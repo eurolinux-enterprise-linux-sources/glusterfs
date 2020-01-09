@@ -1,0 +1,134 @@
+From 2cd1f86d0bd47f93f6e278530fc76a1e44aa9333 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Tue, 25 Apr 2017 16:36:40 +0530
+Subject: [PATCH 59/74] glusterd/ganesha : update cache invalidation properly
+ during volume stop
+
+As per current code, during volume stop for ganesha enabled volume the
+feature.cache-invalidation was turned "off" in ganesha_manage_export().
+And it never turn back to "on" when volume is started. It is not desire
+to modify the volume options during stop, this patch fixes above mentioned
+issue.
+
+Change-Id: Iea9c62e5cda4f54805b41ea6055cf0c3652a634c
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://review.gluster.org/17111
+Smoke: Gluster Build System <jenkins@build.gluster.org>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+Reviewed-by: Raghavendra Talur <rtalur@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-ganesha.c    | 30 ++++++++++++++-----------
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c      |  4 ++--
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c |  2 +-
+ xlators/mgmt/glusterd/src/glusterd.h            |  3 ++-
+ 4 files changed, 22 insertions(+), 17 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-ganesha.c b/xlators/mgmt/glusterd/src/glusterd-ganesha.c
+index 2392341..5d6144a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-ganesha.c
++++ b/xlators/mgmt/glusterd/src/glusterd-ganesha.c
+@@ -463,7 +463,8 @@ manage_export_config (char *volname, char *value, char **op_errstr)
+ 
+ /* Exports and unexports a particular volume via NFS-Ganesha */
+ int
+-ganesha_manage_export (dict_t *dict, char *value, char **op_errstr)
++ganesha_manage_export (dict_t *dict, char *value,
++                       gf_boolean_t update_cache_invalidation, char **op_errstr)
+ {
+         runner_t                 runner = {0,};
+         int                      ret = -1;
+@@ -573,17 +574,20 @@ ganesha_manage_export (dict_t *dict, char *value, char **op_errstr)
+                 }
+         }
+ 
+-        vol_opts = volinfo->dict;
+-        ret = dict_set_dynstr_with_alloc (vol_opts,
+-                                 "features.cache-invalidation", value);
+-        if (ret)
+-                gf_asprintf (op_errstr, "Cache-invalidation could not"
+-                                        " be set to %s.", value);
+-        ret = glusterd_store_volinfo (volinfo,
+-                        GLUSTERD_VOLINFO_VER_AC_INCREMENT);
+-        if (ret)
+-                gf_asprintf (op_errstr, "failed to store volinfo for %s"
+-                             , volinfo->volname);
++        if (update_cache_invalidation) {
++                vol_opts = volinfo->dict;
++                ret = dict_set_dynstr_with_alloc (vol_opts,
++                                                  "features.cache-invalidation",
++                                                  value);
++                if (ret)
++                        gf_asprintf (op_errstr, "Cache-invalidation could not"
++                                                " be set to %s.", value);
++                ret = glusterd_store_volinfo (volinfo,
++                                              GLUSTERD_VOLINFO_VER_AC_INCREMENT);
++                if (ret)
++                        gf_asprintf (op_errstr, "failed to store volinfo for %s"
++                                     , volinfo->volname);
++        }
+ 
+ out:
+         return ret;
+@@ -858,7 +862,7 @@ glusterd_handle_ganesha_op (dict_t *dict, char **op_errstr,
+ 
+ 
+         if (strcmp (key, "ganesha.enable") == 0) {
+-                ret =  ganesha_manage_export (dict, value, op_errstr);
++                ret =  ganesha_manage_export (dict, value, _gf_true, op_errstr);
+                 if (ret < 0)
+                         goto out;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 06e9e25..86f18f0 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -1128,7 +1128,7 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
+ 
+                 if ((strcmp (key, "ganesha.enable") == 0) &&
+                     (strcmp (value, "off") == 0)) {
+-                        ret = ganesha_manage_export (dict, "off", op_errstr);
++                        ret = ganesha_manage_export (dict, "off", _gf_true, op_errstr);
+                         if (ret)
+                                 goto out;
+                 }
+@@ -1655,7 +1655,7 @@ glusterd_op_stage_reset_volume (dict_t *dict, char **op_errstr)
+          */
+         if (volinfo && (!strcmp (key, "all") || !strcmp(key, "ganesha.enable"))) {
+                 if (glusterd_check_ganesha_export (volinfo)) {
+-                        ret = ganesha_manage_export (dict, "off", op_errstr);
++                        ret = ganesha_manage_export (dict, "off", _gf_true, op_errstr);
+                         if (ret)
+                                 gf_msg (this->name, GF_LOG_WARNING, 0,
+                                         GD_MSG_NFS_GNS_RESET_FAIL,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index 92db458..725d194 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -1739,7 +1739,7 @@ glusterd_op_stage_stop_volume (dict_t *dict, char **op_errstr)
+         }
+         ret = glusterd_check_ganesha_export (volinfo);
+         if (ret) {
+-                ret = ganesha_manage_export(dict, "off", op_errstr);
++                ret = ganesha_manage_export(dict, "off", _gf_false, op_errstr);
+                 if (ret) {
+                         gf_msg (THIS->name, GF_LOG_WARNING, 0,
+                                 GD_MSG_NFS_GNS_UNEXPRT_VOL_FAIL, "Could not "
+diff --git a/xlators/mgmt/glusterd/src/glusterd.h b/xlators/mgmt/glusterd/src/glusterd.h
+index 2d8dbb9..3ad5ed6 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.h
++++ b/xlators/mgmt/glusterd/src/glusterd.h
+@@ -1176,7 +1176,8 @@ int glusterd_check_ganesha_cmd (char *key, char *value,
+                                 char **errstr, dict_t *dict);
+ int glusterd_op_stage_set_ganesha (dict_t *dict, char **op_errstr);
+ int glusterd_op_set_ganesha (dict_t *dict, char **errstr);
+-int ganesha_manage_export (dict_t *dict, char *value, char **op_errstr);
++int ganesha_manage_export (dict_t *dict, char *value,
++                           gf_boolean_t update_cache_invalidation, char **op_errstr);
+ int manage_export_config (char *volname, char *value, char **op_errstr);
+ 
+ gf_boolean_t
+-- 
+1.8.3.1
+

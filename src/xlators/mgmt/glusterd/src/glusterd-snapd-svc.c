@@ -20,6 +20,7 @@
 #include "glusterd-snapd-svc.h"
 #include "glusterd-snapd-svc-helper.h"
 #include "glusterd-snapshot-utils.h"
+#include "syscall.h"
 
 char *snapd_svc_name = "snapd";
 
@@ -203,6 +204,10 @@ glusterd_snapdsvc_manager (glusterd_svc_t *svc, void *data, int flags)
         }
 
 out:
+        if (ret) {
+                gf_event (EVENT_SVC_MANAGER_FAILED, "volume=%s;svc_name=%s",
+                          volinfo->volname, svc->name);
+        }
         gf_msg_debug (THIS->name, 0, "Returning %d", ret);
 
         return ret;
@@ -251,7 +256,7 @@ glusterd_snapdsvc_start (glusterd_svc_t *svc, int flags)
                 goto out;
         }
 
-        ret = access (svc->proc.volfile, F_OK);
+        ret = sys_access (svc->proc.volfile, F_OK);
         if (ret) {
                 gf_msg (this->name, GF_LOG_DEBUG, 0,
                         GD_MSG_VOLINFO_GET_FAIL,
@@ -275,7 +280,7 @@ glusterd_snapdsvc_start (glusterd_svc_t *svc, int flags)
         }
         runinit (&runner);
 
-        if (priv->valgrind) {
+        if (this->ctx->cmd_args.valgrind) {
                 snprintf (valgrind_logfile, PATH_MAX, "%s/valgrind-snapd.log",
                           svc->proc.logdir);
 
@@ -294,28 +299,7 @@ glusterd_snapdsvc_start (glusterd_svc_t *svc, int flags)
                          "--brick-name", snapd_id,
                          "-S", svc->conn.sockpath, NULL);
 
-        /* Do a pmap registry remove on the older connected port */
-        if (volinfo->snapd.port) {
-                ret = pmap_registry_remove (this, volinfo->snapd.port,
-                                            snapd_id, GF_PMAP_PORT_BRICKSERVER,
-                                            NULL);
-                if (ret) {
-                        snprintf (msg, sizeof (msg), "Failed to remove pmap "
-                                  "registry for older signin");
-                        goto out;
-                }
-        }
-
-        snapd_port = pmap_registry_alloc (THIS);
-        if (!snapd_port) {
-                snprintf (msg, sizeof (msg), "Could not allocate port "
-                          "for snapd service for volume %s",
-                          volinfo->volname);
-                runner_log (&runner, this->name, GF_LOG_DEBUG, msg);
-                ret = -1;
-                goto out;
-        }
-
+        snapd_port = pmap_assign_port (THIS, volinfo->snapd.port, snapd_id);
         volinfo->snapd.port = snapd_port;
 
         runner_add_arg (&runner, "--brick-port");
@@ -359,15 +343,17 @@ glusterd_snapdsvc_restart ()
 
         cds_list_for_each_entry (volinfo, &conf->volumes, vol_list) {
                 /* Start per volume snapd svc */
-                if (volinfo->status == GLUSTERD_STATUS_STARTED &&
-                    glusterd_is_snapd_enabled (volinfo)) {
+                if (volinfo->status == GLUSTERD_STATUS_STARTED) {
                         svc = &(volinfo->snapd.svc);
-                        ret = svc->start (svc, PROC_START_NO_WAIT);
+                        ret = svc->manager (svc, volinfo, PROC_START_NO_WAIT);
                         if (ret) {
                                 gf_msg (this->name, GF_LOG_ERROR, 0,
                                         GD_MSG_SNAPD_START_FAIL,
-                                        "Couldn't start snapd for "
-                                        "vol: %s", volinfo->volname);
+                                        "Couldn't resolve snapd for "
+                                        "vol: %s on restart", volinfo->volname);
+                                gf_event (EVENT_SVC_MANAGER_FAILED,
+                                          "volume=%s;svc_name=%s",
+                                          volinfo->volname, svc->name);
                                 goto out;
                         }
                 }
@@ -394,11 +380,28 @@ glusterd_snapdsvc_rpc_notify (glusterd_conn_t *conn, rpc_clnt_event_t event)
                         GD_MSG_SVC_GET_FAIL, "Failed to get the service");
                 return -1;
         }
+        snapd = cds_list_entry (svc, glusterd_snapdsvc_t, svc);
+        if (!snapd) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        GD_MSG_SNAPD_OBJ_GET_FAIL, "Failed to get the "
+                        "snapd object");
+                return -1;
+        }
+
+        volinfo = cds_list_entry (snapd, glusterd_volinfo_t, snapd);
+        if (!volinfo) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        GD_MSG_VOLINFO_GET_FAIL, "Failed to get the "
+                        "volinfo object");
+                return -1;
+        }
 
         switch (event) {
         case RPC_CLNT_CONNECT:
                 gf_msg_debug (this->name, 0, "%s has connected with "
                         "glusterd.", svc->name);
+                gf_event (EVENT_SVC_CONNECTED, "volume=%s;svc_name=%s",
+                          volinfo->volname, svc->name);
                 svc->online =  _gf_true;
                 break;
 
@@ -407,27 +410,16 @@ glusterd_snapdsvc_rpc_notify (glusterd_conn_t *conn, rpc_clnt_event_t event)
                         gf_msg (this->name, GF_LOG_INFO, 0,
                                 GD_MSG_NODE_DISCONNECTED, "%s has disconnected "
                                 "from glusterd.", svc->name);
+                        gf_event (EVENT_SVC_DISCONNECTED,
+                                  "volume=%s;svc_name=%s", volinfo->volname,
+                                  svc->name);
                         svc->online =  _gf_false;
                 }
                 break;
 
         case RPC_CLNT_DESTROY:
-                snapd = cds_list_entry (svc, glusterd_snapdsvc_t, svc);
-                if (!snapd) {
-                        gf_msg (this->name, GF_LOG_ERROR, 0,
-                                GD_MSG_SNAPD_OBJ_GET_FAIL, "Failed to get the "
-                                "snapd object");
-                        return -1;
-                }
-
-                volinfo = cds_list_entry (snapd, glusterd_volinfo_t, snapd);
-                if (!volinfo) {
-                        gf_msg (this->name, GF_LOG_ERROR, 0,
-                                GD_MSG_VOLINFO_GET_FAIL, "Failed to get the "
-                                "volinfo object");
-                        return -1;
-                }
                 glusterd_volinfo_unref (volinfo);
+                break;
 
         default:
                 gf_msg_trace (this->name, 0,

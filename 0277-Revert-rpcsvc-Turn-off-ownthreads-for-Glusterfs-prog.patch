@@ -1,0 +1,35 @@
+From 25f242ceae72453de48e5e7ac4a8622d395271ec Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Mon, 21 May 2018 12:14:06 +0530
+Subject: [PATCH 277/282] Revert "rpcsvc: Turn off ownthreads for Glusterfs
+ program"
+
+This reverts commit 0336d2fa2e8ee0b80c5d5891883c2551f6dbe4db.
+
+> Reviewed-on: https://code.engineering.redhat.com/gerrit/139002
+
+Change-Id: I023c56be4686f69c41c613954a19cd7314df592e
+BUG: 1558989
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139305
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/server/src/server-rpc-fops.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/protocol/server/src/server-rpc-fops.c b/xlators/protocol/server/src/server-rpc-fops.c
+index ba6cc1f..91d5c03 100644
+--- a/xlators/protocol/server/src/server-rpc-fops.c
++++ b/xlators/protocol/server/src/server-rpc-fops.c
+@@ -6160,5 +6160,5 @@ struct rpcsvc_program glusterfs3_3_fop_prog = {
+         .progver   = GLUSTER_FOP_VERSION,
+         .numactors = GLUSTER_FOP_PROCCNT,
+         .actors    = glusterfs3_3_fop_actors,
+-        .ownthread = _gf_false,
++        .ownthread = _gf_true,
+ };
+-- 
+1.8.3.1
+

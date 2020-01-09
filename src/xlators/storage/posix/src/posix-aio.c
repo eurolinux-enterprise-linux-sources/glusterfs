@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include "glusterfs.h"
 #include "posix.h"
@@ -179,9 +174,8 @@ posix_aio_readv (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
         priv = this->private;
 
-        ret = posix_fd_ctx_get (fd, this, &pfd);
+        ret = posix_fd_ctx_get (fd, this, &pfd, &op_errno);
         if (ret < 0) {
-                op_errno = -ret;
                 gf_msg (this->name, GF_LOG_WARNING, op_errno, P_MSG_PFD_NULL,
                         "pfd is NULL from fd=%p", fd);
                 goto err;
@@ -337,9 +331,8 @@ posix_aio_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
         priv = this->private;
 
-        ret = posix_fd_ctx_get (fd, this, &pfd);
+        ret = posix_fd_ctx_get (fd, this, &pfd, &op_errno);
         if (ret < 0) {
-                op_errno = -ret;
                 gf_msg (this->name, GF_LOG_WARNING, op_errno, P_MSG_PFD_NULL,
                         "pfd is NULL from fd=%p", fd);
                 goto err;
@@ -492,7 +485,7 @@ posix_aio_init (xlator_t *this)
 	}
 
         ret = gf_thread_create (&priv->aiothread, NULL,
-				posix_aio_thread, this);
+                                posix_aio_thread, this, "posixaio");
         if (ret != 0) {
                 io_destroy (priv->ctxp);
                 goto out;

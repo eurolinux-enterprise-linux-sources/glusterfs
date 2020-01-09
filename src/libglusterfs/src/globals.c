@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif /* !_CONFIG_H */
-
 #include <pthread.h>
 
 #include "glusterfs.h"
@@ -21,6 +16,7 @@
 #include "mem-pool.h"
 #include "syncop.h"
 #include "libglusterfs-messages.h"
+#include "upcall-utils.h"
 
 const char *gf_fop_list[GF_FOP_MAXVALUE] = {
         [GF_FOP_NULL]        = "NULL",
@@ -73,9 +69,31 @@ const char *gf_fop_list[GF_FOP_MAXVALUE] = {
 	[GF_FOP_DISCARD]     = "DISCARD",
         [GF_FOP_ZEROFILL]    = "ZEROFILL",
         [GF_FOP_IPC]         = "IPC",
+        [GF_FOP_SEEK]        = "SEEK",
+        [GF_FOP_LEASE]       = "LEASE",
+        [GF_FOP_COMPOUND]    = "COMPOUND",
+        [GF_FOP_GETACTIVELK] = "GETACTIVELK",
+        [GF_FOP_SETACTIVELK] = "SETACTIVELK",
 };
+
+const char *gf_upcall_list[GF_UPCALL_FLAGS_MAXVALUE] = {
+        [GF_UPCALL_NULL] = "NULL",
+        [GF_UPCALL] = "UPCALL",
+        [GF_UPCALL_CI_STAT] = "CI_IATT",
+        [GF_UPCALL_CI_XATTR] = "CI_XATTR",
+        [GF_UPCALL_CI_RENAME] = "CI_RENAME",
+        [GF_UPCALL_CI_NLINK] = "CI_UNLINK",
+        [GF_UPCALL_CI_FORGET] = "CI_FORGET",
+        [GF_UPCALL_LEASE_RECALL] = "LEASE_RECALL",
+};
+
 /* THIS */
 
+/* This global ctx is a bad hack to prevent some of the libgfapi crashes.
+ * This should be removed once the patch on resource pool is accepted
+ */
+glusterfs_ctx_t *global_ctx = NULL;
+pthread_mutex_t global_ctx_mutex = PTHREAD_MUTEX_INITIALIZER;
 xlator_t global_xlator;
 static pthread_key_t this_xlator_key;
 static pthread_key_t synctask_key;
@@ -83,6 +101,7 @@ static pthread_key_t uuid_buf_key;
 static char          global_uuid_buf[GF_UUID_BUF_SIZE];
 static pthread_key_t lkowner_buf_key;
 static char          global_lkowner_buf[GF_LKOWNER_BUF_SIZE];
+static pthread_key_t leaseid_buf_key;
 static int gf_global_mem_acct_enable = 1;
 static pthread_once_t globals_inited = PTHREAD_ONCE_INIT;
 
@@ -106,6 +125,17 @@ glusterfs_this_destroy (void *ptr)
         FREE (ptr);
 }
 
+static struct xlator_cbks global_cbks = {
+        .forget                 = NULL,
+        .release                = NULL,
+        .releasedir             = NULL,
+        .invalidate             = NULL,
+        .client_destroy         = NULL,
+        .client_disconnect      = NULL,
+        .ictxmerge              = NULL,
+        .ictxsize               = NULL,
+        .fdctxsize              = NULL,
+};
 
 int
 glusterfs_this_init ()
@@ -122,6 +152,7 @@ glusterfs_this_init ()
 
         global_xlator.name = "glusterfs";
         global_xlator.type = "global";
+        global_xlator.cbks = &global_cbks;
 
         INIT_LIST_HEAD (&global_xlator.volume_options);
 
@@ -334,6 +365,41 @@ glusterfs_lkowner_buf_get ()
         return buf;
 }
 
+/* Leaseid buffer */
+void
+glusterfs_leaseid_buf_destroy (void *ptr)
+{
+        FREE (ptr);
+}
+
+int
+glusterfs_leaseid_buf_init ()
+{
+        int ret = 0;
+
+        ret = pthread_key_create (&leaseid_buf_key,
+                                  glusterfs_leaseid_buf_destroy);
+        return ret;
+}
+
+char *
+glusterfs_leaseid_buf_get ()
+{
+        char *buf = NULL;
+        int   ret = 0;
+
+        buf = pthread_getspecific (leaseid_buf_key);
+        if (!buf) {
+                buf = CALLOC (1, GF_LEASE_ID_BUF_SIZE);
+                ret = pthread_setspecific (leaseid_buf_key, (void *) buf);
+                if (ret) {
+                        FREE (buf);
+                        buf = NULL;
+                }
+        }
+        return buf;
+}
+
 static void
 gf_globals_init_once ()
 {
@@ -357,6 +423,13 @@ gf_globals_init_once ()
         if(ret) {
                 gf_msg ("", GF_LOG_CRITICAL, 0, LG_MSG_LKOWNER_BUF_INIT_FAILED,
                         "ERROR: glusterfs lkowner buffer init failed");
+                goto out;
+        }
+
+        ret = glusterfs_leaseid_buf_init ();
+        if (ret) {
+                gf_msg ("", GF_LOG_CRITICAL, 0, LG_MSG_LEASEID_BUF_INIT_FAILED,
+                        "ERROR: glusterfs leaseid buffer init failed");
                 goto out;
         }
 
@@ -387,7 +460,7 @@ glusterfs_globals_init (glusterfs_ctx_t *ctx)
 {
         int ret = 0;
 
-        gf_log_globals_init (ctx);
+        gf_log_globals_init (ctx, GF_LOG_INFO);
 
         ret =  pthread_once (&globals_inited, gf_globals_init_once);
 

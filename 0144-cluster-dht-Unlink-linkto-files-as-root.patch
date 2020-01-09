@@ -1,0 +1,77 @@
+From 8f2fd4ac7ab74d5687fea8c1f6737f81e052953a Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Tue, 6 Feb 2018 15:20:16 +0530
+Subject: [PATCH 144/148] cluster/dht: Unlink linkto files as root
+
+Non-privileged users cannot delete linkto
+files. However the failure to unlink a stale linkto
+causes DHT to fail the lookup with EIO and hence
+prevent access to the file.
+
+upstream patch: https://review.gluster.org/#/c/19508/
+
+> Change-Id: Id295362d41e52263790694602f36f1219f0646a2
+> BUG: 1542318
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: Ic7c4e4f94c03d18d43cfcf7b2de77ceea2b9733c
+BUG: 1540664
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129742
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index c2d0827..727a47b 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -1404,6 +1404,8 @@ dht_lookup_unlink_of_false_linkto_cbk (call_frame_t *frame, void *cookie,
+         local =  (dht_local_t*)frame->local;
+         path = local->loc.path;
+ 
++        FRAME_SU_UNDO (frame, dht_local_t);
++
+         gf_msg (this->name, GF_LOG_INFO, 0,
+                 DHT_MSG_UNLINK_LOOKUP_INFO, "lookup_unlink returned with "
+                 "op_ret -> %d and op-errno -> %d for %s", op_ret, op_errno,
+@@ -1473,6 +1475,7 @@ dht_lookup_unlink_stale_linkto_cbk (call_frame_t *frame, void *cookie,
+                 "op_errno %d for %s", op_ret, op_errno,
+                 ((path==NULL)?"null":path));
+ 
++        FRAME_SU_UNDO (frame, dht_local_t);
+         DHT_STACK_UNWIND (lookup, frame, -1, ENOENT, NULL, NULL, NULL,
+                           NULL);
+ 
+@@ -1629,15 +1632,15 @@ dht_lookup_everywhere_done (call_frame_t *frame, xlator_t *this)
+                                 DHT_STACK_UNWIND (lookup, frame, -1, ENOENT,
+                                                   NULL, NULL, NULL, NULL);
+                         } else {
+-                               local->skip_unlink.handle_valid_link = _gf_false;
++                                local->skip_unlink.handle_valid_link = _gf_false;
+ 
+                                 gf_msg_debug (this->name, 0,
+                                               "No Cached was found and "
+                                               "unlink on hashed was skipped"
+                                               " so performing now: %s",
+                                               local->loc.path);
+-
+-                               STACK_WIND (frame,
++                                FRAME_SU_DO (frame, dht_local_t);
++                                STACK_WIND (frame,
+                                             dht_lookup_unlink_stale_linkto_cbk,
+                                             hashed_subvol,
+                                             hashed_subvol->fops->unlink,
+@@ -1762,6 +1765,7 @@ dht_lookup_everywhere_done (call_frame_t *frame, xlator_t *this)
+                                                             NULL, NULL);
+                                         } else {
+                                                 local->call_cnt = 1;
++                                                FRAME_SU_DO (frame, dht_local_t);
+                                                 STACK_WIND (frame,
+                                           dht_lookup_unlink_of_false_linkto_cbk,
+                                                     hashed_subvol,
+-- 
+1.8.3.1
+

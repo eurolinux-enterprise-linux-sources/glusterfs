@@ -1,0 +1,44 @@
+From 48201511990f4677e634f236bb81ad03a23fc52a Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Tue, 27 Feb 2018 15:35:30 +0530
+Subject: [PATCH 167/180] glusterd/ganesha : change voltype for ganesha.enable
+ in volume option table
+
+The voltype defined for ganesha.enable is features/ganesha. But ganesha xlator
+was removed from client stack long back. Now it is defined as part of glusterd.
+So reflecting the same on the volume option table.
+
+Label: BACKPORT FROM UPSTREAM 3.10
+
+Upstream reference :
+>patch link https://review.gluster.org/19639
+>Change-Id: Ifedd7493020b77bd54edfdbdd9c799d93b24d0aa
+>BUG: 1486542
+>Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+
+Change-Id: Ifedd7493020b77bd54edfdbdd9c799d93b24d0aa
+BUG: 1378371
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131343
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index af0a982..b603c7f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -3232,7 +3232,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "ganesha.enable",
+-          .voltype     = "features/ganesha",
++          .voltype     = "mgmt/glusterd",
+           .value       = "off",
+           .option      = "ganesha.enable",
+           .op_version  = GD_OP_VERSION_3_7_0,
+-- 
+1.8.3.1
+

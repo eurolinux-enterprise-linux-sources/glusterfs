@@ -24,6 +24,7 @@
 #include "changelog-ev-handle.h"
 
 #include "changelog.h"
+#include "changelog-messages.h"
 
 /**
  * the changelog entry
@@ -115,8 +116,9 @@ typedef struct changelog_rollover {
 
         xlator_t *this;
 
-        /* read end of pipe used as event from barrier on snapshot */
-        int rfd;
+        pthread_mutex_t lock;
+        pthread_cond_t cond;
+        gf_boolean_t notify;
 } changelog_rollover_t;
 
 typedef struct changelog_fsync {
@@ -263,9 +265,6 @@ struct changelog_priv {
 
         /* Represents the active color. Initially by default black */
         chlog_fop_color_t current_color;
-
-        /* write end of pipe to do explicit rollover on barrier during snap */
-        int cr_wfd;
 
         /* flag to determine explicit rollover is triggered */
         gf_boolean_t explicit_rollover;
@@ -503,7 +502,8 @@ changelog_inode_ctx_t *
 __changelog_inode_ctx_get (xlator_t *, inode_t *, unsigned long **,
                            unsigned long *, changelog_log_type);
 int
-resolve_pargfid_to_path (xlator_t *this, uuid_t gfid, char **path, char *bname);
+resolve_pargfid_to_path (xlator_t *this, const uuid_t gfid, char **path,
+                         char *bname);
 
 /* macros */
 
@@ -645,7 +645,8 @@ resolve_pargfid_to_path (xlator_t *this, uuid_t gfid, char **path, char *bname);
 
 #define CHANGELOG_NOT_ON_THEN_GOTO(priv, ret, label) do {                      \
                 if (!priv->active) {                                           \
-                        gf_log (this->name, GF_LOG_WARNING,                    \
+                        gf_msg (this->name, GF_LOG_WARNING, 0,                 \
+                                CHANGELOG_MSG_NOT_ACTIVE,                      \
                                 "Changelog is not active, return success");    \
                         ret = 0;                                               \
                         goto label;                                            \
@@ -655,17 +656,19 @@ resolve_pargfid_to_path (xlator_t *this, uuid_t gfid, char **path, char *bname);
 /* Log pthread error and goto label */
 #define CHANGELOG_PTHREAD_ERROR_HANDLE_0(ret, label) do {                      \
                 if (ret) {                                                     \
-                        gf_log (this->name, GF_LOG_ERROR,                      \
+                        gf_msg (this->name, GF_LOG_ERROR,                      \
+                                0, CHANGELOG_MSG_PTHREAD_ERROR,                \
                                 "pthread error: Error: %d", ret);              \
                         ret = -1;                                              \
                         goto label;                                            \
                 }                                                              \
-        } while (0)
+        } while (0);
 
 /* Log pthread error, set flag and goto label */
 #define CHANGELOG_PTHREAD_ERROR_HANDLE_1(ret, label, flag) do {                \
                 if (ret) {                                                     \
-                        gf_log (this->name, GF_LOG_ERROR,                      \
+                        gf_msg (this->name, GF_LOG_ERROR, 0,                   \
+                                CHANGELOG_MSG_PTHREAD_ERROR,                   \
                                 "pthread error: Error: %d", ret);              \
                         ret = -1;                                              \
                         flag = _gf_true;                                       \

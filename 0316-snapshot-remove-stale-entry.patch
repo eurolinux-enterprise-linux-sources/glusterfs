@@ -1,0 +1,163 @@
+From ed178ad11c75da242d68de5d24d9b0a8faaf9deb Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Tue, 3 Jul 2018 16:03:35 +0530
+Subject: [PATCH 316/325] snapshot : remove stale entry
+
+        During snap delete after removing brick-path we should remove
+        snap-path too i.e. /var/run/gluster/snaps/<snap-name>.
+
+        During snap deactivate also we should remove snap-path.
+
+>fixes: bz#1597662
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Upstream Patch : https://review.gluster.org/#/c/20454/
+Change-Id: Ib80b5d8844d6479d31beafa732e5671b0322248b
+BUG: 1547903
+
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Change-Id: I93827f4e15a37247bafeb077575dc60658b8851f
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143814
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/bugs/snapshot/bug-1597662.t             | 57 +++++++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c | 38 ++++++++++++++++++
+ 2 files changed, 95 insertions(+)
+ create mode 100644 tests/bugs/snapshot/bug-1597662.t
+
+diff --git a/tests/bugs/snapshot/bug-1597662.t b/tests/bugs/snapshot/bug-1597662.t
+new file mode 100644
+index 0000000..dc87d17
+--- /dev/null
++++ b/tests/bugs/snapshot/bug-1597662.t
+@@ -0,0 +1,57 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../snapshot.rc
++
++cleanup;
++
++TEST init_n_bricks 3;
++TEST setup_lvm 3;
++TEST glusterd;
++TEST pidof glusterd;
++
++TEST $CLI volume create $V0 $H0:$L1 $H0:$L2 $H0:$L3;
++TEST $CLI volume start $V0;
++
++snap_path=/var/run/gluster/snaps
++
++TEST $CLI snapshot create snap1 $V0 no-timestamp;
++
++$CLI snapshot activate snap1;
++
++EXPECT 'Started' snapshot_status snap1;
++
++# This Function will check for entry /var/run/gluster/snaps/<snap-name>
++# against snap-name
++
++function is_snap_path
++{
++        echo `ls $snap_path | grep snap1 | wc -l`
++}
++
++# snap is active so snap_path should exist
++EXPECT "1" is_snap_path
++
++$CLI snapshot deactivate snap1;
++
++# snap is deactivated so snap_path should not exist
++EXPECT "0" is_snap_path
++
++# activate snap again
++$CLI snapshot activate snap1;
++
++# snap is active so snap_path should exist
++EXPECT "1" is_snap_path
++
++# delete snap now
++TEST $CLI snapshot delete snap1;
++
++# snap is deleted so snap_path should not exist
++EXPECT "0" is_snap_path
++
++TEST $CLI volume stop $V0;
++TEST $CLI volume delete $V0;
++
++cleanup;
++
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index 84335ef..304cef6 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -2945,6 +2945,7 @@ glusterd_lvm_snapshot_remove (dict_t *rsp_dict, glusterd_volinfo_t *snap_vol)
+         glusterd_brickinfo_t *brickinfo            = NULL;
+         xlator_t             *this                 = NULL;
+         char                  brick_dir[PATH_MAX]  = "";
++        char                  snap_path[PATH_MAX]  = "";
+         char                 *tmp                  = NULL;
+         char                 *brick_mount_path     = NULL;
+         gf_boolean_t          is_brick_dir_present = _gf_false;
+@@ -3116,6 +3117,28 @@ remove_brick_path:
+                                         brick_dir, strerror (errno));
+                                 goto out;
+                 }
++
++                /* After removing brick_dir, fetch and remove snap path
++                 * i.e. /var/run/gluster/snaps/<snap-name>.
++                 */
++                if (!snap_vol->snapshot) {
++                        gf_msg (this->name, GF_LOG_WARNING, EINVAL,
++                                GD_MSG_INVALID_ENTRY, "snapshot not"
++                                "present in snap_vol");
++                        ret = -1;
++                        goto out;
++                }
++
++                snprintf (snap_path, sizeof (snap_path) - 1, "%s/%s",
++                          snap_mount_dir, snap_vol->snapshot->snapname);
++                ret = recursive_rmdir (snap_path);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, errno,
++                                GD_MSG_DIR_OP_FAILED, "Failed to remove "
++                                "%s directory : error : %s", snap_path,
++                                strerror (errno));
++                        goto out;
++                }
+         }
+ 
+         ret = 0;
+@@ -6260,6 +6283,7 @@ glusterd_snapshot_deactivate_commit (dict_t *dict, char **op_errstr,
+         glusterd_snap_t          *snap                 = NULL;
+         glusterd_volinfo_t       *snap_volinfo         = NULL;
+         xlator_t                 *this                 = NULL;
++        char                      snap_path[PATH_MAX]  =  "";
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -6318,6 +6342,20 @@ glusterd_snapshot_deactivate_commit (dict_t *dict, char **op_errstr,
+                         "Failed to unmounts for %s", snap->snapname);
+         }
+ 
++        /*Remove /var/run/gluster/snaps/<snap-name> entry for deactivated snaps.
++         * This entry will be created again during snap activate.
++         */
++        snprintf (snap_path, sizeof (snap_path) - 1, "%s/%s",
++                  snap_mount_dir, snapname);
++        ret = recursive_rmdir (snap_path);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, errno,
++                        GD_MSG_DIR_OP_FAILED, "Failed to remove "
++                        "%s directory : error : %s", snap_path,
++                        strerror (errno));
++                goto out;
++        }
++
+         ret = dict_set_dynstr_with_alloc (rsp_dict, "snapuuid",
+                                           uuid_utoa (snap->snap_id));
+         if (ret) {
+-- 
+1.8.3.1
+

@@ -11,11 +11,6 @@
 #ifndef _NFS3_H_
 #define _NFS3_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpcsvc.h"
 #include "dict.h"
 #include "xlator.h"
@@ -28,6 +23,7 @@
 #include "nlm4.h"
 #include "acl3-xdr.h"
 #include "acl3.h"
+#include "refcount.h"
 #include <sys/statvfs.h>
 
 #define GF_NFS3                 GF_NFS"-nfsv3"
@@ -189,6 +185,8 @@ typedef int (*nfs3_resume_fn_t) (void *cs);
  * Imagine the chaos if we need a mem-pool for each one of those sub-structures.
  */
 struct nfs3_local {
+        GF_REF_DECL;
+
         rpcsvc_request_t        *req;
         xlator_t                *vol;
         nfs3_resume_fn_t        resume_fn;
@@ -230,6 +228,7 @@ struct nfs3_local {
         cookie3                 cookie;
         struct iovec            datavec;
         mode_t                  mode;
+        struct iatt             attr_in;
 
         /* NFSv3 FH resolver state */
         int                     hardresolved;

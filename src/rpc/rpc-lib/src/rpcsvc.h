@@ -11,11 +11,6 @@
 #ifndef _RPCSVC_H
 #define _RPCSVC_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "event.h"
 #include "rpc-transport.h"
 #include "logging.h"
@@ -238,9 +233,10 @@ struct rpcsvc_request {
          */
         rpcsvc_auth_data_t      verf;
 
-	/* Execute this request's actor function as a synctask? */
-	gf_boolean_t            synctask;
+	/* Execute this request's actor function in ownthread of program?*/
+	gf_boolean_t            ownthread;
 
+        gf_boolean_t            synctask;
         /* Container for a RPC program wanting to store a temp
          * request-specific item.
          */
@@ -249,11 +245,11 @@ struct rpcsvc_request {
         /* Container for transport to store request-specific item */
         void                    *trans_private;
 
-        /* we need to ref the 'iobuf' in case of 'synctasking' it */
-        struct iobuf            *hdr_iobuf;
-
         /* pointer to cached reply for use in DRC */
         drc_cached_op_t         *reply;
+
+        /* request queue in rpcsvc */
+        struct list_head         request_list;
 };
 
 #define rpcsvc_request_program(req) ((rpcsvc_program_t *)((req)->prog))
@@ -404,11 +400,18 @@ struct rpcsvc_program {
          */
         int                     min_auth;
 
-	/* Execute actor function as a synctask? */
-	gf_boolean_t            synctask;
+	/* Execute actor function in program's own thread? This will reduce */
+        /* the workload on poller threads */
+	gf_boolean_t            ownthread;
+        gf_boolean_t            alive;
 
+        gf_boolean_t            synctask;
         /* list member to link to list of registered services with rpcsvc */
         struct list_head        program;
+        struct list_head        request_queue;
+        pthread_mutex_t         queue_lock;
+        pthread_cond_t          queue_cond;
+        pthread_t               thread;
 };
 
 typedef struct rpcsvc_cbk_program {
@@ -589,7 +592,8 @@ int rpcsvc_request_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
 
 int rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
                             rpcsvc_cbk_program_t *prog, int procnum,
-                            struct iovec *proghdr, int proghdrcount);
+                            struct iovec *proghdr, int proghdrcount,
+                            struct iobref *iobref);
 
 rpcsvc_actor_t *
 rpcsvc_program_actor (rpcsvc_request_t *req);

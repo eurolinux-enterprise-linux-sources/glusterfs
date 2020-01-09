@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2015 Red Hat, Inc. <http://www.redhat.com/>
@@ -10,11 +9,11 @@
 # cases as published by the Free Software Foundation.
 
 import sqlite3
-import urllib
 import os
 
-from utils import RecordType
+from utils import RecordType, unquote_plus_space_newline
 from utils import output_path_prepare
+
 
 class OutputMerger(object):
     """
@@ -91,7 +90,7 @@ class ChangelogData(object):
         self._create_table_pgfid()
         self._create_table_inodegfid()
         self.args = args
-        self.path_sep = "/" if args.no_encode else "%2F"
+        self.path_sep = "/"
 
     def _create_table_gfidpath(self):
         drop_table = "DROP TABLE IF EXISTS gfidpath"
@@ -146,10 +145,7 @@ class ChangelogData(object):
 
         for key, value in filters.items():
             query += " AND %s = ?" % key
-            if isinstance(value, int):
-                params.append(value)
-            else:
-                params.append(unicode(value, "utf8"))
+            params.append(value)
 
         return self.cursor_reader.execute(query, params)
 
@@ -161,10 +157,7 @@ class ChangelogData(object):
 
         for key, value in filters.items():
             query += " AND %s = ?" % key
-            if isinstance(value, int):
-                params.append(value)
-            else:
-                params.append(unicode(value, "utf8"))
+            params.append(value)
 
         return self.cursor_reader.execute(query, params)
 
@@ -175,10 +168,7 @@ class ChangelogData(object):
 
         for key, value in filters.items():
             query += " AND %s = ?" % key
-            if isinstance(value, int):
-                params.append(value)
-            else:
-                params.append(unicode(value, "utf8"))
+            params.append(value)
 
         self.cursor.execute(query, params)
 
@@ -189,10 +179,7 @@ class ChangelogData(object):
         params = []
         for key, value in data.items():
             fields.append(key)
-            if isinstance(value, int):
-                params.append(value)
-            else:
-                params.append(unicode(value, "utf8"))
+            params.append(value)
 
         values_substitute = len(fields)*["?"]
         query += "%s) VALUES(%s)" % (",".join(fields),
@@ -205,20 +192,14 @@ class ChangelogData(object):
         update_fields = []
         for key, value in data.items():
             update_fields.append("%s = ?" % key)
-            if isinstance(value, int):
-                params.append(value)
-            else:
-                params.append(unicode(value, "utf8"))
+            params.append(value)
 
         query = "UPDATE %s SET %s WHERE 1 = 1" % (tablename,
                                                   ", ".join(update_fields))
 
         for key, value in filters.items():
             query += " AND %s = ?" % key
-            if isinstance(value, int):
-                params.append(value)
-            else:
-                params.append(unicode(value, "utf8"))
+            params.append(value)
 
         self.cursor.execute(query, params)
 
@@ -230,12 +211,8 @@ class ChangelogData(object):
         params = []
 
         for key, value in filters.items():
-            print value
             query += " AND %s = ?" % key
-            if isinstance(value, int):
-                params.append(value)
-            else:
-                params.append(unicode(value, "utf8"))
+            params.append(value)
 
         self.cursor.execute(query, params)
         row = self.cursor.fetchone()
@@ -344,29 +321,21 @@ class ChangelogData(object):
     def when_create_mknod_mkdir(self, changelogfile, data):
         # E <GFID> <MKNOD|CREATE|MKDIR> <MODE> <USER> <GRP> <PGFID>/<BNAME>
         # Add the Entry to DB
-        pgfid1, bn1 = urllib.unquote_plus(data[6]).split("/", 1)
+        pgfid1, bn1 = data[6].split("/", 1)
 
         if self.args.no_encode:
-            bn1 = bn1.strip()
-        else:
-            # Quote again the basename
-            bn1 = urllib.quote_plus(bn1.strip())
+            bn1 = unquote_plus_space_newline(bn1).strip()
 
         self.gfidpath_add(changelogfile, RecordType.NEW, data[1], pgfid1, bn1)
 
     def when_rename(self, changelogfile, data):
         # E <GFID> RENAME <OLD_PGFID>/<BNAME> <PGFID>/<BNAME>
-        pgfid1, bn1 = urllib.unquote_plus(data[3]).split("/", 1)
-        pgfid2, bn2 = urllib.unquote_plus(data[4]).split("/", 1)
+        pgfid1, bn1 = data[3].split("/", 1)
+        pgfid2, bn2 = data[4].split("/", 1)
 
         if self.args.no_encode:
-            # Quote again the basename
-            bn1 = bn1.strip()
-            bn2 = bn2.strip()
-        else:
-            # Quote again the basename
-            bn1 = urllib.quote_plus(bn1.strip())
-            bn2 = urllib.quote_plus(bn2.strip())
+            bn1 = unquote_plus_space_newline(bn1).strip()
+            bn2 = unquote_plus_space_newline(bn2).strip()
 
         if self.gfidpath_exists({"gfid": data[1], "type": "NEW",
                                  "pgfid1": pgfid1, "bn1": bn1}):
@@ -406,13 +375,9 @@ class ChangelogData(object):
     def when_link_symlink(self, changelogfile, data):
         # E <GFID> <LINK|SYMLINK> <PGFID>/<BASENAME>
         # Add as New record in Db as Type NEW
-        pgfid1, bn1 = urllib.unquote_plus(data[3]).split("/", 1)
+        pgfid1, bn1 = data[3].split("/", 1)
         if self.args.no_encode:
-            # Quote again the basename
-            bn1 = bn1.strip()
-        else:
-            # Quote again the basename
-            bn1 = urllib.quote_plus(bn1.strip())
+            bn1 = unquote_plus_space_newline(bn1).strip()
 
         self.gfidpath_add(changelogfile, RecordType.NEW, data[1], pgfid1, bn1)
 
@@ -424,18 +389,15 @@ class ChangelogData(object):
 
     def when_unlink_rmdir(self, changelogfile, data):
         # E <GFID> <UNLINK|RMDIR> <PGFID>/<BASENAME>
-        pgfid1, bn1 = urllib.unquote_plus(data[3]).split("/", 1)
+        pgfid1, bn1 = data[3].split("/", 1)
 
         if self.args.no_encode:
-            bn1 = bn1.strip()
-        else:
-            # Quote again the basename
-            bn1 = urllib.quote_plus(bn1.strip())
+            bn1 = unquote_plus_space_newline(bn1).strip()
 
         deleted_path = data[4] if len(data) == 5 else ""
         if deleted_path != "":
-                deleted_path = output_path_prepare(deleted_path,
-                                                   self.args)
+            deleted_path = unquote_plus_space_newline(deleted_path)
+            deleted_path = output_path_prepare(deleted_path, self.args)
 
         if self.gfidpath_exists({"gfid": data[1], "type": "NEW",
                                  "pgfid1": pgfid1, "bn1": bn1}):

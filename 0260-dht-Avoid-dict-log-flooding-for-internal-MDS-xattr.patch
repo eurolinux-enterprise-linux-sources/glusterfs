@@ -1,0 +1,44 @@
+From 1eb5f1a725cc9afdd7b1a7b29cf446b9c60974c6 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Tue, 8 May 2018 14:52:04 +0530
+Subject: [PATCH 260/260] dht: Avoid dict log flooding for internal MDS xattr
+
+Problem: Before populate MDS internal xattr first dht checks if MDS is
+         present in xattr or not.If xattr dictionary is NULL dict_get
+         log the message either dict or key is NULL
+
+Solution: Before call dict_get check xattr, if it is NULL then no
+          need to call dict_get.
+
+> BUG: 1575910
+> Change-Id: I81604ec5945b85eba14b42f4583d06ec713028f4
+> fixes: bz#1575910
+> (cherry picked from commit ed5a09e4aea7f64f9a43698955e24285a936f0c0)
+> (Upstream link https://review.gluster.org/#/c/19981/)
+
+BUG: 1575895
+Change-Id: I728a8068786f94d3793a91cdd5c64f813d7545ca
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138205
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 3b8ba6d..a985481 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -855,7 +855,7 @@ dht_common_mark_mdsxattr (call_frame_t *frame, int *errst, int mark_during_fresh
+            and wind a setxattr call on hashed subvol to update
+            internal xattr
+         */
+-        if (!dict_get (local->xattr, conf->mds_xattr_key)) {
++        if (!local->xattr || !dict_get (local->xattr, conf->mds_xattr_key)) {
+                 /* It means no internal MDS xattr has been set yet
+                 */
+                 /* Check the status of all subvol are up while call
+-- 
+1.8.3.1
+

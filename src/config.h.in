@@ -1,5 +1,11 @@
 /* config.h.in.  Generated from configure.ac by autoheader.  */
 
+/* Disable the Gluster memory pooler. */
+#undef GF_DISABLE_MEMPOOL
+
+/* Disable internal tracking of privileged ports. */
+#undef GF_DISABLE_PRIVPORT_TRACKING
+
 /* Use our own fusermount */
 #undef GF_FUSERMOUNT
 
@@ -11,6 +17,9 @@
 
 /* have argp */
 #undef HAVE_ARGP
+
+/* define if __atomic_*() builtins are available */
+#undef HAVE_ATOMIC_BUILTINS
 
 /* define if found backtrace */
 #undef HAVE_BACKTRACE
@@ -83,6 +92,9 @@
 /* Define to 1 if you have the <linux/falloc.h> header file. */
 #undef HAVE_LINUX_FALLOC_H
 
+/* Define to 1 if you have the <linux/oom.h> header file. */
+#undef HAVE_LINUX_OOM_H
+
 /* define if llistxattr exists */
 #undef HAVE_LLISTXATTR
 
@@ -110,17 +122,20 @@
 /* define if posix_fallocate exists */
 #undef HAVE_POSIX_FALLOCATE
 
-/* define if libglib-2.0 library found and QEMU Block translator enabled */
-#undef HAVE_QEMU_BLOCK
-
 /* readline enabled CLI */
 #undef HAVE_READLINE
+
+/* define if SEEK_HOLE is available */
+#undef HAVE_SEEK_HOLE
 
 /* define if found setfsuid setfsgid */
 #undef HAVE_SET_FSID
 
 /* define if found spinlock */
 #undef HAVE_SPINLOCK
+
+/* Define to 1 if you have the <sqlite3.h> header file. */
+#undef HAVE_SQLITE3_H
 
 /* Define to 1 if you have the <stdint.h> header file. */
 #undef HAVE_STDINT_H
@@ -137,14 +152,14 @@
 /* define if found strnlen */
 #undef HAVE_STRNLEN
 
-/* Define to 1 if `st_atimespec.tv_nsec' is member of `struct stat'. */
+/* Define to 1 if `st_atimespec.tv_nsec' is a member of `struct stat'. */
 #undef HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC
 
-/* Define to 1 if `st_atim.tv_nsec' is member of `struct stat'. */
+/* Define to 1 if `st_atim.tv_nsec' is a member of `struct stat'. */
 #undef HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC
 
-/* Define to 1 if using probes. */
-#undef HAVE_SYSTEMTAP
+/* define if __sync_*() builtins are available */
+#undef HAVE_SYNC_BUILTINS
 
 /* Define to 1 if you have the <sys/acl.h> header file. */
 #undef HAVE_SYS_ACL_H
@@ -167,14 +182,26 @@
 /* Define to 1 if you have the <sys/xattr.h> header file. */
 #undef HAVE_SYS_XATTR_H
 
-/* use new OpenSSL functions */
+/* Using OpenSSL-1.0 TLSv1_2_method */
 #undef HAVE_TLSV1_2_METHOD
+
+/* Using OpenSSL-1.1 TLS_method */
+#undef HAVE_TLS_METHOD
 
 /* define if found umount2 */
 #undef HAVE_UMOUNT2
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
+
+/* Define to 1 if you have the <urcu-bp.h> header file. */
+#undef HAVE_URCU_BP_H
+
+/* Define to 1 if you have the <urcu/cds.h> header file. */
+#undef HAVE_URCU_CDS_H
+
+/* define if utimensat exists */
+#undef HAVE_UTIMENSAT
 
 /* Define to the sub-directory in which libtool stores uninstalled libraries.
    */
@@ -199,8 +226,14 @@
 /* Define to the one symbol short name of this package. */
 #undef PACKAGE_TARNAME
 
+/* Define to the home page for this package. */
+#undef PACKAGE_URL
+
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
+
+/* define if all processes should run under valgrind */
+#undef RUN_WITH_VALGRIND
 
 /* The size of `int', as computed by sizeof. */
 #undef SIZEOF_INT
@@ -217,8 +250,23 @@
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
 
-/* Define if liburcu 0.7 is found */
-#undef URCU_0_7
+/* Define if liburcu 0.6 or 0.7 is found */
+#undef URCU_OLD
+
+/* Defined if using dynamic INTEL AVX code */
+#undef USE_EC_DYNAMIC_AVX
+
+/* Defined if using dynamic ARM NEON code */
+#undef USE_EC_DYNAMIC_NEON
+
+/* Defined if using dynamic INTEL SSE code */
+#undef USE_EC_DYNAMIC_SSE
+
+/* Defined if using dynamic INTEL x64 code */
+#undef USE_EC_DYNAMIC_X64
+
+/* define if events enabled */
+#undef USE_EVENTS
 
 /* no sqlite, gfdb is disabled */
 #undef USE_GFDB

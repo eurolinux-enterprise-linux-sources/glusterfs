@@ -1,0 +1,39 @@
+From 4ea251b0a23ae8fc0740abc2c5d85c09c31e0c70 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Mon, 6 Nov 2017 13:23:32 +0530
+Subject: [PATCH 42/74] glusterd: restart the brick if qorum status is
+ NOT_APPLICABLE_QUORUM
+
+If a volume is not having server quorum enabled and in a trusted storage
+pool all the glusterd instances from other peers are down, on restarting
+glusterd the brick start trigger doesn't happen resulting into the
+brick not coming up.
+
+> mainline patch : https://review.gluster.org/18669
+
+Change-Id: If1458e03b50a113f1653db553bb2350d11577539
+BUG: 1509102
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/123055
+Reviewed-by: Gaurav Yadav <gyadav@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-server-quorum.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-server-quorum.c b/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
+index 659ff9d..4706403 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
++++ b/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
+@@ -341,7 +341,8 @@ glusterd_do_volume_quorum_action (xlator_t *this, glusterd_volinfo_t *volinfo,
+          * the bricks that are down are brought up again. In this process it
+          * also brings up the brick that is purposefully taken down.
+          */
+-        if (volinfo->quorum_status == quorum_status)
++        if (quorum_status != NOT_APPLICABLE_QUORUM &&
++            volinfo->quorum_status == quorum_status)
+                 goto out;
+ 
+         if (quorum_status == MEETS_QUORUM) {
+-- 
+1.8.3.1
+

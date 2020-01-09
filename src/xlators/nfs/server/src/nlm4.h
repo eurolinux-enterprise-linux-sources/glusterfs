@@ -11,11 +11,6 @@
 #ifndef _NLM4_H_
 #define _NLM4_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <sys/types.h>
 #include <signal.h>
 #include "rpcsvc.h"
@@ -67,7 +62,7 @@
 #elif defined(__NetBSD__)
 #define GF_RPC_STATD_PROG       "/usr/sbin/rpc.statd"
 #define GF_RPC_STATD_PIDFILE    "/var/run/rpc.statd.pid"
-#define GF_SM_NOTIFY_PIDFILE    "/var/run/inexistant.pid"
+#define GF_SM_NOTIFY_PIDFILE    "/var/run/inexistent.pid"
 #else
 #define GF_RPC_STATD_PROG       "/sbin/rpc.statd"
 #define GF_RPC_STATD_PIDFILE    "/var/run/rpc.statd.pid"

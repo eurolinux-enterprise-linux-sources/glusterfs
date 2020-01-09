@@ -9,11 +9,6 @@
 */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 /* TODO: add NS locking */
 
 #include "glusterfs.h"
@@ -31,7 +26,7 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                  dict_t *xdata)
 {
 	dht_conf_t    *conf         = NULL;
-	call_frame_t  *prev          = NULL;
+	xlator_t      *prev          = NULL;
 	int            this_call_cnt = 0;
 	int            i = 0;
 	double         percent = 0;
@@ -46,7 +41,7 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	if (op_ret == -1) {
 		gf_msg (this->name, GF_LOG_WARNING, op_errno,
                         DHT_MSG_GET_DISK_INFO_ERROR,
-			"failed to get disk info from %s", prev->this->name);
+			"failed to get disk info from %s", prev->name);
 		goto out;
 	}
 
@@ -81,17 +76,21 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	LOCK (&conf->subvolume_lock);
 	{
 		for (i = 0; i < conf->subvolume_cnt; i++)
-			if (prev->this == conf->subvolumes[i]) {
+			if (prev == conf->subvolumes[i]) {
 				conf->du_stats[i].avail_percent = percent;
 				conf->du_stats[i].avail_space   = bytes;
 				conf->du_stats[i].avail_inodes  = percent_inodes;
                                 conf->du_stats[i].chunks        = chunks;
-				gf_msg_debug (this->name, 0,
+                                conf->du_stats[i].total_blocks  = statvfs->f_blocks;
+                                conf->du_stats[i].avail_blocks  = statvfs->f_bavail;
+                                conf->du_stats[i].frsize        = statvfs->f_frsize;
+
+                                gf_msg_debug (this->name, 0,
 				              "subvolume '%s': avail_percent "
 					      "is: %.2f and avail_space "
                                               "is: %" PRIu64" and avail_inodes"
                                               " is: %.2f",
-					      prev->this->name,
+					      prev->name,
 					      conf->du_stats[i].avail_percent,
 					      conf->du_stats[i].avail_space,
 					      conf->du_stats[i].avail_inodes);
@@ -136,10 +135,11 @@ dht_get_du_info_for_subvol (xlator_t *this, int subvol_idx)
         tmp_loc.gfid[15] = 1;
 
 	statfs_local->call_cnt = 1;
-	STACK_WIND (statfs_frame, dht_du_info_cbk,
-		    conf->subvolumes[subvol_idx],
-		    conf->subvolumes[subvol_idx]->fops->statfs,
-		    &tmp_loc, NULL);
+	STACK_WIND_COOKIE (statfs_frame, dht_du_info_cbk,
+		           conf->subvolumes[subvol_idx],
+                           conf->subvolumes[subvol_idx],
+		           conf->subvolumes[subvol_idx]->fops->statfs,
+		           &tmp_loc, NULL);
 
 	return 0;
 err:
@@ -199,10 +199,11 @@ dht_get_du_info (call_frame_t *frame, xlator_t *this, loc_t *loc)
 
 		statfs_local->call_cnt = conf->subvolume_cnt;
 		for (i = 0; i < conf->subvolume_cnt; i++) {
-			STACK_WIND (statfs_frame, dht_du_info_cbk,
-				    conf->subvolumes[i],
-				    conf->subvolumes[i]->fops->statfs,
-				    &tmp_loc, statfs_local->params);
+			STACK_WIND_COOKIE (statfs_frame, dht_du_info_cbk,
+				           conf->subvolumes[i],
+                                           conf->subvolumes[i],
+				           conf->subvolumes[i]->fops->statfs,
+				           &tmp_loc, statfs_local->params);
 		}
 
 		conf->last_stat_fetch.tv_sec = tv.tv_sec;
@@ -314,8 +315,8 @@ dht_free_disk_available_subvol (xlator_t *this, xlator_t *subvol,
 
         LOCK (&conf->subvolume_lock);
 	{
-                avail_subvol = dht_subvol_with_free_space_inodes(this, subvol,
-                                                                 layout);
+                avail_subvol = dht_subvol_with_free_space_inodes(this, subvol, NULL,
+                                                                 layout, 0);
                 if(!avail_subvol)
                 {
                         avail_subvol = dht_subvol_maxspace_nonzeroinode(this,
@@ -338,15 +339,22 @@ out:
 	return avail_subvol;
 }
 
-static
-int32_t dht_subvol_has_err (dht_conf_t *conf, xlator_t *this,
-                                         dht_layout_t *layout)
+static inline
+int32_t dht_subvol_has_err (dht_conf_t *conf, xlator_t *this, xlator_t *ignore,
+                            dht_layout_t *layout)
 {
         int ret = -1;
         int i   = 0;
 
         if (!this || !layout)
                 goto out;
+
+        /* this check is meant for rebalance process. The source of the file
+         * should be ignored for space check */
+        if (this == ignore) {
+                goto out;
+        }
+
 
         /* check if subvol has layout errors, before selecting it */
         for (i = 0; i < layout->cnt; i++) {
@@ -361,9 +369,10 @@ int32_t dht_subvol_has_err (dht_conf_t *conf, xlator_t *this,
         if (conf->decommission_subvols_cnt) {
                 for (i = 0; i < conf->subvolume_cnt; i++) {
                         if (conf->decommissioned_bricks[i] &&
-                            conf->decommissioned_bricks[i] == this)
+                            conf->decommissioned_bricks[i] == this) {
                                 ret = -1;
                                 goto out;
+                        }
                 }
         }
 
@@ -374,13 +383,18 @@ out:
 
 /*Get subvolume which has both space and inodes more than the min criteria*/
 xlator_t *
-dht_subvol_with_free_space_inodes(xlator_t *this, xlator_t *subvol,
-                                  dht_layout_t *layout)
+dht_subvol_with_free_space_inodes(xlator_t *this, xlator_t *subvol, xlator_t *ignore,
+                                  dht_layout_t *layout, uint64_t filesize)
 {
         int i = 0;
         double max = 0;
         double max_inodes = 0;
         int    ignore_subvol = 0;
+        uint64_t total_blocks = 0;
+        uint64_t avail_blocks = 0;
+        uint64_t frsize = 0;
+        double   post_availspace = 0;
+        double   post_percent = 0;
 
         xlator_t *avail_subvol = NULL;
         dht_conf_t *conf = NULL;
@@ -391,7 +405,7 @@ dht_subvol_with_free_space_inodes(xlator_t *this, xlator_t *subvol,
                 /* check if subvol has layout errors and also it is not a
                  * decommissioned brick, before selecting it */
                 ignore_subvol = dht_subvol_has_err (conf, conf->subvolumes[i],
-                                                    layout);
+                                                    ignore, layout);
                 if (ignore_subvol)
                         continue;
 
@@ -403,6 +417,9 @@ dht_subvol_with_free_space_inodes(xlator_t *this, xlator_t *subvol,
                                 max = conf->du_stats[i].avail_percent;
                                 max_inodes = conf->du_stats[i].avail_inodes;
                                 avail_subvol = conf->subvolumes[i];
+                                total_blocks = conf->du_stats[i].total_blocks;
+                                avail_blocks = conf->du_stats[i].avail_blocks;
+                                frsize       = conf->du_stats[i].frsize;
                         }
                 }
 
@@ -415,6 +432,19 @@ dht_subvol_with_free_space_inodes(xlator_t *this, xlator_t *subvol,
                                 max_inodes = conf->du_stats[i].avail_inodes;
                                 avail_subvol = conf->subvolumes[i];
                         }
+                }
+        }
+
+        if (avail_subvol) {
+                if (conf->disk_unit == 'p') {
+                        post_availspace = (avail_blocks * frsize) - filesize;
+                        post_percent = (post_availspace * 100) / (total_blocks * frsize);
+                        if (post_percent < conf->min_free_disk)
+                                avail_subvol = NULL;
+                }
+                if (conf->disk_unit != 'p') {
+                        if ((max - filesize) < conf->min_free_disk)
+                                avail_subvol = NULL;
                 }
         }
 
@@ -440,7 +470,7 @@ dht_subvol_maxspace_nonzeroinode (xlator_t *this, xlator_t *subvol,
                 /* check if subvol has layout errors and also it is not a
                  * decommissioned brick, before selecting it*/
 
-                ignore_subvol = dht_subvol_has_err (conf, conf->subvolumes[i],
+                ignore_subvol = dht_subvol_has_err (conf, conf->subvolumes[i], NULL,
                                                     layout);
                 if (ignore_subvol)
                         continue;

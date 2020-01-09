@@ -1,0 +1,282 @@
+From 72dc3a3eff84c5e17bbc3bfddec9daf50338464f Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 6 Mar 2018 23:08:08 +0530
+Subject: [PATCH 175/180] rpc: make actor search parallel
+
+Problem:
+On a service request, the actor is searched using an exclusive mutex
+lock which is not really necessary since most of the time the actor
+list is going to be searched and not modified.
+
+Solution:
+Use a read-write lock instead of a mutex lock. Only modify operations
+on a service need to be done under a write-lock which grants exclusive
+access to the code.
+
+NOTE:
+This patch has been specifically been taken in to use the pthread
+rwlock primitives that rpcsvc_ownthread_reconf() is using in commit
+8503ed9b94777d47352f19ebfa844e151352b87f
+(rpcsvc: scale rpcsvc_request_handler threads)
+
+mainline:
+> BUG: 1509644
+> Reviewed-on: https://review.gluster.org/18543
+> Reviewed-by: Jeff Darcy <jeff@pl.atyp.us>
+> Signed-off-by: Milind Changire <mchangir@redhat.com>
+
+Change-Id: I318026c13bb6e0385dc24018a976229182fc7f79
+BUG: 1549497
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131909
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ rpc/rpc-lib/src/rpcsvc-common.h |  2 +-
+ rpc/rpc-lib/src/rpcsvc.c        | 54 ++++++++++++++++++++---------------------
+ 2 files changed, 28 insertions(+), 28 deletions(-)
+
+diff --git a/rpc/rpc-lib/src/rpcsvc-common.h b/rpc/rpc-lib/src/rpcsvc-common.h
+index dd95803..ab715d3 100644
+--- a/rpc/rpc-lib/src/rpcsvc-common.h
++++ b/rpc/rpc-lib/src/rpcsvc-common.h
+@@ -42,7 +42,7 @@ typedef struct rpcsvc_state {
+          * other options.
+          */
+ 
+-        pthread_mutex_t         rpclock;
++        pthread_rwlock_t        rpclock;
+ 
+         unsigned int            memfactor;
+ 
+diff --git a/rpc/rpc-lib/src/rpcsvc.c b/rpc/rpc-lib/src/rpcsvc.c
+index 31b5eb5..fbd1071 100644
+--- a/rpc/rpc-lib/src/rpcsvc.c
++++ b/rpc/rpc-lib/src/rpcsvc.c
+@@ -88,11 +88,11 @@ rpcsvc_listener_destroy (rpcsvc_listener_t *listener)
+                 goto listener_free;
+         }
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_wrlock (&svc->rpclock);
+         {
+                 list_del_init (&listener->list);
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+ listener_free:
+         GF_FREE (listener);
+@@ -110,7 +110,7 @@ rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
+         if (!svc)
+                 return NULL;
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_rdlock (&svc->rpclock);
+         {
+                 /* Find the matching RPC program from registered list */
+                 list_for_each_entry (program, &svc->programs, program) {
+@@ -121,7 +121,7 @@ rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
+                         }
+                 }
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         if (found) {
+                 /* Make sure the requested procnum is supported by RPC prog */
+@@ -237,7 +237,7 @@ rpcsvc_program_actor (rpcsvc_request_t *req)
+ 
+         svc = req->svc;
+         peername = req->trans->peerinfo.identifier;
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_rdlock (&svc->rpclock);
+         {
+                 list_for_each_entry (program, &svc->programs, program) {
+                         if (program->prognum == req->prognum) {
+@@ -251,7 +251,7 @@ rpcsvc_program_actor (rpcsvc_request_t *req)
+                         }
+                 }
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         if (!found) {
+                 if (err != PROG_MISMATCH) {
+@@ -735,7 +735,7 @@ rpcsvc_handle_disconnect (rpcsvc_t *svc, rpc_transport_t *trans)
+         event = (trans->listener == NULL) ? RPCSVC_EVENT_LISTENER_DEAD
+                 : RPCSVC_EVENT_DISCONNECT;
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_rdlock (&svc->rpclock);
+         {
+                 if (!svc->notify_count)
+                         goto unlock;
+@@ -755,7 +755,7 @@ rpcsvc_handle_disconnect (rpcsvc_t *svc, rpc_transport_t *trans)
+                 wrapper_count = i;
+         }
+ unlock:
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         if (wrappers) {
+                 for (i = 0; i < wrapper_count; i++) {
+@@ -1495,7 +1495,7 @@ rpcsvc_get_listener (rpcsvc_t *svc, uint16_t port, rpc_transport_t *trans)
+                 goto out;
+         }
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_rdlock (&svc->rpclock);
+         {
+                 list_for_each_entry (listener, &svc->listeners, list) {
+                         if (trans != NULL) {
+@@ -1521,7 +1521,7 @@ rpcsvc_get_listener (rpcsvc_t *svc, uint16_t port, rpc_transport_t *trans)
+                         }
+                 }
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         if (!found) {
+                 listener = NULL;
+@@ -1566,7 +1566,7 @@ rpcsvc_program_unregister (rpcsvc_t *svc, rpcsvc_program_t *program)
+                         " program failed");
+                 goto out;
+         }
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_rdlock (&svc->rpclock);
+         {
+                 list_for_each_entry (prog, &svc->programs, program) {
+                         if ((prog->prognum == program->prognum)
+@@ -1575,7 +1575,7 @@ rpcsvc_program_unregister (rpcsvc_t *svc, rpcsvc_program_t *program)
+                         }
+                 }
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         if (prog == NULL) {
+                 ret = -1;
+@@ -1592,11 +1592,11 @@ rpcsvc_program_unregister (rpcsvc_t *svc, rpcsvc_program_t *program)
+                 goto out;
+         }
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_wrlock (&svc->rpclock);
+         {
+                 list_del_init (&prog->program);
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         ret = 0;
+ out:
+@@ -1655,11 +1655,11 @@ rpcsvc_listener_alloc (rpcsvc_t *svc, rpc_transport_t *trans)
+ 
+         INIT_LIST_HEAD (&listener->list);
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_wrlock (&svc->rpclock);
+         {
+                 list_add_tail (&listener->list, &svc->listeners);
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ out:
+         return listener;
+ }
+@@ -1813,7 +1813,7 @@ rpcsvc_unregister_notify (rpcsvc_t *svc, rpcsvc_notify_t notify, void *mydata)
+                 goto out;
+         }
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_wrlock (&svc->rpclock);
+         {
+                 list_for_each_entry_safe (wrapper, tmp, &svc->notify, list) {
+                         if ((wrapper->notify == notify)
+@@ -1824,7 +1824,7 @@ rpcsvc_unregister_notify (rpcsvc_t *svc, rpcsvc_notify_t notify, void *mydata)
+                         }
+                 }
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+ out:
+         return ret;
+@@ -1844,12 +1844,12 @@ rpcsvc_register_notify (rpcsvc_t *svc, rpcsvc_notify_t notify, void *mydata)
+         wrapper->data = mydata;
+         wrapper->notify = notify;
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_wrlock (&svc->rpclock);
+         {
+                 list_add_tail (&wrapper->list, &svc->notify);
+                 svc->notify_count++;
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         ret = 0;
+ out:
+@@ -1987,7 +1987,7 @@ rpcsvc_program_register (rpcsvc_t *svc, rpcsvc_program_t *program)
+                 goto out;
+         }
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_rdlock (&svc->rpclock);
+         {
+                 list_for_each_entry (newprog, &svc->programs, program) {
+                         if ((newprog->prognum == program->prognum)
+@@ -1997,7 +1997,7 @@ rpcsvc_program_register (rpcsvc_t *svc, rpcsvc_program_t *program)
+                         }
+                 }
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         if (already_registered) {
+                 ret = 0;
+@@ -2031,11 +2031,11 @@ rpcsvc_program_register (rpcsvc_t *svc, rpcsvc_program_t *program)
+                 }
+         }
+ 
+-        pthread_mutex_lock (&svc->rpclock);
++        pthread_rwlock_wrlock (&svc->rpclock);
+         {
+                 list_add_tail (&newprog->program, &svc->programs);
+         }
+-        pthread_mutex_unlock (&svc->rpclock);
++        pthread_rwlock_unlock (&svc->rpclock);
+ 
+         ret = 0;
+         gf_log (GF_RPCSVC, GF_LOG_DEBUG, "New program registered: %s, Num: %d,"
+@@ -2077,7 +2077,7 @@ build_prog_details (rpcsvc_request_t *req, gf_dump_rsp *rsp)
+         if (!req || !req->trans || !req->svc)
+                 goto out;
+ 
+-        pthread_mutex_lock (&req->svc->rpclock);
++        pthread_rwlock_rdlock (&req->svc->rpclock);
+         {
+                 list_for_each_entry (program, &req->svc->programs, program) {
+                         prog = GF_CALLOC (1, sizeof (*prog), 0);
+@@ -2098,7 +2098,7 @@ build_prog_details (rpcsvc_request_t *req, gf_dump_rsp *rsp)
+                         ret = 0;
+         }
+ unlock:
+-        pthread_mutex_unlock (&req->svc->rpclock);
++        pthread_rwlock_unlock (&req->svc->rpclock);
+ out:
+         return ret;
+ }
+@@ -2456,7 +2456,7 @@ rpcsvc_init (xlator_t *xl, glusterfs_ctx_t *ctx, dict_t *options,
+         if (!svc)
+                 return NULL;
+ 
+-        pthread_mutex_init (&svc->rpclock, NULL);
++        pthread_rwlock_init (&svc->rpclock, NULL);
+         INIT_LIST_HEAD (&svc->authschemes);
+         INIT_LIST_HEAD (&svc->notify);
+         INIT_LIST_HEAD (&svc->listeners);
+-- 
+1.8.3.1
+

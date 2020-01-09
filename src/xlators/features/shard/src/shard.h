@@ -12,11 +12,6 @@
 #ifndef __SHARD_H__
 #define __SHARD_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include "compat-errno.h"
 #include "shard-messages.h"
@@ -259,6 +254,8 @@ typedef struct shard_local {
                 fop_inodelk_cbk_t inodelk_cbk;
                 shard_lock_t *shard_lock;
         } lock;
+        inode_t *resolver_base_inode;
+        gf_boolean_t first_lookup_done;
 } shard_local_t;
 
 typedef struct shard_inode_ctx {
@@ -272,6 +269,7 @@ typedef struct shard_inode_ctx {
         struct list_head ilist;
         uuid_t base_gfid;
         int block_num;
+        gf_boolean_t refreshed;
 } shard_inode_ctx_t;
 
 #endif /* __SHARD_H__ */

@@ -1,0 +1,102 @@
+From fef5fb73545bed5a4040db1f8e4e855286c1981d Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Wed, 18 Jul 2018 14:16:46 +0530
+Subject: [PATCH 327/333] afr: switch lk_owner only when pre-op succeeds
+
+Backport of https://review.gluster.org/#/c/20527/
+
+Problem:
+In a disk full scenario, we take a failure path in afr_transaction_perform_fop()
+and go to unlock phase. But we change the lk-owner before that, causing unlock
+to fail. When mount issues another fop that takes locks on that file, it hangs.
+
+Fix:
+Change lk-owner only when we are about to perform the fop phase.
+Also fix the same issue for arbiters when afr_txn_arbitrate_fop() fails the fop.
+
+Also removed the DISK_SPACE_CHECK_AND_GOTO in posix_xattrop. Otherwise truncate
+to zero will fail pre-op phase with ENOSPC when the user is actually trying to
+freee up space.
+
+Change-Id: I8663003fa7d472e93fe61cc1e39c78084d3de81f
+BUG: 1599998
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144275
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/afr/src/afr-transaction.c | 20 ++++++++++----------
+ xlators/storage/posix/src/posix.c         |  5 -----
+ 2 files changed, 10 insertions(+), 15 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 321b6f1..3f55070 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -495,11 +495,10 @@ afr_txn_arbitrate_fop (call_frame_t *frame, xlator_t *this)
+                 local->op_errno =  ENOTCONN;
+                 for (i = 0; i < priv->child_count; i++)
+                         local->transaction.failed_subvols[i] = 1;
+-                afr_changelog_post_op (frame, this);/*uninherit should happen*/
+-        } else {
+-                afr_transaction_fop (frame, this);
+         }
+ 
++        afr_transaction_fop (frame, this);
++
+         return;
+ }
+ 
+@@ -529,13 +528,6 @@ afr_transaction_perform_fop (call_frame_t *frame, xlator_t *this)
+                                 local->transaction.failed_subvols[i] = 1;
+                 }
+         }
+-        /*  Perform fops with the lk-owner from top xlator.
+-         *  Eg: lk-owner of posix-lk and flush should be same,
+-         *  flush cant clear the  posix-lks without that lk-owner.
+-         */
+-        afr_save_lk_owner (frame);
+-        frame->root->lk_owner =
+-                local->transaction.main_frame->root->lk_owner;
+ 
+ 	if (local->pre_op_compat)
+ 		/* old mode, pre-op was done as afr_changelog_do()
+@@ -561,6 +553,14 @@ afr_transaction_perform_fop (call_frame_t *frame, xlator_t *this)
+         }
+ 
+ fop:
++        /*  Perform fops with the lk-owner from top xlator.
++         *  Eg: lk-owner of posix-lk and flush should be same,
++         *  flush cant clear the  posix-lks without that lk-owner.
++         */
++        afr_save_lk_owner (frame);
++        frame->root->lk_owner =
++                local->transaction.main_frame->root->lk_owner;
++
+         if (priv->arbiter_count == 1) {
+                 afr_txn_arbitrate_fop (frame, this);
+         } else {
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 01f472b..ddb875c 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -6147,16 +6147,11 @@ do_xattrop (call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+         dict_t               *xattr_rsp = NULL;
+         dict_t               *xdata_rsp = NULL;
+         struct iatt           stbuf = {0};
+-        struct  posix_private *priv     = NULL;
+-
+ 
+         VALIDATE_OR_GOTO (frame, out);
+         VALIDATE_OR_GOTO (xattr, out);
+         VALIDATE_OR_GOTO (this, out);
+ 
+-        priv = this->private;
+-        DISK_SPACE_CHECK_AND_GOTO (frame, priv, xdata, op_ret, op_errno, out);
+-
+         if (fd) {
+                 op_ret = posix_fd_ctx_get (fd, this, &pfd, &op_errno);
+                 if (op_ret < 0) {
+-- 
+1.8.3.1
+

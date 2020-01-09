@@ -2,7 +2,6 @@
 #include <unistd.h>
 #include <time.h>
 #include <limits.h>
-#include <alloca.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -32,29 +31,28 @@ int gfapi = 1;
 int
 main (int argc, char *argv[])
 {
-        glfs_t    *fs = NULL;
-        int        ret = 0, i;
-        glfs_fd_t *fd = NULL;
-        char      *filename = "/a1";
-        char      *filename2 = "/a2";
-        struct     stat sb = {0, };
-        struct    callback_arg cbk;
-        char      *logfile = NULL;
-        char      *volname = NULL;
-        int       cnt = 1;
-        struct callback_inode_arg *in_arg = NULL;
-        struct glfs_object *root = NULL, *leaf = NULL;
-
-        cbk.reason = 0;
+        glfs_t                   *fs = NULL;
+        int                       ret = 0, i;
+        glfs_fd_t                *fd = NULL;
+        char                     *filename = "/a1";
+        char                     *filename2 = "/a2";
+        struct stat               sb = {0, };
+        struct glfs_upcall       *cbk = NULL;
+        char                     *logfile = NULL;
+        char                     *volname = NULL;
+        int                       cnt = 1;
+        struct glfs_upcall_inode *in_arg = NULL;
+        struct glfs_object       *root = NULL, *leaf = NULL;
 
         fprintf (stderr, "Starting libgfapi_fini\n");
-        if (argc != 3) {
+        if (argc != 4) {
                 fprintf (stderr, "Invalid argument\n");
                 exit(1);
         }
 
-        volname = argv[1];
-        logfile = argv[2];
+        hostname = argv[1]
+        volname = argv[2];
+        logfile = argv[3];
 
 
         fs = glfs_new (volname);
@@ -63,7 +61,7 @@ main (int argc, char *argv[])
                 return 1;
         }
 
-        ret = glfs_set_volfile_server (fs, "tcp", "localhost", 24007);
+        ret = glfs_set_volfile_server (fs, "tcp", hostname, 24007);
         LOG_ERR("glfs_set_volfile_server", ret);
 
         ret = glfs_set_logging (fs, logfile, 7);
@@ -105,11 +103,13 @@ main (int argc, char *argv[])
                 LOG_ERR ("glfs_h_poll_upcall", ret);
 
                 /* There should not be any upcalls sent */
-                if (cbk.reason != GFAPI_CBK_EVENT_NULL) {
+                if (glfs_upcall_get_reason(cbk) != GLFS_UPCALL_EVENT_NULL) {
                         fprintf (stderr, "Error: Upcall received(%d)\n",
-                                 cbk.reason);
+                                 glfs_upcall_get_reason(cbk));
                         exit (1);
                 }
+
+                glfs_free (cbk);
         }
 
         ret = glfs_fini(fs);

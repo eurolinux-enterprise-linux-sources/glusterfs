@@ -1,0 +1,81 @@
+From 5b28188f7a970ccea32d6ed65b75c38703f25045 Mon Sep 17 00:00:00 2001
+From: Sunil Kumar Acharya <sheggodu@redhat.com>
+Date: Wed, 22 Nov 2017 15:12:26 +0530
+Subject: [PATCH 149/180] cluster/ec: EC DISCARD doesn't punch hole properly
+
+Problem:
+DISCARD operation on EC volume was punching hole of lesser
+size than the specified size in some cases.
+
+Solution:
+EC was not handling punch hole for tail part in some cases.
+Updated the code to handle it appropriately.
+
+>BUG: 1516206
+>Change-Id: If3e69e417c3e5034afee04e78f5f78855e65f932
+>Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+
+Upstream patch: https://review.gluster.org/#/c/18838/
+
+BUG: 1518260
+Change-Id: If3e69e417c3e5034afee04e78f5f78855e65f932
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124648
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/basic/ec/ec-discard.t             | 10 +++++++++-
+ xlators/cluster/ec/src/ec-inode-write.c |  6 ++++--
+ 2 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/tests/basic/ec/ec-discard.t b/tests/basic/ec/ec-discard.t
+index 4a44cec..001f449 100644
+--- a/tests/basic/ec/ec-discard.t
++++ b/tests/basic/ec/ec-discard.t
+@@ -137,6 +137,15 @@ TEST md5_sum=`get_md5_sum $B0/test_file`
+ EXPECT $md5_sum get_md5_sum $M0/test_file
+ TEST rm -f $B0/test_file $M0/test_file
+ 
++#Offset and Size not at boundary covering a stripe
++TEST dd if=/dev/urandom of=$B0/test_file bs=1024 count=8
++TEST cp $B0/test_file $M0/test_file
++TEST fallocate -p -o 1500 -l 3000 $B0/test_file
++TEST fallocate -p -o 1500 -l 3000 $M0/test_file
++TEST md5_sum=`get_md5_sum $B0/test_file`
++EXPECT $md5_sum get_md5_sum $M0/test_file
++TEST rm -f $B0/test_file $M0/test_file
++
+ #Offset and Size not at boundary
+ TEST dd if=/dev/urandom of=$B0/test_file bs=1024 count=8
+ TEST cp $B0/test_file $M0/test_file
+@@ -144,7 +153,6 @@ TEST fallocate -p -o 1000 -l 3072 $B0/test_file
+ TEST fallocate -p -o 1000 -l 3072 $M0/test_file
+ TEST md5_sum=`get_md5_sum $B0/test_file`
+ EXPECT $md5_sum get_md5_sum $M0/test_file
+-#TEST rm -f $B0/test_file $M0/test_file
+ 
+ #Data Corruption Tests
+ #Kill brick1 and brick2
+diff --git a/xlators/cluster/ec/src/ec-inode-write.c b/xlators/cluster/ec/src/ec-inode-write.c
+index ae51202..2c1165b 100644
+--- a/xlators/cluster/ec/src/ec-inode-write.c
++++ b/xlators/cluster/ec/src/ec-inode-write.c
+@@ -1144,11 +1144,13 @@ void ec_update_discard_write(ec_fop_data_t *fop, uintptr_t mask)
+             error = ec_update_write (fop, mask, off_head, fop->user_size);
+     } else {
+             size_head = fop->int32;
+-            size_tail = (fop->user_size - fop->int32) % ec->stripe_size;
++            size_tail = (off_head + fop->user_size) % ec->stripe_size;
+             off_tail = off_head + fop->user_size - size_tail;
+             if (size_head) {
+                     error = ec_update_write (fop, mask, off_head, size_head);
+-                    goto out;
++                    if (error) {
++                        goto out;
++                    }
+             }
+             if (size_tail) {
+                     error = ec_update_write (fop, mask, off_tail, size_tail);
+-- 
+1.8.3.1
+

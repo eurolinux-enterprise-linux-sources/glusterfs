@@ -1,0 +1,54 @@
+From a263e2a308221de328eb5e0dc4cb9c0aed98ec37 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Thu, 5 Apr 2018 21:41:44 +0530
+Subject: [PATCH 216/236] cluster/dht: Wind open to all subvols
+
+dht_opendir should wind the open to all subvols
+whether or not local->subvols is set. This is
+because dht_readdirp winds the calls to all subvols.
+
+upstream master: https://review.gluster.org/19827
+
+> Change-Id: I67a96b06dad14a08967c3721301e88555aa01017
+> updates: bz#1564198
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: Ibdb099c333bc23d0cb769a7636c949ab886b87e2
+BUG: 1553677
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/135514
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 15 +++++----------
+ 1 file changed, 5 insertions(+), 10 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 2fd145d..3b8ba6d 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -6315,16 +6315,11 @@ dht_opendir (call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+                         "Failed to set dictionary value : key = %s",
+                         conf->link_xattr_name);
+ 
+-        if ((conf->defrag && conf->defrag->cmd == GF_DEFRAG_CMD_START_TIER) ||
+-            (conf->defrag && conf->defrag->cmd ==
+-             GF_DEFRAG_CMD_START_DETACH_TIER) ||
+-            (!(conf->local_subvols_cnt) || !conf->defrag)) {
+-                call_count = local->call_cnt = conf->subvolume_cnt;
+-                subvolumes = conf->subvolumes;
+-        } else {
+-                call_count = local->call_cnt = conf->local_subvols_cnt;
+-                subvolumes = conf->local_subvols;
+-        }
++        /* dht_readdirp will wind to all subvols so open has to be sent to
++         * all subvols whether or not conf->local_subvols is set */
++
++        call_count = local->call_cnt = conf->subvolume_cnt;
++        subvolumes = conf->subvolumes;
+ 
+         /* In case of parallel-readdir, the readdir-ahead will be loaded
+          * below dht, in this case, if we want to enable or disable SKIP_DIRs
+-- 
+1.8.3.1
+

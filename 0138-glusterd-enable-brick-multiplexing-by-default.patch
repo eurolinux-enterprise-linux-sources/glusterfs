@@ -1,0 +1,91 @@
+From 2a80ccb39ea7f4ef5c801ad78b43e4bdc23a3c64 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Fri, 2 Feb 2018 15:38:58 +0530
+Subject: [PATCH 138/139] glusterd: enable brick multiplexing by default
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I0d9a1d8ba2fd60576df9761b5faaa521e9228be0
+BUG: 1540011
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129382
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Mohit Agrawal <moagrawa@redhat.com>
+---
+ cli/src/cli-cmd-parser.c                        | 18 ------------------
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c      |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c      |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |  2 +-
+ 4 files changed, 3 insertions(+), 21 deletions(-)
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index 764f420..54bd57f 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -1740,24 +1740,6 @@ cli_cmd_volume_set_parse (struct cli_state *state, const char **words,
+                                 goto out;
+                         }
+                 }
+-
+-                if ((strcmp (key, "cluster.brick-multiplex") == 0)) {
+-                        question = "Brick-multiplexing is supported only for "
+-                                   "container workloads (CNS/CRS). Also it is "
+-                                   "advised to make sure that either all "
+-                                   "volumes are in stopped state or no bricks "
+-                                   "are running before this option is modified."
+-                                   "Do you still want to continue?";
+-
+-                        answer = cli_cmd_get_confirmation (state, question);
+-                        if (GF_ANSWER_NO == answer) {
+-                                gf_log ("cli", GF_LOG_ERROR, "Operation "
+-                                        "cancelled, exiting");
+-                                *op_errstr = gf_strdup ("Aborted by user.");
+-                                ret = -1;
+-                                goto out;
+-                        }
+-                }
+         }
+ 
+         ret = dict_set_int32 (dict, "count", wordcount-3);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index b1a6e06..2fc2e3b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -78,7 +78,7 @@ glusterd_all_vol_opts valid_all_vol_opts[] = {
+          * TBD: add a dynamic handler to set the appropriate value
+          */
+         { GLUSTERD_MAX_OP_VERSION_KEY,          "BUG_NO_MAX_OP_VERSION"},
+-        { GLUSTERD_BRICK_MULTIPLEX_KEY,         "disable"},
++        { GLUSTERD_BRICK_MULTIPLEX_KEY,         "enable"},
+         /* Set this value to 0 by default implying brick-multiplexing
+          * behaviour with no limit set on the number of brick instances that
+          * can be attached per process.
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index f1b365f..4bb54db 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -114,7 +114,7 @@ is_brick_mx_enabled (void)
+         if (!ret)
+                 ret = gf_string2boolean (value, &enabled);
+ 
+-        return ret ? _gf_false: enabled;
++        return ret ? _gf_true : enabled;
+ }
+ 
+ int
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index c255be0..693c917 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -3459,7 +3459,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         /* Brick multiplexing options */
+         { .key         = GLUSTERD_BRICK_MULTIPLEX_KEY,
+           .voltype     = "mgmt/glusterd",
+-          .value       = "off",
++          .value       = "on",
+           .op_version  = GD_OP_VERSION_3_10_0,
+           .validate_fn = validate_boolean,
+           .type        = GLOBAL_DOC,
+-- 
+1.8.3.1
+

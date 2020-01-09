@@ -20,12 +20,8 @@
 #include "event.h"
 #include "mem-pool.h"
 #include "common-utils.h"
+#include "syscall.h"
 #include "libglusterfs-messages.h"
-
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 
 
 #ifdef HAVE_SYS_EPOLL_H
@@ -39,6 +35,7 @@ struct event_slot_epoll {
 	int ref;
 	int do_close;
 	int in_handler;
+        int handled_error;
 	void *data;
 	event_handler_t handler;
 	gf_lock_t lock;
@@ -163,6 +160,8 @@ __event_slot_dealloc (struct event_pool *event_pool, int idx)
 	slot->gen++;
 
 	slot->fd = -1;
+        slot->handled_error = 0;
+        slot->in_handler = 0;
 	event_pool->slots_used[table_idx]--;
 
 	return;
@@ -232,7 +231,7 @@ event_slot_unref (struct event_pool *event_pool, struct event_slot_epoll *slot,
 	event_slot_dealloc (event_pool, idx);
 
 	if (do_close)
-		close (fd);
+		sys_close (fd);
 done:
 	return;
 }
@@ -267,6 +266,7 @@ event_pool_new_epoll (int count, int eventthreadcount)
         event_pool->count = count;
 
         event_pool->eventthreadcount = eventthreadcount;
+        event_pool->auto_thread_count = 0;
 
         pthread_mutex_init (&event_pool->mutex, NULL);
 
@@ -367,7 +367,7 @@ event_register_epoll (struct event_pool *event_pool, int fd,
 		   time as well.
 		*/
 
-		slot->events = EPOLLPRI | EPOLLONESHOT;
+		slot->events = EPOLLPRI | EPOLLHUP | EPOLLERR | EPOLLONESHOT;
 		slot->handler = handler;
 		slot->data = data;
 
@@ -485,18 +485,18 @@ event_select_on_epoll (struct event_pool *event_pool, int fd, int idx,
 		ev_data->gen = slot->gen;
 
 		if (slot->in_handler)
-			/* in_handler indicates at least one thread
-			   executing event_dispatch_epoll_handler()
-			   which will perform epoll_ctl(EPOLL_CTL_MOD)
-			   anyways (because of EPOLLET)
-
-			   This not only saves a system call, but also
-			   avoids possibility of another epoll thread
-			   parallely picking up the next event while the
-			   ongoing handler is still in progress (and
-			   resulting in unnecessary contention on
-			   rpc_transport_t->mutex).
-			*/
+			/*
+			 * in_handler indicates at least one thread
+			 * executing event_dispatch_epoll_handler()
+			 * which will perform epoll_ctl(EPOLL_CTL_MOD)
+			 * anyways (because of EPOLLET)
+			 *
+			 * This not only saves a system call, but also
+			 * avoids possibility of another epoll thread
+			 * picking up the next event while the ongoing
+			 * handler is still in progress (and resulting
+			 * in unnecessary contention on rpc_transport_t->mutex).
+			 */
 			goto unlock;
 
 		ret = epoll_ctl (event_pool->fd, EPOLL_CTL_MOD, fd,
@@ -530,6 +530,7 @@ event_dispatch_epoll_handler (struct event_pool *event_pool,
 	int                 gen = -1;
         int                 ret = -1;
 	int                 fd = -1;
+        gf_boolean_t        handled_error_previously = _gf_false;
 
 	ev_data = (void *)&event->data;
         handler = NULL;
@@ -564,7 +565,13 @@ event_dispatch_epoll_handler (struct event_pool *event_pool,
 		handler = slot->handler;
 		data = slot->data;
 
-		slot->in_handler++;
+                if (slot->handled_error) {
+                        handled_error_previously = _gf_true;
+                } else {
+                        slot->handled_error = (event->events
+                                               & (EPOLLERR|EPOLLHUP));
+                        slot->in_handler++;
+                }
 	}
 pre_unlock:
 	UNLOCK (&slot->lock);
@@ -572,38 +579,12 @@ pre_unlock:
         if (!handler)
 		goto out;
 
-	ret = handler (fd, idx, data,
-		       (event->events & (EPOLLIN|EPOLLPRI)),
-		       (event->events & (EPOLLOUT)),
-		       (event->events & (EPOLLERR|EPOLLHUP)));
-
-	LOCK (&slot->lock);
-	{
-		slot->in_handler--;
-
-		if (gen != slot->gen) {
-			/* event_unregister() happened while we were
-			   in handler()
-			*/
-			gf_msg_debug ("epoll", 0, "generation bumped on idx=%d"
-                                      " from gen=%d to slot->gen=%d, fd=%d, "
-				      "slot->fd=%d", idx, gen, slot->gen, fd,
-                                      slot->fd);
-			goto post_unlock;
-		}
-
-		/* This call also picks up the changes made by another
-		   thread calling event_select_on_epoll() while this
-		   thread was busy in handler()
-		*/
-                if (slot->in_handler == 0) {
-                        event->events = slot->events;
-                        ret = epoll_ctl (event_pool->fd, EPOLL_CTL_MOD,
-                                         fd, event);
-                }
-	}
-post_unlock:
-	UNLOCK (&slot->lock);
+        if (!handled_error_previously) {
+                ret = handler (fd, idx, gen, data,
+                               (event->events & (EPOLLIN|EPOLLPRI)),
+                               (event->events & (EPOLLOUT)),
+                               (event->events & (EPOLLERR|EPOLLHUP)));
+        }
 out:
 	event_slot_unref (event_pool, slot, idx);
 
@@ -693,6 +674,7 @@ event_dispatch_epoll (struct event_pool *event_pool)
         int                       pollercount = 0;
 	int                       ret = -1;
         struct event_thread_data *ev_data = NULL;
+        char                      thread_name[GF_THREAD_NAMEMAX] = {0,};
 
         /* Start the configured number of pollers */
         pthread_mutex_lock (&event_pool->mutex);
@@ -727,9 +709,11 @@ event_dispatch_epoll (struct event_pool *event_pool)
                         ev_data->event_pool = event_pool;
                         ev_data->event_index = i + 1;
 
-                        ret = pthread_create (&t_id, NULL,
-                                              event_dispatch_epoll_worker,
-                                              ev_data);
+                        snprintf (thread_name, sizeof(thread_name),
+                                  "%s%d", "epoll", i);
+                        ret = gf_thread_create (&t_id, NULL,
+                                                event_dispatch_epoll_worker,
+                                                ev_data, thread_name);
                         if (!ret) {
                                 event_pool->pollers[i] = t_id;
 
@@ -770,6 +754,23 @@ event_dispatch_epoll (struct event_pool *event_pool)
 	return ret;
 }
 
+/**
+ * @param event_pool  event_pool on which fds of interest are registered for
+ *                     events.
+ *
+ * @return  1 if at least one epoll worker thread is spawned, 0 otherwise
+ *
+ * NB This function SHOULD be called under event_pool->mutex.
+ */
+
+static int
+event_pool_dispatched_unlocked (struct event_pool *event_pool)
+{
+        return (event_pool->pollers[0] != 0);
+
+}
+
+
 int
 event_reconfigure_threads_epoll (struct event_pool *event_pool, int value)
 {
@@ -778,6 +779,7 @@ event_reconfigure_threads_epoll (struct event_pool *event_pool, int value)
         pthread_t                        t_id;
         int                              oldthreadcount;
         struct event_thread_data        *ev_data = NULL;
+        char                             thread_name[GF_THREAD_NAMEMAX] = {0,};
 
         pthread_mutex_lock (&event_pool->mutex);
         {
@@ -796,7 +798,12 @@ event_reconfigure_threads_epoll (struct event_pool *event_pool, int value)
 
                 oldthreadcount = event_pool->eventthreadcount;
 
-                if (oldthreadcount < value) {
+                /* Start 'worker' threads as necessary only if event_dispatch()
+                 * was called before. If event_dispatch() was not called, there
+                 * will be no epoll 'worker' threads running yet. */
+
+                if (event_pool_dispatched_unlocked(event_pool)
+                    && (oldthreadcount < value)) {
                         /* create more poll threads */
                         for (i = oldthreadcount; i < value; i++) {
                                 /* Start a thread if the index at this location
@@ -813,9 +820,13 @@ event_reconfigure_threads_epoll (struct event_pool *event_pool, int value)
                                         ev_data->event_pool = event_pool;
                                         ev_data->event_index = i + 1;
 
-                                        ret = pthread_create (&t_id, NULL,
+                                        snprintf (thread_name,
+                                                  sizeof(thread_name),
+                                                  "%s%d",
+                                                  "epoll", i);
+                                        ret = gf_thread_create (&t_id, NULL,
                                                 event_dispatch_epoll_worker,
-                                                ev_data);
+                                                ev_data, thread_name);
                                         if (ret) {
                                                 gf_msg ("epoll", GF_LOG_WARNING,
                                                         0,
@@ -849,7 +860,7 @@ event_pool_destroy_epoll (struct event_pool *event_pool)
         int ret = 0, i = 0, j = 0;
         struct event_slot_epoll *table = NULL;
 
-        ret = close (event_pool->fd);
+        ret = sys_close (event_pool->fd);
 
         for (i = 0; i < EVENT_EPOLL_TABLES; i++) {
                 if (event_pool->ereg[i]) {
@@ -872,6 +883,55 @@ event_pool_destroy_epoll (struct event_pool *event_pool)
         return ret;
 }
 
+static int
+event_handled_epoll (struct event_pool *event_pool, int fd, int idx, int gen)
+{
+        struct event_slot_epoll *slot  = NULL;
+        struct epoll_event epoll_event = {0, };
+        struct event_data *ev_data     = (void *)&epoll_event.data;
+        int                ret         = 0;
+
+	slot = event_slot_get (event_pool, idx);
+
+        assert (slot->fd == fd);
+
+	LOCK (&slot->lock);
+	{
+		slot->in_handler--;
+
+		if (gen != slot->gen) {
+			/* event_unregister() happened while we were
+			   in handler()
+			*/
+			gf_msg_debug ("epoll", 0, "generation bumped on idx=%d"
+                                      " from gen=%d to slot->gen=%d, fd=%d, "
+				      "slot->fd=%d", idx, gen, slot->gen, fd,
+                                      slot->fd);
+			goto post_unlock;
+		}
+
+		/* This call also picks up the changes made by another
+		   thread calling event_select_on_epoll() while this
+		   thread was busy in handler()
+		*/
+                if (slot->in_handler == 0) {
+                        epoll_event.events = slot->events;
+                        ev_data->idx = idx;
+                        ev_data->gen = gen;
+
+                        ret = epoll_ctl (event_pool->fd, EPOLL_CTL_MOD,
+                                         fd, &epoll_event);
+                }
+	}
+post_unlock:
+	UNLOCK (&slot->lock);
+
+        event_slot_unref (event_pool, slot, idx);
+
+        return ret;
+}
+
+
 struct event_ops event_ops_epoll = {
         .new                       = event_pool_new_epoll,
         .event_register            = event_register_epoll,
@@ -880,7 +940,8 @@ struct event_ops event_ops_epoll = {
         .event_unregister_close    = event_unregister_close_epoll,
         .event_dispatch            = event_dispatch_epoll,
         .event_reconfigure_threads = event_reconfigure_threads_epoll,
-        .event_pool_destroy        = event_pool_destroy_epoll
+        .event_pool_destroy        = event_pool_destroy_epoll,
+        .event_handled             = event_handled_epoll,
 };
 
 #endif

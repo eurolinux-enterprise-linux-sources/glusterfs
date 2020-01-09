@@ -9,12 +9,7 @@
  *   */
 
 #ifndef _GFAPI_MESSAGES_H__
-#define _GFAPI_MESSAGES_H_
-
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
+#define _GFAPI_MESSAGES_H__
 
 #include "glfs-message-id.h"
 
@@ -45,8 +40,8 @@
  */
 
 #define GLFS_GFAPI_BASE             GLFS_MSGID_COMP_API
-#define GLFS_NUM_MESSAGES           47
-#define GLFS_MSGID_END              (GLFS_GFAPI_BASE + GLFS_NUM_MESSAGESi + 1)
+#define GLFS_NUM_MESSAGES           50
+#define GLFS_MSGID_END              (GLFS_GFAPI_BASE + GLFS_NUM_MESSAGES + 1)
 /* Messages with message IDs */
 #define glfs_msg_start_x GLFS_GFAPI_BASE, "Invalid: Start of messages"
 /*------------*/
@@ -63,7 +58,7 @@
 #define API_MSG_FSMUTEX_UNLOCK_FAILED           (GLFS_GFAPI_BASE + 10)
 #define API_MSG_INODE_REFRESH_FAILED            (GLFS_GFAPI_BASE + 11)
 #define API_MSG_GRAPH_CONSTRUCT_FAILED          (GLFS_GFAPI_BASE + 12)
-#define API_MSG_FUSE_XLATOR_ERROR               (GLFS_GFAPI_BASE + 13)
+#define API_MSG_API_XLATOR_ERROR                (GLFS_GFAPI_BASE + 13)
 #define API_MSG_XDR_PAYLOAD_FAILED              (GLFS_GFAPI_BASE + 14)
 #define API_MSG_GET_VOLINFO_CBK_FAILED          (GLFS_GFAPI_BASE + 15)
 #define API_MSG_FETCH_VOLUUID_FAILED            (GLFS_GFAPI_BASE + 16)
@@ -98,8 +93,11 @@
 #define API_MSG_NEW_GRAPH                       (GLFS_GFAPI_BASE + 45)
 #define API_MSG_ALLOC_FAILED                    (GLFS_GFAPI_BASE + 46)
 #define API_MSG_CREATE_HANDLE_FAILED            (GLFS_GFAPI_BASE + 47)
+#define API_MSG_INODE_LINK_FAILED               (GLFS_GFAPI_BASE + 48)
+#define API_MSG_STATEDUMP_FAILED                (GLFS_GFAPI_BASE + 49)
+#define API_MSG_XREADDIRP_R_FAILED              (GLFS_GFAPI_BASE + 50)
 
 /*------------*/
 #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
 
-#endif /* !_GFAPI_MESSAGES_H_ */
+#endif /* !_GFAPI_MESSAGES_H__ */

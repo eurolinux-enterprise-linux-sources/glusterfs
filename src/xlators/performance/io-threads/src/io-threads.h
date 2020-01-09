@@ -11,11 +11,6 @@
 #ifndef __IOT_H
 #define __IOT_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 
 #include "compat-errno.h"
 #include "glusterfs.h"
@@ -42,7 +37,7 @@ struct iot_conf;
 #define IOT_MAX_THREADS         64
 
 
-#define IOT_THREAD_STACK_SIZE   ((size_t)(1024*1024))
+#define IOT_THREAD_STACK_SIZE   ((size_t)(256*1024))
 
 
 typedef enum {
@@ -53,14 +48,10 @@ typedef enum {
         IOT_PRI_MAX,
 } iot_pri_t;
 
-#define IOT_LEAST_THROTTLE_DELAY 1	/* sample interval in seconds */
-struct iot_least_throttle {
-	struct timeval	sample_time;	/* timestamp of current sample */
-	uint32_t	sample_cnt;	/* sample count for active interval */
-	uint32_t	cached_rate;	/* the most recently measured rate */
-	int32_t		rate_limit;	/* user-specified rate limit */
-	pthread_mutex_t	lock;
-};
+typedef struct {
+        struct list_head        clients;
+        struct list_head        reqs;
+} iot_client_ctx_t;
 
 struct iot_conf {
         pthread_mutex_t      mutex;
@@ -72,7 +63,14 @@ struct iot_conf {
 
         int32_t              idle_time;   /* in seconds */
 
-        struct list_head     reqs[IOT_PRI_MAX];
+        struct list_head     clients[IOT_PRI_MAX];
+        /*
+         * It turns out that there are several ways a frame can get to us
+         * without having an associated client (server_first_lookup was the
+         * first one I hit).  Instead of trying to update all such callers,
+         * we use this to queue them.
+         */
+        iot_client_ctx_t     no_client[IOT_PRI_MAX];
 
         int32_t              ac_iot_limit[IOT_PRI_MAX];
         int32_t              ac_iot_count[IOT_PRI_MAX];
@@ -82,9 +80,10 @@ struct iot_conf {
         gf_boolean_t         least_priority; /*Enable/Disable least-priority */
 
         xlator_t            *this;
-        size_t              stack_size;
-
-	struct iot_least_throttle throttle;
+        size_t               stack_size;
+        gf_boolean_t         down; /*PARENT_DOWN event is notified*/
+        gf_boolean_t         mutex_inited;
+        gf_boolean_t         cond_inited;
 };
 
 typedef struct iot_conf iot_conf_t;

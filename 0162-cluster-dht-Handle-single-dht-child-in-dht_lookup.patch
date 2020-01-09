@@ -1,0 +1,77 @@
+From 90dc8d7cee42eeacc3214fef8bb45cbffc4c8de5 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Mon, 19 Feb 2018 09:44:29 +0530
+Subject: [PATCH 162/180] cluster/dht: Handle single dht child in dht_lookup
+
+This patch limits itself to only handling the case
+where no file (data or linkto) exists on the subvol.
+
+Additional cases to be handled:
+1. A linkto file was found on the only child subvol. This currently
+calls dht_lookup_everywhere which eventually deletes it. It can be
+deleted directly as it will not be pointing to a valid subvol.
+2. Directory lookups - locking might be unnecessary in some cases.
+
+upstream patch: https://review.gluster.org/19581
+
+> Change-Id: I940ba34531f2aaee1d36fd9ca45ecfd46be662a4
+> BUG: 1546620
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I1cc1b9866fa18fe825847585e6a9b8c92898951a
+BUG: 1545570
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130976
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Shyam Ranganathan <srangana@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 1262732..5641330 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -2352,6 +2352,12 @@ dht_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         }
+ 
+         if (ENTRY_MISSING (op_ret, op_errno)) {
++
++                if (1 == conf->subvolume_cnt) {
++                        /* No need to lookup again */
++                        goto out;
++                }
++
+                 gf_msg_debug (this->name, 0,
+                               "Entry %s missing on subvol %s",
+                               loc->path, prev->name);
+@@ -2581,6 +2587,8 @@ dht_lookup (call_frame_t *frame, xlator_t *this,
+                 local->xattr_req = dict_new ();
+         }
+ 
++        /* Nameless lookup */
++
+         if (gf_uuid_is_null (loc->pargfid) && !gf_uuid_is_null (loc->gfid) &&
+             !__is_root_gfid (loc->inode->gfid)) {
+                 local->cached_subvol = NULL;
+@@ -2598,6 +2606,9 @@ dht_lookup (call_frame_t *frame, xlator_t *this,
+                 hashed_subvol = dht_subvol_get_hashed (this, loc);
+         local->hashed_subvol = hashed_subvol;
+ 
++
++        /* The entry has been looked up before and has an inode_ctx set
++         */
+         if (is_revalidate (loc)) {
+                 layout = local->layout;
+                 if (!layout) {
+@@ -2638,6 +2649,7 @@ dht_lookup (call_frame_t *frame, xlator_t *this,
+                                 "path %s", conf->xattr_name, loc->path);
+                         goto err;
+                 }
++
+                 /* need it in case file is not found on cached file
+                  * on revalidate path and we may encounter linkto files on
+                  * with dht_lookup_everywhere*/
+-- 
+1.8.3.1
+

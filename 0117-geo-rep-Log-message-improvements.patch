@@ -1,0 +1,105 @@
+From 8216bddb4f563823a2e7cf046646b3b92239924d Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Thu, 28 Dec 2017 15:17:34 +0530
+Subject: [PATCH 117/128] geo-rep: Log message improvements
+
+>upstream mainline patch: https://review.gluster.org/19103
+
+BUG: 1468972
+Change-Id: If4775ed9886990c0e1bcf4e44c7dfef95cc4f0c3
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126634
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ geo-replication/syncdaemon/gsyncd.py     | 2 +-
+ geo-replication/syncdaemon/master.py     | 8 ++++----
+ geo-replication/syncdaemon/repce.py      | 2 +-
+ geo-replication/syncdaemon/resource.py   | 4 ++--
+ geo-replication/syncdaemon/syncdutils.py | 2 +-
+ 5 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gsyncd.py b/geo-replication/syncdaemon/gsyncd.py
+index 932e37d..d77b90f 100644
+--- a/geo-replication/syncdaemon/gsyncd.py
++++ b/geo-replication/syncdaemon/gsyncd.py
+@@ -796,7 +796,7 @@ def main_i():
+             remote.connect_remote(go_daemon='done')
+     local.connect()
+     if ffd:
+-        logging.info("Closing feedback fd, waking up the monitor")
++        logging.info("Worker spawn successful. Acknowledging back to monitor")
+         os.close(ffd)
+     local.service_loop(*[r for r in [remote] if r])
+ 
+diff --git a/geo-replication/syncdaemon/master.py b/geo-replication/syncdaemon/master.py
+index 4c1a529..e484692 100644
+--- a/geo-replication/syncdaemon/master.py
++++ b/geo-replication/syncdaemon/master.py
+@@ -1639,8 +1639,8 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
+             if isinstance(xtr_root, int):
+                 if xtr_root != ENOENT:
+                     logging.warn(lf("slave cluster not returning the "
+-                                    "correct xtime for root",
+-                                    xtime=xtr_root))
++                                    "xtime for root",
++                                    error=xtr_root))
+                 xtr_root = self.minus_infinity
+         xtl = self.xtime(path)
+         if isinstance(xtl, int):
+@@ -1649,9 +1649,9 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
+         if isinstance(xtr, int):
+             if xtr != ENOENT:
+                 logging.warn(lf("slave cluster not returning the "
+-                                "correct xtime",
++                                "xtime for dir",
+                                 path=path,
+-                                xtime=xtr))
++                                error=xtr))
+             xtr = self.minus_infinity
+         xtr = max(xtr, xtr_root)
+         zero_zero = (0, 0)
+diff --git a/geo-replication/syncdaemon/repce.py b/geo-replication/syncdaemon/repce.py
+index 0ac1449..8db7d9e 100644
+--- a/geo-replication/syncdaemon/repce.py
++++ b/geo-replication/syncdaemon/repce.py
+@@ -203,7 +203,7 @@ class RepceClient(object):
+             meth, *args, **{'cbk': lambda rj, res: rj.wakeup(res)})
+         exc, res = rjob.wait()
+         if exc:
+-            logging.error(lf('call failed on peer',
++            logging.error(lf('call failed',
+                              call=repr(rjob),
+                              method=meth,
+                              error=str(type(res).__name__)))
+diff --git a/geo-replication/syncdaemon/resource.py b/geo-replication/syncdaemon/resource.py
+index 0ca023c..22aaf85 100644
+--- a/geo-replication/syncdaemon/resource.py
++++ b/geo-replication/syncdaemon/resource.py
+@@ -834,8 +834,8 @@ class Server(object):
+                                     except OSError as e:
+                                         if e.errno == ENOTEMPTY:
+                                             logging.error(
+-                                                lf("Unable to delete directory"
+-                                                   ", Both Old and New"
++                                                lf("Directory Rename failed. "
++                                                   "Both Old and New"
+                                                    " directories exists",
+                                                    old=entry,
+                                                    new=en))
+diff --git a/geo-replication/syncdaemon/syncdutils.py b/geo-replication/syncdaemon/syncdutils.py
+index 2187ecd..269f301 100644
+--- a/geo-replication/syncdaemon/syncdutils.py
++++ b/geo-replication/syncdaemon/syncdutils.py
+@@ -321,7 +321,7 @@ def log_raise_exception(excont):
+                 gconf.transport.terminate_geterr()
+         elif isinstance(exc, OSError) and exc.errno in (ENOTCONN,
+                                                         ECONNABORTED):
+-            logging.error(lf('glusterfs session went down',
++            logging.error(lf('Gluster Mount process exited',
+                              error=errorcode[exc.errno]))
+         else:
+             logtag = "FAIL"
+-- 
+1.8.3.1
+

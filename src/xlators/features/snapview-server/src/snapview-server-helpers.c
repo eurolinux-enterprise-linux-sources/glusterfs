@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "snapview-server.h"
 #include "snapview-server-mem-types.h"
 
@@ -335,11 +330,22 @@ out:
 }
 
 void
+svs_uuid_generate (uuid_t gfid, char *snapname, uuid_t origin_gfid)
+{
+        unsigned char md5_sum[MD5_DIGEST_LENGTH] = {0};
+        char          ino_string[NAME_MAX + 32]  = "";
+
+        GF_ASSERT (snapname);
+
+        (void) snprintf (ino_string, sizeof (ino_string), "%s%s",
+                         snapname, uuid_utoa(origin_gfid));
+        MD5((unsigned char *)ino_string, strlen(ino_string), md5_sum);
+        gf_uuid_copy (gfid, md5_sum);
+}
+
+void
 svs_fill_ino_from_gfid (struct iatt *buf)
 {
-        uint64_t  temp_ino = 0;
-        int       j        = 0;
-        int       i        = 0;
         xlator_t *this     = NULL;
 
         this = THIS;
@@ -352,11 +358,8 @@ svs_fill_ino_from_gfid (struct iatt *buf)
                 buf->ia_ino = -1;
                 goto out;
         }
-        for (i = 15; i > (15 - 8); i--) {
-                temp_ino += (uint64_t)(buf->ia_gfid[i]) << j;
-                j += 8;
-        }
-        buf->ia_ino = temp_ino;
+
+        buf->ia_ino = gfid_to_ino (buf->ia_gfid);
 out:
         return;
 }

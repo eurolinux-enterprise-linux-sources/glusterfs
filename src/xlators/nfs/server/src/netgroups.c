@@ -149,7 +149,9 @@ __deleted_entries_free_walk (dict_t *dict, char *key, data_t *val, void *tmp)
 void
 ng_file_deinit (struct netgroups_file *ngfile)
 {
-        GF_VALIDATE_OR_GOTO (GF_NG, ngfile, out);
+        if (!ngfile) {
+                return;
+        }
 
         __deleted_entries = dict_new ();
         GF_VALIDATE_OR_GOTO (GF_NG, __deleted_entries, out);
@@ -735,11 +737,16 @@ _parse_ng_host (char *ng_str, struct netgroup_host **ngh)
         if (ret < 0)
                 goto out;
 
+        gf_msg_trace (GF_NG, 0, "parsing host string: %s", ng_str);
+
         ng_host = _netgroup_host_init ();
         GF_CHECK_ALLOC (ng_host, ret, free_and_out); /* Sets ret to -ENOMEM on
                                                       * failure.
                                                       */
         while ((match = parser_get_next_match (ng_host_parser)) != NULL) {
+                gf_msg_trace (GF_NG, 0, "found match: %s (parts=%d)", match,
+                              parts);
+
                 switch (parts) {
                 case 0:
                         ng_host->hostname = match;
@@ -1124,8 +1131,6 @@ ng_file_parse (const char *filepath)
                         gf_msg (GF_NG, GF_LOG_CRITICAL, ENOMEM,
                                 NFS_MSG_NO_MEMORY, "Allocation error "
                                 "while parsing line!");
-                        ng_file_deinit (file);
-                        GF_FREE (line);
                         goto err;
                 }
                 if (ret != 0) {
@@ -1141,9 +1146,14 @@ ng_file_parse (const char *filepath)
         if (fp)
                 fclose(fp);
 
+        _ng_deinit_parsers ();
+
         return file;
 
 err:
+        if (line)
+                free(line);
+
         if (file)
                 ng_file_deinit (file);
 

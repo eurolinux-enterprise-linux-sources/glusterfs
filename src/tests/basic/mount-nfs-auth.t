@@ -15,6 +15,9 @@ TEST glusterd
 TEST pidof glusterd
 TEST $CLI volume info
 
+H0IP=$(ip addr show |grep -w inet |grep -v 127.0.0.1|awk '{ print $2 }'| cut -d "/" -f 1)
+H0IP6=$(host $HOSTNAME | grep IPv6 | awk '{print $NF}')
+
 # Export variables for allow & deny
 EXPORT_ALLOW="/$V0 $H0(sec=sys,rw,anonuid=0) @ngtop(sec=sys,rw,anonuid=0)"
 EXPORT_ALLOW_SLASH="/$V0/ $H0(sec=sys,rw,anonuid=0) @ngtop(sec=sys,rw,anonuid=0)"
@@ -35,6 +38,10 @@ EXPORT_WILDCARD="/$V0 *(sec=sys,rw,anonuid=0) @ngtop(sec=sys,rw,anonuid=0)"
 
 function build_dirs () {
         mkdir -p $B0/b{0,1,2}/L1/L2/L3
+}
+
+function export_allow_this_host_ipv6 () {
+        printf "$EXPORT_ALLOW6\n" > /var/lib/glusterd/nfs/exports
 }
 
 function export_allow_this_host () {
@@ -70,7 +77,7 @@ function netgroup_deny_this_host () {
 }
 
 function create_vol () {
-        TEST $CLI vol create $V0 replica 3 $H0:$B0/b0 $H0:$B0/b1 $H0:$B0/b2
+        $CLI vol create $V0 $H0:$B0/b0
 }
 
 function setup_cluster() {
@@ -132,17 +139,22 @@ function stat_nfs () {
 
 # Restarts the NFS server
 function restart_nfs () {
-	# disabling nfs acces for a volume requires a restart
-	$CLI volume set patchy nfs.disable true
-	$CLI volume reset patchy nfs.disable
+        local NFS_PID=$(cat $GLUSTERD_PIDFILEDIR/nfs/nfs.pid)
+
+        # kill the NFS-server if it is running
+        while ps -q ${NFS_PID} 2>&1 > /dev/null; do
+                kill ${NFS_PID}
+                sleep 0.5
+        done
+
+        # start-force starts the NFS-server again
+        $CLI vol start patchy force
 }
 
 setup_cluster
 
 # run preliminary tests
-TEST $CLI vol set $V0 cluster.self-heal-daemon off
 TEST $CLI vol set $V0 nfs.disable off
-TEST $CLI vol set $V0 cluster.choose-local off
 TEST $CLI vol start $V0
 
 # Get NFS state directory
@@ -180,6 +192,11 @@ $CLI vol start $V0
 EXPECT_WITHIN $NFS_EXPORT_TIMEOUT "1" is_nfs_export_available
 
 ## Mount NFS
+EXPECT "Y" check_mount_success $V0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" umount_nfs $N0
+
+## Mount NFS using the IPv6 export
+export_allow_this_host_ipv6
 EXPECT "Y" check_mount_success $V0
 
 ## Disallow host

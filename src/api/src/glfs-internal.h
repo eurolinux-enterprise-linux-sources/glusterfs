@@ -16,6 +16,7 @@
 #include "glusterfs.h"
 #include "upcall-utils.h"
 #include "glfs-handles.h"
+#include "refcount.h"
 
 #define GLFS_SYMLINK_MAX_FOLLOW 2048
 
@@ -102,28 +103,6 @@
 #define GFAPI_SYMVER_PRIVATE(fn1, fn2, dotver) /**/
 #endif
 
-/*
- * syncop_xxx() calls are executed in two ways, one is inside a synctask where
- * the executing function will do 'swapcontext' and the other is without
- * synctask where the executing thread is made to wait using pthread_cond_wait.
- * Executing thread may change when syncop_xxx() is executed inside a synctask.
- * This leads to errno_location change i.e. errno may give errno of
- * non-executing thread. So errno is not touched inside a synctask execution.
- * All gfapi calls are executed using the second way of executing syncop_xxx()
- * where the executing thread waits using pthread_cond_wait so it is ok to set
- * errno in these cases. The following macro makes syncop_xxx() behave just
- * like a system call, where -1 is returned and errno is set when a failure
- * occurs.
- */
-#define DECODE_SYNCOP_ERR(ret) do {  \
-        if (ret < 0) {          \
-                errno = -ret;   \
-                ret = -1;       \
-        } else {                \
-                errno = 0;      \
-        }                       \
-        } while (0)
-
 #define ESTALE_RETRY(ret,errno,reval,loc,label) do {	\
 	if (ret == -1 && errno == ESTALE) {	        \
 		if (reval < DEFAULT_REVAL_COUNT) {	\
@@ -162,11 +141,11 @@
 
 struct glfs;
 
-struct _upcall_entry_t {
+struct _upcall_entry {
         struct list_head  upcall_list;
         struct gf_upcall  upcall_data;
 };
-typedef struct _upcall_entry_t upcall_entry;
+typedef struct _upcall_entry upcall_entry;
 
 typedef int (*glfs_init_cbk) (struct glfs *fs, int ret);
 
@@ -186,8 +165,16 @@ struct glfs {
 	int                 ret;
 	int                 err;
 
-	xlator_t           *active_subvol;
-	xlator_t           *next_subvol;
+	xlator_t           *active_subvol; /* active graph */
+        xlator_t           *mip_subvol;    /* graph for which migration is in
+                                            * progress */
+	xlator_t           *next_subvol;   /* Any new graph is put to
+                                            * next_subvol, the graph in
+                                            * next_subvol can either be move to
+                                            * mip_subvol (if any IO picks it up
+                                            * for migration), or be detroyed (if
+                                            * there is a new graph, and this was
+                                            * never picked for migration) */
 	xlator_t           *old_subvol;
 
 	char               *oldvolfile;
@@ -201,6 +188,7 @@ struct glfs {
 
 	gf_boolean_t        migration_in_progress;
 
+        gf_boolean_t        cache_upcalls; /* add upcalls to the upcall_list? */
         struct list_head    upcall_list;
         pthread_mutex_t     upcall_list_mutex; /* mutex for upcall entry list */
 
@@ -208,9 +196,20 @@ struct glfs {
         uint32_t            pthread_flags; /* GLFS_INIT_* # defines set this flag */
 };
 
+/* This enum is used to maintain the state of glfd. In case of async fops
+ * fd might be closed before the actual fop is complete. Therefore we need
+ * to track whether the fd is closed or not, instead actually closing it.*/
+enum glfs_fd_state {
+        GLFD_INIT,
+        GLFD_OPEN,
+        GLFD_CLOSE
+};
+
 struct glfs_fd {
 	struct list_head   openfds;
+        GF_REF_DECL;
 	struct glfs       *fs;
+        enum glfs_fd_state state;
 	off_t              offset;
 	fd_t              *fd; /* Currently guared by @fs->mutex. TODO: per-glfd lock */
 	struct list_head   entries;
@@ -224,6 +223,32 @@ struct glfs_fd {
 struct glfs_object {
         inode_t         *inode;
         uuid_t          gfid;
+};
+
+struct glfs_upcall {
+        struct glfs             *fs;     /* glfs object */
+        enum glfs_upcall_reason  reason; /* Upcall event type */
+        void                    *event;  /* changes based in the event type */
+        void (*free_event)(void *);      /* free event after the usage */
+};
+
+struct glfs_upcall_inode {
+        struct glfs_object   *object;  /* Object which need to be acted upon */
+        int                   flags;   /* Cache UPDATE/INVALIDATE flags */
+        struct stat           buf;     /* Latest stat of this entry */
+        unsigned int          expire_time_attr; /* the amount of time for which
+                                                 * the application need to cache
+                                                 * this entry */
+        struct glfs_object   *p_object; /* parent Object to be updated */
+        struct stat           p_buf;    /* Latest stat of parent dir handle */
+        struct glfs_object   *oldp_object; /* Old parent Object to be updated */
+        struct stat           oldp_buf; /* Latest stat of old parent dir handle */
+};
+
+struct glfs_xreaddirp_stat {
+        struct stat st; /* Stat for that dirent - corresponds to GFAPI_XREADDIRP_STAT */
+        struct glfs_object *object; /* handled for GFAPI_XREADDIRP_HANDLE */
+        uint32_t flags_handled; /* final set of flags successfulyy handled */
 };
 
 #define DEFAULT_EVENT_POOL_SIZE           16384
@@ -248,7 +273,7 @@ fd_t *__glfs_migrate_fd (struct glfs *fs, xlator_t *subvol, struct glfs_fd *glfd
 
 int glfs_first_lookup (xlator_t *subvol);
 
-void glfs_process_upcall_event (struct glfs *fs, void *data);
+void glfs_process_upcall_event (struct glfs *fs, void *data)
         GFAPI_PRIVATE(glfs_process_upcall_event, 3.7.0);
 
 
@@ -269,7 +294,8 @@ do {                                                                \
 
 #define __GLFS_ENTRY_VALIDATE_FD(glfd, label)                       \
 do {                                                                \
-        if (!glfd || !glfd->fd || !glfd->fd->inode) {               \
+        if (!glfd || !glfd->fd || !glfd->fd->inode ||               \
+             glfd->state != GLFD_OPEN) {                           \
                 errno = EBADF;                                      \
                 goto label;                                         \
         }                                                           \
@@ -285,17 +311,26 @@ do {                                                                \
   we can give up the mutex during syncop calls so
   that bottom up calls (particularly CHILD_UP notify)
   can do a mutex_lock() on @glfs without deadlocking
-  the filesystem
+  the filesystem.
+
+  All the fops should wait for graph migration to finish
+  before starting the fops. Therefore these functions should
+  call glfs_lock with wait_for_migration as true. But waiting
+  for migration to finish in call-back path can result thread
+  dead-locks. The reason for this is we only have finite
+  number of epoll threads. so if we wait on epoll threads
+  there will not be any thread left to handle outstanding
+  rpc replies.
 */
 static inline int
-glfs_lock (struct glfs *fs)
+glfs_lock (struct glfs *fs, gf_boolean_t wait_for_migration)
 {
 	pthread_mutex_lock (&fs->mutex);
 
 	while (!fs->init)
 		pthread_cond_wait (&fs->cond, &fs->mutex);
 
-	while (fs->migration_in_progress)
+        while (wait_for_migration && fs->migration_in_progress)
 		pthread_cond_wait (&fs->cond, &fs->mutex);
 
 	return 0;
@@ -307,9 +342,6 @@ glfs_unlock (struct glfs *fs)
 {
 	pthread_mutex_unlock (&fs->mutex);
 }
-
-
-void glfs_fd_destroy (struct glfs_fd *glfd);
 
 struct glfs_fd *glfs_fd_new (struct glfs *fs);
 void glfs_fd_bind (struct glfs_fd *glfd);
@@ -331,6 +363,7 @@ int __glfs_cwd_set (struct glfs *fs, inode_t *inode);
 
 int glfs_resolve_base (struct glfs *fs, xlator_t *subvol, inode_t *inode,
 		       struct iatt *iatt);
+
 int glfs_resolve_at (struct glfs *fs, xlator_t *subvol, inode_t *at,
                           const char *origpath, loc_t *loc, struct iatt *iatt,
                           int follow, int reval)
@@ -340,7 +373,6 @@ int glfs_loc_touchup (loc_t *loc)
 void glfs_iatt_to_stat (struct glfs *fs, struct iatt *iatt, struct stat *stat);
 int glfs_loc_link (loc_t *loc, struct iatt *iatt);
 int glfs_loc_unlink (loc_t *loc);
-dict_t *dict_for_key_value (const char *name, const char *value, size_t size);
 int glfs_getxattr_process (void *value, size_t size, dict_t *xattr,
 			   const char *name);
 
@@ -404,7 +436,7 @@ int glfs_get_upcall_cache_invalidation (struct gf_upcall *to_up_data,
                                         struct gf_upcall *from_up_data);
 int
 glfs_h_poll_cache_invalidation (struct glfs *fs,
-                                struct callback_arg *up_arg,
+                                struct glfs_upcall *up_arg,
                                 struct gf_upcall *upcall_data);
 
 ssize_t
@@ -418,5 +450,49 @@ glfs_anonymous_pwritev (struct glfs *fs, struct glfs_object *object,
 
 struct glfs_object *
 glfs_h_resolve_symlink (struct glfs *fs, struct glfs_object *object);
+
+/* Deprecated structures that were passed to client applications, replaced by
+ * accessor functions. Do not use these in new applications, and update older
+ * usage.
+ *
+ * See http://review.gluster.org/14701 for more details.
+ *
+ * WARNING: These structures will be removed in the future.
+ */
+struct glfs_callback_arg {
+        struct glfs             *fs;
+        enum glfs_upcall_reason  reason;
+        void                    *event_arg;
+};
+
+struct glfs_callback_inode_arg {
+        struct glfs_object      *object; /* Object which need to be acted upon */
+        int                     flags; /* Cache UPDATE/INVALIDATE flags */
+        struct stat             buf; /* Latest stat of this entry */
+        unsigned int            expire_time_attr; /* the amount of time for which
+                                                   * the application need to cache
+                                                   * this entry
+                                                   */
+        struct glfs_object      *p_object; /* parent Object to be updated */
+        struct stat             p_buf; /* Latest stat of parent dir handle */
+        struct glfs_object      *oldp_object; /* Old parent Object
+                                               * to be updated */
+        struct stat             oldp_buf; /* Latest stat of old parent
+                                           * dir handle */
+};
+struct dirent *
+glfs_readdirbuf_get (struct glfs_fd *glfd);
+
+gf_dirent_t *
+glfd_entry_next (struct glfs_fd *glfd, int plus);
+
+void
+gf_dirent_to_dirent (gf_dirent_t *gf_dirent, struct dirent *dirent);
+
+/*
+ * Nobody needs this call at all yet except for the test script.
+ */
+int glfs_ipc (glfs_fd_t *fd, int cmd,  void *xd_in, void **xd_out) __THROW
+        GFAPI_PRIVATE(glfs_ipc, 3.12.0);
 
 #endif /* !_GLFS_INTERNAL_H */

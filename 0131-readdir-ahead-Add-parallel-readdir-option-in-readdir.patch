@@ -1,0 +1,81 @@
+From 20a92ebcfcf534390468fadca97e7fdc0207967c Mon Sep 17 00:00:00 2001
+From: Poornima G <pgurusid@redhat.com>
+Date: Wed, 25 Oct 2017 17:00:36 +0530
+Subject: [PATCH 131/139] readdir-ahead: Add parallel-readdir option in
+ readdir-ahead
+
+parallel-readdir option is defined as belonging to readdir-ahead
+in glusterd-volume-set.c, but was not defined in options of
+readdir-ahead, fixing the same.
+
+> Reviewed on: https://review.gluster.org/#/c/18572/
+> Change-Id: I97cc88b38ab99ade5f066519ca1cb9bfed03a7da
+> BUG: 1506197
+> Signed-off-by: Poornima G <pgurusid@redhat.com>
+> (cherry picked from commit 80a6a2357c0c0351691c450c40de820efce7ff6f)
+
+Change-Id: I97cc88b38ab99ade5f066519ca1cb9bfed03a7da
+BUG: 1463592
+Signed-off-by: Poornima G <pgurusid@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/128484
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/performance/readdir-ahead/src/readdir-ahead.c | 13 +++++++++++++
+ xlators/performance/readdir-ahead/src/readdir-ahead.h |  1 +
+ 2 files changed, 14 insertions(+)
+
+diff --git a/xlators/performance/readdir-ahead/src/readdir-ahead.c b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+index 8827b8b..c2ceda4 100644
+--- a/xlators/performance/readdir-ahead/src/readdir-ahead.c
++++ b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+@@ -635,6 +635,8 @@ reconfigure(xlator_t *this, dict_t *options)
+                          size_uint64, err);
+         GF_OPTION_RECONF("rda-cache-limit", priv->rda_cache_limit, options,
+                          size_uint64, err);
++        GF_OPTION_RECONF("parallel-readdir", priv->parallel_readdir, options,
++                         bool, err);
+ 
+ 	return 0;
+ err:
+@@ -678,6 +680,8 @@ init(xlator_t *this)
+                        err);
+         GF_OPTION_INIT("rda-cache-limit", priv->rda_cache_limit, size_uint64,
+                        err);
++        GF_OPTION_INIT("parallel-readdir", priv->parallel_readdir, bool,
++                       err);
+ 
+ 	return 0;
+ 
+@@ -745,6 +749,15 @@ struct volume_options options[] = {
+                          "value, irrespective of the number/size of "
+                          "directories cached",
+         },
++        { .key = {"parallel-readdir"},
++          .type = GF_OPTION_TYPE_BOOL,
++          .default_value = "off",
++          .description = "If this option is enabled, the readdir operation "
++                         "is performed in parallel on all the bricks, thus "
++                         "improving the performance of readdir. Note that "
++                         "the performance improvement is higher in large "
++                         "clusters"
++        },
+         { .key = {NULL} },
+ };
+ 
+diff --git a/xlators/performance/readdir-ahead/src/readdir-ahead.h b/xlators/performance/readdir-ahead/src/readdir-ahead.h
+index 8c663e0..36d4df8 100644
+--- a/xlators/performance/readdir-ahead/src/readdir-ahead.h
++++ b/xlators/performance/readdir-ahead/src/readdir-ahead.h
+@@ -45,6 +45,7 @@ struct rda_priv {
+ 	uint64_t rda_high_wmark;
+         uint64_t rda_cache_limit;
+         uint64_t rda_cache_size;
++        gf_boolean_t parallel_readdir;
+ };
+ 
+ #endif /* __READDIR_AHEAD_H */
+-- 
+1.8.3.1
+

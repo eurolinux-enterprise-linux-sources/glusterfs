@@ -11,11 +11,6 @@
 #define __GFDB_DATA_STORE_H
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "xlator.h"
 #include "logging.h"
@@ -24,42 +19,6 @@
 #include <sys/time.h>
 
 #include "gfdb_data_store_types.h"
-
-#define GFDB_IPC_CTR_KEY "gfdb.ipc-ctr-op"
-
-/*
- * CTR IPC OPERATIONS
- *
- *
- */
-#define GFDB_IPC_CTR_QUERY_OPS "gfdb.ipc-ctr-query-op"
-#define GFDB_IPC_CTR_CLEAR_OPS "gfdb.ipc-ctr-clear-op"
-#define GFDB_IPC_CTR_GET_DB_PARAM_OPS "gfdb.ipc-ctr-get-db-parm"
-#define GFDB_IPC_CTR_GET_DB_VERSION_OPS "gfdb.ipc-ctr-get-db-version"
-
-/*
- * CTR IPC INPUT/OUTPUT
- *
- *
- */
-#define GFDB_IPC_CTR_GET_QFILE_PATH "gfdb.ipc-ctr-get-qfile-path"
-#define GFDB_IPC_CTR_GET_QUERY_PARAMS "gfdb.ipc-ctr-get-query-parms"
-#define GFDB_IPC_CTR_RET_QUERY_COUNT "gfdb.ipc-ctr-ret-rec-count"
-#define GFDB_IPC_CTR_GET_DB_KEY "gfdb.ipc-ctr-get-params-key"
-#define GFDB_IPC_CTR_RET_DB_VERSION "gfdb.ipc-ctr-ret-db-version"
-
-/*
- * gfdb ipc ctr params for query
- *
- *
- */
-typedef struct gfdb_ipc_ctr_params {
-        gf_boolean_t is_promote;
-        int write_freq_threshold;
-        int read_freq_threshold;
-        gfdb_time_t time_stamp;
-} gfdb_ipc_ctr_params_t;
-
 
 /* GFDB Connection Node:
  * ~~~~~~~~~~~~~~~~~~~~
@@ -151,11 +110,20 @@ delete_record(gfdb_conn_node_t *, gfdb_db_record_t *gfdb_db_record);
  *                        for every record found
  *      _query_cbk_args : Custom argument passed for the call back
  *                        function query_callback
+ *      query_limit     : 0 - umlimited,
+ *                        any positive value - adds the LIMIT clause
+ *                        to the SQL query
+ *
  * Returns : if successful return 0 or
  *          -ve value in case of failure*/
 int find_all(gfdb_conn_node_t *, gf_query_callback_t query_callback,
-                void *_query_cbk_args);
+                void *_query_cbk_args,
+                int query_limit);
 
+typedef int (*find_all_t) (gfdb_conn_node_t *,
+                           gf_query_callback_t query_callback,
+                           void *_query_cbk_args,
+                           int query_limit);
 
 
 
@@ -206,8 +174,7 @@ typedef int (*find_recently_changed_files_t) (gfdb_conn_node_t *_conn_node,
                                               gfdb_time_t *from_time);
 
 
-typedef const
-char * (*get_db_path_t) ();
+
 
 /*Libgfdb API Function: Query records/files that have not changed/accessed
  *                      from a time in past to current time, with
@@ -277,7 +244,6 @@ typedef int (*find_recently_changed_files_freq_t) (gfdb_conn_node_t *_conn_node,
                                                    int write_freq_thresold,
                                                    int read_freq_thresold,
                                                    gf_boolean_t _clear_counters);
-
 
 typedef const
 char *(*get_db_path_key_t)();
@@ -355,11 +321,27 @@ typedef int (*set_db_params_t)(gfdb_conn_node_t *db_conn,
                                      char *param_key,
                                      char *param_value);
 
+/*Libgfdb API Function: Compact the database.
+ *
+ * Arguments:
+ *      _conn_node                      :  GFDB Connection node
+ *      _compact_active                 :  Is compaction currently on?
+ *      _compact_mode_switched          :  Was the compaction switch flipped?
+ * Returns : if successful return 0 or
+ *          -ve value in case of failure*/
+int
+compact_db (gfdb_conn_node_t *_conn_node, gf_boolean_t _compact_active,
+            gf_boolean_t _compact_mode_switched);
+
+typedef int (*compact_db_t)(gfdb_conn_node_t *db_conn,
+                            gf_boolean_t compact_active,
+                            gf_boolean_t compact_mode_switched);
 
 
 typedef struct gfdb_methods_s {
         init_db_t                       init_db;
         fini_db_t                       fini_db;
+        find_all_t                      find_all;
         find_unchanged_for_time_t       find_unchanged_for_time;
         find_recently_changed_files_t   find_recently_changed_files;
         find_unchanged_for_time_freq_t  find_unchanged_for_time_freq;
@@ -384,6 +366,8 @@ typedef struct gfdb_methods_s {
         gfdb_link_info_new_t            gfdb_link_info_new;
         gfdb_link_info_free_t           gfdb_link_info_free;
 
+        /* Compaction related functions */
+        compact_db_t                    compact_db;
 } gfdb_methods_t;
 
 void get_gfdb_methods (gfdb_methods_t *methods);

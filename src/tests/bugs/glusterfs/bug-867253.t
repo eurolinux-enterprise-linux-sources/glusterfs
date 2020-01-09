@@ -26,6 +26,7 @@ TEST glusterd
 TEST pidof glusterd
 
 TEST $CLI volume create $V0 $H0:$B0/${V0}0 $H0:$B0/${V0}1
+TEST $CLI volume set $V0 nfs.disable false
 TEST $CLI volume start $V0
 
 EXPECT_WITHIN $NFS_EXPORT_TIMEOUT "1" is_nfs_export_available;
@@ -35,9 +36,9 @@ TEST mount_nfs $H0:/$V0 $M0 nolock,noac;
 touch $M0/files{1..1000};
 
 # Kill a brick process
-kill -9 `cat $GLUSTERD_WORKDIR/vols/$V0/run/$H0-d-backends-${V0}0.pid`;
+kill_brick $V0 $H0 $B0/${V0}0
 
-( cd $M0 ; umount $M0 ) # fail but drops kernel cache
+drop_cache $M0
 
 ls -l $M0 >/dev/null;
 
@@ -46,9 +47,9 @@ NEW_FILE_COUNT=`echo $?`;
 TEST $CLI volume start $V0 force
 
 # Kill a brick process
-kill -9 `cat $GLUSTERD_WORKDIR/vols/$V0/run/$H0-d-backends-${V0}1.pid`;
+kill_brick $V0 $H0 $B0/${V0}1
 
-( cd $M0 ; umount $M0 )
+drop_cache $M0
 
 ls -l $M0 >/dev/null;
 

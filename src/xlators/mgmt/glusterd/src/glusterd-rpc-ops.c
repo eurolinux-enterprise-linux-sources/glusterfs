@@ -8,11 +8,6 @@
    cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpc-clnt.h"
 #include "glusterd1-xdr.h"
 #include "cli1-xdr.h"
@@ -64,6 +59,7 @@ glusterd_op_send_cli_response (glusterd_op_t op, int32_t op_ret,
 
         switch (op) {
         case GD_OP_DETACH_TIER:
+        case GD_OP_REMOVE_TIER_BRICK:
         case GD_OP_REMOVE_BRICK:
         {
                 if (ctx)
@@ -77,6 +73,8 @@ glusterd_op_send_cli_response (glusterd_op_t op, int32_t op_ret,
                 break;
         }
         case GD_OP_TIER_MIGRATE:
+        case GD_OP_TIER_STATUS:
+        case GD_OP_DETACH_TIER_STATUS:
         case GD_OP_REBALANCE:
         case GD_OP_DEFRAG_BRICK_VOLUME:
         {
@@ -139,7 +137,6 @@ glusterd_op_send_cli_response (glusterd_op_t op, int32_t op_ret,
         case GD_OP_REPLACE_BRICK:
         case GD_OP_STATUS_VOLUME:
         case GD_OP_SET_VOLUME:
-        case GD_OP_GANESHA:
         case GD_OP_LIST_VOLUME:
         case GD_OP_CLEARLOCKS_VOLUME:
         case GD_OP_HEAL_VOLUME:
@@ -148,6 +145,14 @@ glusterd_op_send_cli_response (glusterd_op_t op, int32_t op_ret,
         case GD_OP_BARRIER:
         case GD_OP_BITROT:
         case GD_OP_SCRUB_STATUS:
+        case GD_OP_SCRUB_ONDEMAND:
+        case GD_OP_RESET_BRICK:
+        case GD_OP_MAX_OPVERSION:
+        case GD_OP_TIER_START_STOP:
+        case GD_OP_DETACH_NOT_STARTED:
+        case GD_OP_GANESHA:
+        case GD_OP_ADD_TIER_BRICK:
+
         {
                 /*nothing specific to be done*/
                 break;
@@ -330,8 +335,8 @@ __glusterd_probe_cbk (struct rpc_req *req, struct iovec *iov,
                         goto reply;
                 }
 
-                /* Injecting LOCAL_ACC to send update */
-                ret = glusterd_friend_sm_new_event (GD_FRIEND_EVENT_LOCAL_ACC,
+                /* Injecting EVENT_NEW_NAME to send update */
+                ret = glusterd_friend_sm_new_event (GD_FRIEND_EVENT_NEW_NAME,
                                                     &event);
                 if (!ret) {
                         event->peername = gf_strdup (peerinfo->hostname);
@@ -424,7 +429,7 @@ out:
         GLUSTERD_STACK_DESTROY (((call_frame_t *)myframe));
 
         /* Attempt to start the state machine. Needed as no state machine could
-         * be running at time this RPC reply was recieved
+         * be running at time this RPC reply was received
          */
         if (!ret) {
                 glusterd_friend_sm ();
@@ -564,7 +569,7 @@ __glusterd_friend_remove_cbk (struct rpc_req * req, struct iovec *iov,
         glusterd_friend_sm_event_type_t event_type = GD_FRIEND_EVENT_NONE;
         glusterd_peerinfo_t             *peerinfo = NULL;
         int32_t                         op_ret = -1;
-        int32_t                         op_errno = -1;
+        int32_t                         op_errno = 0;
         glusterd_probe_ctx_t            *ctx = NULL;
         gf_boolean_t                    move_sm_now = _gf_true;
 
@@ -685,7 +690,7 @@ __glusterd_friend_update_cbk (struct rpc_req *req, struct iovec *iov,
         if (ret < 0) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_RES_DECODE_FAIL, "Failed to serialize friend"
-                        " update repsonse");
+                        " update response");
                 goto out;
         }
 
@@ -715,7 +720,6 @@ __glusterd_cluster_lock_cbk (struct rpc_req *req, struct iovec *iov,
         int                           ret   = -1;
         int32_t                       op_ret = -1;
         glusterd_op_sm_event_type_t   event_type = GD_OP_EVENT_NONE;
-        glusterd_peerinfo_t           *peerinfo = NULL;
         xlator_t                      *this = NULL;
         uuid_t                        *txn_id = NULL;
         glusterd_conf_t               *priv = NULL;
@@ -790,6 +794,15 @@ __glusterd_cluster_lock_cbk (struct rpc_req *req, struct iovec *iov,
         }
 
 out:
+
+        ret = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
         ret = glusterd_op_sm_inject_event (event_type, txn_id, NULL);
 
         if (!ret) {
@@ -900,6 +913,14 @@ glusterd_mgmt_v3_lock_peers_cbk_fn (struct rpc_req *req, struct iovec *iov,
         }
 
 out:
+
+        ret = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
         ret = glusterd_op_sm_inject_event (event_type, txn_id, NULL);
         if (!ret) {
                 glusterd_friend_sm ();
@@ -1003,6 +1024,14 @@ glusterd_mgmt_v3_unlock_peers_cbk_fn (struct rpc_req *req, struct iovec *iov,
         }
 
 out:
+
+        ret = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
         ret = glusterd_op_sm_inject_event (event_type, txn_id, NULL);
 
         if (!ret) {
@@ -1031,7 +1060,6 @@ __glusterd_cluster_unlock_cbk (struct rpc_req *req, struct iovec *iov,
         int                           ret   = -1;
         int32_t                       op_ret = -1;
         glusterd_op_sm_event_type_t   event_type = GD_OP_EVENT_NONE;
-        glusterd_peerinfo_t           *peerinfo = NULL;
         xlator_t                      *this = NULL;
         uuid_t                        *txn_id = NULL;
         glusterd_conf_t               *priv = NULL;
@@ -1101,6 +1129,14 @@ __glusterd_cluster_unlock_cbk (struct rpc_req *req, struct iovec *iov,
         }
 
 out:
+
+        ret = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
         ret = glusterd_op_sm_inject_event (event_type, txn_id, NULL);
 
         if (!ret) {
@@ -1234,6 +1270,13 @@ out:
 
         rcu_read_unlock ();
 
+
+        ret = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
 
         ret = glusterd_op_sm_inject_event (event_type, txn_id, NULL);
 
@@ -1410,6 +1453,14 @@ unlock:
         rcu_read_unlock ();
 
 out:
+
+        ret = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
         ret = glusterd_op_sm_inject_event (event_type, txn_id, NULL);
 
         if (!ret) {
@@ -1789,6 +1840,10 @@ glusterd_mgmt_v3_lock_peers (call_frame_t *frame, xlator_t *this,
                                        (xdrproc_t)xdr_gd1_mgmt_v3_lock_req);
 out:
         gf_msg_debug (this->name, 0, "Returning %d", ret);
+        if (dict)
+                dict_unref (dict);
+        if (req.dict.dict_val)
+                GF_FREE (req.dict.dict_val);
         return ret;
 }
 
@@ -1866,6 +1921,11 @@ glusterd_mgmt_v3_unlock_peers (call_frame_t *frame, xlator_t *this,
                                        xdr_gd1_mgmt_v3_unlock_req);
 out:
         gf_msg_debug (this->name, 0, "Returning %d", ret);
+        if (dict)
+                dict_unref(dict);
+
+        if (req.dict.dict_val)
+                GF_FREE (req.dict.dict_val);
         return ret;
 }
 
@@ -1996,7 +2056,6 @@ glusterd_commit_op (call_frame_t *frame, xlator_t *this,
         int                     ret         = -1;
         glusterd_peerinfo_t    *peerinfo    = NULL;
         glusterd_conf_t        *priv        = NULL;
-        call_frame_t           *dummy_frame = NULL;
         dict_t                 *dict        = NULL;
         gf_boolean_t            is_alloc    = _gf_true;
         uuid_t                 *txn_id      = NULL;
@@ -2204,6 +2263,7 @@ glusterd_brick_op (call_frame_t *frame, xlator_t *this,
 
         gd1_mgmt_brick_op_req           *req = NULL;
         int                             ret = 0;
+        int                             ret1 = 0;
         glusterd_conf_t                 *priv = NULL;
         call_frame_t                    *dummy_frame = NULL;
         char                            *op_errstr = NULL;
@@ -2279,7 +2339,8 @@ glusterd_brick_op (call_frame_t *frame, xlator_t *this,
 
                 rpc = glusterd_pending_node_get_rpc (pending_node);
                 if (!rpc) {
-                        if (pending_node->type == GD_NODE_REBALANCE) {
+                        if (pending_node->type == GD_NODE_REBALANCE ||
+                            pending_node->type == GD_NODE_TIERD) {
                                 opinfo.brick_pending_count = 0;
                                 ret = 0;
                                 if (req) {
@@ -2327,6 +2388,17 @@ glusterd_brick_op (call_frame_t *frame, xlator_t *this,
         opinfo.brick_pending_count = pending_bricks;
 
 out:
+
+        if (ret)
+                opinfo.op_ret = ret;
+
+        ret1 = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret1)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
         if (ret) {
                 glusterd_op_sm_inject_event (GD_OP_EVENT_RCVD_RJT,
                                              txn_id, data);
@@ -2334,7 +2406,6 @@ out:
         }
 
         gf_msg_debug (this ? this->name : "glusterd", 0, "Returning %d", ret);
-
         return ret;
 }
 

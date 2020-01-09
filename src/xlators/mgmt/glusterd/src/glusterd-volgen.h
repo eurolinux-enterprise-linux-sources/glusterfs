@@ -10,11 +10,6 @@
 #ifndef _GLUSTERD_VOLGEN_H_
 #define _GLUSTERD_VOLGEN_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #if (HAVE_LIB_XML)
 #include <libxml/encoding.h>
 #include <libxml/xmlwriter.h>
@@ -37,6 +32,11 @@
 #define VKEY_FEATURES_TRASH       "features.trash"
 #define VKEY_FEATURES_BITROT      "features.bitrot"
 #define VKEY_FEATURES_SCRUB       "features.scrub"
+#define VKEY_FEATURES_SELINUX     "features.selinux"
+#define VKEY_PARALLEL_READDIR     "performance.parallel-readdir"
+#define VKEY_READDIR_AHEAD        "performance.readdir-ahead"
+#define VKEY_RDA_CACHE_LIMIT      "performance.rda-cache-limit"
+#define VKEY_RDA_REQUEST_SIZE     "performance.rda-request-size"
 
 #define AUTH_ALLOW_MAP_KEY "auth.allow"
 #define AUTH_REJECT_MAP_KEY "auth.reject"
@@ -60,9 +60,17 @@ typedef enum {
         GF_CLIENT_OTHER
 } glusterd_client_type_t;
 
+/* It indicates the type of volfile that the graph is built for */
+typedef enum {
+        GF_REBALANCED = 1,
+        GF_QUOTAD,
+        GF_SNAPD,
+} glusterd_graph_type_t;
+
 struct volgen_graph {
         char **errstr;
         glusterfs_graph_t graph;
+        glusterd_graph_type_t type;
 };
 typedef struct volgen_graph volgen_graph_t;
 
@@ -104,6 +112,7 @@ typedef enum {
         GF_XLATOR_POSIX = 0,
         GF_XLATOR_ACL,
         GF_XLATOR_LOCKS,
+        GF_XLATOR_LEASES,
         GF_XLATOR_UPCALL,
         GF_XLATOR_IOT,
         GF_XLATOR_INDEX,
@@ -181,6 +190,9 @@ glusterd_create_volfiles (glusterd_volinfo_t *volinfo);
 int
 glusterd_create_volfiles_and_notify_services (glusterd_volinfo_t *volinfo);
 
+int
+glusterd_generate_client_per_brick_volfile (glusterd_volinfo_t *volinfo);
+
 void
 glusterd_get_nfs_filepath (char *filename);
 
@@ -195,6 +207,10 @@ build_nfs_graph (volgen_graph_t *graph, dict_t *mod_dict);
 
 int
 build_quotad_graph (volgen_graph_t *graph, dict_t *mod_dict);
+
+int
+build_rebalance_volfile (glusterd_volinfo_t *volinfo, char *filepath,
+                         dict_t *mod_dict);
 
 int
 build_bitd_graph (volgen_graph_t *graph, dict_t *mod_dict);
@@ -231,9 +247,6 @@ glusterd_check_voloption_flags (char *key, int32_t flags);
 
 gf_boolean_t
 glusterd_is_valid_volfpath (char *volname, char *brick);
-
-void
-assign_brick_groups (glusterd_volinfo_t *volinfo);
 
 int
 generate_brick_volfiles (glusterd_volinfo_t *volinfo);
@@ -292,5 +305,8 @@ glusterd_volopt_validate (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
                           char *value, char **op_errstr);
 gf_boolean_t
 gd_is_self_heal_enabled (glusterd_volinfo_t *volinfo, dict_t *dict);
+
+int
+generate_dummy_client_volfiles (glusterd_volinfo_t *volinfo);
 
 #endif

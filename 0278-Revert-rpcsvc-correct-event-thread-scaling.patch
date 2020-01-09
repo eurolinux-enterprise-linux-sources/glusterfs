@@ -1,0 +1,42 @@
+From 471455f0fce403570b367ea5677ed9a9e198a1c7 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Mon, 21 May 2018 12:15:59 +0530
+Subject: [PATCH 278/282] Revert "rpcsvc: correct event-thread scaling"
+
+This reverts commit 96146ccae552c648f33a19783fad824cf8101790.
+
+> Reviewed-on: https://code.engineering.redhat.com/gerrit/132509
+
+Change-Id: I5b44bcce0dd36620b580acf1b0aedbc7b79934f5
+BUG: 1558989
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139306
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/server/src/server.c | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index d40457c..79f68e8 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -1042,11 +1042,10 @@ do_rpc:
+         }
+ 
+         /*
+-         * Update:
+-         * We don't need to reset auto_thread_count since it has been derived
+-         * out of the total bricks attached. We can reconfigure event threads
+-         * but not auto threads.
++         * Let the event subsystem know that we're auto-scaling, with an
++         * initial count of one.
+          */
++        ((struct event_pool *)(this->ctx->event_pool))->auto_thread_count = 1;
+ 
+         GF_OPTION_RECONF ("event-threads", new_nthread, options, int32, out);
+         ret = server_check_event_threads (this, conf, new_nthread);
+-- 
+1.8.3.1
+

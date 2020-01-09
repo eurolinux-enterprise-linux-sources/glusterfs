@@ -1,0 +1,903 @@
+From 3a4682ccd935744a0c5346bae23658ff08d65343 Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Mon, 15 Jan 2018 12:48:54 +0530
+Subject: [PATCH 125/128] cluster/afr: Fixing the flaws in arbiter becoming
+ source patch
+
+Problem:
+Setting the write_subvol value to read_subvol in case of metadata
+transaction during pre-op (commit 19f9bcff4aada589d4321356c2670ed283f02c03)
+might lead to the original problem of arbiter becoming source.
+
+Scenario:
+1) All bricks are up and good
+2) 2 writes w1 and w2 are in progress in parallel
+3) ctx->read_subvol is good for all the subvolumes
+4) w1 succeeds on brick0 and fails on brick1, yet to do post-op on
+   the disk
+5) read/lookup comes on the same file and refreshes read_subvols back
+   to all good
+6) metadata transaction happens which makes ctx->write_subvol to be
+   assigned with ctx->read_subvol which is all good
+7) w2 succeeds on brick1 and fails on brick0 and this will update the
+   brick in reverse order leading to arbiter becoming source
+
+Fix:
+Instead of setting the ctx->write_subvol to ctx->read_subvol in the
+pre-op statge, if there is a metadata transaction, check in the
+function __afr_set_in_flight_sb_status() if it is a data/metadata
+transaction. Use the value of ctx->write_subvol if it is a data
+transactions and ctx->read_subvol value for other transactions.
+
+With this patch we assign the value of ctx->write_subvol in the
+afr_transaction_perform_fop() with the on disk value, instead of
+assigning it in the afr_changelog_pre_op() with the in memory value.
+
+Upstream Patch: https://review.gluster.org/#/c/19045/
+
+> Change-Id: Id2025a7e965f0578af35b1abaac793b019c43cc4
+> BUG: 1482064
+> Signed-off-by: karthik-us <ksubrahm@redhat.com>
+
+Change-Id: Ie5d6745703fa5024d27e413093f7dfd08992e1df
+BUG: 1401969
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/127644
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+Tested-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c      | 266 +++++++++++++++++-------------
+ xlators/cluster/afr/src/afr-dir-write.c   |  16 +-
+ xlators/cluster/afr/src/afr-inode-write.c |  57 +++++--
+ xlators/cluster/afr/src/afr-lk-common.c   |  42 +++--
+ xlators/cluster/afr/src/afr-messages.h    |   9 +-
+ xlators/cluster/afr/src/afr-transaction.c |  45 ++---
+ xlators/cluster/afr/src/afr.h             |  22 ++-
+ 7 files changed, 277 insertions(+), 180 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 692f198..6e6f5fa 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -150,6 +150,7 @@ __afr_inode_ctx_get (xlator_t *this, inode_t *inode, afr_inode_ctx_t **ctx)
+                 tmp_ctx->spb_choice = -1;
+                 tmp_ctx->read_subvol = 0;
+                 tmp_ctx->write_subvol = 0;
++                tmp_ctx->lock_count = 0;
+         } else {
+                 tmp_ctx = (afr_inode_ctx_t *) ctx_int;
+         }
+@@ -195,7 +196,6 @@ __afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+                                inode_t *inode)
+ {
+         int                 i               = 0;
+-        int                 ret             = -1;
+         int                 txn_type        = 0;
+         int                 count           = 0;
+         int                 index           = -1;
+@@ -208,16 +208,14 @@ __afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+         uint32_t            event           = 0;
+         uint64_t            val             = 0;
+         afr_private_t      *priv            = NULL;
+-        afr_inode_ctx_t    *ctx             = NULL;
+ 
+         priv = this->private;
+         txn_type = local->transaction.type;
+ 
+-        ret = __afr_inode_ctx_get (this, inode, &ctx);
+-        if (ret < 0)
+-                return ret;
+-
+-        val = ctx->write_subvol;
++        if (txn_type == AFR_DATA_TRANSACTION)
++                val = local->inode_ctx->write_subvol;
++        else
++                val = local->inode_ctx->read_subvol;
+ 
+         metadatamap_old = metadatamap = (val & 0x000000000000ffff);
+         datamap_old = datamap = (val & 0x00000000ffff0000) >> 16;
+@@ -278,10 +276,11 @@ __afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+                 (((uint64_t) datamap) << 16) |
+                 (((uint64_t) event) << 32);
+ 
+-        ctx->write_subvol = val;
+-        ctx->read_subvol = val;
++        if (txn_type == AFR_DATA_TRANSACTION)
++                local->inode_ctx->write_subvol = val;
++        local->inode_ctx->read_subvol = val;
+ 
+-        return ret;
++        return 0;
+ }
+ 
+ gf_boolean_t
+@@ -1001,6 +1000,81 @@ afr_accuse_smallfiles (xlator_t *this, struct afr_reply *replies,
+ }
+ 
+ int
++afr_readables_fill (call_frame_t *frame, xlator_t *this, inode_t *inode,
++                    unsigned char *data_accused,
++                    unsigned char *metadata_accused,
++                    unsigned char *data_readable,
++                    unsigned char *metadata_readable,
++                    struct afr_reply *replies)
++{
++        afr_local_t *local = NULL;
++        afr_private_t *priv = NULL;
++        dict_t *xdata = NULL;
++        int i = 0;
++        int ret = 0;
++        ia_type_t ia_type = IA_INVAL;
++
++        local = frame->local;
++        priv = this->private;
++
++        for (i = 0; i < priv->child_count; i++) {
++                data_readable[i] = 1;
++                metadata_readable[i] = 1;
++        }
++        if (AFR_IS_ARBITER_BRICK (priv, ARBITER_BRICK_INDEX)) {
++                data_readable[ARBITER_BRICK_INDEX] =  0;
++                metadata_readable[ARBITER_BRICK_INDEX] = 0;
++        }
++
++        for (i = 0; i < priv->child_count; i++) {
++                if (replies) {/* Lookup */
++                        if (!replies[i].valid || replies[i].op_ret == -1 ||
++                            (replies[i].xdata && dict_get (replies[i].xdata,
++                                                        GLUSTERFS_BAD_INODE))) {
++                                data_readable[i] = 0;
++                                metadata_readable[i] = 0;
++                                continue;
++                        }
++
++                        xdata = replies[i].xdata;
++                        ia_type = replies[i].poststat.ia_type;
++                } else {/* pre-op xattrop */
++                        xdata = local->transaction.pre_op_xdata[i];
++                        ia_type = inode->ia_type;
++                }
++
++                afr_accused_fill (this, xdata, data_accused,
++                                  (ia_type == IA_IFDIR) ?
++                                  AFR_ENTRY_TRANSACTION : AFR_DATA_TRANSACTION);
++
++                afr_accused_fill (this, xdata,
++                                  metadata_accused, AFR_METADATA_TRANSACTION);
++        }
++
++        if (replies && ia_type != IA_INVAL && ia_type != IA_IFDIR &&
++            /* We want to accuse small files only when we know for
++             * sure that there is no IO happening. Otherwise, the
++             * ia_sizes obtained in post-refresh replies may
++             * mismatch due to a race between inode-refresh and
++             * ongoing writes, causing spurious heal launches*/
++            !afr_is_possibly_under_txn (AFR_DATA_TRANSACTION, local, this)) {
++                afr_accuse_smallfiles (this, replies, data_accused);
++        }
++
++        for (i = 0; i < priv->child_count; i++) {
++                if (data_accused[i]) {
++                        data_readable[i] = 0;
++                        ret = 1;
++                }
++                if (metadata_accused[i]) {
++                        metadata_readable[i] = 0;
++                        ret = 1;
++                }
++        }
++        return ret;
++}
++
++int
+ afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode,
+                        gf_boolean_t *start_heal)
+ {
+@@ -1025,62 +1099,9 @@ afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode,
+ 	metadata_accused = alloca0 (priv->child_count);
+ 	metadata_readable = alloca0 (priv->child_count);
+ 
+-	for (i = 0; i < priv->child_count; i++) {
+-		data_readable[i] = 1;
+-		metadata_readable[i] = 1;
+-	}
+-        if (AFR_IS_ARBITER_BRICK (priv, ARBITER_BRICK_INDEX)) {
+-                data_readable[ARBITER_BRICK_INDEX] =  0;
+-                metadata_readable[ARBITER_BRICK_INDEX] = 0;
+-        }
+-
+-	for (i = 0; i < priv->child_count; i++) {
+-		if (!replies[i].valid) {
+-			data_readable[i] = 0;
+-			metadata_readable[i] = 0;
+-			continue;
+-		}
+-
+-		if (replies[i].op_ret == -1) {
+-			data_readable[i] = 0;
+-			metadata_readable[i] = 0;
+-			continue;
+-		}
+-
+-                if (replies[i].xdata &&
+-                    dict_get (replies[i].xdata, GLUSTERFS_BAD_INODE)) {
+-			data_readable[i] = 0;
+-			metadata_readable[i] = 0;
+-			continue;
+-                }
+-
+-		afr_accused_fill (this, replies[i].xdata, data_accused,
+-				  (replies[i].poststat.ia_type == IA_IFDIR) ?
+-				   AFR_ENTRY_TRANSACTION : AFR_DATA_TRANSACTION);
+-
+-		afr_accused_fill (this, replies[i].xdata,
+-				  metadata_accused, AFR_METADATA_TRANSACTION);
+-
+-	}
+-
+-	if ((inode->ia_type != IA_IFDIR) &&
+-            /* We want to accuse small files only when we know for sure that
+-             * there is no IO happening. Otherwise, the ia_sizes obtained in
+-             * post-refresh replies may  mismatch due to a race between inode-
+-             * refresh and ongoing writes, causing spurious heal launches*/
+-            !afr_is_possibly_under_txn (AFR_DATA_TRANSACTION, local, this))
+-		afr_accuse_smallfiles (this, replies, data_accused);
+-
+-	for (i = 0; i < priv->child_count; i++) {
+-		if (data_accused[i]) {
+-			data_readable[i] = 0;
+-			ret = 1;
+-		}
+-		if (metadata_accused[i]) {
+-			metadata_readable[i] = 0;
+-			ret = 1;
+-		}
+-	}
++        ret = afr_readables_fill (frame, this, inode, data_accused,
++                                  metadata_accused, data_readable,
++                                  metadata_readable, replies);
+ 
+ 	for (i = 0; i < priv->child_count; i++) {
+                 if (start_heal && priv->child_up[i] &&
+@@ -5510,13 +5531,13 @@ afr_transaction_local_init (afr_local_t *local, xlator_t *this)
+         if (!local->transaction.pre_op)
+                 goto out;
+ 
+-        if (priv->arbiter_count == 1) {
+-                local->transaction.pre_op_xdata =
+-                        GF_CALLOC (sizeof (*local->transaction.pre_op_xdata),
+-                                   priv->child_count, gf_afr_mt_dict_t);
+-                if (!local->transaction.pre_op_xdata)
+-                        goto out;
++        local->transaction.pre_op_xdata =
++                GF_CALLOC (sizeof (*local->transaction.pre_op_xdata),
++                           priv->child_count, gf_afr_mt_dict_t);
++        if (!local->transaction.pre_op_xdata)
++                goto out;
+ 
++        if (priv->arbiter_count == 1) {
+                 local->transaction.pre_op_sources =
+                         GF_CALLOC (sizeof (*local->transaction.pre_op_sources),
+                                    priv->child_count, gf_afr_mt_char);
+@@ -6489,42 +6510,45 @@ int
+ afr_write_subvol_set (call_frame_t *frame, xlator_t *this)
+ {
+         afr_local_t      *local = NULL;
+-        afr_inode_ctx_t  *ctx   = NULL;
++        afr_private_t    *priv  = NULL;
++        unsigned char    *data_accused = NULL;
++        unsigned char    *metadata_accused = NULL;
++        unsigned char    *data_readable = NULL;
++        unsigned char    *metadata_readable = NULL;
++        uint16_t          datamap = 0;
++        uint16_t          metadatamap = 0;
+         uint64_t          val   = 0;
+-        uint64_t          val1  = 0;
+-        int               ret   = -1;
++        int               event = 0;
++        int               i     = 0;
+ 
+         local = frame->local;
++        priv = this->private;
++        data_accused = alloca0 (priv->child_count);
++        metadata_accused = alloca0 (priv->child_count);
++        data_readable = alloca0 (priv->child_count);
++        metadata_readable = alloca0 (priv->child_count);
++        event = local->event_generation;
++
++        afr_readables_fill (frame, this, local->inode, data_accused,
++                            metadata_accused, data_readable, metadata_readable,
++                            NULL);
++
++        for (i = 0; i < priv->child_count; i++) {
++                if (data_readable[i])
++                        datamap |= (1 << i);
++                if (metadata_readable[i])
++                        metadatamap |= (1 << i);
++        }
++
++        val = ((uint64_t) metadatamap) |
++              (((uint64_t) datamap) << 16) |
++              (((uint64_t) event) << 32);
++
+         LOCK(&local->inode->lock);
+         {
+-                ret = __afr_inode_ctx_get (this, local->inode, &ctx);
+-                if (ret < 0) {
+-                        gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                AFR_MSG_DICT_GET_FAILED,
+-                                "ERROR GETTING INODE CTX");
+-                        UNLOCK(&local->inode->lock);
+-                        return ret;
+-                }
+-
+-                val = ctx->write_subvol;
+-                /*
+-                 * We need to set the value of write_subvol to read_subvol in 2
+-                 * cases:
+-                 * 1. Initially when the value is 0. i.e., it's the first lock
+-                 * request.
+-                 * 2. If it's a metadata transaction. If metadata transactions
+-                 * comes in between data transactions and we have a brick
+-                 * disconnect, the next metadata transaction won't get the
+-                 * latest value of readables, since we do resetting of
+-                 * write_subvol in unlock code path only if it's a data
+-                 * transaction. To handle those scenarios we need to set the
+-                 * value of write_subvol to read_subvol in case of metadata
+-                 * transactions.
+-                */
+-                if (val == 0 ||
+-                    local->transaction.type == AFR_METADATA_TRANSACTION) {
+-                        val1 = ctx->read_subvol;
+-                        ctx->write_subvol = val1;
++                if (local->inode_ctx->write_subvol == 0 &&
++                    local->transaction.type == AFR_DATA_TRANSACTION) {
++                        local->inode_ctx->write_subvol = val;
+                 }
+         }
+         UNLOCK (&local->inode->lock);
+@@ -6536,23 +6560,37 @@ int
+ afr_write_subvol_reset (call_frame_t *frame, xlator_t *this)
+ {
+         afr_local_t      *local = NULL;
+-        afr_inode_ctx_t  *ctx   = NULL;
+-        int               ret   = -1;
+ 
+         local = frame->local;
+         LOCK(&local->inode->lock);
+         {
+-                ret = __afr_inode_ctx_get (this, local->inode, &ctx);
+-                if (ret < 0) {
+-                        gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                AFR_MSG_DICT_GET_FAILED,
+-                                "ERROR GETTING INODE CTX");
+-                        UNLOCK(&local->inode->lock);
+-                        return ret;
+-                }
+-                ctx->write_subvol = 0;
++                local->inode_ctx->lock_count--;
++
++                if (!local->inode_ctx->lock_count)
++                        local->inode_ctx->write_subvol = 0;
+         }
+         UNLOCK(&local->inode->lock);
+ 
+         return 0;
+ }
++
++int
++afr_set_inode_local (xlator_t *this, afr_local_t *local, inode_t *inode)
++{
++        int ret = 0;
++
++        local->inode = inode_ref (inode);
++        LOCK(&local->inode->lock);
++        {
++                ret = __afr_inode_ctx_get (this, local->inode,
++                                           &local->inode_ctx);
++        }
++        UNLOCK (&local->inode->lock);
++        if (ret < 0) {
++                gf_msg_callingfn (this->name, GF_LOG_ERROR, ENOMEM,
++                                  AFR_MSG_INODE_CTX_GET_FAILED,
++                                  "Error getting inode ctx %s",
++                                  uuid_utoa (local->inode->gfid));
++        }
++        return ret;
++}
+diff --git a/xlators/cluster/afr/src/afr-dir-write.c b/xlators/cluster/afr/src/afr-dir-write.c
+index 9099b8c..e088ed6 100644
+--- a/xlators/cluster/afr/src/afr-dir-write.c
++++ b/xlators/cluster/afr/src/afr-dir-write.c
+@@ -477,7 +477,7 @@ afr_create (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
+ 	if (!local->fd_ctx)
+ 		goto out;
+ 
+-	local->inode = inode_ref (loc->inode);
++        local->inode = inode_ref (loc->inode);
+ 	local->parent = inode_ref (loc->parent);
+ 
+         local->op                = GF_FOP_CREATE;
+@@ -609,7 +609,7 @@ afr_mknod (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
+ 		goto out;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        local->inode = inode_ref (loc->inode);
+ 	local->parent = inode_ref (loc->parent);
+ 
+         local->op               = GF_FOP_MKNOD;
+@@ -740,7 +740,7 @@ afr_mkdir (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
+ 		goto out;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        local->inode = inode_ref (loc->inode);
+ 	local->parent = inode_ref (loc->parent);
+ 
+         local->cont.mkdir.mode  = mode;
+@@ -877,7 +877,7 @@ afr_link (call_frame_t *frame, xlator_t *this, loc_t *oldloc, loc_t *newloc,
+         loc_copy (&local->loc,    oldloc);
+         loc_copy (&local->newloc, newloc);
+ 
+-	local->inode = inode_ref (oldloc->inode);
++        local->inode = inode_ref (oldloc->inode);
+ 	local->parent = inode_ref (newloc->parent);
+ 
+         if (xdata)
+@@ -1005,7 +1005,7 @@ afr_symlink (call_frame_t *frame, xlator_t *this, const char *linkpath,
+ 		goto out;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        local->inode = inode_ref (loc->inode);
+ 	local->parent = inode_ref (loc->parent);
+ 
+         local->cont.symlink.linkpath = gf_strdup (linkpath);
+@@ -1142,7 +1142,7 @@ afr_rename (call_frame_t *frame, xlator_t *this, loc_t *oldloc, loc_t *newloc,
+         loc_copy (&local->loc,    oldloc);
+         loc_copy (&local->newloc, newloc);
+ 
+-	local->inode = inode_ref (oldloc->inode);
++        local->inode = inode_ref (oldloc->inode);
+ 	local->parent = inode_ref (oldloc->parent);
+ 	local->parent2 = inode_ref (newloc->parent);
+ 
+@@ -1295,7 +1295,7 @@ afr_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
+         loc_copy (&local->loc, loc);
+         local->xflag = xflag;
+ 
+-	local->inode = inode_ref (loc->inode);
++        local->inode = inode_ref (loc->inode);
+ 	local->parent = inode_ref (loc->parent);
+ 
+         if (xdata)
+@@ -1421,7 +1421,7 @@ afr_rmdir (call_frame_t *frame, xlator_t *this, loc_t *loc, int flags,
+ 
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        local->inode = inode_ref (loc->inode);
+ 	local->parent = inode_ref (loc->parent);
+ 
+         local->cont.rmdir.flags = flags;
+diff --git a/xlators/cluster/afr/src/afr-inode-write.c b/xlators/cluster/afr/src/afr-inode-write.c
+index 97397f9..f0231b7 100644
+--- a/xlators/cluster/afr/src/afr-inode-write.c
++++ b/xlators/cluster/afr/src/afr-inode-write.c
+@@ -507,6 +507,7 @@ afr_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
+ {
+         afr_local_t *local = NULL;
+         int op_errno = ENOMEM;
++        int ret = -1;
+ 
+ 	local = AFR_FRAME_INIT (frame, op_errno);
+ 	if (!local)
+@@ -529,7 +530,9 @@ afr_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
+ 		goto out;
+ 
+         local->fd = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	if (dict_set_uint32 (local->xdata_req, GLUSTERFS_OPEN_FD_COUNT, 4)) {
+ 		op_errno = ENOMEM;
+@@ -654,7 +657,9 @@ afr_truncate (call_frame_t *frame, xlator_t *this,
+         local->transaction.unwind = afr_truncate_unwind;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        ret = afr_set_inode_local (this, local, loc->inode);
++        if (ret)
++                goto out;
+ 
+         local->op = GF_FOP_TRUNCATE;
+ 
+@@ -768,7 +773,9 @@ afr_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+ 		goto out;
+ 
+         local->fd = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+         local->op = GF_FOP_FTRUNCATE;
+ 
+@@ -886,7 +893,9 @@ afr_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc, struct iatt *buf,
+         local->transaction.unwind = afr_setattr_unwind;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        ret = afr_set_inode_local (this, local, loc->inode);
++        if (ret)
++                goto out;
+ 
+ 	local->op = GF_FOP_SETATTR;
+ 
+@@ -991,7 +1000,9 @@ afr_fsetattr (call_frame_t *frame, xlator_t *this,
+         local->transaction.unwind = afr_fsetattr_unwind;
+ 
+         local->fd                 = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	local->op = GF_FOP_FSETATTR;
+ 
+@@ -1633,7 +1644,9 @@ afr_setxattr (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *dict,
+         local->transaction.unwind = afr_setxattr_unwind;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        ret = afr_set_inode_local (this, local, loc->inode);
++        if (ret)
++                goto out;
+ 
+         local->transaction.main_frame = frame;
+         local->transaction.start   = LLONG_MAX - 1;
+@@ -1745,7 +1758,9 @@ afr_fsetxattr (call_frame_t *frame, xlator_t *this,
+         local->transaction.unwind = afr_fsetxattr_unwind;
+ 
+         local->fd                 = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	local->op = GF_FOP_FSETXATTR;
+ 
+@@ -1858,7 +1873,9 @@ afr_removexattr (call_frame_t *frame, xlator_t *this,
+         local->transaction.unwind = afr_removexattr_unwind;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        ret = afr_set_inode_local (this, local, loc->inode);
++        if (ret)
++                goto out;
+ 
+ 	local->op = GF_FOP_REMOVEXATTR;
+ 
+@@ -1965,7 +1982,9 @@ afr_fremovexattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
+         local->transaction.unwind = afr_fremovexattr_unwind;
+ 
+         local->fd = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	local->op = GF_FOP_FREMOVEXATTR;
+ 
+@@ -2060,7 +2079,9 @@ afr_fallocate (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
+         local->cont.fallocate.len = len;
+ 
+         local->fd = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	if (xdata)
+ 		local->xdata_req = dict_copy_with_ref (xdata, NULL);
+@@ -2172,7 +2193,9 @@ afr_discard (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+         local->cont.discard.len = len;
+ 
+         local->fd = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	if (xdata)
+ 		local->xdata_req = dict_copy_with_ref (xdata, NULL);
+@@ -2281,7 +2304,9 @@ afr_zerofill (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+         local->cont.zerofill.len = len;
+ 
+         local->fd = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	if (xdata)
+ 		local->xdata_req = dict_copy_with_ref (xdata, NULL);
+@@ -2393,7 +2418,9 @@ afr_xattrop (call_frame_t *frame, xlator_t *this, loc_t *loc,
+         local->transaction.unwind = afr_xattrop_unwind;
+ 
+         loc_copy (&local->loc, loc);
+-	local->inode = inode_ref (loc->inode);
++        ret = afr_set_inode_local (this, local, loc->inode);
++        if (ret)
++                goto out;
+ 
+ 	local->op = GF_FOP_XATTROP;
+ 
+@@ -2487,7 +2514,9 @@ afr_fxattrop (call_frame_t *frame, xlator_t *this, fd_t *fd,
+         local->transaction.unwind = afr_fxattrop_unwind;
+ 
+ 	local->fd = fd_ref (fd);
+-	local->inode = inode_ref (fd->inode);
++        ret = afr_set_inode_local (this, local, fd->inode);
++        if (ret)
++                goto out;
+ 
+ 	local->op = GF_FOP_FXATTROP;
+ 
+diff --git a/xlators/cluster/afr/src/afr-lk-common.c b/xlators/cluster/afr/src/afr-lk-common.c
+index c17f60f..f50c7b6 100644
+--- a/xlators/cluster/afr/src/afr-lk-common.c
++++ b/xlators/cluster/afr/src/afr-lk-common.c
+@@ -615,14 +615,14 @@ afr_unlock_common_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ {
+         afr_local_t             *local          = NULL;
+         afr_internal_lock_t     *int_lock       = NULL;
+-        afr_fd_ctx_t            *fd_ctx         = NULL;
+-        afr_private_t           *priv           = NULL;
+         int                      call_count     = 0;
+         int                      ret            = 0;
+ 
+         local    = frame->local;
+         int_lock = &local->internal_lock;
+-        priv = this->private;
++
++        if (local->transaction.type == AFR_DATA_TRANSACTION && op_ret != 1)
++                ret = afr_write_subvol_reset (frame, this);
+ 
+         LOCK (&frame->lock);
+         {
+@@ -633,11 +633,6 @@ afr_unlock_common_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         if (call_count == 0) {
+                 gf_msg_trace (this->name, 0,
+                               "All internal locks unlocked");
+-                if (local->fd) {
+-                        fd_ctx = afr_fd_ctx_get (local->fd, this);
+-                        if (0 == AFR_COUNT (fd_ctx->lock_acquired, priv->child_count))
+-                                ret = afr_write_subvol_reset (frame, this);
+-                }
+                 int_lock->lock_cbk (frame, this);
+         }
+ 
+@@ -947,6 +942,15 @@ afr_lock_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                         } else {
+                                 int_lock->locked_nodes[child_index] |= LOCKED_YES;
+                                 int_lock->lock_count++;
++
++                                if (local->transaction.type ==
++                                    AFR_DATA_TRANSACTION) {
++                                        LOCK(&local->inode->lock);
++                                        {
++                                                local->inode_ctx->lock_count++;
++                                        }
++                                        UNLOCK (&local->inode->lock);
++                                }
+                         }
+                 }
+                 afr_lock_blocking (frame, this, cky + 1);
+@@ -1502,13 +1506,12 @@ int32_t
+ afr_nonblocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                              int32_t op_ret, int32_t op_errno, dict_t *xdata)
+ {
+-        afr_internal_lock_t *int_lock = NULL;
+-        afr_inodelk_t       *inodelk  = NULL;
+-        afr_local_t         *local    = NULL;
+-        int call_count  = 0;
+-        int child_index = (long) cookie;
+-        afr_fd_ctx_t        *fd_ctx = NULL;
+-
++        afr_internal_lock_t *int_lock    = NULL;
++        afr_inodelk_t       *inodelk     = NULL;
++        afr_local_t         *local       = NULL;
++        afr_fd_ctx_t        *fd_ctx      = NULL;
++        int                  call_count  = 0;
++        int                  child_index = (long) cookie;
+ 
+         local    = frame->local;
+         int_lock = &local->internal_lock;
+@@ -1553,6 +1556,15 @@ afr_nonblocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                                         fd_ctx->lock_acquired[child_index]++;
+ 				}
+ 			}
++
++                        if (local->transaction.type == AFR_DATA_TRANSACTION &&
++                            op_ret == 0) {
++                                LOCK(&local->inode->lock);
++                                {
++                                        local->inode_ctx->lock_count++;
++                                }
++                                UNLOCK (&local->inode->lock);
++                        }
+ 		}
+ 
+                 call_count = --int_lock->lk_call_count;
+diff --git a/xlators/cluster/afr/src/afr-messages.h b/xlators/cluster/afr/src/afr-messages.h
+index 02eb206..53ffcd8 100644
+--- a/xlators/cluster/afr/src/afr-messages.h
++++ b/xlators/cluster/afr/src/afr-messages.h
+@@ -40,7 +40,7 @@
+  */
+ 
+ #define GLFS_COMP_BASE_AFR      GLFS_MSGID_COMP_AFR
+-#define GLFS_NUM_MESSAGES       42
++#define GLFS_NUM_MESSAGES       43
+ #define GLFS_MSGID_END          (GLFS_COMP_BASE_AFR + GLFS_NUM_MESSAGES + 1)
+ 
+ #define glfs_msg_start_x GLFS_COMP_BASE_AFR, "Invalid: Start of messages"
+@@ -369,5 +369,12 @@
+ */
+ #define AFR_MSG_SBRAIN_FAV_CHILD_POLICY  (GLFS_COMP_BASE_AFR + 42)
+ 
++/*!
++ * @messageid 108043
++ * @diagnosis
++ * @recommendation
++*/
++#define AFR_MSG_INODE_CTX_GET_FAILED (GLFS_COMP_BASE_AFR + 43)
++
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+ #endif /* !_AFR_MESSAGES_H_ */
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index a04636f..7e40bba 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -372,14 +372,27 @@ afr_txn_arbitrate_fop (call_frame_t *frame, xlator_t *this)
+ int
+ afr_transaction_perform_fop (call_frame_t *frame, xlator_t *this)
+ {
+-        afr_local_t     *local = NULL;
+-        afr_private_t   *priv = NULL;
+-        fd_t            *fd   = NULL;
++        afr_local_t   *local = NULL;
++        afr_private_t *priv  = NULL;
++        fd_t          *fd    = NULL;
++        int           i      = 0;
++        int           ret    = 0;
+ 
+         local = frame->local;
+         priv = this->private;
+         fd    = local->fd;
+ 
++        if (local->transaction.type == AFR_DATA_TRANSACTION &&
++            !local->transaction.inherited) {
++                ret = afr_write_subvol_set (frame, this);
++                if (ret) {
++                        /*act as if operation failed on all subvols*/
++                        local->op_ret = -1;
++                        local->op_errno = -ret;
++                        for (i = 0; i < priv->child_count; i++)
++                                local->transaction.failed_subvols[i] = 1;
++                }
++        }
+         /*  Perform fops with the lk-owner from top xlator.
+          *  Eg: lk-owner of posix-lk and flush should be same,
+          *  flush cant clear the  posix-lks without that lk-owner.
+@@ -1116,32 +1129,28 @@ unlock:
+ 
+ int
+ afr_changelog_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+-		   int op_ret, int op_errno, dict_t *xattr, dict_t *xdata)
++                   int op_ret, int op_errno, dict_t *xattr, dict_t *xdata)
+ {
+         afr_local_t *local = NULL;
+-        afr_private_t *priv = NULL;
+         int call_count = -1;
+         int child_index = -1;
+ 
+         local = frame->local;
+-        priv = this->private;
+         child_index = (long) cookie;
+ 
+-	if (op_ret == -1) {
++        if (op_ret == -1) {
+                 local->op_errno = op_errno;
+-		afr_transaction_fop_failed (frame, this, child_index);
++                afr_transaction_fop_failed (frame, this, child_index);
+         }
+ 
+-        if (priv->arbiter_count == 1 && !op_ret) {
+-                if (xattr)
+-                        local->transaction.pre_op_xdata[child_index] =
+-                                                               dict_ref (xattr);
+-        }
++        if (xattr)
++                local->transaction.pre_op_xdata[child_index] = dict_ref (xattr);
+ 
+-	call_count = afr_frame_return (frame);
++        call_count = afr_frame_return (frame);
+ 
+-        if (call_count == 0)
+-		local->transaction.changelog_resume (frame, this);
++        if (call_count == 0) {
++                local->transaction.changelog_resume (frame, this);
++        }
+ 
+         return 0;
+ }
+@@ -1750,10 +1759,6 @@ afr_changelog_pre_op (call_frame_t *frame, xlator_t *this)
+ 	if (pre_nop)
+ 		goto next;
+ 
+-        ret = afr_write_subvol_set (frame, this);
+-        if (ret)
+-                goto err;
+-
+ 	if (!local->pre_op_compat) {
+ 		dict_copy (xdata_req, local->xdata_req);
+ 		goto next;
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index 0a06eb6..96fefb1 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -377,6 +377,16 @@ typedef enum {
+         AFR_FOP_LOCK_QUORUM_FAILED,
+ } afr_fop_lock_state_t;
+ 
++typedef struct _afr_inode_ctx {
++        uint64_t        read_subvol;
++        uint64_t        write_subvol;
++        int             lock_count;
++        int             spb_choice;
++        gf_timer_t      *timer;
++        gf_boolean_t    need_refresh;
++} afr_inode_ctx_t;
++
++
+ typedef struct _afr_local {
+ 	glusterfs_fop_t  op;
+         unsigned int call_count;
+@@ -833,17 +843,10 @@ typedef struct _afr_local {
+         compound_args_t *c_args;
+ 
+         gf_boolean_t is_read_txn;
++        afr_inode_ctx_t *inode_ctx;
+ } afr_local_t;
+ 
+ 
+-typedef struct _afr_inode_ctx {
+-        uint64_t        read_subvol;
+-        uint64_t        write_subvol;
+-        int             spb_choice;
+-        gf_timer_t      *timer;
+-        gf_boolean_t    need_refresh;
+-} afr_inode_ctx_t;
+-
+ typedef struct afr_spbc_timeout {
+         call_frame_t *frame;
+         gf_boolean_t d_spb;
+@@ -1274,6 +1277,9 @@ afr_write_subvol_set (call_frame_t *frame, xlator_t *this);
+ int
+ afr_write_subvol_reset (call_frame_t *frame, xlator_t *this);
+ 
++int
++afr_set_inode_local (xlator_t *this, afr_local_t *local, inode_t *inode);
++
+ gf_boolean_t
+ afr_is_symmetric_error (call_frame_t *frame, xlator_t *this);
+ #endif /* __AFR_H__ */
+-- 
+1.8.3.1
+

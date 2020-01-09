@@ -42,11 +42,6 @@ int32_t
 tier_unlink (call_frame_t *frame, xlator_t *this,
              loc_t *loc, int xflag, dict_t *xdata);
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 int32_t
 tier_readdirp (call_frame_t *frame,
                xlator_t *this,
@@ -63,5 +58,11 @@ tier_readdir (call_frame_t *frame,
 int
 tier_link (call_frame_t *frame, xlator_t *this,
           loc_t *oldloc, loc_t *newloc, dict_t *xdata);
+
+
+int
+tier_statfs (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata);
+
+
 #endif
 

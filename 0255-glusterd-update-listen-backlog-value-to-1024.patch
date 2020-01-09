@@ -1,0 +1,46 @@
+From 8b2af4ee879261ea6e690c3c52d9acc5d0a92cfd Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Thu, 19 Apr 2018 11:18:58 +0530
+Subject: [PATCH 255/260] glusterd: update listen-backlog value to 1024
+
+Update default value of listen-backlog to 1024 to reflect the changes in
+socket.c
+
+This keeps the actual implementation in socket.c and the help text in
+glusterd-volume-set.c consistent
+
+mainline:
+> Reviewed-on: https://review.gluster.org/19874
+> fixes: bz#1564600
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+> Reviewed-by: Jeff Darcy <jeff@pl.atyp.us>
+> Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+(cherry picked from commit d9cf6d25a4719c4f6fb4d88325f08e49fca18e6b)
+
+Change-Id: If04c9e0bb5afb55edcc7ca57bbc10922b85b7075
+BUG: 1563804
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136215
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 9bc0933..b9da961 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -2131,7 +2131,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .description = "This option uses the value of backlog argument that "
+                          "defines the maximum length to which the queue of "
+                          "pending connections for socket fd may grow.",
+-          .value       = "10",
++          .value       = "1024",
+         },
+ 
+         /* Generic transport options */
+-- 
+1.8.3.1
+

@@ -16,11 +16,6 @@
 #include <stdlib.h>
 #include <signal.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "afr.h"
 #include "dict.h"
@@ -620,10 +615,9 @@ unlock:
                         goto unwind;
                 }
 
-        unwind:
-                // Updating child_errno with more recent 'events'
                 op_errno = afr_final_errno (local, priv);
 
+unwind:
                 AFR_STACK_UNWIND (fgetxattr, frame, op_ret, op_errno, xattr,
                                   xdata);
                 if (xattr)
@@ -707,10 +701,9 @@ unlock:
                         goto unwind;
                 }
 
-        unwind:
-                // Updating child_errno with more recent 'events'
                 op_errno = afr_final_errno (local, priv);
 
+unwind:
                 AFR_STACK_UNWIND (getxattr, frame, op_ret, op_errno, xattr, xdata);
 
                 if (xattr)
@@ -760,16 +753,120 @@ afr_getxattr_node_uuid_cbk (call_frame_t *frame, void *cookie,
                                    children[curr_call_child]->fops->getxattr,
                                    &local->loc,
                                    local->cont.getxattr.name,
-                                   NULL);
+                                   local->xdata_req);
         }
 
  unwind:
         if (unwind)
                 AFR_STACK_UNWIND (getxattr, frame, op_ret, op_errno, dict,
-                                  NULL);
+                                  xdata);
 
         return 0;
 }
+
+/**
+ * list-node-uuids cbk returns the list of node_uuids for the subvolume.
+ */
+int32_t
+afr_getxattr_list_node_uuids_cbk (call_frame_t *frame, void *cookie,
+                                  xlator_t *this, int32_t op_ret,
+                                  int32_t op_errno, dict_t *dict, dict_t *xdata)
+{
+        afr_local_t    *local          = NULL;
+        afr_private_t  *priv           = NULL;
+        int32_t         callcnt        = 0;
+        int             ret            = 0;
+        char           *xattr_serz     = NULL;
+        long            cky            = 0;
+        int32_t         tlen           = 0;
+
+        local = frame->local;
+        priv = this->private;
+        cky = (long) cookie;
+
+        LOCK (&frame->lock);
+        {
+                callcnt = --local->call_count;
+                local->replies[cky].valid = 1;
+                local->replies[cky].op_ret = op_ret;
+                local->replies[cky].op_errno = op_errno;
+
+                if (op_ret < 0)
+                        goto unlock;
+
+                local->op_ret = 0;
+
+                if (!local->xdata_rsp && xdata)
+                                local->xdata_rsp = dict_ref (xdata);
+                local->replies[cky].xattr = dict_ref (dict);
+        }
+
+unlock:
+        UNLOCK (&frame->lock);
+
+        if (!callcnt) {
+
+                if (local->op_ret != 0) {
+                        /* All bricks gave an error. */
+                        local->op_errno = afr_final_errno (local, priv);
+                        goto unwind;
+                }
+
+                /*Since we store the UUID0_STR as node uuid for down bricks and
+                 *for non zero op_ret, assigning length to  priv->child_count
+                 *number of uuids*/
+                local->cont.getxattr.xattr_len = (strlen (UUID0_STR) + 2) *
+                                                  priv->child_count;
+
+                if (!local->dict)
+                        local->dict = dict_new ();
+                if (!local->dict) {
+                        local->op_ret = -1;
+                        local->op_errno = ENOMEM;
+                        goto unwind;
+                }
+
+                xattr_serz = GF_CALLOC (local->cont.getxattr.xattr_len,
+                                        sizeof (char), gf_common_mt_char);
+
+                if (!xattr_serz) {
+                        local->op_ret = -1;
+                        local->op_errno = ENOMEM;
+                        goto unwind;
+                }
+
+                ret = afr_serialize_xattrs_with_delimiter (frame, this,
+                                                           xattr_serz,
+                                                           UUID0_STR, &tlen,
+                                                           ' ');
+                if (ret) {
+                        local->op_ret = -1;
+                        local->op_errno = ENOMEM;
+                        goto unwind;
+                }
+                ret = dict_set_dynstr (local->dict,
+                                       GF_XATTR_LIST_NODE_UUIDS_KEY,
+                                       xattr_serz);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR,
+                                -ret, AFR_MSG_DICT_SET_FAILED,
+                                "Cannot set node_uuid key in dict");
+                        local->op_ret = -1;
+                        local->op_errno = ENOMEM;
+                } else {
+                        local->op_ret = local->cont.getxattr.xattr_len - 1;
+                        local->op_errno = 0;
+                }
+
+unwind:
+                AFR_STACK_UNWIND (getxattr, frame, local->op_ret,
+                                  local->op_errno, local->dict,
+                                  local->xdata_rsp);
+        }
+
+        return ret;
+}
+
 
 int32_t
 afr_getxattr_quota_size_cbk (call_frame_t *frame, void *cookie,
@@ -1381,6 +1478,8 @@ afr_is_special_xattr (const char *name, fop_getxattr_cbk_t *cbk,
                 *cbk = afr_common_getxattr_stime_cbk;
         } else if (strcmp (name, QUOTA_SIZE_KEY) == 0) {
                 *cbk = afr_getxattr_quota_size_cbk;
+        } else if (!strcmp (name, GF_XATTR_LIST_NODE_UUIDS_KEY)) {
+                *cbk = afr_getxattr_list_node_uuids_cbk;
         } else {
                 is_spl = _gf_false;
         }
@@ -1405,15 +1504,20 @@ afr_getxattr_all_subvols (xlator_t *this, call_frame_t *frame,
         //local->call_count set in afr_local_init
         call_count = local->call_count;
 
+        if (!strcmp (name, GF_XATTR_LIST_NODE_UUIDS_KEY)) {
+                GF_FREE (local->cont.getxattr.name);
+                local->cont.getxattr.name = gf_strdup (GF_XATTR_NODE_UUID_KEY);
+        }
+
         //If up-children count is 0, afr_local_init would have failed already
         //and the call would have unwound so not handling it here.
-
         for (i = 0; i < priv->child_count; i++) {
                 if (local->child_up[i]) {
                         STACK_WIND_COOKIE (frame, cbk,
                                            (void *) (long) i, priv->children[i],
                                            priv->children[i]->fops->getxattr,
-                                           loc, name, NULL);
+                                           loc, local->cont.getxattr.name,
+                                           NULL);
                         if (!--call_count)
                                 break;
                 }
@@ -1496,8 +1600,8 @@ afr_getxattr (call_frame_t *frame, xlator_t *this,
               loc_t *loc, const char *name, dict_t *xdata)
 {
         afr_private_t           *priv         = NULL;
-        xlator_t                **children    = NULL;
         afr_local_t             *local        = NULL;
+        xlator_t                **children    = NULL;
         int                     i             = 0;
         int32_t                 op_errno      = 0;
         int                     ret           = -1;
@@ -1792,4 +1896,82 @@ out:
 	return 0;
 }
 
+/* }}} */
+
+/* {{{ seek */
+
+int
+afr_seek_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+              int32_t op_ret, int32_t op_errno, off_t offset, dict_t *xdata)
+{
+        afr_local_t *local = NULL;
+
+        local = frame->local;
+
+        if (op_ret < 0) {
+                local->op_ret = -1;
+                local->op_errno = op_errno;
+
+                afr_read_txn_continue (frame, this, (long) cookie);
+                return 0;
+        }
+
+        AFR_STACK_UNWIND (seek, frame, op_ret, op_errno, offset, xdata);
+        return 0;
+}
+
+
+int
+afr_seek_wind (call_frame_t *frame, xlator_t *this, int subvol)
+{
+        afr_local_t *local = NULL;
+        afr_private_t *priv = NULL;
+
+        local = frame->local;
+        priv = this->private;
+
+        if (subvol == -1) {
+                AFR_STACK_UNWIND (seek, frame, local->op_ret, local->op_errno,
+                                  0, NULL);
+                return 0;
+        }
+
+        STACK_WIND_COOKIE (frame, afr_seek_cbk, (void *) (long) subvol,
+                           priv->children[subvol],
+                           priv->children[subvol]->fops->seek,
+                           local->fd, local->cont.seek.offset,
+                           local->cont.seek.what, local->xdata_req);
+        return 0;
+}
+
+
+int
+afr_seek (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+          gf_seek_what_t what, dict_t *xdata)
+{
+        afr_local_t    *local      = NULL;
+        int32_t         op_errno   = 0;
+
+        local = AFR_FRAME_INIT (frame, op_errno);
+        if (!local)
+                goto out;
+
+        local->op = GF_FOP_SEEK;
+        local->fd = fd_ref (fd);
+        local->cont.seek.offset = offset;
+        local->cont.seek.what = what;
+        if (xdata)
+                local->xdata_req = dict_ref (xdata);
+
+        afr_fix_open (fd, this);
+
+        afr_read_txn (frame, this, fd->inode, afr_seek_wind,
+                      AFR_DATA_TRANSACTION);
+
+        return 0;
+out:
+        AFR_STACK_UNWIND (seek, frame, -1, op_errno, 0, NULL);
+
+        return 0;
+}
 /* }}} */

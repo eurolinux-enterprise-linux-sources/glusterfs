@@ -1,0 +1,46 @@
+From aea891fe38aa75329b84952db2a8aad0e5536cea Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawal@redhat.com>
+Date: Wed, 8 Aug 2018 08:17:28 +0530
+Subject: [PATCH 343/351] core: Update condition in get_xlator_by_name_or_type
+
+Problem: Sometimes client connection is failed after throwing
+         error "cleanup flag is set for xlator Try again later".
+         The situation comes only after get a detach request but
+         the brick stack is not completely detached and at the same time
+         the client initiates a connection with brick
+
+Solution: To resolve the same check cleanup_starting flag in get
+          xlator_by_name_or_type, this function call by server_setvolume
+          to attach a client with brick.
+
+> Change-Id: I3720e42642fe495dd05211e2ed2cb976db9e231b
+> fixes: bz#1614124
+> (cherry pick from commit a6900e829484435c5bd5d8efe38490cab54ac442)
+> (Reviewed on upstream link https://review.gluster.org/#/c/glusterfs/+/20657/)
+
+Change-Id: Id51823148b519f42f762ef716a6434eb2b5f2ffc
+BUG: 1608352
+Signed-off-by: Mohit Agrawal <moagrawal@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146848
+Tested-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ libglusterfs/src/xlator.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libglusterfs/src/xlator.c b/libglusterfs/src/xlator.c
+index 4722800..1cf4a63 100644
+--- a/libglusterfs/src/xlator.c
++++ b/libglusterfs/src/xlator.c
+@@ -424,7 +424,7 @@ get_xlator_by_name_or_type (xlator_t *this, char *target, int is_name)
+ 
+         for (trav = this->children; trav; trav = trav->next) {
+                 value = is_name ? trav->xlator->name : trav->xlator->type;
+-                if (!strcmp(value, target)) {
++                if (!strcmp(value, target) && !trav->xlator->cleanup_starting) {
+                         return trav->xlator;
+                 }
+                 child_xl = get_xlator_by_name_or_type (trav->xlator, target,
+-- 
+1.8.3.1
+

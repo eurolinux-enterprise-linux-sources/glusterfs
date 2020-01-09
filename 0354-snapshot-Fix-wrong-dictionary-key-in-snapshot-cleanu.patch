@@ -1,0 +1,44 @@
+From 8e616a6badedec070098c2bc324e566b1a5d34b1 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Sat, 18 Aug 2018 19:40:46 +0530
+Subject: [PATCH 354/359] snapshot:Fix wrong dictionary key in snapshot cleanup
+ code
+
+Snapshot was designed to support multiple volume snapshot,
+hence the volume name keys are labelled with volume count.
+So the volume key should have a volume count appended with
+key
+
+>Change-Id: I044d73fc86db0e662dc914669aecfb82a6476fb5
+>fixes: bz#1618004
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/glusterfs/+/20854/
+
+Change-Id: I044d73fc86db0e662dc914669aecfb82a6476fb5
+BUG: 1615578
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147524
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index fdd5012..830a67f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -6529,7 +6529,8 @@ glusterd_do_snap_cleanup (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                 goto out;
+         }
+ 
+-        ret = dict_get_str (dict, "volname", &volname);
++        /* As of now snapshot of multiple volumes are not supported */
++        ret = dict_get_str (dict, "volname1", &volname);
+         if (ret) {
+                 gf_msg ("glusterd", GF_LOG_ERROR, 0,
+                         GD_MSG_DICT_GET_FAILED, "Unable to get"
+-- 
+1.8.3.1
+

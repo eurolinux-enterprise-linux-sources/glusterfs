@@ -1,0 +1,99 @@
+From 59fafc2b918846cc59daac107981211fa1568335 Mon Sep 17 00:00:00 2001
+From: Susant Palai <spalai@redhat.com>
+Date: Mon, 6 Aug 2018 15:02:58 +0530
+Subject: [PATCH 350/351] cluster/dht: fix inode ref management in
+ dht_heal_path
+
+In dht_heal_path, the inodes are created & looked up from top to down.
+
+If the path is "a/b/c", then lookup will be done on a, then b and so
+on. Here is a rough snippet of the function "dht_heal_path".
+
+<snippet>
+if (bname) {						ref_count
+	- loc.inode = create/grep inode    		  1
+	- syncop_lookup (loc.inode)
+	- linked_inode = inode_link (loc.inode)		  2
+	/*clean up current loc*/
+	- loc_wipe(&loc)				  1
+	/*set up parent and bname for next child */
+	- loc.parent = inode
+	- bname = next_child_name
+}
+out:
+	- inode_ref (linked_inode)			  2
+	- loc_wipe (&loc) 				  1
+</snippet>
+
+The problem with the above code is if _bname_ is empty ie the chain lookup is
+done, then for the next iteration we populate loc.parent anyway. Now that
+bname is empty, the loc_wipe is done in the _out_ section as well. Since, the
+loc.parent was set to the previous inode, we lose a ref unwantedly. Now a
+dht_local_wipe as part of the DHT_STACK_UNWIND takes away the last ref leading
+to inode_destroy.
+
+This problenm is observed currently with nfs-ganesha with the nameless lookup.
+Post the inode_purge, gfapi does not get the new inode to link and hence, it links
+the inode it sent in the lookup fop, which does not have any dht related context
+(layout) leading to "invalid argument error" in lookup path done parallely with tar
+operation.
+
+test done in the following way:
+ - create two nfs client connected with two different nfs servers.
+ - run untar on one client and run lookup continuously on the other.
+ - Prior to this patch, invalid arguement was seen which is fixed with
+   the current patch.
+
+> Change-Id: Ifb90c178a2f3c16604068c7da8fa562b877f5c61
+> fixes: bz#1610256
+> Signed-off-by: Susant Palai <spalai@redhat.com>
+(backport of https://review.gluster.org/#/c/glusterfs/+/20643/)
+
+Fixes: bz#1569657
+Change-Id: I94329f2d148c31fe85a8753256e7aaf1d4d337ac
+BUG: 1569657
+Signed-off-by: Susant Palai <spalai@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146966
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-helper.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-helper.c b/xlators/cluster/dht/src/dht-helper.c
+index 09ca966..d35d7e8 100644
+--- a/xlators/cluster/dht/src/dht-helper.c
++++ b/xlators/cluster/dht/src/dht-helper.c
+@@ -1974,12 +1974,16 @@ dht_heal_path (xlator_t *this, char *path, inode_table_t *itable)
+                 } else {
+                         /*
+                          * Inode is already populated in the inode table.
+-                         * Which means we already looked up the inde and
++                         * Which means we already looked up the inode and
+                          * linked with a dentry. So that we will skip
+                          * lookup on this entry, and proceed to next.
+                          */
++                        linked_inode = loc.inode;
+                         bname = strtok_r (NULL, "/",  &save_ptr);
+                         inode_unref (loc.parent);
++                        if (!bname) {
++                                goto out;
++                        }
+                         loc.parent = loc.inode;
+                         gf_uuid_copy (loc.pargfid, loc.inode->gfid);
+                         loc.inode = NULL;
+@@ -2005,9 +2009,10 @@ dht_heal_path (xlator_t *this, char *path, inode_table_t *itable)
+                 loc_wipe (&loc);
+                 gf_uuid_copy (loc.pargfid, linked_inode->gfid);
+                 loc.inode = NULL;
+-                loc.parent = linked_inode;
+ 
+                 bname = strtok_r (NULL, "/",  &save_ptr);
++                if (bname)
++                        loc.parent = linked_inode;
+         }
+ out:
+         inode_ref (linked_inode);
+-- 
+1.8.3.1
+

@@ -154,12 +154,15 @@ ob_wake_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 		if (op_ret < 0) {
 			/* mark fd BAD for ever */
 			ob_fd->op_errno = op_errno;
+                        ob_fd = NULL; /*shouldn't be freed*/
 		} else {
 			__fd_ctx_del (fd, this, NULL);
-			ob_fd_free (ob_fd);
 		}
 	}
 	UNLOCK (&fd->lock);
+
+        if (ob_fd)
+                ob_fd_free (ob_fd);
 
 	list_for_each_entry_safe (stub, tmp, &list, list) {
 		list_del_init (&stub->list);
@@ -351,19 +354,25 @@ err:
 
 
 fd_t *
-ob_get_wind_fd (xlator_t *this, fd_t *fd)
+ob_get_wind_fd (xlator_t *this, fd_t *fd, uint32_t *flag)
 {
-	ob_conf_t  *conf = NULL;
-	ob_fd_t    *ob_fd = NULL;
+        fd_t       *wind_fd = NULL;
+	ob_fd_t    *ob_fd   = NULL;
+	ob_conf_t  *conf    = NULL;
 
 	conf = this->private;
 
 	ob_fd = ob_fd_ctx_get (this, fd);
 
-	if (ob_fd && conf->use_anonymous_fd)
-		return fd_anonymous (fd->inode);
+	if (ob_fd && conf->use_anonymous_fd) {
+                wind_fd = fd_anonymous (fd->inode);
+                if ((ob_fd->flags & O_DIRECT) && (flag))
+                        *flag = *flag | O_DIRECT;
+        } else {
+                wind_fd = fd_ref (fd);
+        }
 
-	return fd_ref (fd);
+	return wind_fd;
 }
 
 
@@ -378,7 +387,7 @@ ob_readv (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
         conf = this->private;
 
         if (!conf->read_after_open)
-                wind_fd = ob_get_wind_fd (this, fd);
+                wind_fd = ob_get_wind_fd (this, fd, &flags);
         else
                 wind_fd = fd_ref (fd);
 
@@ -427,7 +436,7 @@ ob_fstat (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *xdata)
 	call_stub_t  *stub = NULL;
 	fd_t         *wind_fd = NULL;
 
-	wind_fd = ob_get_wind_fd (this, fd);
+	wind_fd = ob_get_wind_fd (this, fd, NULL);
 
 	stub = fop_fstat_stub (frame, default_fstat_resume, wind_fd, xdata);
 

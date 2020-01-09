@@ -1,0 +1,39 @@
+From eeaf040d3231c30d6d559a70c5e8ae36098d3a9a Mon Sep 17 00:00:00 2001
+From: Soumya Koduri <skoduri@redhat.com>
+Date: Wed, 14 Jun 2017 15:20:22 +0530
+Subject: [PATCH 72/74] common-ha: Fix an incorrect syntax during setup
+
+There was an invalid line introduced as part of
+https://code.engineering.redhat.com/gerrit/#/c/108431/
+
+Detected by rpmdiff -
+ https://errata.devel.redhat.com/rpmdiff/show/175336?result_id=4796901
+
+This change is to fix the same.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I55cdd7d866cb175fb620dbbd2d02c36eab291a74
+Signed-off-by: Soumya Koduri <skoduri@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/109017
+Reviewed-by: Kaleb Keithley <kkeithle@redhat.com>
+Tested-by: Kaleb Keithley <kkeithle@redhat.com>
+---
+ extras/ganesha/scripts/ganesha-ha.sh | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/extras/ganesha/scripts/ganesha-ha.sh b/extras/ganesha/scripts/ganesha-ha.sh
+index b252818..623fb64 100644
+--- a/extras/ganesha/scripts/ganesha-ha.sh
++++ b/extras/ganesha/scripts/ganesha-ha.sh
+@@ -791,7 +791,6 @@ enable_pacemaker()
+ {
+     while [[ ${1} ]]; do
+         if [ "${SERVICE_MAN}" == "/usr/bin/systemctl" ]; then
+-${SECRET_PEM} root@${1} ${SERVICE_MAN} enable pacemaker"
+             ssh -oPasswordAuthentication=no -oStrictHostKeyChecking=no -i \
+ ${SECRET_PEM} root@${1} "${SERVICE_MAN} enable pacemaker"
+         else
+-- 
+1.8.3.1
+

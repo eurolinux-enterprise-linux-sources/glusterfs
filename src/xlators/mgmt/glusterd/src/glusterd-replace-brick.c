@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "common-utils.h"
 #include "cli1-xdr.h"
 #include "xdr-generic.h"
@@ -26,95 +21,17 @@
 #include "glusterd-nfs-svc.h"
 #include "glusterd-volgen.h"
 #include "glusterd-messages.h"
+#include "glusterd-server-quorum.h"
 #include "glusterd-mgmt.h"
 #include "run.h"
 #include "syscall.h"
 
 #include <signal.h>
 
-#define GLUSTERD_GET_RB_MNTPT(path, len, volinfo)                           \
-        snprintf (path, len,                                                \
-                  DEFAULT_VAR_RUN_DIRECTORY"/%s-"RB_CLIENT_MOUNTPOINT,      \
-                  volinfo->volname);
-
-extern uuid_t global_txn_id;
-
 int
 glusterd_mgmt_v3_initiate_replace_brick_cmd_phases (rpcsvc_request_t *req,
                                                     glusterd_op_t op,
                                                     dict_t *dict);
-int
-glusterd_handle_replicate_replace_brick (glusterd_volinfo_t *volinfo,
-                                         glusterd_brickinfo_t *brickinfo)
-{
-        int32_t                    ret               = -1;
-        char                       tmpmount[]        = "/tmp/mntXXXXXX";
-        char                       logfile[PATH_MAX] = {0,};
-        int                        dirty[3]          = {0,};
-        runner_t                   runner            = {0};
-        glusterd_conf_t           *priv              = NULL;
-        char                      *pid               = NULL;
-
-        priv = THIS->private;
-
-        dirty[2] = hton32(1);
-
-        ret = sys_lsetxattr (brickinfo->path, GF_AFR_DIRTY, dirty,
-                             sizeof (dirty), 0);
-        if (ret == -1) {
-                gf_msg (THIS->name, GF_LOG_ERROR, errno,
-                        GD_MSG_SETXATTR_FAIL, "Failed to set extended"
-                        " attribute %s : %s.", GF_AFR_DIRTY, strerror (errno));
-                goto out;
-        }
-
-        if (mkdtemp (tmpmount) == NULL) {
-                gf_msg (THIS->name, GF_LOG_ERROR, errno,
-                        GD_MSG_DIR_OP_FAILED,
-                        "failed to create a temporary mount directory.");
-                ret = -1;
-                goto out;
-        }
-        snprintf (logfile, sizeof (logfile),
-                  DEFAULT_LOG_FILE_DIRECTORY"/%s-replace-brick-mount.log",
-                  volinfo->volname);
-
-        ret = gf_asprintf (&pid, "%d", GF_CLIENT_PID_SELF_HEALD);
-        if (ret < 0)
-                goto out;
-
-        runinit (&runner);
-        runner_add_args (&runner, SBIN_DIR"/glusterfs",
-                         "-s", "localhost",
-                         "--volfile-id", volinfo->volname,
-                         "--client-pid", pid,
-                         "-l", logfile, tmpmount, NULL);
-        synclock_unlock (&priv->big_lock);
-        ret = runner_run (&runner);
-
-        if (ret) {
-                runner_log (&runner, THIS->name, GF_LOG_ERROR, "mount command"
-                            "failed.");
-                goto lock;
-        }
-        ret = sys_lsetxattr (tmpmount, GF_AFR_REPLACE_BRICK,
-                             brickinfo->brick_id, sizeof (brickinfo->brick_id),
-                             0);
-        if (ret == -1)
-                gf_msg (THIS->name, GF_LOG_ERROR, errno,
-                        GD_MSG_SETXATTR_FAIL, "Failed to set extended"
-                        " attribute %s : %s", GF_AFR_REPLACE_BRICK,
-                        strerror (errno));
-        gf_umount_lazy (THIS->name, tmpmount, 1);
-lock:
-        synclock_lock (&priv->big_lock);
-out:
-        if (pid)
-                GF_FREE (pid);
-        gf_msg_debug ("glusterd", 0, "Returning with ret");
-        return ret;
-}
-
 int
 __glusterd_handle_replace_brick (rpcsvc_request_t *req)
 {
@@ -123,15 +40,17 @@ __glusterd_handle_replace_brick (rpcsvc_request_t *req)
         dict_t                          *dict = NULL;
         char                            *src_brick = NULL;
         char                            *dst_brick = NULL;
-        int32_t                         op = 0;
-        glusterd_op_t                   cli_op = GD_OP_REPLACE_BRICK;
+        char                            *cli_op = NULL;
+        glusterd_op_t                   op = -1;
         char                            *volname = NULL;
         char                            msg[2048] = {0,};
         xlator_t                        *this = NULL;
+        glusterd_conf_t                 *conf = NULL;
 
         GF_ASSERT (req);
         this = THIS;
         GF_ASSERT (this);
+        conf = this->private;
 
         ret = xdr_to_generic (req->msg[0], &cli_req, (xdrproc_t)xdr_gf_cli_req);
         if (ret < 0) {
@@ -173,11 +92,24 @@ __glusterd_handle_replace_brick (rpcsvc_request_t *req)
                 goto out;
         }
 
-        ret = dict_get_int32 (dict, "operation", &op);
+        ret = dict_get_str (dict, "operation", &cli_op);
         if (ret) {
                 gf_msg_debug (this->name, 0,
                         "dict_get on operation failed");
                 snprintf (msg, sizeof (msg), "Could not get operation");
+                goto out;
+        }
+
+        op = gd_cli_to_gd_op (cli_op);
+
+        if (conf->op_version < GD_OP_VERSION_3_9_0 &&
+            strcmp (cli_op, "GF_REPLACE_OP_COMMIT_FORCE")) {
+                snprintf (msg, sizeof (msg), "Cannot execute command. The "
+                          "cluster is operating at version %d. reset-brick "
+                          "command %s is unavailable in this version.",
+                          conf->op_version,
+                          gd_rb_op_to_str (cli_op));
+                ret = -1;
                 goto out;
         }
 
@@ -192,28 +124,48 @@ __glusterd_handle_replace_brick (rpcsvc_request_t *req)
         gf_msg_debug (this->name, 0,
                 "src brick=%s", src_brick);
 
-        ret = dict_get_str (dict, "dst-brick", &dst_brick);
+        if (!strcmp (cli_op, "GF_RESET_OP_COMMIT") ||
+            !strcmp (cli_op, "GF_RESET_OP_COMMIT_FORCE") ||
+            !strcmp (cli_op,  "GF_REPLACE_OP_COMMIT_FORCE")) {
+                ret = dict_get_str (dict, "dst-brick", &dst_brick);
 
-        if (ret) {
-                snprintf (msg, sizeof (msg), "Failed to get dest brick");
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_DICT_GET_FAILED, "%s", msg);
-                goto out;
+                if (ret) {
+                        snprintf (msg, sizeof (msg), "Failed to get"
+                                  "dest brick");
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_DICT_GET_FAILED, "%s", msg);
+                        goto out;
+                }
+
+                gf_msg_debug (this->name, 0, "dst brick=%s", dst_brick);
         }
 
-        gf_msg_debug (this->name, 0, "dst brick=%s", dst_brick);
         gf_msg (this->name, GF_LOG_INFO, 0,
-                GD_MSG_REPLACE_BRK_COMMIT_FORCE_REQ_RCVD,
-                "Received replace brick commit-force "
-                "request operation");
+                (op == GD_OP_REPLACE_BRICK) ?
+                 GD_MSG_REPLACE_BRK_COMMIT_FORCE_REQ_RCVD :
+                 GD_MSG_RESET_BRICK_COMMIT_FORCE_REQ_RCVD,
+                "Received %s request.",
+                 gd_rb_op_to_str (cli_op));
 
         ret = glusterd_mgmt_v3_initiate_replace_brick_cmd_phases (req,
-                                            GD_OP_REPLACE_BRICK, dict);
+                                                                  op, dict);
 
 out:
+        if (ret) {
+                glusterd_op_send_cli_response (op, ret, 0, req,
+                                               dict, msg);
+        }
+        ret = 0;
         free (cli_req.dict.dict_val);//malloced by xdr
 
         return ret;
+}
+
+int
+glusterd_handle_reset_brick (rpcsvc_request_t *req)
+{
+        return glusterd_big_locked_handler (req,
+                                            __glusterd_handle_replace_brick);
 }
 
 int
@@ -223,49 +175,27 @@ glusterd_handle_replace_brick (rpcsvc_request_t *req)
                                             __glusterd_handle_replace_brick);
 }
 
-static int
-glusterd_get_rb_dst_brickinfo (glusterd_volinfo_t *volinfo,
-                               glusterd_brickinfo_t **brickinfo)
-{
-        int32_t                 ret = -1;
-
-        if (!volinfo || !brickinfo)
-                goto out;
-
-        *brickinfo = volinfo->rep_brick.dst_brick;
-
-        ret = 0;
-
-out:
-        return ret;
-}
-
 int
 glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
                                  dict_t *rsp_dict)
 {
         int                                      ret                = 0;
-        int32_t                                  port               = 0;
         char                                    *src_brick          = NULL;
         char                                    *dst_brick          = NULL;
         char                                    *volname            = NULL;
-        char                                    *replace_op         = NULL;
+        char                                    *op                 = NULL;
+        glusterd_op_t                            gd_op              = -1;
         glusterd_volinfo_t                      *volinfo            = NULL;
         glusterd_brickinfo_t                    *src_brickinfo      = NULL;
         char                                    *host               = NULL;
-        char                                    *path               = NULL;
         char                                     msg[2048]          = {0};
-        char                                    *dup_dstbrick       = NULL;
         glusterd_peerinfo_t                     *peerinfo           = NULL;
         glusterd_brickinfo_t                    *dst_brickinfo      = NULL;
-        gf_boolean_t                             enabled            = _gf_false;
         glusterd_conf_t                         *priv               = NULL;
-        char                                    *savetok            = NULL;
         char                                     pidfile[PATH_MAX]  = {0};
-        char                                    *task_id_str        = NULL;
         xlator_t                                *this               = NULL;
         gf_boolean_t                             is_force           = _gf_false;
-        gsync_status_param_t                     param              = {0,};
+        char                                    *dup_dstbrick       = NULL;
 
         this = THIS;
         GF_ASSERT (this);
@@ -273,181 +203,59 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
         priv = this->private;
         GF_ASSERT (priv);
 
-        ret = dict_get_str (dict, "src-brick", &src_brick);
-
-        if (ret) {
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_DICT_GET_FAILED, "Unable to get src brick");
+        ret = glusterd_brick_op_prerequisites (dict, &op, &gd_op,
+                                               &volname, &volinfo,
+                                               &src_brick, &src_brickinfo,
+                                               pidfile,
+                                               op_errstr, rsp_dict);
+        if (ret)
                 goto out;
-        }
 
-        gf_msg_debug (this->name, 0, "src brick=%s", src_brick);
-
-        ret = dict_get_str (dict, "dst-brick", &dst_brick);
-
-        if (ret) {
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_DICT_GET_FAILED, "Unable to get dest brick");
-                goto out;
-        }
-
-        gf_msg_debug (this->name, 0, "dst brick=%s", dst_brick);
-
-        ret = dict_get_str (dict, "volname", &volname);
-
-        if (ret) {
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_DICT_GET_FAILED, "Unable to get volume name");
-                goto out;
-        }
-
-        ret = dict_get_str (dict, "operation", &replace_op);
-        if (ret) {
-                gf_msg_debug (this->name, 0,
-                        "dict get on replace-brick operation failed");
-                goto out;
-        }
-
-        ret = glusterd_volinfo_find (volname, &volinfo);
-        if (ret) {
-                snprintf (msg, sizeof (msg), "volume: %s does not exist",
-                          volname);
-                *op_errstr = gf_strdup (msg);
-                goto out;
-        }
-
-        if (GLUSTERD_STATUS_STARTED != volinfo->status) {
-                ret = -1;
-                snprintf (msg, sizeof (msg), "volume: %s is not started",
-                          volname);
-                *op_errstr = gf_strdup (msg);
-                goto out;
-        }
-
-        ret = glusterd_disallow_op_for_tier (volinfo, GD_OP_REPLACE_BRICK, -1);
-        if (ret) {
-                snprintf (msg, sizeof (msg), "Replace brick commands are not "
-                          "supported on tiered volume %s", volname);
-                *op_errstr = gf_strdup (msg);
-                goto out;
-        }
-
-        if (!glusterd_store_is_valid_brickpath (volname, dst_brick) ||
-                !glusterd_is_valid_volfpath (volname, dst_brick)) {
-                snprintf (msg, sizeof (msg), "brick path %s is too "
-                          "long.", dst_brick);
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_BRKPATH_TOO_LONG, "%s", msg);
-                *op_errstr = gf_strdup (msg);
-
+        if (volinfo->type == GF_CLUSTER_TYPE_NONE) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, GD_MSG_OP_NOT_PERMITTED,
+                        "replace-brick is not permitted on distribute only "
+                        "volumes");
+                gf_asprintf (op_errstr, "replace-brick is not permitted on "
+                             "distribute only volumes. Please use add-brick "
+                             "and remove-brick operations instead.");
                 ret = -1;
                 goto out;
         }
-
-        /* If geo-rep is configured, for this volume, it should be stopped. */
-        param.volinfo = volinfo;
-        ret = glusterd_check_geo_rep_running (&param, op_errstr);
-        if (ret || param.is_active) {
-                ret = -1;
-                goto out;
-        }
-
-        if (glusterd_is_defrag_on(volinfo)) {
-                snprintf (msg, sizeof(msg), "Volume name %s rebalance is in "
-                          "progress. Please retry after completion", volname);
+        ret = glusterd_validate_quorum (this, gd_op,  dict, op_errstr);
+        if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_OIP_RETRY_LATER, "%s", msg);
-                *op_errstr = gf_strdup (msg);
-                ret = -1;
+                        GD_MSG_SERVER_QUORUM_NOT_MET,
+                        "Server quorum not met. Rejecting operation.");
                 goto out;
         }
 
-        if (!strcmp(replace_op, "GF_REPLACE_OP_COMMIT_FORCE")) {
-                is_force = _gf_true;
+        if (strcmp (op, "GF_REPLACE_OP_COMMIT_FORCE")) {
+                ret = -1;
+                goto out;
         } else {
-                ret = -1;
-                goto out;
-        }
+                is_force = _gf_true;
+	}
 
-        ret = glusterd_volume_brickinfo_get_by_brick (src_brick, volinfo,
-                                                      &src_brickinfo);
-        if (ret) {
-                snprintf (msg, sizeof (msg), "brick: %s does not exist in "
-                          "volume: %s", src_brick, volname);
-                *op_errstr = gf_strdup (msg);
-                goto out;
-        }
-
-        if (dict) {
-                if (!glusterd_is_fuse_available ()) {
-                        gf_msg (this->name, GF_LOG_ERROR, 0,
-                                GD_MSG_RB_CMD_FAIL, "Unable to open /dev/"
-                                "fuse (%s), replace-brick command failed",
-                                strerror (errno));
-                        snprintf (msg, sizeof(msg), "Fuse unavailable\n "
-                                "Replace-brick failed");
-                        *op_errstr = gf_strdup (msg);
-                        ret = -1;
-                        goto out;
-                }
-        }
-
-        if (gf_is_local_addr (src_brickinfo->hostname)) {
-                gf_msg_debug (this->name, 0,
-                        "I AM THE SOURCE HOST");
-                if (src_brickinfo->port && rsp_dict) {
-                        ret = dict_set_int32 (rsp_dict, "src-brick-port",
-                                              src_brickinfo->port);
-                        if (ret) {
-                                gf_msg_debug (this->name, 0,
-                                        "Could not set src-brick-port=%d",
-                                        src_brickinfo->port);
-                        }
-                }
-
-                GLUSTERD_GET_BRICK_PIDFILE (pidfile, volinfo, src_brickinfo,
-                                            priv);
-
-        }
-
-        dup_dstbrick = gf_strdup (dst_brick);
-        if (!dup_dstbrick) {
-                ret = -1;
-                gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
-                        GD_MSG_NO_MEMORY, "Memory allocation failed");
-                goto out;
-        }
-        host = strtok_r (dup_dstbrick, ":", &savetok);
-        path = strtok_r (NULL, ":", &savetok);
-
-        if (!host || !path) {
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_BAD_FORMAT,
-                        "dst brick %s is not of form <HOSTNAME>:<export-dir>",
-                        dst_brick);
-                ret = -1;
-                goto out;
-        }
-
-        ret = glusterd_brickinfo_new_from_brick (dst_brick, &dst_brickinfo);
+	ret = glusterd_get_dst_brick_info (&dst_brick, volname,
+                                           op_errstr,
+                                           &dst_brickinfo, &host,
+                                           dict, &dup_dstbrick);
         if (ret)
                 goto out;
 
         ret = glusterd_new_brick_validate (dst_brick, dst_brickinfo,
-                                           msg, sizeof (msg));
-        if (ret) {
+                                           msg, sizeof (msg), op);
+        /* fail if brick being replaced with itself */
+	if (ret) {
                 *op_errstr = gf_strdup (msg);
                 ret = -1;
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_BRICK_VALIDATE_FAIL, "%s", *op_errstr);
                 goto out;
-        }
+	}
 
-        if (!strcmp(replace_op, "GF_REPLACE_OP_COMMIT_FORCE")) {
-
-                volinfo->rep_brick.src_brick = src_brickinfo;
-                volinfo->rep_brick.dst_brick = dst_brickinfo;
-        }
+        volinfo->rep_brick.src_brick = src_brickinfo;
+        volinfo->rep_brick.dst_brick = dst_brickinfo;
 
         if (glusterd_rb_check_bricks (volinfo, src_brickinfo, dst_brickinfo)) {
 
@@ -463,7 +271,8 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
         if (gf_is_local_addr (host)) {
                 ret = glusterd_validate_and_create_brickpath (dst_brickinfo,
                                                   volinfo->volume_id,
-                                                  op_errstr, is_force);
+                                                  op_errstr, is_force,
+                                                  _gf_false);
                 if (ret)
                         goto out;
         }
@@ -537,64 +346,8 @@ out:
         return ret;
 }
 
-static int
-rb_kill_destination_brick (glusterd_volinfo_t *volinfo,
-                           glusterd_brickinfo_t *dst_brickinfo)
-{
-        glusterd_conf_t  *priv               = NULL;
-        char              pidfile[PATH_MAX]  = {0,};
 
-        priv = THIS->private;
-
-        snprintf (pidfile, PATH_MAX, "%s/vols/%s/%s",
-                  priv->workdir, volinfo->volname,
-                  RB_DSTBRICK_PIDFILE);
-
-        return glusterd_service_stop ("brick", pidfile, SIGTERM, _gf_true);
-}
-
-static int
-rb_update_dstbrick_port (glusterd_brickinfo_t *dst_brickinfo, dict_t *rsp_dict,
-                         dict_t *req_dict, char *replace_op)
-{
-        int     ret           = 0;
-        int     dict_ret      = 0;
-        int     dst_port      = 0;
-
-        dict_ret = dict_get_int32 (req_dict, "dst-brick-port", &dst_port);
-        if (!dict_ret)
-                dst_brickinfo->port = dst_port;
-
-        if (gf_is_local_addr (dst_brickinfo->hostname)) {
-                gf_msg ("glusterd", GF_LOG_INFO, 0,
-                        GD_MSG_BRK_PORT_NO_ADD_INDO,
-                        "adding dst-brick port no");
-
-                if (rsp_dict) {
-                        ret = dict_set_int32 (rsp_dict, "dst-brick-port",
-                                              dst_brickinfo->port);
-                        if (ret) {
-                                gf_msg_debug ("glusterd", 0,
-                                        "Could not set dst-brick port no in rsp dict");
-                                goto out;
-                        }
-                }
-
-                if (req_dict) {
-                        ret = dict_set_int32 (req_dict, "dst-brick-port",
-                                              dst_brickinfo->port);
-                        if (ret) {
-                                gf_msg_debug ("glusterd", 0,
-                                        "Could not set dst-brick port no");
-                                goto out;
-                        }
-                }
-        }
-out:
-        return ret;
-}
-
-static int
+int
 glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
                                    char *old_brick, char *new_brick,
                                    dict_t *dict)
@@ -614,23 +367,24 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
         conf = this->private;
         GF_ASSERT (conf);
 
-        ret = glusterd_brickinfo_new_from_brick (new_brick,
-                                                 &new_brickinfo);
+        ret = glusterd_brickinfo_new_from_brick (new_brick, &new_brickinfo,
+                                                 _gf_true, NULL);
         if (ret)
                 goto out;
 
         ret = glusterd_resolve_brick (new_brickinfo);
-
         if (ret)
                 goto out;
 
         ret = glusterd_volume_brickinfo_get_by_brick (old_brick,
-                                                      volinfo, &old_brickinfo);
+                                                      volinfo, &old_brickinfo,
+                                                      _gf_false);
         if (ret)
                 goto out;
 
         strncpy (new_brickinfo->brick_id, old_brickinfo->brick_id,
                  sizeof (new_brickinfo->brick_id));
+        new_brickinfo->port = old_brickinfo->port;
 
         /* A bricks mount dir is required only by snapshots which were
          * introduced in gluster-3.6.0
@@ -647,8 +401,8 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
                          sizeof(new_brickinfo->mount_dir));
         }
 
-        cds_list_add_tail (&new_brickinfo->brick_list,
-                           &old_brickinfo->brick_list);
+        cds_list_add (&new_brickinfo->brick_list,
+                      &old_brickinfo->brick_list);
 
         volinfo->brick_count++;
 
@@ -659,8 +413,8 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
         /* if the volume is a replicate volume, do: */
         if (glusterd_is_volume_replicate (volinfo)) {
                 if (!gf_uuid_compare (new_brickinfo->uuid, MY_UUID)) {
-                        ret = glusterd_handle_replicate_replace_brick
-                                  (volinfo, new_brickinfo);
+                        ret = glusterd_handle_replicate_brick_ops (volinfo,
+                                        new_brickinfo, GD_OP_REPLACE_BRICK);
                         if (ret < 0)
                                 goto out;
                 }
@@ -686,7 +440,6 @@ int
 glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
 {
         int                                      ret           = 0;
-        dict_t                                  *ctx           = NULL;
         char                                    *replace_op    = NULL;
         glusterd_volinfo_t                      *volinfo       = NULL;
         char                                    *volname       = NULL;
@@ -696,7 +449,6 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
         char                                    *dst_brick     = NULL;
         glusterd_brickinfo_t                    *src_brickinfo = NULL;
         glusterd_brickinfo_t                    *dst_brickinfo = NULL;
-        char                                    *task_id_str   = NULL;
 
         this = THIS;
         GF_ASSERT (this);
@@ -744,7 +496,8 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
         }
 
         ret = glusterd_volume_brickinfo_get_by_brick (src_brick, volinfo,
-                                                      &src_brickinfo);
+                                                      &src_brickinfo,
+                                                      _gf_false);
         if (ret) {
                 gf_msg_debug (this->name, 0,
                         "Unable to get src-brickinfo");
@@ -768,31 +521,20 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
         }
 
         ret = rb_update_dstbrick_port (dst_brickinfo, rsp_dict,
-                                       dict, replace_op);
+                                       dict);
         if (ret)
                 goto out;
 
-        if (strcmp(replace_op, "GF_REPLACE_OP_COMMIT_FORCE")) {
+        if (strcmp (replace_op, "GF_REPLACE_OP_COMMIT_FORCE")) {
                 ret = -1;
                 goto out;
-        }
-
-        if (gf_is_local_addr (dst_brickinfo->hostname)) {
-                gf_msg_debug (this->name, 0, "I AM THE DESTINATION HOST");
-                ret = rb_kill_destination_brick (volinfo, dst_brickinfo);
-                if (ret) {
-                        gf_msg (this->name, GF_LOG_CRITICAL, 0,
-                                GD_MSG_BRK_CLEANUP_FAIL,
-                                "Unable to cleanup dst brick");
-                        goto out;
-                }
         }
 
         ret = glusterd_svcs_stop (volinfo);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_NFS_SERVER_STOP_FAIL,
-                        "Unable to stop nfs server, ret: %d", ret);
+                        GD_MSG_GLUSTER_SERVICES_STOP_FAIL,
+                        "Unable to stop gluster services, ret: %d", ret);
         }
 
         ret = glusterd_op_perform_replace_brick (volinfo, src_brick,
@@ -801,7 +543,7 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
                 gf_msg (this->name, GF_LOG_CRITICAL, 0,
                         GD_MSG_BRICK_ADD_FAIL, "Unable to add dst-brick: "
                         "%s to volume: %s", dst_brick, volinfo->volname);
-		(void) glusterd_svcs_manager (volinfo);
+                (void) glusterd_svcs_manager (volinfo);
                 goto out;
         }
 
@@ -810,8 +552,8 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
         ret = glusterd_svcs_manager (volinfo);
         if (ret) {
                 gf_msg (this->name, GF_LOG_CRITICAL, 0,
-                        GD_MSG_NFS_VOL_FILE_GEN_FAIL,
-                        "Failed to generate nfs volume file");
+                        GD_MSG_GLUSTER_SERVICE_START_FAIL,
+                        "Failed to start one or more gluster services.");
         }
 
 
@@ -821,7 +563,7 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
         volinfo->rep_brick.dst_brick = NULL;
 
         if (!ret)
-		ret = glusterd_store_volinfo (volinfo,
+                ret = glusterd_store_volinfo (volinfo,
                                               GLUSTERD_VOLINFO_VER_AC_INCREMENT);
         if (ret)
                 gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -841,14 +583,12 @@ glusterd_mgmt_v3_initiate_replace_brick_cmd_phases (rpcsvc_request_t *req,
         int32_t                     op_ret           = -1;
         uint32_t                    txn_generation   = 0;
         uint32_t                    op_errno         = 0;
-        char                        *cli_errstr      = NULL;
         char                        *op_errstr       = NULL;
         dict_t                      *req_dict        = NULL;
         dict_t                      *tmp_dict        = NULL;
         uuid_t                      *originator_uuid = NULL;
         xlator_t                    *this            = NULL;
         glusterd_conf_t             *conf            = NULL;
-        gf_boolean_t                success          = _gf_false;
         gf_boolean_t                is_acquired      = _gf_false;
 
         this = THIS;
@@ -873,6 +613,7 @@ glusterd_mgmt_v3_initiate_replace_brick_cmd_phases (rpcsvc_request_t *req,
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_DICT_SET_FAILED,
                         "Failed to set originator_uuid.");
+                GF_FREE (originator_uuid);
                 goto out;
         }
 

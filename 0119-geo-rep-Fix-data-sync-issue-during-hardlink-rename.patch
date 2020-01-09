@@ -1,0 +1,77 @@
+From a47d863ea4501d3d0daceacb194c9f900cefe1a7 Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Mon, 13 Nov 2017 05:27:50 -0500
+Subject: [PATCH 119/128] geo-rep: Fix data sync issue during hardlink, rename
+
+Problem:
+The data is not getting synced if master witnessed
+IO as below.
+
+1. echo "test_data" > f1
+2. ln f1 f2
+3. mv f2 f3
+4. unlink f1
+
+On master, 'f3' exists with data "test_data" but on
+slave, only f3 exists with zero byte file without
+backend gfid link.
+
+Cause:
+On master, since 'f2' no longer exists, the hardlink
+is skipped during processing. Later, on trying to sync
+rename, since source ('f2') doesn't exist, dst ('f3')
+is created with same gfid. But in this use case, it
+succeeds but backend gfid would not have linked as 'f1'
+exists with the same gfid. So, rsync would fail with
+ENOENT as backend gfid is not linked with 'f3' and 'f1'
+is unlinked.
+
+Fix:
+On processing rename, if src doesn't exist on slave,
+don't blindly create dst with same gfid. The gfid
+needs to be checked, if it exists, hardlink needs
+to be created instead of mknod.
+
+Thanks Aravinda for helping in RCA :)
+
+Upstream Reference:
+> Patch: https://review.gluster.org/18731
+> BUG: 1512483
+
+Change-Id: I5af4f99798ed1bcb297598a4bc796b701d1e0130
+BUG: 1512496
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126728
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ geo-replication/syncdaemon/resource.py | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/resource.py b/geo-replication/syncdaemon/resource.py
+index 22aaf85..5ad5b97 100644
+--- a/geo-replication/syncdaemon/resource.py
++++ b/geo-replication/syncdaemon/resource.py
+@@ -814,8 +814,17 @@ class Server(object):
+                             elif not matching_disk_gfid(gfid, en):
+                                 collect_failure(e, EEXIST, True)
+                         else:
+-                            (pg, bname) = entry2pb(en)
+-                            blob = entry_pack_reg_stat(gfid, bname, e['stat'])
++                            slink = os.path.join(pfx, gfid)
++                            st = lstat(slink)
++                            # don't create multiple entries with same gfid
++                            if isinstance(st, int):
++                                (pg, bname) = entry2pb(en)
++                                blob = entry_pack_reg_stat(gfid, bname,
++                                                           e['stat'])
++                            else:
++                                cmd_ret = errno_wrap(os.link, [slink, en],
++                                                    [ENOENT, EEXIST], [ESTALE])
++                                collect_failure(e, cmd_ret)
+                 else:
+                     st1 = lstat(en)
+                     if isinstance(st1, int):
+-- 
+1.8.3.1
+

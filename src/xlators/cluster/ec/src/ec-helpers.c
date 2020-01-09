@@ -12,14 +12,12 @@
 
 #include "byte-order.h"
 
+#include "ec.h"
 #include "ec-mem-types.h"
-#include "ec-fops.h"
-#include "ec-helpers.h"
 #include "ec-messages.h"
-
-#ifndef ffsll
-#define ffsll(x) __builtin_ffsll(x)
-#endif
+#include "ec-fops.h"
+#include "ec-method.h"
+#include "ec-helpers.h"
 
 static const char * ec_fop_list[] =
 {
@@ -96,23 +94,6 @@ void ec_trace(const char * event, ec_fop_data_t * fop, const char * fmt, ...)
     }
 }
 
-int32_t ec_bits_count(uint64_t n)
-{
-    n -= (n >> 1) & 0x5555555555555555ULL;
-    n = ((n >> 2) & 0x3333333333333333ULL) + (n & 0x3333333333333333ULL);
-    n = (n + (n >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
-    n += n >> 8;
-    n += n >> 16;
-    n += n >> 32;
-
-    return n & 0xFF;
-}
-
-int32_t ec_bits_index(uint64_t n)
-{
-    return ffsll(n) - 1;
-}
-
 int32_t ec_bits_consume(uint64_t * n)
 {
     uint64_t tmp;
@@ -121,7 +102,7 @@ int32_t ec_bits_consume(uint64_t * n)
     tmp &= -tmp;
     *n ^= tmp;
 
-    return ffsll(tmp) - 1;
+    return gf_bits_index(tmp);
 }
 
 size_t ec_iov_copy_to(void * dst, struct iovec * vector, int32_t count,
@@ -158,9 +139,57 @@ size_t ec_iov_copy_to(void * dst, struct iovec * vector, int32_t count,
     return total;
 }
 
+int32_t ec_buffer_alloc(xlator_t *xl, size_t size, struct iobref **piobref,
+                        void **ptr)
+{
+    struct iobref *iobref = NULL;
+    struct iobuf *iobuf = NULL;
+    int32_t ret = -ENOMEM;
+
+    iobuf = iobuf_get_page_aligned (xl->ctx->iobuf_pool, size,
+                                    EC_METHOD_WORD_SIZE);
+    if (iobuf == NULL) {
+        goto out;
+    }
+
+    iobref = *piobref;
+    if (iobref == NULL) {
+        iobref = iobref_new();
+        if (iobref == NULL) {
+            goto out;
+        }
+    }
+
+    ret = iobref_add(iobref, iobuf);
+    if (ret != 0) {
+        if (iobref != *piobref) {
+            iobref_unref(iobref);
+        }
+        iobref = NULL;
+
+        goto out;
+    }
+
+    GF_ASSERT(EC_ALIGN_CHECK(iobuf->ptr, EC_METHOD_WORD_SIZE));
+
+    *ptr = iobuf->ptr;
+
+out:
+    if (iobuf != NULL) {
+        iobuf_unref(iobuf);
+    }
+
+    if (iobref != NULL) {
+        *piobref = iobref;
+    }
+
+    return ret;
+}
+
 int32_t ec_dict_set_array(dict_t *dict, char *key, uint64_t value[],
                           int32_t size)
 {
+    int         ret = -1;
     uint64_t   *ptr = NULL;
     int32_t     vindex;
 
@@ -175,12 +204,15 @@ int32_t ec_dict_set_array(dict_t *dict, char *key, uint64_t value[],
     for (vindex = 0; vindex < size; vindex++) {
          ptr[vindex] = hton64(value[vindex]);
     }
-    return dict_set_bin(dict, key, ptr, sizeof(uint64_t) * size);
+    ret = dict_set_bin(dict, key, ptr, sizeof(uint64_t) * size);
+    if (ret)
+         GF_FREE (ptr);
+    return ret;
 }
 
 
-int32_t ec_dict_del_array(dict_t *dict, char *key, uint64_t value[],
-                          int32_t size)
+int32_t
+ec_dict_get_array (dict_t *dict, char *key, uint64_t value[], int32_t size)
 {
     void    *ptr;
     int32_t len;
@@ -214,14 +246,25 @@ int32_t ec_dict_del_array(dict_t *dict, char *key, uint64_t value[],
             }
     }
 
-    dict_del(dict, key);
-
     return 0;
+}
+
+int32_t
+ec_dict_del_array (dict_t *dict, char *key, uint64_t value[], int32_t size)
+{
+    int ret = 0;
+
+    ret = ec_dict_get_array (dict, key, value, size);
+    if (ret == 0)
+            dict_del(dict, key);
+
+    return ret;
 }
 
 
 int32_t ec_dict_set_number(dict_t * dict, char * key, uint64_t value)
 {
+    int        ret = -1;
     uint64_t * ptr;
 
     ptr = GF_MALLOC(sizeof(value), gf_common_mt_char);
@@ -231,7 +274,11 @@ int32_t ec_dict_set_number(dict_t * dict, char * key, uint64_t value)
 
     *ptr = hton64(value);
 
-    return dict_set_bin(dict, key, ptr, sizeof(value));
+    ret = dict_set_bin(dict, key, ptr, sizeof(value));
+    if (ret)
+        GF_FREE (ptr);
+
+    return ret;
 }
 
 int32_t ec_dict_del_number(dict_t * dict, char * key, uint64_t * value)
@@ -259,6 +306,7 @@ int32_t ec_dict_del_number(dict_t * dict, char * key, uint64_t * value)
 
 int32_t ec_dict_set_config(dict_t * dict, char * key, ec_config_t * config)
 {
+    int ret = -1;
     uint64_t * ptr, data;
 
     if (config->version > EC_CONFIG_VERSION)
@@ -286,7 +334,11 @@ int32_t ec_dict_set_config(dict_t * dict, char * key, ec_config_t * config)
 
     *ptr = hton64(data);
 
-    return dict_set_bin(dict, key, ptr, sizeof(uint64_t));
+    ret = dict_set_bin(dict, key, ptr, sizeof(uint64_t));
+    if (ret)
+        GF_FREE (ptr);
+
+    return ret;
 }
 
 int32_t ec_dict_del_config(dict_t * dict, char * key, ec_config_t * config)
@@ -314,8 +366,7 @@ int32_t ec_dict_del_config(dict_t * dict, char * key, ec_config_t * config)
      * instead of saying that it doesn't exist.
      *
      * We need to filter out this case and consider that a config xattr == 0 is
-     * the same than a non-existant xattr. Otherwise ec_config_check() will
-     * fail.
+     * the same as a non-existent xattr. Otherwise ec_config_check() will fail.
      */
     if (data == 0) {
         return -ENODATA;
@@ -650,10 +701,9 @@ void ec_owner_set(call_frame_t * frame, void * owner)
     set_lk_owner_from_ptr(&frame->root->lk_owner, owner);
 }
 
-void ec_owner_copy(call_frame_t * frame, gf_lkowner_t * owner)
+void ec_owner_copy(call_frame_t *frame, gf_lkowner_t *owner)
 {
-    frame->root->lk_owner.len = owner->len;
-    memcpy(frame->root->lk_owner.data, owner->data, owner->len);
+    lk_owner_copy (&frame->root->lk_owner, owner);
 }
 
 ec_inode_t * __ec_inode_get(inode_t * inode, xlator_t * xl)

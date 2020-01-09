@@ -17,6 +17,7 @@
 #include "glusterd-proc-mgmt.h"
 #include "glusterd-conn-mgmt.h"
 #include "glusterd-messages.h"
+#include "syscall.h"
 
 int
 glusterd_svc_create_rundir (char *rundir)
@@ -85,8 +86,9 @@ glusterd_svc_init_common (glusterd_svc_t *svc,
                 goto out;
 
         /* Initialize the process mgmt */
-        glusterd_svc_build_pidfile_path (svc_name, workdir, pidfile,
-                                         sizeof(pidfile));
+        glusterd_svc_build_pidfile_path (svc_name, priv->rundir,
+                                         pidfile, sizeof(pidfile));
+
         glusterd_svc_build_volfile_path (svc_name, workdir, volfile,
                                          sizeof (volfile));
 
@@ -132,7 +134,7 @@ int glusterd_svc_init (glusterd_svc_t *svc, char *svc_name)
         priv = this->private;
         GF_ASSERT (priv);
 
-        glusterd_svc_build_rundir (svc_name, priv->workdir, rundir,
+        glusterd_svc_build_rundir (svc_name, priv->rundir, rundir,
                                    sizeof (rundir));
         ret = glusterd_svc_init_common (svc, svc_name, priv->workdir, rundir,
                                         DEFAULT_LOG_FILE_DIRECTORY, NULL);
@@ -148,7 +150,6 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
         glusterd_conf_t     *priv                       = NULL;
         xlator_t            *this                       = NULL;
         char                 valgrind_logfile[PATH_MAX] = {0};
-        char                 glusterd_uuid_option[1024] = {0};
 
         this = THIS;
         GF_ASSERT (this);
@@ -161,7 +162,7 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
                 goto out;
         }
 
-        ret = access (svc->proc.volfile, F_OK);
+        ret = sys_access (svc->proc.volfile, F_OK);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_VOLFILE_NOT_FOUND, "Volfile %s is not present",
@@ -171,7 +172,7 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
 
         runinit (&runner);
 
-        if (priv->valgrind) {
+        if (this->ctx->cmd_args.valgrind) {
                 snprintf (valgrind_logfile, PATH_MAX, "%s/valgrind-%s.log",
                           svc->proc.logfile, svc->name);
 
@@ -192,7 +193,8 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
         if (cmdline)
                 dict_foreach (cmdline, svc_add_args, (void *) &runner);
 
-        gf_msg_debug (this->name, 0, "Starting %s service", svc->name);
+        gf_msg (this->name, GF_LOG_INFO, 0, GD_MSG_SVC_START_SUCCESS,
+                "Starting %s service", svc->name);
 
         if (flags == PROC_START_NO_WAIT) {
                 ret = runner_run_nowait (&runner);
@@ -223,6 +225,8 @@ int glusterd_svc_stop (glusterd_svc_t *svc, int sig)
                 svc->online =  _gf_false;
                 (void) glusterd_unlink_file ((char *)svc->conn.sockpath);
         }
+        gf_msg (THIS->name, GF_LOG_INFO, 0, GD_MSG_SVC_STOP_SUCCESS,
+                "%s service is stopped", svc->name);
 out:
         gf_msg_debug (THIS->name, 0, "Returning %d", ret);
 
@@ -273,7 +277,7 @@ glusterd_svc_build_rundir (char *server, char *workdir, char *path, size_t len)
         GF_ASSERT (len == PATH_MAX);
 
         glusterd_svc_build_svcdir (server, workdir, dir, sizeof (dir));
-        snprintf (path, len, "%s/run", dir);
+        snprintf (path, len, "%s", dir);
 }
 
 int
@@ -313,6 +317,7 @@ glusterd_svc_common_rpc_notify (glusterd_conn_t *conn,
         case RPC_CLNT_CONNECT:
                 gf_msg_debug (this->name, 0, "%s has connected with "
                         "glusterd.", svc->name);
+                gf_event (EVENT_SVC_CONNECTED, "svc_name=%s", svc->name);
                 svc->online =  _gf_true;
                 break;
 
@@ -321,6 +326,8 @@ glusterd_svc_common_rpc_notify (glusterd_conn_t *conn,
                         gf_msg (this->name, GF_LOG_INFO, 0,
                                 GD_MSG_NODE_DISCONNECTED, "%s has disconnected "
                                 "from glusterd.", svc->name);
+                        gf_event (EVENT_SVC_DISCONNECTED, "svc_name=%s",
+                                  svc->name);
                         svc->online =  _gf_false;
                 }
                 break;

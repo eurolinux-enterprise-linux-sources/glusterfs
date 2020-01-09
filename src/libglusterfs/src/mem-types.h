@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2008-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2008-2016 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -61,7 +61,9 @@ enum gf_common_mem_types_ {
         gf_common_mt_char,
         gf_common_mt_rbthash_table_t,
         gf_common_mt_rbthash_bucket,
+#if defined(GF_DISABLE_MEMPOOL)
         gf_common_mt_mem_pool,
+#endif
         gf_common_mt_long,
         gf_common_mt_rpcsvc_auth_list,
         gf_common_mt_rpcsvc_t,
@@ -128,6 +130,8 @@ enum gf_common_mem_types_ {
         gf_common_mt_ereg,
         gf_common_mt_wr,
         gf_common_mt_rdma_arena_mr,
+        gf_common_mt_dnscache             = 115,
+        gf_common_mt_dnscache_entry       = 116,
         gf_common_mt_parser_t,
         gf_common_quota_meta_t,
         /*related to gfdb library*/
@@ -155,6 +159,24 @@ enum gf_common_mem_types_ {
         gf_common_mt_synctask,
         gf_common_mt_syncstack,
         gf_common_mt_syncenv,
+        gf_common_mt_scan_data,
+        gf_common_list_node,
+        gf_mt_default_args_t,
+        gf_mt_default_args_cbk_t,
+        /*used for compound fops*/
+        gf_mt_compound_req_t,
+        gf_mt_compound_rsp_t,
+        gf_common_mt_tw_ctx,
+        gf_common_mt_tw_timer_list,
+        /*lock migration*/
+        gf_common_mt_lock_mig,
+        /* throttle */
+        gf_common_mt_tbf_t,
+        gf_common_mt_tbf_bucket_t,
+        gf_common_mt_tbf_throttle_t,
+        gf_common_mt_pthread_t,
+        gf_common_ping_local_t,
+        gf_common_volfile_t,
         gf_common_mt_end
 };
 #endif

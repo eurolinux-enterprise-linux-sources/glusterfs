@@ -13,11 +13,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <lvm2app.h>
 #include <sys/uio.h>
 
@@ -447,8 +442,8 @@ bd_aio_init (xlator_t *this)
                 goto out;
         }
 
-        ret = pthread_create (&priv->aiothread, NULL,
-                              bd_aio_thread, this);
+        ret = gf_thread_create (&priv->aiothread, NULL,
+                                bd_aio_thread, this, "bdaio");
         if (ret != 0) {
                 io_destroy (priv->ctxp);
                 goto out;

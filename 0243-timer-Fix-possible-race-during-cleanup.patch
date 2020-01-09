@@ -1,0 +1,86 @@
+From 4623ebe9a69a5284565b4ad253084a1236478988 Mon Sep 17 00:00:00 2001
+From: Soumya Koduri <skoduri@redhat.com>
+Date: Fri, 3 Nov 2017 15:41:34 +0530
+Subject: [PATCH 243/260] timer: Fix possible race during cleanup
+
+As mentioned in bug1509189, there is a possible race
+between gf_timer_cancel(), gf_timer_proc() and
+gf_timer_registry_destroy() leading to use_after_free.
+
+Problem:
+
+1) gf_timer_proc() is called, locks reg, and gets an event.
+It unlocks reg, and calls the callback.
+
+2) Meanwhile gf_timer_registry_destroy() is called, and removes
+reg from ctx, and joins on gf_timer_proc().
+
+3) gf_timer_call_cancel() is called on the event being
+processed.  It cannot find reg (since it's been removed from reg),
+so it frees event.
+
+4) the callback returns into gf_timer_proc(), and it tries to free
+event, but it's already free, so double free.
+
+Solution:
+The fix is to bail out in gf_timer_cancel() when registry
+is not found. The logic behind this is that, gf_timer_cancel()
+is called only on any existing event. That means there was a valid
+registry earlier while creating that event. And the only reason
+we cannot find that registry now is that it must have got set to
+NULL when context cleanup is started.
+Since gf_timer_proc() takes care of releasing all the remaining
+events active on that registry, it seems safe to bail out
+in gf_timer_cancel().
+
+>Change-Id: Ia9b088533141c3bb335eff2fe06b52d1575bb34f
+>BUG: 1509189
+>Reported-by: Daniel Gryniewicz <dang@redhat.com>
+>Signed-off-by: Soumya Koduri <skoduri@redhat.com>
+Upstream Link: https://review.gluster.org/#/c/18652/
+
+BUG: 1568374
+Change-Id: Ia9b088533141c3bb335eff2fe06b52d1575bb34f
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/135896
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ libglusterfs/src/timer.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/libglusterfs/src/timer.c b/libglusterfs/src/timer.c
+index 34dfd35..d6f008d 100644
+--- a/libglusterfs/src/timer.c
++++ b/libglusterfs/src/timer.c
+@@ -83,6 +83,13 @@ gf_timer_call_cancel (glusterfs_ctx_t *ctx,
+                 return 0;
+         }
+ 
++        if (ctx->cleanup_started) {
++                gf_msg_callingfn ("timer", GF_LOG_INFO, 0,
++                                  LG_MSG_CTX_CLEANUP_STARTED,
++                                  "ctx cleanup started");
++                return 0;
++        }
++
+         LOCK (&ctx->lock);
+         {
+                 reg = ctx->timer;
+@@ -90,9 +97,11 @@ gf_timer_call_cancel (glusterfs_ctx_t *ctx,
+         UNLOCK (&ctx->lock);
+ 
+         if (!reg) {
+-                gf_msg ("timer", GF_LOG_ERROR, 0, LG_MSG_INIT_TIMER_FAILED,
+-                        "!reg");
+-                GF_FREE (event);
++                /* This can happen when cleanup may have just started and
++                 * gf_timer_registry_destroy() sets ctx->timer to NULL.
++                 * Just bail out as success as gf_timer_proc() takes
++                 * care of cleaning up the events.
++                 */
+                 return 0;
+         }
+ 
+-- 
+1.8.3.1
+

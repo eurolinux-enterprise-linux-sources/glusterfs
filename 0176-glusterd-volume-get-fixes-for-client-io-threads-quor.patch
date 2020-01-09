@@ -1,0 +1,210 @@
+From 787e1e865ba4b9680c95ae78a11a4d84714cc9a3 Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Wed, 7 Mar 2018 11:03:50 +0530
+Subject: [PATCH 176/180] glusterd: volume get fixes for client-io-threads &
+ quorum-type
+
+Backport of: https://review.gluster.org/#/c/19567/
+
+1. If a replica volume created on glusterfs-3.8 was upgraded to
+glusterfs-3.12, `gluster vol get volname client-io-threads` displayed
+'on' even though it wasn't and the xlator wasn't loaded on
+the client-graph. This was due to removing certain checks in
+glusterd_get_default_val_for_volopt as a part of commit
+47604fad4c2a3951077e41e0c007ceb979bb2c24. Fix it.
+
+2. Also, as a part of op-version bump-up, client-io-threads was being
+loaded on the clients  during volfile regeneration. Prevent it.
+
+3. AFR assumes quorum-type to be auto in newly created replic 3 (odd
+replica in general) volumes but `gluster vol get quorum-type` displays
+'none'. Fix it.
+
+Change-Id: I4a6099e50f2f10f2bd76f304b1e3bc0795e07a9d
+BUG: 1543068
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131964
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handler.c |  6 +++---
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c   | 13 +++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-utils.c   | 27 ++++++++++++++++++++++++++-
+ xlators/mgmt/glusterd/src/glusterd-utils.h   |  3 ++-
+ xlators/mgmt/glusterd/src/glusterd-volgen.c  |  8 +++++++-
+ 5 files changed, 51 insertions(+), 6 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index 8fc665d..cf280a7 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -4913,7 +4913,7 @@ glusterd_get_volume_opts (rpcsvc_request_t *req, dict_t *dict)
+                                                                (dict,
+                                                                 _gf_false,
+                                                                 key, orig_key,
+-                                                                volinfo->dict,
++                                                                volinfo,
+                                                                 &rsp.op_errstr);
+                                         if (ret && !rsp.op_errstr) {
+                                                 snprintf (err_str,
+@@ -4939,7 +4939,7 @@ glusterd_get_volume_opts (rpcsvc_request_t *req, dict_t *dict)
+         } else {
+                 /* Handle the "all" volume option request */
+                 ret = glusterd_get_default_val_for_volopt (dict, _gf_true, NULL,
+-                                                           NULL, volinfo->dict,
++                                                           NULL, volinfo,
+                                                            &rsp.op_errstr);
+                 if (ret && !rsp.op_errstr) {
+                         snprintf (err_str, sizeof(err_str),
+@@ -5530,7 +5530,7 @@ glusterd_get_state (rpcsvc_request_t *req, dict_t *dict)
+                         vol_all_opts = dict_new ();
+ 
+                         ret = glusterd_get_default_val_for_volopt (vol_all_opts,
+-                                        _gf_true, NULL, NULL, volinfo->dict,
++                                        _gf_true, NULL, NULL, volinfo,
+                                         &rsp.op_errstr);
+                         if (ret) {
+                                 gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 0cf76dd..0a21e02 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -2542,6 +2542,15 @@ out:
+         return ret;
+ }
+ 
++/* This is a hack to prevent client-io-threads from being loaded in the graph
++ * when the cluster-op-version is bumped up from 3.8.x to 3.13.x. The key is
++ * deleted subsequently in glusterd_create_volfiles(). */
++static int
++glusterd_dict_set_skip_cliot_key (glusterd_volinfo_t *volinfo)
++{
++        return  dict_set_int32 (volinfo->dict, "skip-CLIOT", 1);
++}
++
+ static int
+ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                     char **op_errstr)
+@@ -2633,6 +2642,10 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                                 (volinfo, &start_nfs_svc);
+                                 if (ret)
+                                         goto out;
++
++                                if (glusterd_dict_set_skip_cliot_key (volinfo))
++                                        goto out;
++
+                                 if (!volinfo->is_snap_volume) {
+                                         svc = &(volinfo->snapd.svc);
+                                         ret = svc->manager (svc, volinfo,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 9a67cfd..49605cc 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -12842,10 +12842,30 @@ out:
+         return ret;
+ }
+ 
++char *
++glusterd_get_option_value (glusterd_volinfo_t *volinfo, char *key)
++{
++        char *value = NULL;
++
++        if (!glusterd_is_volume_replicate(volinfo))
++                goto ret;
++
++        if (!strcmp (key, "performance.client-io-threads")) {
++                value = "off";
++        } else if (!strcmp (key, "cluster.quorum-type")) {
++                if (volinfo->replica_count%2) {
++                        value = "auto";
++                }
++        }
++ret:
++        return value;
++}
++
+ int
+ glusterd_get_default_val_for_volopt (dict_t *ctx, gf_boolean_t all_opts,
+                                      char *input_key, char *orig_key,
+-                                     dict_t *vol_dict, char **op_errstr)
++                                     glusterd_volinfo_t *volinfo,
++                                     char **op_errstr)
+ {
+         struct volopt_map_entry *vme = NULL;
+         int                      ret = -1;
+@@ -12856,6 +12876,7 @@ glusterd_get_default_val_for_volopt (dict_t *ctx, gf_boolean_t all_opts,
+         char                     dict_key[50] = {0,};
+         gf_boolean_t             key_found = _gf_false;
+         glusterd_conf_t         *priv = NULL;
++        dict_t                  *vol_dict = NULL;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -12863,6 +12884,7 @@ glusterd_get_default_val_for_volopt (dict_t *ctx, gf_boolean_t all_opts,
+         priv = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, priv, out);
+ 
++        vol_dict = volinfo->dict;
+         GF_VALIDATE_OR_GOTO (this->name, vol_dict, out);
+ 
+         /* Check whether key is passed for a single option */
+@@ -12883,6 +12905,9 @@ glusterd_get_default_val_for_volopt (dict_t *ctx, gf_boolean_t all_opts,
+                 ret = dict_get_str (priv->opts, vme->key, &def_val);
+                 if (!def_val) {
+                         ret = dict_get_str (vol_dict, vme->key, &def_val);
++                        if (ret == -ENOENT)
++                                def_val = glusterd_get_option_value (volinfo,
++                                                                     vme->key);
+                         if (!def_val) {
+                                 if (vme->value) {
+                                         def_val = vme->value;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.h b/xlators/mgmt/glusterd/src/glusterd-utils.h
+index 6c525e5..e69a779 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.h
+@@ -730,7 +730,8 @@ glusterd_get_global_options_for_all_vols (rpcsvc_request_t *req, dict_t *dict,
+ int
+ glusterd_get_default_val_for_volopt (dict_t *dict, gf_boolean_t all_opts,
+                                      char *key, char *orig_key,
+-                                     dict_t *vol_dict, char **err_str);
++                                     glusterd_volinfo_t *volinfo,
++                                     char **err_str);
+ 
+ int
+ glusterd_check_client_op_version_support (char *volname, uint32_t op_version,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index 8ff76d6..0e287b6 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -263,7 +263,6 @@ first_of (volgen_graph_t *graph)
+  *
+  *************************/
+ 
+-
+ static int
+ volopt_selector (int lvl, char **patt, void *param,
+                      int (*optcbk)(char *word, void *param))
+@@ -514,6 +513,11 @@ volgen_graph_set_options_generic (volgen_graph_t *graph, dict_t *dict,
+                 odt.data_t_fake = _gf_false;
+ 
+                 data = dict_get (dict, vme->key);
++                if (!strcmp (vme->key, "performance.client-io-threads") &&
++                    dict_get_str_boolean (dict, "skip-CLIOT",
++                                          _gf_false) == _gf_true) {
++                        continue;
++                }
+ 
+                 if (data)
+                         process_option (vme->key, data, &odt);
+@@ -6393,6 +6397,8 @@ glusterd_create_volfiles (glusterd_volinfo_t *volinfo)
+                         GD_MSG_VOLFILE_CREATE_FAIL,
+                         "Could not generate client volfiles");
+ 
++        dict_del (volinfo->dict, "skip-CLIOT");
++
+ out:
+         return ret;
+ }
+-- 
+1.8.3.1
+

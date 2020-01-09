@@ -1,0 +1,49 @@
+From 9c1ddc2e32cbfc8ad313b4f1342fbc20e49af80b Mon Sep 17 00:00:00 2001
+From: Niels de Vos <ndevos@redhat.com>
+Date: Mon, 9 Oct 2017 18:58:09 +0200
+Subject: [PATCH 331/333] rpc: free registered callback programs
+
+> Change-Id: I8c6f6b642f025d1faf74015b8f7aaecd7ebfd4d5
+> BUG: 1443145
+> Signed-off-by: Niels de Vos <ndevos@redhat.com>
+> (cherry picked from commit ec39ca32d942d49fd701156174abbba0b73bce2f)
+> (Reviewed on upstream link https://review.gluster.org/#/c/18478)
+
+Change-Id: I23e44507d12326bf63c96c56eae83d5424f8ee63
+BUG: 1600790
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/145358
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ rpc/rpc-lib/src/rpc-clnt.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/rpc/rpc-lib/src/rpc-clnt.c b/rpc/rpc-lib/src/rpc-clnt.c
+index e34d2ca..1ea8099 100644
+--- a/rpc/rpc-lib/src/rpc-clnt.c
++++ b/rpc/rpc-lib/src/rpc-clnt.c
+@@ -1771,6 +1771,9 @@ rpc_clnt_trigger_destroy (struct rpc_clnt *rpc)
+ static void
+ rpc_clnt_destroy (struct rpc_clnt *rpc)
+ {
++        rpcclnt_cb_program_t *program = NULL;
++        rpcclnt_cb_program_t *tmp = NULL;
++
+         if (!rpc)
+                 return;
+ 
+@@ -1783,6 +1786,10 @@ rpc_clnt_destroy (struct rpc_clnt *rpc)
+         mem_pool_destroy (rpc->reqpool);
+         mem_pool_destroy (rpc->saved_frames_pool);
+ 
++        list_for_each_entry_safe (program, tmp, &rpc->programs, program) {
++                GF_FREE (program);
++        }
++
+         GF_FREE (rpc);
+         return;
+ }
+-- 
+1.8.3.1
+

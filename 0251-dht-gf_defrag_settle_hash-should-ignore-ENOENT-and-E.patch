@@ -1,0 +1,52 @@
+From c5401605f80c2630e39b283f10b7da92ff777863 Mon Sep 17 00:00:00 2001
+From: Susant Palai <spalai@redhat.com>
+Date: Fri, 27 Apr 2018 16:40:02 +0530
+Subject: [PATCH 251/260] dht: gf_defrag_settle_hash should ignore ENOENT and
+ ESTALE error
+
+Problem: A directory deletion can happen just before gf_defrag_settle_hash
+which internally does a setxattr operation on a directory.
+
+Solution: Ignore ENOENT and ESTALE errors
+
+> Fixes: bz#1572581
+> Change-Id: I2f91809f3b5e02976c4c3a5a596406a8b2f8f6f2
+> Signed-off-by: Susant Palai <spalai@redhat.com>
+(cherry picked from commit e2fda098112803bf651c4795952376cb8c1ad204)
+
+upstream patch: https://review.gluster.org/#/c/19945/
+
+BUG: 1572585
+Change-Id: I2f91809f3b5e02976c4c3a5a596406a8b2f8f6f2
+Signed-off-by: Susant Palai <spalai@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/137527
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index eee00b8..51af11c 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -3493,8 +3493,15 @@ gf_defrag_settle_hash (xlator_t *this, gf_defrag_info_t *defrag,
+ 
+         ret = syncop_setxattr (this, loc, fix_layout, 0, NULL, NULL);
+         if (ret) {
+-                gf_log (this->name, GF_LOG_ERROR,
++                gf_msg (this->name, GF_LOG_ERROR, -ret,
++                        DHT_MSG_LAYOUT_FIX_FAILED,
+                         "fix layout on %s failed", loc->path);
++
++                if (-ret == ENOENT || -ret == ESTALE) {
++                        /* Dir most likely is deleted */
++                        return 0;
++                }
++
+                 return -1;
+         }
+ 
+-- 
+1.8.3.1
+

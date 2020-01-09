@@ -1,0 +1,52 @@
+From c2b215a14a38d3587a5a3ea4efab384033019ed5 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Wed, 18 Jul 2018 22:09:19 +0530
+Subject: [PATCH 329/333] cluster/dht: Set loc->gfid before healing attr
+
+AFR takes inodelks when setting attrs. The loc->gfid
+and loc->inode->gfid were both null when dht_dir_attr_heal
+was called during a fresh lookup of an existing directory.
+As the gfid is null, client_pre_inodelk asserts in the gfid
+check.
+We now set the loc->gfid before calling dht_dir_attr_heal.
+
+upstream patch: https://review.gluster.org/#/c/20530/
+
+> Change-Id: I457f5a73fd301d97a03ca032587e73d4803298ac
+> fixes: bz#1602866
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: Ie5e30d4ab3b824eaad333da22465d6672c75a2f6
+BUG: 1601331
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144386
+Reviewed-by: Mohit Agrawal <moagrawa@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 2207708..0984f8f 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -1518,7 +1518,6 @@ unlock:
+                 if (local->need_attrheal) {
+                         local->need_attrheal = 0;
+                         if (!__is_root_gfid (inode->gfid)) {
+-                                gf_uuid_copy (local->gfid, local->mds_stbuf.ia_gfid);
+                                 local->stbuf.ia_gid = local->mds_stbuf.ia_gid;
+                                 local->stbuf.ia_uid = local->mds_stbuf.ia_uid;
+                                 local->stbuf.ia_prot = local->mds_stbuf.ia_prot;
+@@ -1532,6 +1531,8 @@ unlock:
+                                         goto skip_attr_heal;
+                                 }
+                                 copy_local->stbuf = local->stbuf;
++                                gf_uuid_copy (copy_local->loc.gfid,
++                                              local->stbuf.ia_gfid);
+                                 copy_local->mds_stbuf = local->mds_stbuf;
+                                 copy_local->mds_subvol = local->mds_subvol;
+                                 copy->local = copy_local;
+-- 
+1.8.3.1
+

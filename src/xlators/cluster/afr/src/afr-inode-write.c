@@ -16,11 +16,6 @@
 #include <stdlib.h>
 #include <signal.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "afr.h"
 #include "dict.h"
@@ -43,34 +38,64 @@
 static void
 __afr_inode_write_finalize (call_frame_t *frame, xlator_t *this)
 {
-	afr_local_t *local = NULL;
-	afr_private_t *priv = NULL;
-	int read_subvol = 0;
-	int i = 0;
+	int                       i               = 0;
+        int                       ret             = 0;
+	int                       read_subvol     = 0;
+        struct iatt              *stbuf           = NULL;
+	afr_local_t              *local           = NULL;
+	afr_private_t            *priv            = NULL;
+        afr_read_subvol_args_t    args            = {0,};
 
 	local = frame->local;
 	priv = this->private;
 
+        /*This code needs to stay till DHT sends fops on linked
+         * inodes*/
+        if (local->inode && !inode_is_linked (local->inode)) {
+                for (i = 0; i < priv->child_count; i++) {
+                        if (!local->replies[i].valid)
+                                continue;
+                        if (local->replies[i].op_ret == -1)
+                                continue;
+                        if (!gf_uuid_is_null
+                                        (local->replies[i].poststat.ia_gfid)) {
+                                gf_uuid_copy (args.gfid,
+                                            local->replies[i].poststat.ia_gfid);
+                                args.ia_type =
+                                        local->replies[i].poststat.ia_type;
+                                break;
+                        } else {
+                                ret = dict_get_bin (local->replies[i].xdata,
+                                                    DHT_IATT_IN_XDATA_KEY,
+                                                    (void **) &stbuf);
+                                if (ret)
+                                        continue;
+                                gf_uuid_copy (args.gfid, stbuf->ia_gfid);
+                                args.ia_type = stbuf->ia_type;
+                                break;
+                        }
+                }
+        }
+
 	if (local->inode) {
 		if (local->transaction.type == AFR_METADATA_TRANSACTION)
-			read_subvol = afr_metadata_subvol_get (local->inode, this,
-							       NULL, NULL,
-                                                               NULL);
+                        read_subvol = afr_metadata_subvol_get (local->inode,
+                                      this, NULL, local->readable, NULL, &args);
 		else
 			read_subvol = afr_data_subvol_get (local->inode, this,
-							   NULL, NULL, NULL);
+                                            NULL, local->readable, NULL, &args);
 	}
 
 	local->op_ret = -1;
 	local->op_errno = afr_final_errno (local, priv);
+        afr_pick_error_xdata (local, priv, local->inode, local->readable, NULL,
+                              NULL);
 
 	for (i = 0; i < priv->child_count; i++) {
 		if (!local->replies[i].valid)
 			continue;
-		if (local->replies[i].op_ret < 0) {
-			afr_inode_read_subvol_reset (local->inode, this);
+		if (local->replies[i].op_ret < 0)
 			continue;
-		}
 
 		/* Order of checks in the compound conditional
 		   below is important.
@@ -106,7 +131,7 @@ __afr_inode_write_finalize (call_frame_t *frame, xlator_t *this)
 		}
 	}
 
-        afr_txn_arbitrate_fop_cbk (frame, this);
+        afr_set_in_flight_sb_status (this, local, local->inode);
 }
 
 
@@ -130,6 +155,8 @@ __afr_inode_write_fill (call_frame_t *frame, xlator_t *this, int child_index,
 
 	local->replies[child_index].op_ret = op_ret;
 	local->replies[child_index].op_errno = op_errno;
+        if (xdata)
+                local->replies[child_index].xdata = dict_ref (xdata);
 
 	if (op_ret >= 0) {
 		if (prebuf)
@@ -138,8 +165,6 @@ __afr_inode_write_fill (call_frame_t *frame, xlator_t *this, int child_index,
 			local->replies[child_index].poststat = *postbuf;
 		if (xattr)
 			local->replies[child_index].xattr = dict_ref (xattr);
-		if (xdata)
-			local->replies[child_index].xdata = dict_ref (xdata);
 	} else {
 		afr_transaction_fop_failed (frame, this, child_index);
 	}
@@ -156,7 +181,9 @@ __afr_inode_write_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         afr_local_t *local = NULL;
         int child_index = (long) cookie;
         int call_count = -1;
+        afr_private_t *priv = NULL;
 
+        priv = this->private;
         local = frame->local;
 
         LOCK (&frame->lock);
@@ -172,8 +199,13 @@ __afr_inode_write_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (call_count == 0) {
 		__afr_inode_write_finalize (frame, this);
 
-		if (afr_txn_nothing_failed (frame, this))
-			local->transaction.unwind (frame, this);
+		if (afr_txn_nothing_failed (frame, this)) {
+                        /*if it did pre-op, it will do post-op changing ctime*/
+                        if (priv->consistent_metadata &&
+                            afr_needs_changelog_update (local))
+                                afr_zero_fill_stat (local);
+                        local->transaction.unwind (frame, this);
+                }
 
                 local->transaction.resume (frame, this);
         }
@@ -204,7 +236,12 @@ void
 afr_writev_unwind (call_frame_t *frame, xlator_t *this)
 {
         afr_local_t *   local = NULL;
+        afr_private_t *priv = this->private;
+
         local = frame->local;
+
+       if (priv->consistent_metadata)
+               afr_zero_fill_stat (local);
 
         AFR_STACK_UNWIND (writev, frame,
                           local->op_ret, local->op_errno,
@@ -254,20 +291,15 @@ afr_writev_handle_short_writes (call_frame_t *frame, xlator_t *this)
         }
 }
 
-int
-afr_writev_wind_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+void
+afr_inode_write_fill (call_frame_t *frame, xlator_t *this, int child_index,
                      int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
                      struct iatt *postbuf, dict_t *xdata)
 {
-        afr_local_t *   local = NULL;
-        call_frame_t    *fop_frame = NULL;
-        int child_index = (long) cookie;
-        int call_count  = -1;
         int ret = 0;
+        afr_local_t *local = frame->local;
         uint32_t open_fd_count = 0;
         uint32_t write_is_append = 0;
-
-        local = frame->local;
 
         LOCK (&frame->lock);
         {
@@ -286,32 +318,59 @@ afr_writev_wind_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 				       &open_fd_count);
 		if (ret == -1)
 			goto unlock;
-		if ((open_fd_count > local->open_fd_count)) {
-			local->open_fd_count = open_fd_count;
-			local->update_open_fd_count = _gf_true;
+		if (open_fd_count > local->open_fd_count) {
+                        local->open_fd_count = open_fd_count;
+                        local->update_open_fd_count = _gf_true;
 		}
         }
 unlock:
         UNLOCK (&frame->lock);
+}
+
+void
+afr_process_post_writev (call_frame_t *frame, xlator_t *this)
+{
+        afr_local_t     *local = NULL;
+
+        local = frame->local;
+
+        if (!local->stable_write && !local->append_write)
+                /* An appended write removes the necessity to
+                   fsync() the file. This is because self-heal
+                   has the logic to check for larger file when
+                   the xattrs are not reliably pointing at
+                   a stale file.
+                */
+                afr_fd_report_unstable_write (this, local->fd);
+
+        __afr_inode_write_finalize (frame, this);
+
+        afr_writev_handle_short_writes (frame, this);
+
+        if (local->update_open_fd_count)
+                afr_handle_open_fd_count (frame, this);
+
+}
+
+int
+afr_writev_wind_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                     int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
+                     struct iatt *postbuf, dict_t *xdata)
+{
+        afr_local_t     *local = NULL;
+        call_frame_t    *fop_frame = NULL;
+        int child_index = (long) cookie;
+        int call_count  = -1;
+
+        local = frame->local;
+
+        afr_inode_write_fill (frame, this, child_index, op_ret, op_errno,
+                              prebuf, postbuf, xdata);
 
         call_count = afr_frame_return (frame);
 
         if (call_count == 0) {
-		if (!local->stable_write && !local->append_write)
-			/* An appended write removes the necessity to
-			   fsync() the file. This is because self-heal
-			   has the logic to check for larger file when
-			   the xattrs are not reliably pointing at
-			   a stale file.
-			*/
-			afr_fd_report_unstable_write (this, local->fd);
-
-		__afr_inode_write_finalize (frame, this);
-
-                afr_writev_handle_short_writes (frame, this);
-
-                if (local->update_open_fd_count)
-                        afr_handle_open_fd_count (frame, this);
+                afr_process_post_writev (frame, this);
 
                 if (!afr_txn_nothing_failed (frame, this)) {
                         //Don't unwind until post-op is complete
@@ -386,7 +445,6 @@ afr_do_writev (call_frame_t *frame, xlator_t *this)
 {
         call_frame_t    *transaction_frame = NULL;
         afr_local_t     *local             = NULL;
-        afr_private_t   *priv              = NULL;
         int             ret   = -1;
         int             op_errno = ENOMEM;
 
@@ -395,7 +453,6 @@ afr_do_writev (call_frame_t *frame, xlator_t *this)
                 goto out;
 
         local = frame->local;
-        priv = this->private;
         transaction_frame->local = local;
 	frame->local = NULL;
 
@@ -425,12 +482,6 @@ afr_do_writev (call_frame_t *frame, xlator_t *this)
                 local->transaction.start   = local->cont.writev.offset;
                 local->transaction.len     = iov_length (local->cont.writev.vector,
                                                          local->cont.writev.count);
-
-                /*Lock entire file to avoid network split brains.*/
-                if (priv->arbiter_count == 1) {
-                        local->transaction.start   = 0;
-                        local->transaction.len     = 0;
-                }
         }
 
         ret = afr_transaction (transaction_frame, this, AFR_DATA_TRANSACTION);
@@ -1014,14 +1065,15 @@ afr_setxattr_wind (call_frame_t *frame, xlator_t *this, int subvol)
 }
 
 int
-afr_rb_set_pending_changelog_cbk (call_frame_t *frame, void *cookie,
+afr_emptyb_set_pending_changelog_cbk (call_frame_t *frame, void *cookie,
                                   xlator_t *this, int op_ret, int op_errno,
                                   dict_t *xattr, dict_t *xdata)
 
 {
         afr_local_t *local = NULL;
         afr_private_t *priv = NULL;
-        int i = 0;
+        int i, ret = 0;
+        char *op_type = NULL;
 
         local = frame->local;
         priv = this->private;
@@ -1030,19 +1082,26 @@ afr_rb_set_pending_changelog_cbk (call_frame_t *frame, void *cookie,
         local->replies[i].valid = 1;
         local->replies[i].op_ret = op_ret;
         local->replies[i].op_errno = op_errno;
+
+        ret = dict_get_str (local->xdata_req, "replicate-brick-op", &op_type);
+        if (ret)
+                goto out;
+
         gf_msg (this->name, op_ret ? GF_LOG_ERROR : GF_LOG_INFO,
                 op_ret ? op_errno : 0,
-                AFR_MSG_REPLACE_BRICK_STATUS, "Set of pending xattr %s on"
+                afr_get_msg_id (op_type),
+                "Set of pending xattr %s on"
                 " %s.", op_ret ? "failed" : "succeeded",
                 priv->children[i]->name);
 
+out:
         syncbarrier_wake (&local->barrier);
         return 0;
 }
 
 int
-afr_rb_set_pending_changelog (call_frame_t *frame, xlator_t *this,
-                              unsigned char *locked_nodes)
+afr_emptyb_set_pending_changelog (call_frame_t *frame, xlator_t *this,
+                                unsigned char *locked_nodes)
 {
         afr_local_t *local = NULL;
         afr_private_t *priv = NULL;
@@ -1051,9 +1110,9 @@ afr_rb_set_pending_changelog (call_frame_t *frame, xlator_t *this,
         local = frame->local;
         priv = this->private;
 
-        AFR_ONLIST (locked_nodes, frame, afr_rb_set_pending_changelog_cbk,
+        AFR_ONLIST (locked_nodes, frame, afr_emptyb_set_pending_changelog_cbk,
                     xattrop, &local->loc, GF_XATTROP_ADD_ARRAY,
-                    local->xdata_req, NULL);
+                    local->xattr_req, NULL);
 
         /* It is sufficient if xattrop was successful on one child */
         for (i = 0; i < priv->child_count; i++) {
@@ -1073,16 +1132,18 @@ out:
 }
 
 int
-_afr_handle_replace_brick_type (xlator_t *this, call_frame_t *frame,
-                                loc_t *loc, int rb_index,
-                                afr_transaction_type type)
+_afr_handle_empty_brick_type (xlator_t *this, call_frame_t *frame,
+                            loc_t *loc, int empty_index,
+                            afr_transaction_type type,
+                            char *op_type)
 {
-        afr_local_t     *local            = NULL;
-        afr_private_t   *priv             = NULL;
-        unsigned char   *locked_nodes     = NULL;
         int              count            = 0;
         int              ret              = -ENOMEM;
         int              idx              = -1;
+        int              d_idx            = -1;
+        unsigned char   *locked_nodes     = NULL;
+        afr_local_t     *local            = NULL;
+        afr_private_t   *priv             = NULL;
 
         priv = this->private;
         local = frame->local;
@@ -1090,19 +1151,31 @@ _afr_handle_replace_brick_type (xlator_t *this, call_frame_t *frame,
         locked_nodes = alloca0 (priv->child_count);
 
         idx = afr_index_for_transaction_type (type);
+        d_idx = afr_index_for_transaction_type (AFR_DATA_TRANSACTION);
 
         local->pending = afr_matrix_create (priv->child_count,
                                             AFR_NUM_CHANGE_LOGS);
         if (!local->pending)
                 goto out;
 
-        local->pending[rb_index][idx] = hton32 (1);
+        local->pending[empty_index][idx] = hton32 (1);
+
+        if ((priv->esh_granular) && (type == AFR_ENTRY_TRANSACTION))
+                        local->pending[empty_index][d_idx] = hton32 (1);
 
         local->xdata_req = dict_new ();
         if (!local->xdata_req)
                 goto out;
 
-        ret = afr_set_pending_dict (priv, local->xdata_req, local->pending);
+        ret = dict_set_str (local->xdata_req, "replicate-brick-op", op_type);
+        if (ret)
+                goto out;
+
+        local->xattr_req = dict_new ();
+        if (!local->xattr_req)
+                goto out;
+
+        ret = afr_set_pending_dict (priv, local->xattr_req, local->pending);
         if (ret < 0)
                 goto out;
 
@@ -1123,14 +1196,14 @@ _afr_handle_replace_brick_type (xlator_t *this, call_frame_t *frame,
                 goto unlock;
         }
 
-        ret = afr_rb_set_pending_changelog (frame, this, locked_nodes);
+        ret = afr_emptyb_set_pending_changelog (frame, this, locked_nodes);
         if (ret)
                 goto unlock;
         ret = 0;
 unlock:
         if (AFR_ENTRY_TRANSACTION == type) {
                 afr_selfheal_unentrylk (frame, this, loc->inode, this->name,
-                                        NULL, locked_nodes);
+                                        NULL, locked_nodes, NULL);
         } else {
                 afr_selfheal_uninodelk (frame, this, loc->inode, this->name,
                                         LLONG_MAX - 1, 0, locked_nodes);
@@ -1139,33 +1212,41 @@ out:
         return ret;
 }
 
-int
-_afr_handle_replace_brick_cbk (int ret, call_frame_t *frame, void *opaque)
+void
+afr_brick_args_cleanup (void *opaque)
 {
-        afr_replace_brick_args_t *data = NULL;
+        afr_empty_brick_args_t *data = NULL;
 
         data = opaque;
         loc_wipe (&data->loc);
         GF_FREE (data);
+}
+
+int
+_afr_handle_empty_brick_cbk (int ret, call_frame_t *frame, void *opaque)
+{
+        afr_brick_args_cleanup (opaque);
         return 0;
 }
 
 int
-_afr_handle_replace_brick (void *opaque)
+_afr_handle_empty_brick (void *opaque)
 {
 
         afr_local_t     *local          = NULL;
         afr_private_t   *priv           = NULL;
-        int              rb_index       = -1;
+        int              empty_index       = -1;
         int              ret            = -1;
         int              op_errno       = ENOMEM;
         call_frame_t    *frame          = NULL;
         xlator_t        *this           = NULL;
-        afr_replace_brick_args_t *data  = NULL;
+        char            *op_type        = NULL;
+        afr_empty_brick_args_t *data  = NULL;
 
         data = opaque;
         frame = data->frame;
-        rb_index = data->rb_index;
+        empty_index = data->empty_index;
+        op_type = data->op_type;
         this = frame->this;
         priv = this->private;
 
@@ -1175,11 +1256,11 @@ _afr_handle_replace_brick (void *opaque)
 
         loc_copy (&local->loc, &data->loc);
 
-        gf_msg_debug (this->name, 0, "Child being replaced is : %s",
-                      priv->children[rb_index]->name);
+        gf_msg (this->name, GF_LOG_INFO, 0, 0, "New brick is : %s",
+                priv->children[empty_index]->name);
 
-        ret = _afr_handle_replace_brick_type (this, frame, &local->loc, rb_index,
-                                              AFR_METADATA_TRANSACTION);
+        ret = _afr_handle_empty_brick_type (this, frame, &local->loc, empty_index,
+                                          AFR_METADATA_TRANSACTION, op_type);
         if (ret) {
                 op_errno = -ret;
                 ret = -1;
@@ -1187,12 +1268,14 @@ _afr_handle_replace_brick (void *opaque)
         }
 
         dict_unref (local->xdata_req);
+        dict_unref (local->xattr_req);
         afr_matrix_cleanup (local->pending, priv->child_count);
         local->pending = NULL;
+        local->xattr_req = NULL;
         local->xdata_req = NULL;
 
-        ret = _afr_handle_replace_brick_type (this, frame, &local->loc, rb_index,
-                                              AFR_ENTRY_TRANSACTION);
+        ret = _afr_handle_empty_brick_type (this, frame, &local->loc, empty_index,
+                                          AFR_ENTRY_TRANSACTION, op_type);
         if (ret) {
                 op_errno = -ret;
                 ret = -1;
@@ -1350,7 +1433,8 @@ afr_handle_split_brain_commands (xlator_t *this, call_frame_t *frame,
                 }
                 data->spb_child_index = spb_child_index;
                 data->frame = frame;
-                data->loc = loc;
+                loc_copy (&local->loc, loc);
+                data->loc = &local->loc;
                 ret = synctask_new (this->ctx->env,
                                     afr_can_set_split_brain_choice,
                                     afr_set_split_brain_choice, NULL, data);
@@ -1413,63 +1497,71 @@ afr_handle_spb_choice_timeout (xlator_t *this, call_frame_t *frame,
 }
 
 int
-afr_handle_replace_brick (xlator_t *this, call_frame_t *frame, loc_t *loc,
-                          dict_t *dict)
+afr_handle_empty_brick (xlator_t *this, call_frame_t *frame, loc_t *loc,
+                        dict_t *dict)
 {
         int             ret               = -1;
-        int             rb_index          = -1;
+        int             ab_ret            = -1;
+        int             empty_index        = -1;
         int             op_errno          = EPERM;
-        char           *replace_brick     = NULL;
-        afr_replace_brick_args_t *data    = NULL;
+        char           *empty_brick         = NULL;
+        char           *op_type           = NULL;
+        afr_empty_brick_args_t *data        = NULL;
 
-        ret =  dict_get_str (dict, GF_AFR_REPLACE_BRICK, &replace_brick);
+        ret =  dict_get_str (dict, GF_AFR_REPLACE_BRICK, &empty_brick);
+        if (!ret)
+                op_type = GF_AFR_REPLACE_BRICK;
 
-        if (!ret) {
-                if (frame->root->pid != GF_CLIENT_PID_SELF_HEALD) {
-                        gf_msg (this->name, GF_LOG_ERROR, EPERM,
-                                AFR_MSG_REPLACE_BRICK_STATUS, "'%s' is an "
-                                "internal extended attribute",
-                                GF_AFR_REPLACE_BRICK);
+        ab_ret = dict_get_str (dict, GF_AFR_ADD_BRICK, &empty_brick);
+        if (!ab_ret)
+                op_type = GF_AFR_ADD_BRICK;
+
+        if (ret && ab_ret)
+                goto out;
+
+        if (frame->root->pid != GF_CLIENT_PID_SELF_HEALD) {
+                gf_msg (this->name, GF_LOG_ERROR, EPERM,
+                        afr_get_msg_id (op_type),
+                        "'%s' is an internal extended attribute.",
+                        op_type);
+                ret = 1;
+                goto out;
+        }
+        empty_index = afr_get_child_index_from_name (this, empty_brick);
+
+        if (empty_index < 0) {
+                 /* Didn't belong to this replica pair
+                  * Just do a no-op
+                  */
+                AFR_STACK_UNWIND (setxattr, frame, 0, 0, NULL);
+                return 0;
+        } else {
+                data = GF_CALLOC (1, sizeof (*data),
+                                  gf_afr_mt_empty_brick_t);
+                if (!data) {
                         ret = 1;
+                        op_errno = ENOMEM;
                         goto out;
                 }
-                rb_index = afr_get_child_index_from_name (this, replace_brick);
-
-                if (rb_index < 0) {
-                         /* Didn't belong to this replica pair
-                          * Just do a no-op
-                          */
-                        AFR_STACK_UNWIND (setxattr, frame, 0, 0, NULL);
-                        return 0;
-                } else {
-                        data = GF_CALLOC (1, sizeof (*data),
-                                          gf_afr_mt_replace_brick_t);
-                        if (!data) {
-                                ret = 1;
-                                op_errno = ENOMEM;
-                                goto out;
-                        }
-                        data->frame = frame;
-                        loc_copy (&data->loc, loc);
-                        data->rb_index = rb_index;
-                        ret = synctask_new (this->ctx->env,
-                                            _afr_handle_replace_brick,
-                                            _afr_handle_replace_brick_cbk,
-                                            NULL, data);
-                        if (ret) {
-                                gf_msg (this->name, GF_LOG_ERROR, 0,
-                                        AFR_MSG_REPLACE_BRICK_FAILED,
-                                        "Failed to create synctask. Unable to "
-                                        "perform replace-brick.");
-                                ret = 1;
-                                op_errno = ENOMEM;
-                                loc_wipe (&data->loc);
-                                GF_FREE (data);
-                                goto out;
-                        }
+                data->frame = frame;
+                loc_copy (&data->loc, loc);
+                data->empty_index = empty_index;
+                data->op_type = op_type;
+                ret = synctask_new (this->ctx->env,
+                                    _afr_handle_empty_brick,
+                                    _afr_handle_empty_brick_cbk,
+                                    NULL, data);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                afr_get_msg_id (op_type),
+                                "Failed to create synctask.");
+                        ret = 1;
+                        op_errno = ENOMEM;
+                        afr_brick_args_cleanup (data);
+                        goto out;
                 }
-                ret = 0;
         }
+        ret = 0;
 out:
         if (ret == 1) {
                 AFR_STACK_UNWIND (setxattr, frame, -1, op_errno, NULL);
@@ -1492,7 +1584,8 @@ afr_handle_special_xattr (xlator_t *this, call_frame_t *frame, loc_t *loc,
         if (ret == 0)
                 goto out;
 
-        ret = afr_handle_replace_brick (this, frame, loc, dict);
+        /* Applicable for replace-brick and add-brick commands */
+        ret = afr_handle_empty_brick (this, frame, loc, dict);
 out:
         return ret;
 }

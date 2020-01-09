@@ -1,0 +1,84 @@
+From c55511be71a6181788067fa018b5f0deaca10e61 Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Thu, 28 Dec 2017 14:04:50 +0530
+Subject: [PATCH 115/128] eventsapi: JWT signing without external dependency
+
+Added support for JWT signing without using python-jwt since it is not
+available in all the distributions.
+
+>upstream mainline patch : https://review.gluster.org/19102
+
+BUG: 1466129
+Change-Id: I95699055442fbf9da15249f5defe8a8b287010f1
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126619
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ events/src/utils.py | 20 +++++++++++++++++---
+ glusterfs.spec.in   |  4 ++--
+ 2 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/events/src/utils.py b/events/src/utils.py
+index 5130720..f24d64d 100644
+--- a/events/src/utils.py
++++ b/events/src/utils.py
+@@ -18,6 +18,10 @@ from threading import Thread
+ import multiprocessing
+ from Queue import Queue
+ from datetime import datetime, timedelta
++import base64
++import hmac
++from hashlib import sha256
++from calendar import timegm
+ 
+ from eventsapiconf import (LOG_FILE,
+                            WEBHOOKS_FILE,
+@@ -184,15 +188,25 @@ def autoload_webhooks():
+             load_webhooks()
+ 
+ 
++def base64_urlencode(inp):
++    return base64.urlsafe_b64encode(inp).replace("=", "").strip()
++
++
+ def get_jwt_token(secret, event_type, event_ts, jwt_expiry_time_seconds=60):
+-    import jwt
++    exp = datetime.utcnow() + timedelta(seconds=jwt_expiry_time_seconds)
+     payload = {
+-        "exp": datetime.utcnow() + timedelta(seconds=jwt_expiry_time_seconds),
++        "exp": timegm(exp.utctimetuple()),
+         "iss": "gluster",
+         "sub": event_type,
+         "iat": event_ts
+     }
+-    return jwt.encode(payload, secret, algorithm='HS256')
++    header = '{"alg":"HS256","typ":"JWT"}'
++    payload = json.dumps(payload, separators=(',', ':'), sort_keys=True)
++    msg = base64_urlencode(header) + "." + base64_urlencode(payload)
++    return "%s.%s" % (
++        msg,
++        base64_urlencode(hmac.HMAC(secret, msg, sha256).digest())
++    )
+ 
+ 
+ def publish_to_webhook(url, token, secret, message_queue):
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 29329fa..56a62a9 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -671,9 +671,9 @@ Requires:         %{name}-server%{?_isa} = %{version}-%{release}
+ Requires:         python2 python-prettytable
+ Requires:         python2-gluster = %{version}-%{release}
+ %if ( 0%{?rhel} )
+-Requires:         python-requests python-jwt
++Requires:         python-requests
+ %else
+-Requires:         python2-requests python2-jwt
++Requires:         python2-requests
+ %endif
+ %if ( 0%{?rhel} && 0%{?rhel} < 7 )
+ Requires:         python-argparse
+-- 
+1.8.3.1
+

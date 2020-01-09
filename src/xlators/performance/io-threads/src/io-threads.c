@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "call-stub.h"
 #include "defaults.h"
 #include "glusterfs.h"
@@ -53,71 +48,70 @@ struct volume_options options[];
                 }                                                              \
         } while (0)
 
-call_stub_t *
-__iot_dequeue (iot_conf_t *conf, int *pri, struct timespec *sleep)
+iot_client_ctx_t *
+iot_get_ctx (xlator_t *this, client_t *client)
 {
-        call_stub_t  *stub = NULL;
-        int           i = 0;
-	struct timeval curtv = {0,}, difftv = {0,};
+        iot_client_ctx_t        *ctx    = NULL;
+        iot_client_ctx_t        *setted_ctx    = NULL;
+        int                      i;
+
+        if (client_ctx_get (client, this, (void **)&ctx) != 0) {
+                ctx = GF_CALLOC (IOT_PRI_MAX, sizeof(*ctx),
+                                 gf_iot_mt_client_ctx_t);
+                if (ctx) {
+                        for (i = 0; i < IOT_PRI_MAX; ++i) {
+                                INIT_LIST_HEAD (&ctx[i].clients);
+                                INIT_LIST_HEAD (&ctx[i].reqs);
+                        }
+                        setted_ctx = client_ctx_set (client, this, ctx);
+                        if (ctx != setted_ctx) {
+                                GF_FREE (ctx);
+                                ctx = setted_ctx;
+                        }
+                }
+        }
+
+        return ctx;
+}
+
+call_stub_t *
+__iot_dequeue (iot_conf_t *conf, int *pri)
+{
+        call_stub_t             *stub = NULL;
+        int                     i = 0;
+        iot_client_ctx_t        *ctx;
 
         *pri = -1;
-	sleep->tv_sec = 0;
-	sleep->tv_nsec = 0;
         for (i = 0; i < IOT_PRI_MAX; i++) {
-                if (list_empty (&conf->reqs[i]) ||
-                   (conf->ac_iot_count[i] >= conf->ac_iot_limit[i]))
+
+                if (conf->ac_iot_count[i] >= conf->ac_iot_limit[i]) {
                         continue;
+                }
 
-		if (i == IOT_PRI_LEAST) {
-			pthread_mutex_lock(&conf->throttle.lock);
-			if (!conf->throttle.sample_time.tv_sec) {
-				/* initialize */
-				gettimeofday(&conf->throttle.sample_time, NULL);
-			} else {
-				/*
-				 * Maintain a running count of least priority
-				 * operations that are handled over a particular
-				 * time interval. The count is provided via
-				 * state dump and is used as a measure against
-				 * least priority op throttling.
-				 */
-				gettimeofday(&curtv, NULL);
-				timersub(&curtv, &conf->throttle.sample_time,
-					 &difftv);
-				if (difftv.tv_sec >= IOT_LEAST_THROTTLE_DELAY) {
-					conf->throttle.cached_rate =
-						conf->throttle.sample_cnt;
-					conf->throttle.sample_cnt = 0;
-					conf->throttle.sample_time = curtv;
-				}
+                if (list_empty (&conf->clients[i])) {
+                        continue;
+                }
 
-				/*
-				 * If we're over the configured rate limit,
-				 * provide an absolute time to the caller that
-				 * represents the soonest we're allowed to
-				 * return another least priority request.
-				 */
-				if (conf->throttle.rate_limit &&
-				    conf->throttle.sample_cnt >=
-						conf->throttle.rate_limit) {
-					struct timeval delay;
-					delay.tv_sec = IOT_LEAST_THROTTLE_DELAY;
-					delay.tv_usec = 0;
+                /* Get the first per-client queue for this priority. */
+                ctx = list_first_entry (&conf->clients[i],
+                                        iot_client_ctx_t, clients);
+                if (!ctx) {
+                        continue;
+                }
 
-					timeradd(&conf->throttle.sample_time,
-						 &delay, &curtv);
-					TIMEVAL_TO_TIMESPEC(&curtv, sleep);
+                if (list_empty (&ctx->reqs)) {
+                        continue;
+                }
 
-					pthread_mutex_unlock(
-						&conf->throttle.lock);
-					break;
-				}
-			}
-			conf->throttle.sample_cnt++;
-			pthread_mutex_unlock(&conf->throttle.lock);
-		}
+                /* Get the first request on that queue. */
+                stub = list_first_entry (&ctx->reqs, call_stub_t, list);
+                list_del_init (&stub->list);
+                if (list_empty (&ctx->reqs)) {
+                        list_del_init (&ctx->clients);
+                } else {
+                        list_rotate_left (&conf->clients[i]);
+                }
 
-                stub = list_entry (conf->reqs[i].next, call_stub_t, list);
                 conf->ac_iot_count[i]++;
                 *pri = i;
                 break;
@@ -128,7 +122,6 @@ __iot_dequeue (iot_conf_t *conf, int *pri, struct timespec *sleep)
 
         conf->queue_size--;
         conf->queue_sizes[*pri]--;
-        list_del_init (&stub->list);
 
         return stub;
 }
@@ -137,15 +130,31 @@ __iot_dequeue (iot_conf_t *conf, int *pri, struct timespec *sleep)
 void
 __iot_enqueue (iot_conf_t *conf, call_stub_t *stub, int pri)
 {
+        client_t                *client = stub->frame->root->client;
+        iot_client_ctx_t        *ctx;
+
         if (pri < 0 || pri >= IOT_PRI_MAX)
                 pri = IOT_PRI_MAX-1;
 
-        list_add_tail (&stub->list, &conf->reqs[pri]);
+        if (client) {
+                ctx = iot_get_ctx (THIS, client);
+                if (ctx) {
+                        ctx = &ctx[pri];
+                }
+        } else {
+                ctx = NULL;
+        }
+        if (!ctx) {
+                ctx = &conf->no_client[pri];
+        }
+
+        if (list_empty (&ctx->reqs)) {
+                list_add_tail (&ctx->clients, &conf->clients[pri]);
+        }
+        list_add_tail (&stub->list, &ctx->reqs);
 
         conf->queue_size++;
         conf->queue_sizes[pri]++;
-
-        return;
 }
 
 
@@ -158,9 +167,7 @@ iot_worker (void *data)
         struct timespec   sleep_till = {0, };
         int               ret = 0;
         int               pri = -1;
-        char              timeout = 0;
-        char              bye = 0;
-	struct timespec	  sleep = {0,};
+        gf_boolean_t      bye = _gf_false;
 
         conf = data;
         this = conf->this;
@@ -176,6 +183,11 @@ iot_worker (void *data)
                                 pri = -1;
                         }
                         while (conf->queue_size == 0) {
+                                if (conf->down) {
+                                        bye = _gf_true;/*Avoid sleep*/
+                                        break;
+                                }
+
                                 conf->sleep_count++;
 
                                 ret = pthread_cond_timedwait (&conf->cond,
@@ -183,48 +195,39 @@ iot_worker (void *data)
                                                               &sleep_till);
                                 conf->sleep_count--;
 
-                                if (ret == ETIMEDOUT) {
-                                        timeout = 1;
+                                if (conf->down || ret == ETIMEDOUT) {
+                                        bye = _gf_true;
                                         break;
                                 }
                         }
 
-                        if (timeout) {
-                                if (conf->curr_count > IOT_MIN_THREADS) {
+                        if (bye) {
+                                if (conf->down || conf->curr_count > IOT_MIN_THREADS) {
                                         conf->curr_count--;
-                                        bye = 1;
+                                        if (conf->curr_count == 0)
+                                           pthread_cond_broadcast (&conf->cond);
                                         gf_msg_debug (conf->this->name, 0,
-                                                      "timeout, terminated. conf->curr_count=%d",
+                                                      "terminated. "
+                                                      "conf->curr_count=%d",
                                                       conf->curr_count);
                                 } else {
-                                        timeout = 0;
+                                        bye = _gf_false;
                                 }
                         }
 
-                        stub = __iot_dequeue (conf, &pri, &sleep);
-			if (!stub && (sleep.tv_sec || sleep.tv_nsec)) {
-				pthread_cond_timedwait(&conf->cond,
-						       &conf->mutex, &sleep);
-				pthread_mutex_unlock(&conf->mutex);
-				continue;
-			}
+                        if (!bye)
+                                stub = __iot_dequeue (conf, &pri);
                 }
                 pthread_mutex_unlock (&conf->mutex);
 
                 if (stub) /* guard against spurious wakeups */
                         call_resume (stub);
+                stub = NULL;
 
                 if (bye)
                         break;
         }
 
-        if (pri != -1) {
-                pthread_mutex_lock (&conf->mutex);
-                {
-                        conf->ac_iot_count[pri]--;
-                }
-                pthread_mutex_unlock (&conf->mutex);
-        }
         return NULL;
 }
 
@@ -294,6 +297,8 @@ iot_schedule (call_frame_t *frame, xlator_t *this, call_stub_t *stub)
         case GF_FOP_STATFS:
         case GF_FOP_READDIR:
         case GF_FOP_READDIRP:
+        case GF_FOP_GETACTIVELK:
+        case GF_FOP_SETACTIVELK:
                 pri = IOT_PRI_HI;
                 break;
 
@@ -304,6 +309,7 @@ iot_schedule (call_frame_t *frame, xlator_t *this, call_stub_t *stub)
         case GF_FOP_FINODELK:
         case GF_FOP_ENTRYLK:
         case GF_FOP_FENTRYLK:
+        case GF_FOP_LEASE:
         case GF_FOP_UNLINK:
         case GF_FOP_SETATTR:
         case GF_FOP_FSETATTR:
@@ -331,9 +337,10 @@ iot_schedule (call_frame_t *frame, xlator_t *this, call_stub_t *stub)
         case GF_FOP_XATTROP:
         case GF_FOP_FXATTROP:
         case GF_FOP_RCHECKSUM:
-	case GF_FOP_FALLOCATE:
-	case GF_FOP_DISCARD:
+        case GF_FOP_FALLOCATE:
+        case GF_FOP_DISCARD:
         case GF_FOP_ZEROFILL:
+        case GF_FOP_SEEK:
                 pri = IOT_PRI_LO;
                 break;
 
@@ -717,7 +724,7 @@ iot_rchecksum (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
 }
 
 int
-iot_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
+iot_fallocate (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
 	      off_t offset, size_t len, dict_t *xdata)
 {
         IOT_FOP (fallocate, frame, this, fd, mode, offset, len, xdata);
@@ -725,7 +732,7 @@ iot_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
 }
 
 int
-iot_discard(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+iot_discard (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
 	    size_t len, dict_t *xdata)
 {
         IOT_FOP (discard, frame, this, fd, offset, len, xdata);
@@ -733,10 +740,42 @@ iot_discard(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
 }
 
 int
-iot_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+iot_zerofill (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
             off_t len, dict_t *xdata)
 {
         IOT_FOP (zerofill, frame, this, fd, offset, len, xdata);
+        return 0;
+}
+
+int
+iot_seek (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+          gf_seek_what_t what, dict_t *xdata)
+{
+        IOT_FOP (seek, frame, this, fd, offset, what, xdata);
+        return 0;
+}
+
+int
+iot_lease (call_frame_t *frame, xlator_t *this, loc_t *loc,
+           struct gf_lease *lease, dict_t *xdata)
+{
+        IOT_FOP (lease, frame, this, loc, lease, xdata);
+        return 0;
+}
+
+int
+iot_getactivelk (call_frame_t *frame, xlator_t *this,
+                 loc_t *loc, dict_t *xdata)
+{
+        IOT_FOP (getactivelk, frame, this, loc, xdata);
+        return 0;
+}
+
+int
+iot_setactivelk (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                 lock_migration_info_t *locklist, dict_t *xdata)
+{
+        IOT_FOP (setactivelk, frame, this, loc, locklist, xdata);
         return 0;
 }
 
@@ -749,6 +788,7 @@ __iot_workers_scale (iot_conf_t *conf)
         pthread_t thread;
         int       ret = 0;
         int       i = 0;
+        char      thread_name[GF_THREAD_NAMEMAX] = {0,};
 
         for (i = 0; i < IOT_PRI_MAX; i++)
                 scale += min (conf->queue_sizes[i], conf->ac_iot_limit[i]);
@@ -766,7 +806,10 @@ __iot_workers_scale (iot_conf_t *conf)
         while (diff) {
                 diff --;
 
-                ret = gf_thread_create (&thread, &conf->w_attr, iot_worker, conf);
+                snprintf (thread_name, sizeof(thread_name),
+                          "%s%d", "iotwr", conf->curr_count);
+                ret = gf_thread_create (&thread, &conf->w_attr, iot_worker,
+                                        conf, thread_name);
                 if (ret == 0) {
                         conf->curr_count++;
                         gf_msg_debug (conf->this->name, 0,
@@ -883,10 +926,6 @@ iot_priv_dump (xlator_t *this)
         gf_proc_dump_write("least_priority_threads", "%d",
                            conf->ac_iot_limit[IOT_PRI_LEAST]);
 
-	gf_proc_dump_write("cached least rate", "%u",
-			   conf->throttle.cached_rate);
-	gf_proc_dump_write("least rate limit", "%u", conf->throttle.rate_limit);
-
         return 0;
 }
 
@@ -917,9 +956,6 @@ reconfigure (xlator_t *this, dict_t *options)
                           out);
         GF_OPTION_RECONF ("enable-least-priority", conf->least_priority,
                           options, bool, out);
-
-	GF_OPTION_RECONF("least-rate-limit", conf->throttle.rate_limit, options,
-			 int32, out);
 
 	ret = 0;
 out:
@@ -962,6 +998,7 @@ init (xlator_t *this)
                         "pthread_cond_init failed (%d)", ret);
                 goto out;
         }
+        conf->cond_inited = _gf_true;
 
         if ((ret = pthread_mutex_init(&conf->mutex, NULL)) != 0) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -969,6 +1006,7 @@ init (xlator_t *this)
                         "pthread_mutex_init failed (%d)", ret);
                 goto out;
         }
+        conf->mutex_inited = _gf_true;
 
         set_stack_size (conf);
 
@@ -990,19 +1028,12 @@ init (xlator_t *this)
         GF_OPTION_INIT ("enable-least-priority", conf->least_priority,
                         bool, out);
 
-	GF_OPTION_INIT("least-rate-limit", conf->throttle.rate_limit, int32,
-		       out);
-        if ((ret = pthread_mutex_init(&conf->throttle.lock, NULL)) != 0) {
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        IO_THREADS_MSG_INIT_FAILED,
-                        "pthread_mutex_init failed (%d)", ret);
-                goto out;
-        }
-
         conf->this = this;
 
         for (i = 0; i < IOT_PRI_MAX; i++) {
-                INIT_LIST_HEAD (&conf->reqs[i]);
+                INIT_LIST_HEAD (&conf->clients[i]);
+                INIT_LIST_HEAD (&conf->no_client[i].clients);
+                INIT_LIST_HEAD (&conf->no_client[i].reqs);
         }
 
 	ret = iot_workers_scale (conf);
@@ -1023,17 +1054,69 @@ out:
 	return ret;
 }
 
+static void
+iot_exit_threads (iot_conf_t *conf)
+{
+        pthread_mutex_lock (&conf->mutex);
+        {
+                conf->down = _gf_true;
+                /*Let all the threads know that xl is going down*/
+                pthread_cond_broadcast (&conf->cond);
+                while (conf->curr_count)/*Wait for threads to exit*/
+                        pthread_cond_wait (&conf->cond, &conf->mutex);
+        }
+        pthread_mutex_unlock (&conf->mutex);
+}
+
+int
+notify (xlator_t *this, int32_t event, void *data, ...)
+{
+        iot_conf_t *conf = this->private;
+
+        if ((GF_EVENT_PARENT_DOWN == event) ||
+            (GF_EVENT_CLEANUP == event))
+                iot_exit_threads (conf);
+
+        default_notify (this, event, data);
+
+        return 0;
+}
 
 void
 fini (xlator_t *this)
 {
 	iot_conf_t *conf = this->private;
 
+        if (!conf)
+                return;
+
+        if (conf->mutex_inited && conf->cond_inited)
+                iot_exit_threads (conf);
+
+        if (conf->cond_inited)
+                pthread_cond_destroy (&conf->cond);
+
+        if (conf->mutex_inited)
+                pthread_mutex_destroy (&conf->mutex);
+
 	GF_FREE (conf);
 
 	this->private = NULL;
 	return;
 }
+
+int
+iot_client_destroy (xlator_t *this, client_t *client)
+{
+        void    *tmp    = NULL;
+
+        if (client_ctx_del (client, this, &tmp) == 0) {
+                GF_FREE (tmp);
+        }
+
+        return 0;
+}
+
 
 struct xlator_dumpops dumpops = {
         .priv    = iot_priv_dump,
@@ -1079,14 +1162,20 @@ struct xlator_fops fops = {
         .entrylk     = iot_entrylk,
         .fentrylk    = iot_fentrylk,
         .xattrop     = iot_xattrop,
-	.fxattrop    = iot_fxattrop,
+        .fxattrop    = iot_fxattrop,
         .rchecksum   = iot_rchecksum,
-	.fallocate   = iot_fallocate,
-	.discard     = iot_discard,
+        .fallocate   = iot_fallocate,
+        .discard     = iot_discard,
         .zerofill    = iot_zerofill,
+        .seek        = iot_seek,
+        .lease       = iot_lease,
+        .getactivelk = iot_getactivelk,
+        .setactivelk = iot_setactivelk,
 };
 
-struct xlator_cbks cbks;
+struct xlator_cbks cbks = {
+        .client_destroy = iot_client_destroy,
+};
 
 struct volume_options options[] = {
 	{ .key  = {"thread-count"},
@@ -1144,14 +1233,6 @@ struct volume_options options[] = {
          .max   = 0x7fffffff,
          .default_value = "120",
         },
-	{.key	= {"least-rate-limit"},
-	 .type	= GF_OPTION_TYPE_INT,
-	 .min	= 0,
-         .max	= INT_MAX,
-	 .default_value = "0",
-	 .description = "Max number of least priority operations to handle "
-			"per-second"
-	},
 	{ .key  = {NULL},
         },
 };

@@ -8,14 +8,10 @@
    cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include "defaults.h"
 #include "glusterfs.h"
+#include "syscall.h"
 #include "compat-errno.h"
 
 #include "glusterd.h"
@@ -25,9 +21,10 @@
 #include "glusterd-snapshot-utils.h"
 #include "glusterd-svc-mgmt.h"
 #include "glusterd-snapd-svc-helper.h"
+#include "glusterd-tierd-svc-helper.h"
+#include "glusterd-volgen.h"
 #include "glusterd-quotad-svc.h"
 #include "glusterd-messages.h"
-
 #include "glusterfs3.h"
 #include "protocol-common.h"
 #include "rpcsvc.h"
@@ -160,7 +157,28 @@ out:
         return ret;
 }
 
-static size_t
+int32_t
+glusterd_get_client_per_brick_volfile (glusterd_volinfo_t *volinfo,
+                                       char *filename, char *path, int path_len)
+{
+        char                    workdir[PATH_MAX]      = {0,};
+        glusterd_conf_t        *priv                   = NULL;
+        int32_t                 ret                    = -1;
+
+        GF_VALIDATE_OR_GOTO ("glusterd", THIS, out);
+        priv = THIS->private;
+        GF_VALIDATE_OR_GOTO (THIS->name, priv, out);
+
+        GLUSTERD_GET_VOLUME_DIR (workdir, volinfo, priv);
+
+        snprintf (path, path_len, "%s/%s", workdir, filename);
+
+        ret = 0;
+out:
+        return ret;
+}
+
+size_t
 build_volfile_path (char *volume_id, char *path,
                     size_t path_len, char *trusted_str)
 {
@@ -202,6 +220,28 @@ build_volfile_path (char *volume_id, char *path,
                         goto out;
                 }
                 glusterd_svc_build_snapd_volfile (volinfo, path, path_len);
+                ret = 0;
+                goto out;
+
+        }
+
+        volid_ptr = strstr (volume_id, "tierd/");
+        if (volid_ptr) {
+                volid_ptr = strchr (volid_ptr, '/');
+                if (!volid_ptr) {
+                        ret = -1;
+                        goto out;
+                }
+                volid_ptr++;
+
+                ret = glusterd_volinfo_find (volid_ptr, &volinfo);
+                if (ret == -1) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_VOLINFO_GET_FAIL,
+                                "Couldn't find volinfo");
+                        goto out;
+                }
+                glusterd_svc_build_tierd_volfile_path (volinfo, path, path_len);
                 ret = 0;
                 goto out;
 
@@ -268,6 +308,49 @@ build_volfile_path (char *volume_id, char *path,
                 goto out;
         }
 
+        volid_ptr = strstr (volume_id, "client_per_brick/");
+        if (volid_ptr) {
+                volid_ptr = strchr (volid_ptr, '/');
+                if (!volid_ptr) {
+                        ret = -1;
+                        goto out;
+                }
+                volid_ptr++;
+
+                dup_volname = gf_strdup (volid_ptr);
+                if (!dup_volname) {
+                        gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
+                                GD_MSG_NO_MEMORY,
+                                "strdup failed");
+                        ret = -1;
+                        goto out;
+                }
+
+                /* Split the volume name */
+                vol = strtok_r (dup_volname, ".", &save_ptr);
+                if (!vol) {
+                        ret = -1;
+                        goto out;
+                }
+                ret = glusterd_volinfo_find (vol, &volinfo);
+                if (ret == -1) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_VOLINFO_GET_FAIL,
+                                "Couldn't find volinfo");
+                        goto out;
+                }
+                ret = glusterd_get_client_per_brick_volfile (volinfo, volid_ptr,
+                                                             path, path_len);
+                if (ret < 0) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_NO_MEMORY, "failed to get volinfo path");
+                        goto out;
+                }
+
+                ret = sys_access (path, F_OK);
+                goto out;
+        }
+
         if (volume_id[0] == '/') {
                 /* Normal behavior */
                 volid_ptr = volume_id;
@@ -311,7 +394,7 @@ gotvolinfo:
         if (ret == -1)
                 goto out;
 
-        ret = stat (path, &stbuf);
+        ret = sys_stat (path, &stbuf);
 
         if ((ret == -1) && (errno == ENOENT)) {
                 strncpy (dup_volid, volid_ptr, (PATH_MAX - 1));
@@ -335,7 +418,7 @@ gotvolinfo:
                           path_prefix, volinfo->volname,
                           (trusted_str ? trusted_str : ""),
                           dup_volid);
-                ret = stat (path, &stbuf);
+                ret = sys_stat (path, &stbuf);
         }
 out:
         if (dup_volname)
@@ -358,6 +441,7 @@ glusterd_get_args_from_dict (gf_getspec_req *args, peer_info_t *peerinfo,
         int        client_min_op_version = 1;
         int32_t    ret                   = -1;
         xlator_t  *this                  = NULL;
+        char      *name                  = NULL;
 
         this = THIS;
         GF_ASSERT (this);
@@ -402,12 +486,16 @@ glusterd_get_args_from_dict (gf_getspec_req *args, peer_info_t *peerinfo,
                 goto out;
         }
 
-        ret = dict_get_str (dict, "brick_name",
-                            brick_name);
+        ret = dict_get_str (dict, "brick_name", &name);
         if (ret) {
                 gf_msg_debug (this->name, 0,
                         "No brick name present");
                 ret = 0;
+                goto out;
+        }
+        *brick_name = gf_strdup(name);
+        if (*brick_name == NULL) {
+                ret = -1;
                 goto out;
         }
 
@@ -415,6 +503,10 @@ glusterd_get_args_from_dict (gf_getspec_req *args, peer_info_t *peerinfo,
 out:
         peerinfo->max_op_version = client_max_op_version;
         peerinfo->min_op_version = client_min_op_version;
+
+        if (dict)
+                dict_unref (dict);
+
 
         return ret;
 }
@@ -555,7 +647,7 @@ glusterd_create_missed_snap (glusterd_missed_snap_info *missed_snapinfo,
 
         /* Create and mount the snap brick */
         ret = glusterd_snap_brick_create (snap_vol, brickinfo,
-                                          snap_opinfo->brick_num - 1);
+                                          snap_opinfo->brick_num - 1, 0);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_BRICK_CREATION_FAIL, "Failed to "
@@ -754,6 +846,7 @@ __server_getspec (rpcsvc_request_t *req)
         peerinfo = &req->trans->peerinfo;
 
         volume = args.key;
+
         /* Need to strip leading '/' from volnames. This was introduced to
          * support nfs style mount parameters for native gluster mount
          */
@@ -804,7 +897,7 @@ __server_getspec (rpcsvc_request_t *req)
 
         if (ret == 0) {
                 /* to allocate the proper buffer to hold the file data */
-                ret = stat (filename, &stbuf);
+                ret = sys_stat (filename, &stbuf);
                 if (ret < 0){
                         gf_msg ("glusterd", GF_LOG_ERROR, errno,
                                 GD_MSG_FILE_OP_FAILED,
@@ -834,7 +927,7 @@ __server_getspec (rpcsvc_request_t *req)
                         op_errno = ENOMEM;
                         goto fail;
                 }
-                ret = read (spec_fd, rsp.spec, file_len);
+                ret = sys_read (spec_fd, rsp.spec, file_len);
         }
 
         if (brick_name) {
@@ -853,7 +946,9 @@ __server_getspec (rpcsvc_request_t *req)
         /* convert to XDR */
 fail:
         if (spec_fd > 0)
-                close (spec_fd);
+                sys_close (spec_fd);
+
+        GF_FREE(brick_name);
 
         rsp.op_ret   = ret;
 
@@ -869,6 +964,8 @@ fail:
                                (xdrproc_t)xdr_gf_getspec_rsp);
         free (args.key);//malloced by xdr
         free (rsp.spec);
+        if (args.xdata.xdata_val)
+                free (args.xdata.xdata_val);
 
         return 0;
 }
@@ -924,6 +1021,7 @@ __server_event_notify (rpcsvc_request_t *req)
                 gf_msg ("glusterd", GF_LOG_ERROR, EINVAL,
                         GD_MSG_OP_UNSUPPORTED, "Unknown op received in event "
                         "notify");
+                gf_event (EVENT_NOTIFY_UNKNOWN_OP, "op=%d", args.op);
                 ret = -1;
                 break;
         }
@@ -1032,15 +1130,39 @@ gd_validate_mgmt_hndsk_req (rpcsvc_request_t *req, dict_t *dict)
         if (ret)
                 return _gf_false;
 
+        /* If peer object is not found it indicates that request is from an
+         * unknown peer, if its found, validate whether its uuid is also
+         * available in the peerinfo list. There could be a case where hostname
+         * is available in the peerinfo list but the uuid has changed of the
+         * node due to a reinstall, in that case the validation should fail!
+         */
         rcu_read_lock ();
-        ret = (glusterd_peerinfo_find (NULL, hostname) == NULL);
+        if (!uuid_str) {
+                ret = (glusterd_peerinfo_find (NULL, hostname) == NULL);
+        } else {
+                peer = glusterd_peerinfo_find (NULL, hostname);
+                if (!peer) {
+                        ret = -1;
+                } else if (peer &&
+                           glusterd_peerinfo_find (peer_uuid, NULL) != NULL) {
+                        ret = 0;
+                } else {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_HANDSHAKE_REQ_REJECTED, "Request from "
+                                "peer %s has an entry in peerinfo, but uuid "
+                                "does not match",
+                                req->trans->peerinfo.identifier);
+                        ret = -1;
+                }
+        }
         rcu_read_unlock ();
-
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_HANDSHAKE_REQ_REJECTED, "Rejecting management "
                         "handshake request from unknown peer %s",
                         req->trans->peerinfo.identifier);
+                gf_event (EVENT_PEER_REJECT, "peer=%s",
+                          req->trans->peerinfo.identifier);
                 return _gf_false;
         }
 
@@ -1306,7 +1428,7 @@ __server_get_volume_info (rpcsvc_request_t *req)
                 goto out;
         }
 
-        if (flags | (int32_t)GF_GET_VOLUME_UUID) {
+        if (flags & (int32_t)GF_GET_VOLUME_UUID) {
                 volume_id_str = gf_strdup (uuid_utoa (volinfo->volume_id));
                 if (!volume_id_str) {
                         op_errno = ENOMEM;
@@ -1379,7 +1501,6 @@ __server_get_snap_info (rpcsvc_request_t *req)
         gf_getsnap_name_uuid_rsp        snap_info_rsp   = {0,};
         dict_t                          *dict           = NULL;
         dict_t                          *dict_rsp       = NULL;
-        glusterd_volinfo_t              *volinfo        = NULL;
         char                            *volname        = NULL;
 
         GF_ASSERT (req);
@@ -1667,7 +1788,6 @@ __glusterd_mgmt_hndsk_version_ack_cbk (struct rpc_req *req, struct iovec *iov,
                                      int count, void *myframe)
 {
         int                  ret      = -1;
-        int                  op_errno = EINVAL;
         gf_mgmt_hndsk_rsp    rsp      = {0,};
         xlator_t            *this     = NULL;
         call_frame_t        *frame    = NULL;
@@ -1706,7 +1826,6 @@ __glusterd_mgmt_hndsk_version_ack_cbk (struct rpc_req *req, struct iovec *iov,
                 goto out;
         }
 
-        op_errno = rsp.op_errno;
         if (-1 == rsp.op_ret) {
                 ret = -1;
                 snprintf (msg, sizeof (msg),
@@ -1741,7 +1860,7 @@ __glusterd_mgmt_hndsk_version_ack_cbk (struct rpc_req *req, struct iovec *iov,
 out:
 
         if (ret != 0 && peerinfo)
-                rpc_transport_disconnect (peerinfo->rpc->conn.trans);
+                rpc_transport_disconnect (peerinfo->rpc->conn.trans, _gf_false);
 
         rcu_read_unlock ();
 
@@ -1866,7 +1985,8 @@ out:
                 frame->local = NULL;
                 STACK_DESTROY (frame->root);
                 if (peerinfo)
-                        rpc_transport_disconnect (peerinfo->rpc->conn.trans);
+                        rpc_transport_disconnect (peerinfo->rpc->conn.trans,
+                                                  _gf_false);
         }
 
         rcu_read_unlock ();
@@ -1902,7 +2022,6 @@ glusterd_mgmt_handshake (xlator_t *this, glusterd_peerctx_t *peerctx)
         glusterd_peerinfo_t *peerinfo = NULL;
         dict_t              *req_dict = NULL;
         int                  ret      = -1;
-        int                  op_errno = EINVAL;
 
         frame = create_frame (this, this->ctx->pool);
         if (!frame)
@@ -1924,7 +2043,7 @@ glusterd_mgmt_handshake (xlator_t *this, glusterd_peerctx_t *peerctx)
         }
 
         GF_PROTOCOL_DICT_SERIALIZE (this, req_dict, (&req.hndsk.hndsk_val),
-                                    req.hndsk.hndsk_len, op_errno, out);
+                                    req.hndsk.hndsk_len, ret, out);
 
         rcu_read_lock ();
 
@@ -2136,7 +2255,7 @@ __glusterd_peer_dump_version_cbk (struct rpc_req *req, struct iovec *iov,
 
 out:
         if (ret != 0 && peerinfo)
-                rpc_transport_disconnect (peerinfo->rpc->conn.trans);
+                rpc_transport_disconnect (peerinfo->rpc->conn.trans, _gf_false);
 
         rcu_read_unlock ();
 

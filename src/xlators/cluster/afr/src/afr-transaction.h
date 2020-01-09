@@ -16,8 +16,6 @@
 void
 afr_transaction_fop_failed (call_frame_t *frame, xlator_t *this,
 			    int child_index);
-void
-afr_txn_arbitrate_fop_cbk (call_frame_t *frame, xlator_t *this);
 
 int
 afr_lock_server_count (afr_private_t *priv, afr_transaction_type type);
@@ -52,5 +50,15 @@ int __afr_txn_write_fop (call_frame_t *frame, xlator_t *this);
 int __afr_txn_write_done (call_frame_t *frame, xlator_t *this);
 call_frame_t *afr_transaction_detach_fop_frame (call_frame_t *frame);
 gf_boolean_t afr_has_quorum (unsigned char *subvols, xlator_t *this);
+gf_boolean_t afr_needs_changelog_update (afr_local_t *local);
+void afr_zero_fill_stat (afr_local_t *local);
 
+void
+afr_pick_error_xdata (afr_local_t *local, afr_private_t *priv,
+                      inode_t *inode1, unsigned char *readable1,
+                      inode_t *inode2, unsigned char *readable2);
+int
+afr_pre_op_writev_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                       int op_ret, int op_errno,
+                       void *data, dict_t *xdata);
 #endif /* __TRANSACTION_H__ */

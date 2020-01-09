@@ -54,25 +54,32 @@ af_inet_bind_to_port_lt_ceiling (struct rdma_cm_id *cm_id,
                                  struct sockaddr *sockaddr,
                                  socklen_t sockaddr_len, uint32_t ceiling)
 {
-        int32_t        ret        = -1;
-        uint16_t      port        = ceiling - 1;
-        /* by default assume none of the ports are blocked and all are available */
-        gf_boolean_t  ports[GF_PORT_MAX] = {_gf_false,};
-        int           i           = 0;
+#if GF_DISABLE_PRIVPORT_TRACKING
+        _assign_port (sockaddr, 0);
+        return rdma_bind_addr (cm_id, sockaddr);
+#else
+        int32_t         ret                             = -1;
+        uint16_t        port                            = ceiling - 1;
+        unsigned char   ports[GF_PORT_ARRAY_SIZE]       = {0,};
+        int             i                               = 0;
 
+loop:
         ret = gf_process_reserved_ports (ports, ceiling);
-        if (ret != 0) {
-                for (i = 0; i < GF_PORT_MAX; i++)
-                        ports[i] = _gf_false;
-        }
 
         while (port) {
-                _assign_port (sockaddr, port);
+                if (port == GF_CLIENT_PORT_CEILING) {
+                        ret = -1;
+                        break;
+                }
+
                 /* ignore the reserved ports */
-                if (ports[port] == _gf_true) {
+                if (BIT_VALUE (ports, port)) {
                         port--;
                         continue;
                 }
+
+                _assign_port (sockaddr, port);
+
                 ret = rdma_bind_addr (cm_id, sockaddr);
 
                 if (ret == 0)
@@ -84,7 +91,20 @@ af_inet_bind_to_port_lt_ceiling (struct rdma_cm_id *cm_id,
                 port--;
         }
 
+        /* Incase if all the secure ports are exhausted, we are no more
+         * binding to secure ports, hence instead of getting a random
+         * port, lets define the range to restrict it from getting from
+         * ports reserved for bricks i.e from range of 49152 - 65535
+         * which further may lead to port clash */
+        if (!port) {
+                ceiling = port = GF_CLNT_INSECURE_PORT_CEILING;
+                for (i = 0; i <= ceiling; i++)
+                        BIT_CLEAR (ports, i);
+                goto loop;
+        }
+
         return ret;
+#endif /* GF_DISABLE_PRIVPORT_TRACKING */
 }
 
 #if 0
@@ -433,8 +453,8 @@ gf_rdma_client_bind (rpc_transport_t *this, struct sockaddr *sockaddr,
         case AF_INET6:
                 if (!this->bind_insecure) {
                         ret = af_inet_bind_to_port_lt_ceiling (cm_id, sockaddr,
-                                                       *sockaddr_len,
-                                                       GF_CLIENT_PORT_CEILING);
+                                                               *sockaddr_len,
+                                                               GF_CLIENT_PORT_CEILING);
                         if (ret == -1) {
                                 gf_msg (this->name, GF_LOG_WARNING, errno,
                                         RDMA_MSG_PORT_BIND_FAILED,
@@ -443,13 +463,14 @@ gf_rdma_client_bind (rpc_transport_t *this, struct sockaddr *sockaddr,
                         }
                 } else {
                         ret = af_inet_bind_to_port_lt_ceiling (cm_id, sockaddr,
-                                                       *sockaddr_len,
-                                                       GF_PORT_MAX);
+                                                               *sockaddr_len,
+                                                               GF_IANA_PRIV_PORTS_START);
                         if (ret == -1) {
                                 gf_msg (this->name, GF_LOG_WARNING, errno,
                                         RDMA_MSG_PORT_BIND_FAILED,
                                         "cannot bind rdma_cm_id to port "
-                                        "less than %d", GF_PORT_MAX);
+                                        "less than %d",
+                                        GF_IANA_PRIV_PORTS_START);
                         }
                 }
                 break;

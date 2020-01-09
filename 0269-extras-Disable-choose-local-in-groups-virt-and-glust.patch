@@ -1,0 +1,42 @@
+From 79b42b350da05615422443aa34b5af1909786ee5 Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Thu, 12 Apr 2018 13:41:29 +0530
+Subject: [PATCH 269/271] extras: Disable choose-local in groups virt and
+ gluster-block
+
+> Upstream: https://review.gluster.org/19855
+> BUG: 1566386
+> Change-Id: Icba68406d86623195d59d6ee668e0850c037c63a
+
+Change-Id: If5575abf3c737fbfc7454d008b945530ed9b7bb3
+BUG: 1568297
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/135960
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ extras/group-gluster-block | 1 +
+ extras/group-virt.example  | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/extras/group-gluster-block b/extras/group-gluster-block
+index e94f834..d619255 100644
+--- a/extras/group-gluster-block
++++ b/extras/group-gluster-block
+@@ -16,3 +16,4 @@ features.shard=on
+ features.shard-block-size=64MB
+ user.cifs=off
+ server.allow-insecure=on
++cluster.choose-local=off
+diff --git a/extras/group-virt.example b/extras/group-virt.example
+index 403bed6..7e34b72 100644
+--- a/extras/group-virt.example
++++ b/extras/group-virt.example
+@@ -12,3 +12,4 @@ cluster.shd-max-threads=8
+ cluster.shd-wait-qlength=10000
+ features.shard=on
+ user.cifs=off
++cluster.choose-local=off
+-- 
+1.8.3.1
+

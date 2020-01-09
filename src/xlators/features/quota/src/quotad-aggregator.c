@@ -38,8 +38,9 @@ quotad_serialize_reply (rpcsvc_request_t *req, void *arg, struct iovec *outmsg,
                 };
 
                 iobuf_to_iovec (iob, outmsg);
-                /* Use the given serializer to translate the give C structure in arg
-                 * to XDR format which will be written into the buffer in outmsg.
+                /* Use the given serializer to translate the given C structure
+                 * in arg to XDR format which will be written into the buffer
+                 * in outmsg.
                  */
                 /* retlen is used to received the error since size_t is unsigned and we
                  * need -1 for error notification during encoding.
@@ -48,7 +49,7 @@ quotad_serialize_reply (rpcsvc_request_t *req, void *arg, struct iovec *outmsg,
                 retlen = xdr_serialize_generic (*outmsg, arg, xdrproc);
                 if (retlen == -1) {
                         /* Failed to Encode 'GlusterFS' msg in RPC is not exactly
-                           failure of RPC return values.. client should get
+                           failure of RPC return values.. Client should get
                            notified about this, so there are no missing frames */
                         gf_log_callingfn ("", GF_LOG_ERROR, "Failed to encode message");
                         req->rpc_err = GARBAGE_ARGS;
@@ -181,7 +182,6 @@ quotad_aggregator_getlimit (rpcsvc_request_t *req)
         gf_cli_req                 cli_req = {{0}, };
         gf_cli_rsp                 cli_rsp = {0};
         gfs3_lookup_req            args  = {{0,},};
-        gfs3_lookup_rsp            rsp   = {0,};
         quotad_aggregator_state_t *state = NULL;
         xlator_t                  *this  = NULL;
         dict_t                    *dict  = NULL;
@@ -224,8 +224,8 @@ quotad_aggregator_getlimit (rpcsvc_request_t *req)
 
         frame = quotad_aggregator_get_frame_from_req (req);
         if (frame == NULL) {
-                rsp.op_errno = ENOMEM;
-                goto err;
+                cli_rsp.op_errno = ENOMEM;
+                goto errx;
         }
         state = frame->root->state;
         state->xdata = dict;
@@ -257,15 +257,16 @@ quotad_aggregator_getlimit (rpcsvc_request_t *req)
         ret = qd_nameless_lookup (this, frame, &args, state->xdata,
                                   quotad_aggregator_getlimit_cbk);
         if (ret) {
-                rsp.op_errno = ret;
-                goto err;
+                cli_rsp.op_errno = ret;
+                goto errx;
         }
 
         return ret;
 
 err:
-        cli_rsp.op_ret = -1;
         cli_rsp.op_errno = op_errno;
+errx:
+        cli_rsp.op_ret = -1;
         cli_rsp.op_errstr = "";
 
         quotad_aggregator_getlimit_cbk (this, frame, &cli_rsp);

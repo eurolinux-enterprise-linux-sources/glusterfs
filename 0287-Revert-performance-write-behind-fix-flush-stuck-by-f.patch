@@ -1,0 +1,78 @@
+From 3e7c6b338deb7a8b95b208b1aa087f97fb58549f Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Fri, 25 May 2018 08:16:41 +0530
+Subject: [PATCH 287/305] Revert "performance/write-behind: fix flush stuck by
+ former failed writes"
+
+This reverts commit 9340b3c7a6c8556d6f1d4046de0dbd1946a64963.
+
+operations/writes across different fds of the same file cannot be
+considered as independent. For eg., man 2 fsync states,
+
+<man 2 fsync>
+
+fsync()  transfers  ("flushes")  all  modified  in-core  data of
+(i.e., modified buffer cache pages for) the file referred to by the
+file descriptor fd to the disk device
+
+</man>
+
+This means fsync is an operation on file and fd is just a way to reach
+file. So, it has to sync writes done on other fds too. Patch
+9340b3c7a6c, prevents this.
+
+The problem fixed by patch 9340b3c7a6c - a flush on an fd is hung on a
+failed write (held in cache for retrying) on a different fd - is
+solved in this patch by making sure __wb_request_waiting_on considers
+failed writes on any fd as dependent on flush/fsync on any fd (not
+just the fd on which writes happened) opened on the same file. This
+means failed writes on any fd are either synced or thrown away on
+witnessing flush/fsync on any fd of the same file.
+
+>Change-Id: Iee748cebb6d2a5b32f9328aff2b5b7cbf6c52c05
+>Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+>Updates: bz#1512691
+
+upstream patch: https://review.gluster.org/20082
+BUG: 1518710
+Change-Id: Ie9df1cb2fcd698db3d186485fd61ea6dc1c1fcb7
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140063
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Csaba Henk <chenk@redhat.com>
+Tested-by: Csaba Henk <chenk@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/performance/write-behind/src/write-behind.c | 9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/xlators/performance/write-behind/src/write-behind.c b/xlators/performance/write-behind/src/write-behind.c
+index 7104eb9..ca1cb63 100644
+--- a/xlators/performance/write-behind/src/write-behind.c
++++ b/xlators/performance/write-behind/src/write-behind.c
+@@ -287,10 +287,6 @@ wb_requests_conflict (wb_request_t *lie, wb_request_t *req)
+ 		   us in the todo list */
+ 		return _gf_false;
+ 
+-        /* requests from different fd do not conflict with each other. */
+-        if (req->fd && (req->fd != lie->fd))
+-                return _gf_false;
+-
+ 	if (lie->ordering.append)
+ 		/* all modifications wait for the completion
+ 		   of outstanding append */
+@@ -743,9 +739,8 @@ __wb_request_waiting_on (wb_request_t *req)
+         wb_inode = req->wb_inode;
+ 
+         list_for_each_entry (trav, &wb_inode->todo, todo) {
+-                if ((trav->fd == req->fd)
+-                    && ((trav->stub->fop == GF_FOP_FLUSH)
+-                        || (trav->stub->fop == GF_FOP_FSYNC))
++                if (((trav->stub->fop == GF_FOP_FLUSH) || (trav->stub->fop
++                                                           == GF_FOP_FSYNC))
+                     && (trav->gen >= req->gen))
+                         return trav;
+         }
+-- 
+1.8.3.1
+

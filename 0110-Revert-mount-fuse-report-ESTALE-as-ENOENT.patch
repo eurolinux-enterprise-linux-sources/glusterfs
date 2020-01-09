@@ -1,0 +1,57 @@
+From de1ee9800f8e20d0c0a8adb1994f208d2dc8ae09 Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Tue, 10 Oct 2017 11:29:04 +0530
+Subject: [PATCH 110/128] Revert "mount/fuse: report ESTALE as ENOENT"
+
+This reverts commit 26d16b90ec7f8acbe07e56e8fe1baf9c9fa1519e.
+
+Consider rename (index.new, store.idx) and open (store.idx) being
+executed in parallel. When we break down operations following sequence
+is possible.
+
+* lookup (store.idx) - as part of open(store.idx) returns gfid1 as the
+  result.
+* rename (index.new, store.idx) changes gfid of store.idx to
+  gfid2. Note that gfid2 was the nodeid of index.new. Since rename is
+  successful, gfid2 is associated with store.idx.
+* open (store.idx) resumes and issues open fop to glusterfs with
+  gfid1. open in glusterfs fails as gfid1 doesn't exist and the error
+  returned by glusterfs to kernel-fuse is ENOENT.
+* kernel passes back the same error to application as a result to
+  open.
+
+This error could've been prevented if kernel retries open with
+gfid2. Interestingly kernel do retry open when it receives ESTALE
+error. Even though failure to find gfid resulted in ESTALE error,
+commit 26d16b90ec7f8acb converted that error to ENOENT while sending
+an error reply to kernel. This prevented kernel from retrying open
+resulting in error.
+
+Change-Id: I2e752ca60dd8af1b989dd1d29c7b002ee58440b4
+BUG: 1492591
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+upstream patch: https://review.gluster.org/#/c/18463/
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126509
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mount/fuse/src/fuse-bridge.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index a6dfd66..03d26eb 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -421,9 +421,6 @@ send_fuse_err (xlator_t *this, fuse_in_header_t *finh, int error)
+         struct iovec iov_out;
+         inode_t  *inode = NULL;
+ 
+-        if (error == ESTALE)
+-                error = ENOENT;
+-
+         fouh.error = -error;
+         iov_out.iov_base = &fouh;
+ 
+-- 
+1.8.3.1
+

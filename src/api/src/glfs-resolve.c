@@ -16,11 +16,6 @@
 #include <inttypes.h>
 #include <limits.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "logging.h"
 #include "stack.h"
@@ -30,12 +25,10 @@
 #include "syncop.h"
 #include "call-stub.h"
 #include "gfapi-messages.h"
-
+#include "inode.h"
 #include "glfs-internal.h"
 
 #define graphid_str(subvol) (uuid_utoa((unsigned char *)subvol->graph->graph_uuid))
-
-
 int
 glfs_first_lookup_safe (xlator_t *subvol)
 {
@@ -134,6 +127,11 @@ glfs_refresh_inode_safe (xlator_t *subvol, inode_t *oldinode,
                 if (newinode == loc.inode)
                         inode_ctx_set (newinode, THIS, &ctx_value);
                 inode_lookup (newinode);
+        } else {
+                gf_msg (subvol->name, GF_LOG_WARNING, errno,
+                        API_MSG_INODE_LINK_FAILED,
+                        "inode linking of %s failed",
+                        uuid_utoa ((unsigned char *)&iatt.ia_gfid));
         }
 
 	loc_wipe (&loc);
@@ -229,7 +227,39 @@ out:
 
 	return ret;
 }
+/*
+ * This function can be used to call named lookup on root.
+ * If you use glfs_resolve_base, that will be a nameless lookup.
+ */
+static int
+glfs_resolve_root (struct glfs *fs, xlator_t *subvol, inode_t *inode,
+                   struct iatt *iatt)
+{
+        loc_t       loc = {0, };
+        int         ret = -1;
+        char       *path = NULL;
 
+        loc.inode = inode_ref (inode);
+
+        ret = inode_path (loc.inode, NULL, &path);
+        loc.path = path;
+        loc.name = "";
+        /* Having a value in loc.name will help to bypass md-cache check for
+         * nameless lookup.
+         * TODO: Re-visit on nameless lookup and md-cache.
+         * Github issue : https://github.com/gluster/glusterfs/issues/232
+         */
+        loc.parent = inode_ref (inode);
+        if (ret < 0)
+                goto out;
+
+        ret = syncop_lookup (subvol, &loc, iatt, NULL, NULL, NULL);
+        DECODE_SYNCOP_ERR (ret);
+out:
+        loc_wipe (&loc);
+
+        return ret;
+}
 
 inode_t *
 glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
@@ -238,6 +268,7 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
 {
 	loc_t        loc = {0, };
 	inode_t     *inode = NULL;
+        inode_t     *temp_parent = NULL;
 	int          reval = 0;
 	int          ret = -1;
 	int          glret = -1;
@@ -246,30 +277,83 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
 	dict_t      *xattr_req = NULL;
         uint64_t     ctx_value = LOOKUP_NOT_NEEDED;
 
-	loc.name = component;
-
 	loc.parent = inode_ref (parent);
 	gf_uuid_copy (loc.pargfid, parent->gfid);
 
-        /* /.. and /. should point back to /
-           we lookup using inode and gfid of root
-           Fill loc.name so that we make use md-cache.
-           md-cache is not valid for nameless lookups.
-        */
         if (__is_root_gfid (parent->gfid) &&
-            (strcmp (component, "..") == 0)) {
-                loc.inode = inode_ref (parent);
-                loc.name = ".";
-        } else {
-                if (strcmp (component, ".") == 0)
-                        loc.inode = inode_ref (parent);
-                else if (strcmp (component, "..") == 0)
-                        loc.inode = inode_parent (parent, 0, 0);
-                else
-                        loc.inode = inode_grep (parent->table, parent,
-                                                component);
+            ((strcmp (component, ".") == 0) ||
+             (strcmp (component, "..") == 0) ||
+             (strcmp (component, "") == 0))) {
+                if (!force_lookup) {
+                        inode = inode_ref (parent);
+                } else {
+                        ret = glfs_resolve_root (fs, subvol, parent, &ciatt);
+                        if (!ret)
+                                inode = inode_ref (parent);
+                }
+                goto found;
         }
+        /* *
+        * if the component name is either "." or "..", it will try to
+        * resolve that if inode has a proper parent (named lookup).
+        *
+        * Below condition works like this
+        *
+        * Example 1 :
+        * Path /out_dir/dir/in_dir/.
+        *     In put values :
+        *         parent = in_dir
+        *         component : "."
+        *
+        *      Out put values:
+        *         parent : dir
+        *         component : "in_dir"
+        *
+        * Example 2 :
+        * Path /out_dir/dir/in_dir/..
+        *     In put values :
+        *         parent = in_dir
+        *         component : ".."
+        *
+        *     Out put values:
+        *         parent : output_dir
+        *         component : "dir"
+        *
+        * Incase of nameless lookup, both "." and ".." retained
+        */
 
+        if (strcmp (component, ".") == 0) {
+                loc.inode = inode_ref (parent);
+                temp_parent = inode_parent (loc.inode, 0, 0);
+                if (temp_parent) {
+                        inode_unref (loc.parent);
+                        loc.parent = temp_parent;
+                        inode_find_directory_name (loc.inode, &loc.name);
+                }
+
+        } else if (strcmp (component, "..") == 0) {
+                loc.inode = inode_parent (parent, 0, 0);
+                if (loc.inode) {
+                        temp_parent = inode_parent (loc.inode, 0, 0);
+                        if (temp_parent) {
+                                inode_unref (loc.parent);
+                                loc.parent = temp_parent;
+                                inode_find_directory_name (loc.inode, &loc.name);
+                        } else if (__is_root_gfid (loc.inode->gfid)) {
+                                inode_unref (loc.parent);
+                                loc.parent = inode_ref (loc.inode);
+                                loc.name = "";
+                        } else {
+                                inode_unref (loc.inode);
+                                loc.inode = NULL;
+                        }
+
+                }
+        } else
+                loc.inode = inode_grep (parent->table, parent, component);
+
+        if (!loc.name)
+                loc.name = component;
 
 	if (loc.inode) {
 		gf_uuid_copy (loc.gfid, loc.inode->gfid);
@@ -277,7 +361,6 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
 
                 if (!(force_lookup || inode_needs_lookup (loc.inode, THIS))) {
 			inode = inode_ref (loc.inode);
-			ciatt.ia_type = inode->ia_type;
 			goto found;
 		}
 	} else {
@@ -318,6 +401,7 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
                         inode_unlink(loc.inode, loc.parent,
                                      loc.name);
 		inode_unref (loc.inode);
+	        gf_uuid_clear (loc.gfid);
 		loc.inode = inode_new (parent->table);
 		if (!loc.inode) {
 			errno = ENOMEM;
@@ -346,17 +430,25 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
 		goto out;
 
 	inode = inode_link (loc.inode, loc.parent, component, &ciatt);
-        if (inode == loc.inode)
+
+        if (!inode) {
+                gf_msg (subvol->name, GF_LOG_WARNING, errno,
+                        API_MSG_INODE_LINK_FAILED,
+                        "inode linking of %s failed",
+                        uuid_utoa ((unsigned char *)&ciatt.ia_gfid));
+                goto out;
+        } else if (inode == loc.inode)
                 inode_ctx_set (inode, THIS, &ctx_value);
 found:
-	if (inode)
+	if (inode) {
+                ciatt.ia_type = inode->ia_type;
 		inode_lookup (inode);
+        }
 	if (iatt)
 		*iatt = ciatt;
 out:
 	if (xattr_req)
 		dict_unref (xattr_req);
-
 	loc_wipe (&loc);
 
 	return inode;
@@ -377,6 +469,9 @@ priv_glfs_resolve_at (struct glfs *fs, xlator_t *subvol, inode_t *at,
 	int         ret = -1;
 	struct iatt ciatt = {0, };
 
+	DECLARE_OLD_THIS;
+	__GLFS_ENTRY_VALIDATE_FS(fs, invalid_fs);
+
 	path = gf_strdup (origpath);
 	if (!path) {
 		errno = ENOMEM;
@@ -393,7 +488,7 @@ priv_glfs_resolve_at (struct glfs *fs, xlator_t *subvol, inode_t *at,
 		inode = inode_ref (subvol->itable->root);
 
 		if (strcmp (path, "/") == 0)
-			glfs_resolve_base (fs, subvol, inode, &ciatt);
+                        glfs_resolve_root (fs, subvol, inode, &ciatt);
 	}
 
 	for (component = strtok_r (path, "/", &saveptr);
@@ -403,9 +498,7 @@ priv_glfs_resolve_at (struct glfs *fs, xlator_t *subvol, inode_t *at,
 
 		if (parent)
 			inode_unref (parent);
-
 		parent = inode;
-
 		inode = glfs_resolve_component (fs, subvol, parent,
 						component, &ciatt,
 						/* force hard lookup on the last
@@ -502,9 +595,10 @@ priv_glfs_resolve_at (struct glfs *fs, xlator_t *subvol, inode_t *at,
         }
 out:
 	GF_FREE (path);
+        __GLFS_EXIT_FS;
 
 	/* do NOT loc_wipe here as only last component might be missing */
-
+invalid_fs:
 	return ret;
 }
 
@@ -776,7 +870,7 @@ glfs_resolve_fd (struct glfs *fs, xlator_t *subvol, struct glfs_fd *glfd)
 {
 	fd_t *fd = NULL;
 
-	glfs_lock (fs);
+        glfs_lock (fs, _gf_true);
 	{
 		fd = __glfs_resolve_fd (fs, subvol, glfd);
 	}
@@ -812,6 +906,13 @@ __glfs_migrate_openfds (struct glfs *fs, xlator_t *subvol)
 }
 
 
+/* Note that though it appears that this function executes under fs->mutex,
+ * it is not fully executed under fs->mutex. i.e. there are functions like
+ * __glfs_first_lookup, __glfs_refresh_inode, __glfs_migrate_openfds which
+ * unlocks fs->mutex before sending any network fop, and reacquire fs->mutex
+ * once the fop is complete. Hence the variable read from fs at the start of the
+ * function need not have the same value by the end of the function.
+ */
 xlator_t *
 __glfs_active_subvol (struct glfs *fs)
 {
@@ -822,7 +923,8 @@ __glfs_active_subvol (struct glfs *fs)
 	if (!fs->next_subvol)
 		return fs->active_subvol;
 
-	new_subvol = fs->next_subvol;
+	new_subvol = fs->mip_subvol = fs->next_subvol;
+        fs->next_subvol = NULL;
 
 	ret = __glfs_first_lookup (fs, new_subvol);
 	if (ret) {
@@ -856,8 +958,8 @@ __glfs_active_subvol (struct glfs *fs)
 	   should be atomic
 	*/
 	fs->old_subvol = fs->active_subvol;
-	fs->active_subvol = fs->next_subvol;
-	fs->next_subvol = NULL;
+	fs->active_subvol = fs->mip_subvol;
+	fs->mip_subvol = NULL;
 
 	if (new_cwd) {
 		__glfs_cwd_set (fs, new_cwd);
@@ -881,12 +983,17 @@ priv_glfs_subvol_done (struct glfs *fs, xlator_t *subvol)
 	if (!subvol)
 		return;
 
-	glfs_lock (fs);
+        /* For decrementing subvol->wind ref count we need not check/wait for
+         * migration-in-progress flag.
+         * Also glfs_subvol_done is called in call-back path therefore waiting
+         * fot migration-in-progress flag can lead to dead-lock.
+         */
+        glfs_lock (fs, _gf_false);
 	{
 		ref = (--subvol->winds);
 		active_subvol = fs->active_subvol;
 	}
-	glfs_unlock (fs);
+        glfs_unlock (fs);
 
 	if (ref == 0) {
 		assert (subvol != active_subvol);
@@ -903,7 +1010,7 @@ priv_glfs_active_subvol (struct glfs *fs)
 	xlator_t      *subvol = NULL;
 	xlator_t      *old_subvol = NULL;
 
-	glfs_lock (fs);
+        glfs_lock (fs, _gf_true);
 	{
 		subvol = __glfs_active_subvol (fs);
 
@@ -952,7 +1059,7 @@ glfs_cwd_set (struct glfs *fs, inode_t *inode)
 {
 	int ret = 0;
 
-	glfs_lock (fs);
+        glfs_lock (fs, _gf_true);
 	{
 		ret = __glfs_cwd_set (fs, inode);
 	}
@@ -985,7 +1092,7 @@ glfs_cwd_get (struct glfs *fs)
 {
 	inode_t *cwd = NULL;
 
-	glfs_lock (fs);
+        glfs_lock (fs, _gf_true);
 	{
 		cwd = __glfs_cwd_get (fs);
 	}
@@ -1025,7 +1132,7 @@ glfs_resolve_inode (struct glfs *fs, xlator_t *subvol,
 {
 	inode_t *inode = NULL;
 
-	glfs_lock (fs);
+        glfs_lock (fs, _gf_true);
 	{
 		inode = __glfs_resolve_inode(fs, subvol, object);
 	}

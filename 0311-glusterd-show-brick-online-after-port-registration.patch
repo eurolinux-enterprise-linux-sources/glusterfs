@@ -1,0 +1,62 @@
+From f5326dd5cfd3c2fae01bc62aa6e0725b501faa3a Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Sun, 1 Apr 2018 22:10:30 +0530
+Subject: [PATCH 311/325] glusterd: show brick online after port registration
+
+	Upstream-patch: https://review.gluster.org/19804
+
+gluster-block project needs a dependency check to see if all the bricks
+are online before bringing up the relevant gluster-block services. While
+the patch https://review.gluster.org/#/c/19785/ attempts to write the
+script but brick should be only marked as online only when the
+pmap_signin is completed.
+
+While this is perfectly fine for non brick multiplexing, but with brick
+multiplexing this patch still doesn't eliminate the race completely as
+the attach_req call is asynchrnous and glusterd immediately marks the
+port as registerd.
+
+ >Fixes: bz#1563273
+BUG: 1598356
+Change-Id: I81db54b88f7315e1b24e0234beebe00de6429f9d
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143591
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 5e9213c..e08c053 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -5967,6 +5967,7 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                         (void) pmap_registry_bind (this,
+                                         brickinfo->port, brickinfo->path,
+                                         GF_PMAP_PORT_BRICKSERVER, NULL);
++                        brickinfo->port_registered = _gf_true;
+                         /*
+                          * This will unfortunately result in a separate RPC
+                          * connection per brick, even though they're all in
+@@ -5976,7 +5977,6 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                          * TBD: re-use RPC connection across bricks
+                          */
+                         if (is_brick_mx_enabled ()) {
+-                                brickinfo->port_registered = _gf_true;
+                                 ret = glusterd_get_sock_from_brick_pid (pid, socketpath,
+                                                                         sizeof(socketpath));
+                                 if (ret) {
+@@ -7083,7 +7083,8 @@ glusterd_add_brick_to_dict (glusterd_volinfo_t *volinfo,
+         GLUSTERD_GET_BRICK_PIDFILE (pidfile, volinfo, brickinfo, priv);
+ 
+         if (glusterd_is_brick_started (brickinfo)) {
+-                if (gf_is_service_running (pidfile, &pid)) {
++                if (gf_is_service_running (pidfile, &pid) &&
++                    brickinfo->port_registered) {
+                         brick_online = _gf_true;
+                 } else {
+                         pid = -1;
+-- 
+1.8.3.1
+

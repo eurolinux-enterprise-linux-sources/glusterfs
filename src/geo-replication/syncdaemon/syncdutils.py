@@ -16,12 +16,31 @@ import fcntl
 import shutil
 import logging
 import socket
+import subprocess
 from threading import Lock, Thread as baseThread
 from errno import EACCES, EAGAIN, EPIPE, ENOTCONN, ECONNABORTED
-from errno import EINTR, ENOENT, EPERM, ESTALE, errorcode
+from errno import EINTR, ENOENT, EPERM, ESTALE, EBUSY, errorcode
 from signal import signal, SIGTERM
 import select as oselect
 from os import waitpid as owaitpid
+import subprocess
+
+from conf import GLUSTERFS_LIBEXECDIR, UUID_FILE
+sys.path.insert(1, GLUSTERFS_LIBEXECDIR)
+EVENTS_ENABLED = True
+try:
+    from events.eventtypes import GEOREP_FAULTY as EVENT_GEOREP_FAULTY
+    from events.eventtypes import GEOREP_ACTIVE as EVENT_GEOREP_ACTIVE
+    from events.eventtypes import GEOREP_PASSIVE as EVENT_GEOREP_PASSIVE
+    from events.eventtypes import GEOREP_CHECKPOINT_COMPLETED \
+        as EVENT_GEOREP_CHECKPOINT_COMPLETED
+except ImportError:
+    # Events APIs not installed, dummy eventtypes with None
+    EVENTS_ENABLED = False
+    EVENT_GEOREP_FAULTY = None
+    EVENT_GEOREP_ACTIVE = None
+    EVENT_GEOREP_PASSIVE = None
+    EVENT_GEOREP_CHECKPOINT_COMPLETED = None
 
 try:
     from cPickle import PickleError
@@ -45,10 +64,17 @@ except ImportError:
 
 # auxiliary gfid based access prefix
 _CL_AUX_GFID_PFX = ".gfid/"
-GF_OP_RETRIES = 20
+GF_OP_RETRIES = 10
+
+GX_GFID_CANONICAL_LEN = 37  # canonical gfid len + '\0'
 
 CHANGELOG_AGENT_SERVER_VERSION = 1.0
 CHANGELOG_AGENT_CLIENT_VERSION = 1.0
+NodeID = None
+rsync_version = None
+SPACE_ESCAPE_CHAR = "%20"
+NEWLINE_ESCAPE_CHAR = "%0A"
+PERCENTAGE_ESCAPE_CHAR = "%25"
 
 
 def escape(s):
@@ -60,6 +86,18 @@ def escape(s):
 def unescape(s):
     """inverse of .escape"""
     return urllib.unquote_plus(s)
+
+
+def escape_space_newline(s):
+    return s.replace("%", PERCENTAGE_ESCAPE_CHAR)\
+            .replace(" ", SPACE_ESCAPE_CHAR)\
+            .replace("\n", NEWLINE_ESCAPE_CHAR)
+
+
+def unescape_space_newline(s):
+    return s.replace(SPACE_ESCAPE_CHAR, " ")\
+            .replace(NEWLINE_ESCAPE_CHAR, "\n")\
+            .replace(PERCENTAGE_ESCAPE_CHAR, "%")
 
 
 def norm(s):
@@ -171,12 +209,13 @@ def grabpidfile(fname=None, setpid=True):
 
 final_lock = Lock()
 
-
+mntpt_list = []
 def finalize(*a, **kw):
     """all those messy final steps we go trough upon termination
 
     Do away with pidfile, ssh control dir and logging.
     """
+
     final_lock.acquire()
     if getattr(gconf, 'pid_file', None):
         rm_pidf = gconf.pid_file_owned
@@ -216,11 +255,24 @@ def finalize(*a, **kw):
             if sys.exc_info()[0] == OSError:
                 pass
 
+    """ Unmount if not done """
+    for mnt in mntpt_list:
+        p0 = subprocess.Popen (["umount", "-l", mnt], stderr=subprocess.PIPE)
+        _, errdata = p0.communicate()
+        if p0.returncode == 0:
+            try:
+                os.rmdir(mnt)
+            except OSError:
+                pass
+        else:
+            pass
+
     if gconf.log_exit:
         logging.info("exiting.")
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(kw.get('exval', 0))
+
 
 
 def log_raise_exception(excont):
@@ -253,21 +305,24 @@ def log_raise_exception(excont):
             if hasattr(gconf, 'transport'):
                 gconf.transport.wait()
                 if gconf.transport.returncode == 127:
-                    logging.warn("!!!!!!!!!!!!!")
-                    logging.warn('!!! getting "No such file or directory" '
-                                 "errors is most likely due to "
-                                 "MISCONFIGURATION"
-                                 ", please consult https://access.redhat.com"
-                                 "/site/documentation/en-US/Red_Hat_Storage"
-                                 "/2.1/html/Administration_Guide"
-                                 "/chap-User_Guide-Geo_Rep-Preparation-"
-                                 "Settingup_Environment.html")
-                    logging.warn("!!!!!!!!!!!!!")
+                    logging.error("getting \"No such file or directory\""
+                                  "errors is most likely due to "
+                                  "MISCONFIGURATION, please remove all "
+                                  "the public keys added by geo-replication "
+                                  "from authorized_keys file in slave nodes "
+                                  "and run Geo-replication create "
+                                  "command again.")
+                    logging.error("If `gsec_create container` was used, then "
+                                  "run `gluster volume geo-replication "
+                                  "<MASTERVOL> [<SLAVEUSER>@]<SLAVEHOST>::"
+                                  "<SLAVEVOL> config remote-gsyncd "
+                                  "<GSYNCD_PATH> (Example GSYNCD_PATH: "
+                                  "`/usr/libexec/glusterfs/gsyncd`)")
                 gconf.transport.terminate_geterr()
         elif isinstance(exc, OSError) and exc.errno in (ENOTCONN,
                                                         ECONNABORTED):
-            logging.error('glusterfs session went down [%s]',
-                          errorcode[exc.errno])
+            logging.error(lf('glusterfs session went down',
+                             error=errorcode[exc.errno]))
         else:
             logtag = "FAIL"
         if not logtag and logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -318,6 +373,33 @@ class GsyncdError(Exception):
     pass
 
 
+class _MetaXattr(object):
+
+    """singleton class, a lazy wrapper around the
+    libcxattr module
+
+    libcxattr (a heavy import due to ctypes) is
+    loaded only when when the single
+    instance is tried to be used.
+
+    This reduces runtime for those invocations
+    which do not need filesystem manipulation
+    (eg. for config, url parsing)
+    """
+
+    def __getattr__(self, meth):
+        from libcxattr import Xattr as LXattr
+        xmeth = [m for m in dir(LXattr) if m[0] != '_']
+        if meth not in xmeth:
+            return
+        for m in xmeth:
+            setattr(self, m, getattr(LXattr, m))
+        return getattr(self, meth)
+
+
+Xattr = _MetaXattr()
+
+
 def getusername(uid=None):
     if uid is None:
         uid = os.geteuid()
@@ -349,8 +431,9 @@ def boolify(s):
     if lstr in true_list:
         rv = True
     elif not lstr in false_list:
-        logging.warn("Unknown string (%s) in string to boolean conversion "
-                     "defaulting to False\n" % (s))
+        logging.warn(lf("Unknown string in \"string to boolean\" conversion, "
+                        "defaulting to False",
+                        str=s))
 
     return rv
 
@@ -381,48 +464,25 @@ def set_term_handler(hook=lambda *a: finalize(*a, **{'exval': 1})):
     signal(SIGTERM, hook)
 
 
-def is_host_local(host):
-    locaddr = False
-    for ai in socket.getaddrinfo(host, None):
-        # cf. http://github.com/gluster/glusterfs/blob/ce111f47/xlators
-        # /mgmt/glusterd/src/glusterd-utils.c#L125
-        if ai[0] == socket.AF_INET:
-            if ai[-1][0].split(".")[0] == "127":
-                locaddr = True
+def get_node_uuid():
+    global NodeID
+    if NodeID is not None:
+        return NodeID
+
+    NodeID = ""
+    with open(UUID_FILE) as f:
+        for line in f:
+            if line.startswith("UUID="):
+                NodeID = line.strip().split("=")[-1]
                 break
-        elif ai[0] == socket.AF_INET6:
-            if ai[-1][0] == "::1":
-                locaddr = True
-                break
-        else:
-            continue
-        try:
-            # use ICMP socket to avoid net.ipv4.ip_nonlocal_bind issue,
-            # cf. https://bugzilla.redhat.com/show_bug.cgi?id=890587
-            s = socket.socket(ai[0], socket.SOCK_RAW, socket.IPPROTO_ICMP)
-        except socket.error:
-            ex = sys.exc_info()[1]
-            if ex.errno != EPERM:
-                raise
-            f = None
-            try:
-                f = open("/proc/sys/net/ipv4/ip_nonlocal_bind")
-                if int(f.read()) != 0:
-                    raise GsyncdError(
-                        "non-local bind is set and not allowed to create "
-                        "raw sockets, cannot determine if %s is local" % host)
-                s = socket.socket(ai[0], socket.SOCK_DGRAM)
-            finally:
-                if f:
-                    f.close()
-        try:
-            s.bind(ai[-1])
-            locaddr = True
-            break
-        except:
-            pass
-        s.close()
-    return locaddr
+
+    if NodeID == "":
+        raise GsyncdError("Failed to get Host UUID from %s" % UUID_FILE)
+    return NodeID
+
+
+def is_host_local(host_id):
+    return host_id == get_node_uuid()
 
 
 def funcode(f):
@@ -482,16 +542,35 @@ def errno_wrap(call, arg=[], errnos=[], retry_errnos=[]):
             nr_tries += 1
             if nr_tries == GF_OP_RETRIES:
                 # probably a screwed state, cannot do much...
-                logging.warn('reached maximum retries (%s)...%s' %
-                             (repr(arg), ex))
-                return ex.errno
+                logging.warn(lf('reached maximum retries',
+                                args=repr(arg),
+                                error=ex))
+                raise
             time.sleep(0.250)  # retry the call
 
 
 def lstat(e):
-    return errno_wrap(os.lstat, [e], [ENOENT], [ESTALE])
+    return errno_wrap(os.lstat, [e], [ENOENT], [ESTALE, EBUSY])
 
-class NoPurgeTimeAvailable(Exception):
+
+def get_gfid_from_mnt(gfidpath):
+    return errno_wrap(Xattr.lgetxattr,
+                      [gfidpath, 'glusterfs.gfid.string',
+                       GX_GFID_CANONICAL_LEN], [ENOENT], [ESTALE])
+
+
+def matching_disk_gfid(gfid, entry):
+    disk_gfid = get_gfid_from_mnt(entry)
+    if isinstance(disk_gfid, int):
+        return False
+
+    if not gfid == disk_gfid:
+        return False
+
+    return True
+
+
+class NoStimeAvailable(Exception):
     pass
 
 
@@ -499,5 +578,73 @@ class PartialHistoryAvailable(Exception):
     pass
 
 
+class ChangelogHistoryNotAvailable(Exception):
+    pass
+
+
 class ChangelogException(OSError):
     pass
+
+
+def gf_event(event_type, **kwargs):
+    if EVENTS_ENABLED:
+        from events.gf_event import gf_event as gfevent
+        gfevent(event_type, **kwargs)
+
+
+class GlusterLogLevel(object):
+        NONE = 0
+        EMERG = 1
+        ALERT = 2
+        CRITICAL = 3
+        ERROR = 4
+        WARNING = 5
+        NOTICE = 6
+        INFO = 7
+        DEBUG = 8
+        TRACE = 9
+
+
+def get_changelog_log_level(lvl):
+    return getattr(GlusterLogLevel, lvl, GlusterLogLevel.INFO)
+
+
+def get_master_and_slave_data_from_args(args):
+    master_name = None
+    slave_data = None
+    for arg in args:
+        if arg.startswith(":"):
+            master_name = arg.replace(":", "")
+        if "::" in arg:
+            slave_data = arg.replace("ssh://", "")
+
+    return (master_name, slave_data)
+
+
+def get_rsync_version(rsync_cmd):
+    global rsync_version
+    if rsync_version is not None:
+        return rsync_version
+
+    rsync_version = "0"
+    p = subprocess.Popen([rsync_cmd, "--version"],
+                         stderr=subprocess.PIPE,
+                         stdout=subprocess.PIPE)
+    out, err = p.communicate()
+    if p.returncode == 0:
+        rsync_version = out.split(" ", 4)[3]
+
+    return rsync_version
+
+
+def lf(event, **kwargs):
+    """
+    Log Format helper function, log messages can be
+    easily modified to structured log format.
+    lf("Config Change", sync_jobs=4, brick=/bricks/b1) will be
+    converted as "Config Change<TAB>brick=/bricks/b1<TAB>sync_jobs=4"
+    """
+    msg = event
+    for k, v in kwargs.items():
+        msg += "\t{0}={1}".format(k, v)
+    return msg

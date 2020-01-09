@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "gfid-access.h"
 #include "inode.h"
 #include "byte-order.h"
@@ -171,7 +166,6 @@ ga_newfile_parse_args (xlator_t *this, data_t *data)
                         goto err;
                 }
                 args->args.mkdir.umask = ntoh32 (*(uint32_t *)blob);
-                blob += sizeof (uint32_t);
                 blob_len -= sizeof (uint32_t);
                 if (blob_len < 0) {
                         gf_log (this->name, GF_LOG_ERROR,
@@ -193,7 +187,6 @@ ga_newfile_parse_args (xlator_t *this, data_t *data)
                         goto err;
 
                 memcpy (args->args.symlink.linkpath, blob, (len + 1));
-                blob += (len + 1);
                 blob_len -= (len + 1);
         } else {
                 if (blob_len < sizeof (uint32_t)) {
@@ -223,7 +216,6 @@ ga_newfile_parse_args (xlator_t *this, data_t *data)
                         goto err;
                 }
                 args->args.mknod.umask = ntoh32 (*(uint32_t *)blob);
-                blob += sizeof (uint32_t);
                 blob_len -= sizeof (uint32_t);
         }
 
@@ -663,10 +655,7 @@ ga_virtual_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                        int32_t op_ret, int32_t op_errno, inode_t *inode,
                        struct iatt *buf, dict_t *xdata, struct iatt *postparent)
 {
-        int             j                       = 0;
-        int             i                       = 0;
         int             ret                     = 0;
-        uint64_t        temp_ino                = 0;
         inode_t         *cbk_inode              = NULL;
         inode_t         *true_inode             = NULL;
         uuid_t          random_gfid             = {0,};
@@ -735,11 +724,7 @@ ga_virtual_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         gf_uuid_copy (buf->ia_gfid, random_gfid);
 
-        for (i = 15; i > (15 - 8); i--) {
-                temp_ino += (uint64_t)(buf->ia_gfid[i]) << j;
-                j += 8;
-        }
-        buf->ia_ino = temp_ino;
+        buf->ia_ino = gfid_to_ino (buf->ia_gfid);
 
 unwind:
         /* Lookup on non-existing gfid returns ESTALE.
@@ -799,6 +784,16 @@ ga_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
         inode_t      *true_inode    = NULL;
         int32_t       op_errno = ENOENT;
 
+        priv = this->private;
+
+        /* Handle nameless lookup on ".gfid" */
+        if (!loc->parent && __is_gfid_access_dir(loc->gfid)) {
+                STACK_UNWIND_STRICT (lookup, frame, 0, 0, loc->inode,
+                                     &priv->gfiddir_stbuf, xdata,
+                                     &priv->root_stbuf);
+                return 0;
+        }
+
         /* if its discover(), no need for any action here */
         if (!loc->name)
                 goto wind;
@@ -830,8 +825,6 @@ ga_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
                 /* not something to bother, continue the flow */
                 goto wind;
         }
-
-        priv = this->private;
 
         /* need to check if the lookup is on virtual dir */
         if ((loc->name && !strcmp (GF_GFID_DIR, loc->name)) &&

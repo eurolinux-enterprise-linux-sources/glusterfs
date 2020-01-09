@@ -1,0 +1,65 @@
+From 4353f2061b81a7d3f9538d7d080890e394cbe67c Mon Sep 17 00:00:00 2001
+From: Csaba Henk <csaba@redhat.com>
+Date: Sat, 14 Apr 2018 08:22:48 +0200
+Subject: [PATCH 231/236] fuse: retire statvfs tweak
+
+fuse xlator used to override the  filesystem
+block size of the storage backend to indicate
+its preferences. Now we retire this tweak and
+pass on what we get from the backend.
+
+This fixes the anomaly reported in the referred
+BUG. For more background, see the following email,
+which was sent out to gluster-devel and gluster-users
+mailing lists to gauge if anyone sees any use of
+this tweak:
+
+http://lists.gluster.org/pipermail/gluster-devel/2018-March/054660.html
+http://lists.gluster.org/pipermail/gluster-users/2018-March/033775.html
+
+Noone vetoed the removal of it but it got endorsement:
+
+http://lists.gluster.org/pipermail/gluster-devel/2018-March/054686.html
+
+upstream: https://review.gluster.org/19873
+> BUG: 1523219
+> Change-Id: I3b7111d3037a1b91a288c1589f407b2c48d81bfa
+> Signed-off-by: Csaba Henk <csaba@redhat.com>
+
+BUG: 1523216
+Change-Id: I3b7111d3037a1b91a288c1589f407b2c48d81bfa
+Signed-off-by: Csaba Henk <csaba@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136313
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mount/fuse/src/fuse-bridge.c | 13 -------------
+ 1 file changed, 13 deletions(-)
+
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 44697d2..b767ea4 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -3164,19 +3164,6 @@ fuse_statfs_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                      gf_fop_list[frame->root->op]);
+ 
+         if (op_ret == 0) {
+-#ifndef GF_DARWIN_HOST_OS
+-                /* MacFUSE doesn't respect anyof these tweaks */
+-                buf->f_blocks *= buf->f_frsize;
+-                buf->f_blocks /= this->ctx->page_size;
+-
+-                buf->f_bavail *= buf->f_frsize;
+-                buf->f_bavail /= this->ctx->page_size;
+-
+-                buf->f_bfree *= buf->f_frsize;
+-                buf->f_bfree /= this->ctx->page_size;
+-
+-                buf->f_frsize = buf->f_bsize =this->ctx->page_size;
+-#endif /* GF_DARWIN_HOST_OS */
+                 fso.st.bsize   = buf->f_bsize;
+                 fso.st.frsize  = buf->f_frsize;
+                 fso.st.blocks  = buf->f_blocks;
+-- 
+1.8.3.1
+

@@ -30,6 +30,7 @@ TEST pidof glusterd
 
 TEST $CLI volume create $V0 $H0:$B0/brick1
 EXPECT 'Created' volinfo_field $V0 'Status'
+TEST $CLI volume set $V0 nfs.disable false
 
 TEST $CLI volume start $V0;
 EXPECT 'Started' volinfo_field $V0 'Status'
@@ -76,9 +77,15 @@ TEST gluster volume set $V0 nfs.mount-rmtab $M0/rmtab
 # glusterfs/nfs needs some time to restart
 EXPECT_WITHIN $NFS_EXPORT_TIMEOUT 1 is_nfs_export_available
 
+# Apparently "is_nfs_export_available" might return even if the export is
+# not, in fact, available.  (eyeroll)  Give it a bit of extra time.
+#
+# TBD: fix the broken shell function instead of working around it here
+sleep 5
+
 # a new mount should be added to the rmtab, not overwrite exiting ones
 TEST mount_nfs $H0:/$V0 $N0 nolock
-EXPECT '4' count_lines $M0/rmtab
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT '4' count_lines $M0/rmtab
 
 EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $N0
 EXPECT '2' count_lines $M0/rmtab

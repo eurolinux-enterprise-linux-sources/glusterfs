@@ -1,0 +1,72 @@
+From 73b0dc833716484cba04b46fe0d645975dba44db Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Mon, 26 Mar 2018 20:27:34 +0530
+Subject: [PATCH 240/260] shared storage: Prevent mounting shared storage from
+ non-trusted client
+
+gluster shared storage is a volume used for internal storage for
+various features including ganesha, geo-rep, snapshot.
+
+So this volume should not be exposed to the client, as it is
+a special volume for internal use.
+
+This fix wont't generate non trusted volfile for shared storage volume.
+
+backport of https://review.gluster.org/#/c/19920/
+
+>Change-Id: I8ffe30ae99ec05196d75466210b84db311611a4c
+>updates: bz#1570432
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+
+Change-Id: Ic540b983bcc53a783fda7ca7a283a9ab48d9eeb7
+BUG: 1568969
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136708
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-volgen.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index 0e287b6..1c43f24 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -5828,6 +5828,7 @@ generate_client_volfiles (glusterd_volinfo_t *volinfo,
+         int                i                  = 0;
+         int                ret                = -1;
+         char               filepath[PATH_MAX] = {0,};
++        char               *volname           = NULL;
+         char               *types[]           = {NULL, NULL, NULL};
+         dict_t             *dict              = NULL;
+         xlator_t           *this              = NULL;
+@@ -5835,6 +5836,26 @@ generate_client_volfiles (glusterd_volinfo_t *volinfo,
+ 
+         this = THIS;
+ 
++        volname = volinfo->is_snap_volume ?
++                  volinfo->parent_volname : volinfo->volname;
++
++
++        if (volname && !strcmp (volname, GLUSTER_SHARED_STORAGE) &&
++             client_type != GF_CLIENT_TRUSTED) {
++                /*
++                 * shared storage volume cannot be mounted from non trusted
++                 * nodes. So we are not creating volfiles for non-trusted
++                 * clients for shared volumes as well as snapshot of shared
++                 * volumes.
++                 */
++
++                ret = 0;
++                gf_msg_debug ("glusterd", 0, "Skipping the non-trusted volfile"
++                               "creation for shared storage volume. Volume %s",
++                               volname);
++                goto out;
++        }
++
+         enumerate_transport_reqs (volinfo->transport_type, types);
+         dict = dict_new ();
+         if (!dict)
+-- 
+1.8.3.1
+

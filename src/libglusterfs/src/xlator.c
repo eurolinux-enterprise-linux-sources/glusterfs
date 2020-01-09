@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include <dlfcn.h>
 #include <netdb.h>
@@ -29,6 +24,21 @@
                 if (!xl->cbks->fn)			\
                         xl->cbks->fn = default_##fn;	\
         } while (0)
+
+pthread_mutex_t xlator_init_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void
+xlator_init_lock (void)
+{
+        (void) pthread_mutex_lock (&xlator_init_mutex);
+}
+
+
+void
+xlator_init_unlock (void)
+{
+        (void) pthread_mutex_unlock (&xlator_init_mutex);
+}
 
 
 static void
@@ -85,6 +95,10 @@ fill_defaults (xlator_t *xl)
 	SET_DEFAULT_FOP (discard);
         SET_DEFAULT_FOP (zerofill);
         SET_DEFAULT_FOP (ipc);
+        SET_DEFAULT_FOP (seek);
+        SET_DEFAULT_FOP (lease);
+        SET_DEFAULT_FOP (getactivelk);
+        SET_DEFAULT_FOP (setactivelk);
 
         SET_DEFAULT_FOP (getspec);
 
@@ -392,6 +406,59 @@ out:
         return search;
 }
 
+
+/*
+ * With brick multiplexing, we sort of have multiple graphs, so
+ * xlator_search_by_name might not find what we want.  Also, the translator
+ * we're looking for might not be a direct child if something else was put in
+ * between (as already happened with decompounder before that was fixed) and
+ * it's hard to debug why our translator wasn't found.  Using a recursive tree
+ * search instead of a linear search works around both problems.
+ */
+static xlator_t *
+get_xlator_by_name_or_type (xlator_t *this, char *target, int is_name)
+{
+        xlator_list_t   *trav;
+        xlator_t        *child_xl;
+        char            *value;
+
+        for (trav = this->children; trav; trav = trav->next) {
+                value = is_name ? trav->xlator->name : trav->xlator->type;
+                if (strcmp(value, target) == 0) {
+                        return trav->xlator;
+                }
+                child_xl = get_xlator_by_name_or_type (trav->xlator, target,
+                                                       is_name);
+                if (child_xl) {
+                        /*
+                         * If the xlator we're looking for is somewhere down
+                         * the stack, get_xlator_by_name expects to get a
+                         * pointer to the top of its subtree (child of "this")
+                         * while get_xlator_by_type expects a pointer to what
+                         * we actually found.  Handle both cases here.
+                         *
+                         * TBD: rename the functions and fix callers to better
+                         * reflect the difference in semantics.
+                         */
+                        return is_name ? trav->xlator : child_xl;
+                }
+        }
+
+        return NULL;
+}
+
+xlator_t *
+get_xlator_by_name (xlator_t *this, char *target)
+{
+        return get_xlator_by_name_or_type (this, target, 1);
+}
+
+xlator_t *
+get_xlator_by_type (xlator_t *this, char *target)
+{
+        return get_xlator_by_name_or_type (this, target, 0);
+}
+
 static int
 __xlator_init(xlator_t *xl)
 {
@@ -401,7 +468,9 @@ __xlator_init(xlator_t *xl)
         old_THIS = THIS;
         THIS = xl;
 
+        xlator_init_lock ();
         ret = xl->init (xl);
+        xlator_init_unlock ();
 
         THIS = old_THIS;
 
@@ -419,6 +488,7 @@ xlator_init (xlator_t *xl)
         if (xl->mem_acct_init)
                 xl->mem_acct_init (xl);
 
+        xl->instance_name = NULL;
         if (!xl->init) {
                 gf_msg (xl->name, GF_LOG_WARNING, 0, LG_MSG_INIT_FAILED,
                         "No init() found");
@@ -526,8 +596,7 @@ xlator_mem_acct_init (xlator_t *xl, int num_types)
         memset (xl->mem_acct, 0, sizeof(struct mem_acct));
 
         xl->mem_acct->num_types = num_types;
-        LOCK_INIT (&xl->mem_acct->lock);
-        xl->mem_acct->refcnt = 1;
+        GF_ATOMIC_INIT (xl->mem_acct->refcnt, 1);
 
         for (i = 0; i < num_types; i++) {
                 memset (&xl->mem_acct->rec[i], 0, sizeof(struct mem_acct_rec));
@@ -584,7 +653,7 @@ xlator_memrec_free (xlator_t *xl)
                 for (i = 0; i < mem_acct->num_types; i++) {
                         LOCK_DESTROY (&(mem_acct->rec[i].lock));
                 }
-                if (DECREMENT_ATOMIC (mem_acct->lock, mem_acct->refcnt) == 0) {
+                if (GF_ATOMIC_DEC (mem_acct->refcnt) == 0) {
                         FREE (mem_acct);
                         xl->mem_acct = NULL;
                 }
@@ -604,7 +673,7 @@ xlator_members_free (xlator_t *xl)
 
         GF_FREE (xl->name);
         GF_FREE (xl->type);
-        if (xl->dlhandle)
+        if (!(xl->ctx && xl->ctx->cmd_args.valgrind) && xl->dlhandle)
                 dlclose (xl->dlhandle);
         if (xl->options)
                 dict_unref (xl->options);
@@ -682,6 +751,7 @@ xlator_tree_free_memacct (xlator_t *tree)
         while (prev) {
                 trav = prev->next;
                 xlator_memrec_free (prev);
+                GF_FREE (prev);
                 prev = trav;
         }
 
@@ -758,6 +828,23 @@ loc_gfid (loc_t *loc, uuid_t gfid)
                 gf_uuid_copy (gfid, loc->gfid);
         else if (loc->inode && (!gf_uuid_is_null (loc->inode->gfid)))
                 gf_uuid_copy (gfid, loc->inode->gfid);
+out:
+        return;
+}
+
+void
+loc_pargfid (loc_t *loc, uuid_t gfid)
+{
+        if (!gfid)
+                goto out;
+        gf_uuid_clear (gfid);
+
+        if (!loc)
+                goto out;
+        else if (!gf_uuid_is_null (loc->pargfid))
+                gf_uuid_copy (gfid, loc->pargfid);
+        else if (loc->parent && (!gf_uuid_is_null (loc->parent->gfid)))
+                gf_uuid_copy (gfid, loc->parent->gfid);
 out:
         return;
 }
@@ -852,7 +939,11 @@ loc_copy (loc_t *dst, loc_t *src)
         GF_VALIDATE_OR_GOTO ("xlator", dst, err);
         GF_VALIDATE_OR_GOTO ("xlator", src, err);
 
-        gf_uuid_copy (dst->gfid, src->gfid);
+        if (!gf_uuid_is_null (src->gfid))
+                gf_uuid_copy (dst->gfid, src->gfid);
+        else if (src->inode && !gf_uuid_is_null (src->inode->gfid))
+                gf_uuid_copy (dst->gfid, src->inode->gfid);
+
         gf_uuid_copy (dst->pargfid, src->pargfid);
 
         if (src->inode)
@@ -936,6 +1027,21 @@ out:
 
         return ret;
 }
+
+
+gf_boolean_t
+loc_is_nameless (loc_t *loc)
+{
+        gf_boolean_t ret = _gf_false;
+
+        GF_VALIDATE_OR_GOTO ("xlator", loc, out);
+
+        if ((!loc->parent && gf_uuid_is_null (loc->pargfid)) || !loc->name)
+                ret = _gf_true;
+out:
+        return ret;
+}
+
 
 int
 xlator_destroy (xlator_t *xl)
@@ -1069,4 +1175,49 @@ xlator_subvolume_count (xlator_t *this)
         for (list = this->children; list; list = list->next)
                 i++;
         return i;
+}
+
+static int
+_copy_opt_to_child (dict_t *options, char *key, data_t *value, void *data)
+{
+        xlator_t        *child = data;
+
+        gf_log (__func__, GF_LOG_DEBUG,
+                "copying %s to child %s", key, child->name);
+        dict_set (child->options, key, value);
+
+        return 0;
+}
+
+int
+copy_opts_to_child (xlator_t *src, xlator_t *dst, char *glob)
+{
+        return dict_foreach_fnmatch (src->options, glob,
+                                     _copy_opt_to_child, dst);
+}
+
+int
+glusterfs_delete_volfile_checksum (glusterfs_ctx_t *ctx,
+                                   const char *volfile_id) {
+
+        gf_volfile_t            *volfile_tmp      = NULL;
+        gf_volfile_t            *volfile_obj      = NULL;
+
+        list_for_each_entry (volfile_tmp,  &ctx->volfile_list,
+                             volfile_list) {
+                if (!strcmp (volfile_id, volfile_tmp->vol_id)) {
+                        list_del_init (&volfile_tmp->volfile_list);
+                        volfile_obj = volfile_tmp;
+                        break;
+                }
+        }
+
+        if (volfile_obj) {
+                GF_FREE (volfile_obj);
+        } else {
+                gf_log (THIS->name, GF_LOG_ERROR, "failed to get volfile "
+                        "checksum for volfile id %s.", volfile_id);
+        }
+
+        return 0;
 }

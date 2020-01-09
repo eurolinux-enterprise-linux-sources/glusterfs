@@ -1,0 +1,88 @@
+From a7570af0bc6dc53044dce2cace9a65e96c571da6 Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Mon, 19 Sep 2016 16:59:30 +0530
+Subject: [PATCH 20/74] eventsapi: Fix eventtypes.h header generation with
+ Python 2.4
+
+eventskeygen.py file generates eventtypes.h and eventtypes.py files
+during build. If Python version is old(Version 2.4), then Gluster
+Client build will fail. eventskeygen.py uses "with" statement to
+open file, which is introduced in Python 2.5
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I995e102fad0c7bc66e840b1ab9d53ed564266253
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/85060
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ events/eventskeygen.py | 47 +++++++++++++++++++++++++----------------------
+ 1 file changed, 25 insertions(+), 22 deletions(-)
+
+diff --git a/events/eventskeygen.py b/events/eventskeygen.py
+index 23dfb47..a9c5573 100644
+--- a/events/eventskeygen.py
++++ b/events/eventskeygen.py
+@@ -207,33 +207,36 @@ ERRORS = (
+ 
+ if gen_header_type == "C_HEADER":
+     # Generate eventtypes.h
+-    with open(eventtypes_h, "w") as f:
+-        f.write("#ifndef __EVENTTYPES_H__\n")
+-        f.write("#define __EVENTTYPES_H__\n\n")
+-        f.write("typedef enum {\n")
+-        for k in ERRORS:
+-            f.write("    {0},\n".format(k))
+-        f.write("} event_errors_t;\n")
++    f = open(eventtypes_h, "w")
++    f.write("#ifndef __EVENTTYPES_H__\n")
++    f.write("#define __EVENTTYPES_H__\n\n")
++    f.write("typedef enum {\n")
++    for k in ERRORS:
++        f.write("    %s,\n" % k)
++    f.write("} event_errors_t;\n")
+ 
+-        f.write("\n")
++    f.write("\n")
+ 
+-        f.write("typedef enum {\n")
+-        for k in keys:
+-            f.write("    {0},\n".format(k))
++    f.write("typedef enum {\n")
++    for k in keys:
++        f.write("    %s,\n" % k)
+ 
+-        f.write("    {0}\n".format(LAST_EVENT))
+-        f.write("} eventtypes_t;\n")
+-        f.write("\n#endif /* __EVENTTYPES_H__ */\n")
++    f.write("    %s\n" % LAST_EVENT)
++    f.write("} eventtypes_t;\n")
++    f.write("\n#endif /* __EVENTTYPES_H__ */\n")
++    f.close()
+ 
+ if gen_header_type == "PY_HEADER":
+     # Generate eventtypes.py
+-    with open(eventtypes_py, "w") as f:
+-        f.write("# -*- coding: utf-8 -*-\n")
+-        f.write("all_events = [\n")
+-        for ev in keys:
+-            f.write('    "{0}",\n'.format(ev))
++    f = open(eventtypes_py, "w")
++    f.write("# -*- coding: utf-8 -*-\n")
++    f.write("all_events = [\n")
++    for ev in keys:
++        f.write('    "%s",\n' % ev)
+ 
+-        f.write("]\n\n")
++    f.write("]\n\n")
+ 
+-        for idx, ev in enumerate(keys):
+-            f.write("{0} = {1}\n".format(ev.replace("EVENT_", ""), idx))
++    for idx, ev in enumerate(keys):
++        f.write("%s = %s\n" % (ev.replace("EVENT_", ""), idx))
++
++    f.close()
+-- 
+1.8.3.1
+

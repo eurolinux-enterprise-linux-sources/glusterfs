@@ -1,0 +1,242 @@
+From cee93742430f0ecd3defb65e5ca62ef37f581703 Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Tue, 17 Oct 2017 12:50:48 +0530
+Subject: [PATCH 116/128] eventsapi: HTTPS support for Webhooks
+
+First it tries to call URL with verify=True without specifying the cert
+path, it succeeds if a webhook is HTTP or HTTPS with CA trusted
+certificates(for example https://github..).
+
+If above call fails with SSL error then it tries to get the server
+certificate and calls URL again. If call fails with SSL error even after
+using the certificate, then verification will be disabled and logged in
+the log file.
+
+All other errors will be catched and logged as usual.
+
+>upstream mainline patch : https://review.gluster.org/18578
+
+BUG: 1466122
+Change-Id: I86a3390ed48b75dffdc7848022af23a1e1d7f076
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126618
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ events/src/eventsapiconf.py.in |  1 +
+ events/src/peer_eventsapi.py   | 48 +++++++++++++++++----
+ events/src/utils.py            | 94 ++++++++++++++++++++++++++++++++----------
+ 3 files changed, 114 insertions(+), 29 deletions(-)
+
+diff --git a/events/src/eventsapiconf.py.in b/events/src/eventsapiconf.py.in
+index 08a3602..687eaa3 100644
+--- a/events/src/eventsapiconf.py.in
++++ b/events/src/eventsapiconf.py.in
+@@ -26,6 +26,7 @@ UUID_FILE = "@GLUSTERD_WORKDIR@/glusterd.info"
+ PID_FILE = "@localstatedir@/run/glustereventsd.pid"
+ AUTO_BOOL_ATTRIBUTES = ["force", "push-pem", "no-verify"]
+ AUTO_INT_ATTRIBUTES = ["ssh-port"]
++CERTS_DIR = "@GLUSTERD_WORKDIR@/events"
+ 
+ # Errors
+ ERROR_SAME_CONFIG = 2
+diff --git a/events/src/peer_eventsapi.py b/events/src/peer_eventsapi.py
+index 3a6a0eb..d72fdbe 100644
+--- a/events/src/peer_eventsapi.py
++++ b/events/src/peer_eventsapi.py
+@@ -27,7 +27,7 @@ from gluster.cliutils import (Cmd, node_output_ok, node_output_notok,
+                               sync_file_to_peers, GlusterCmdException,
+                               output_error, execute_in_peers, runcli,
+                               set_common_args_func)
+-from events.utils import LockedOpen, get_jwt_token
++from events.utils import LockedOpen, get_jwt_token, save_https_cert
+ 
+ from events.eventsapiconf import (WEBHOOKS_FILE_TO_SYNC,
+                                   WEBHOOKS_FILE,
+@@ -47,7 +47,8 @@ from events.eventsapiconf import (WEBHOOKS_FILE_TO_SYNC,
+                                   ERROR_PARTIAL_SUCCESS,
+                                   ERROR_ALL_NODES_STATUS_NOT_OK,
+                                   ERROR_SAME_CONFIG,
+-                                  ERROR_WEBHOOK_SYNC_FAILED)
++                                  ERROR_WEBHOOK_SYNC_FAILED,
++                                  CERTS_DIR)
+ 
+ 
+ def handle_output_error(err, errcode=1, json_output=False):
+@@ -405,12 +406,43 @@ class NodeWebhookTestCmd(Cmd):
+         if hashval:
+             http_headers["Authorization"] = "Bearer " + hashval
+ 
+-        try:
+-            resp = requests.post(args.url, headers=http_headers)
+-        except requests.ConnectionError as e:
+-            node_output_notok("{0}".format(e))
+-        except requests.exceptions.InvalidSchema as e:
+-            node_output_notok("{0}".format(e))
++        urldata = requests.utils.urlparse(args.url)
++        parts = urldata.netloc.split(":")
++        domain = parts[0]
++        # Default https port if not specified
++        port = 443
++        if len(parts) == 2:
++            port = int(parts[1])
++
++        cert_path = os.path.join(CERTS_DIR, args.url.replace("/", "_").strip())
++        verify = True
++        while True:
++            try:
++                resp = requests.post(args.url, headers=http_headers,
++                                     verify=verify)
++                # Successful webhook push
++                break
++            except requests.exceptions.SSLError as e:
++                # If verify is equal to cert path, but still failed with
++                # SSLError, Looks like some issue with custom downloaded
++                # certificate, Try with verify = false
++                if verify == cert_path:
++                    verify = False
++                    continue
++
++                # If verify is instance of bool and True, then custom cert
++                # is required, download the cert and retry
++                try:
++                    save_https_cert(domain, port, cert_path)
++                    verify = cert_path
++                except Exception:
++                    verify = False
++
++                # Done with collecting cert, continue
++                continue
++            except Exception as e:
++                node_output_notok("{0}".format(e))
++                break
+ 
+         if resp.status_code != 200:
+             node_output_notok("{0}".format(resp.status_code))
+diff --git a/events/src/utils.py b/events/src/utils.py
+index f24d64d..f405e44 100644
+--- a/events/src/utils.py
++++ b/events/src/utils.py
+@@ -27,7 +27,8 @@ from eventsapiconf import (LOG_FILE,
+                            WEBHOOKS_FILE,
+                            DEFAULT_CONFIG_FILE,
+                            CUSTOM_CONFIG_FILE,
+-                           UUID_FILE)
++                           UUID_FILE,
++                           CERTS_DIR)
+ import eventtypes
+ 
+ 
+@@ -209,11 +210,33 @@ def get_jwt_token(secret, event_type, event_ts, jwt_expiry_time_seconds=60):
+     )
+ 
+ 
++def save_https_cert(domain, port, cert_path):
++    import ssl
++
++    # Cert file already available for this URL
++    if os.path.exists(cert_path):
++        return
++
++    cert_data = ssl.get_server_certificate((domain, port))
++    with open(cert_path, "w") as f:
++        f.write(cert_data)
++
++
+ def publish_to_webhook(url, token, secret, message_queue):
+     # Import requests here since not used in any other place
+     import requests
+ 
+     http_headers = {"Content-Type": "application/json"}
++    urldata = requests.utils.urlparse(url)
++    parts = urldata.netloc.split(":")
++    domain = parts[0]
++    # Default https port if not specified
++    port = 443
++    if len(parts) == 2:
++        port = int(parts[1])
++
++    cert_path = os.path.join(CERTS_DIR, url.replace("/", "_").strip())
++
+     while True:
+         hashval = ""
+         event_type, event_ts, message_json = message_queue.get()
+@@ -226,26 +249,55 @@ def publish_to_webhook(url, token, secret, message_queue):
+         if hashval:
+             http_headers["Authorization"] = "Bearer " + hashval
+ 
+-        try:
+-            resp = requests.post(url, headers=http_headers, data=message_json)
+-        except requests.ConnectionError as e:
+-            logger.warn("Event push failed to URL: {url}, "
+-                        "Event: {event}, "
+-                        "Status: {error}".format(
+-                            url=url,
+-                            event=message_json,
+-                            error=e))
+-            continue
+-        finally:
+-            message_queue.task_done()
+-
+-        if resp.status_code != 200:
+-            logger.warn("Event push failed to URL: {url}, "
+-                        "Event: {event}, "
+-                        "Status Code: {status_code}".format(
+-                            url=url,
+-                            event=message_json,
+-                            status_code=resp.status_code))
++        verify = True
++        while True:
++            try:
++                resp = requests.post(url, headers=http_headers,
++                                     data=message_json,
++                                     verify=verify)
++                # Successful webhook push
++                message_queue.task_done()
++                if resp.status_code != 200:
++                    logger.warn("Event push failed to URL: {url}, "
++                                "Event: {event}, "
++                                "Status Code: {status_code}".format(
++                                    url=url,
++                                    event=message_json,
++                                    status_code=resp.status_code))
++                break
++            except requests.exceptions.SSLError as e:
++                # If verify is equal to cert path, but still failed with
++                # SSLError, Looks like some issue with custom downloaded
++                # certificate, Try with verify = false
++                if verify == cert_path:
++                    logger.warn("Event push failed with certificate, "
++                                "ignoring verification url={0} "
++                                "Error={1}".format(url, e))
++                    verify = False
++                    continue
++
++                # If verify is instance of bool and True, then custom cert
++                # is required, download the cert and retry
++                try:
++                    save_https_cert(domain, port, cert_path)
++                    verify = cert_path
++                except Exception as ex:
++                    verify = False
++                    logger.warn("Unable to get Server certificate, "
++                                "ignoring verification url={0} "
++                                "Error={1}".format(url, ex))
++
++                # Done with collecting cert, continue
++                continue
++            except Exception as e:
++                logger.warn("Event push failed to URL: {url}, "
++                            "Event: {event}, "
++                            "Status: {error}".format(
++                                url=url,
++                                event=message_json,
++                                error=e))
++                message_queue.task_done()
++                break
+ 
+ 
+ def plugin_webhook(message):
+-- 
+1.8.3.1
+

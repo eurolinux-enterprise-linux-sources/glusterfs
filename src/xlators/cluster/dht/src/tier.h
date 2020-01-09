@@ -11,11 +11,6 @@
 #ifndef _TIER_H_
 #define _TIER_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 
 /******************************************************************************/
 /* This is from dht-rebalancer.c as we dont have dht-rebalancer.h */
@@ -59,6 +54,7 @@ typedef struct _query_cbk_args {
         /* This is write */
         int                     query_fd;
         int                     is_promotion;
+        int                     is_compaction;
         /* This is for read */
         tier_qfile_array_t       *qfile_array;
 } query_cbk_args_t;
@@ -86,7 +82,10 @@ typedef struct _dm_thread_args {
         struct list_head        *brick_list;
         int                     freq_time;
         int                     return_value;
-} promotion_args_t, demotion_args_t;
+        int                     is_promotion;
+        int                     is_compaction;
+        gf_boolean_t            is_hot_tier;
+} migration_args_t;
 
 typedef enum tier_watermark_op_ {
         TIER_WM_NONE = 0,
@@ -97,13 +96,17 @@ typedef enum tier_watermark_op_ {
 
 #define DEFAULT_PROMOTE_FREQ_SEC       120
 #define DEFAULT_DEMOTE_FREQ_SEC        120
-#define DEFAULT_DEMOTE_DEGRADED        10
+#define DEFAULT_HOT_COMPACT_FREQ_SEC   604800
+#define DEFAULT_COLD_COMPACT_FREQ_SEC  604800
+#define DEFAULT_DEMOTE_DEGRADED        1
 #define DEFAULT_WRITE_FREQ_SEC         0
 #define DEFAULT_READ_FREQ_SEC          0
 #define DEFAULT_WM_LOW                 75
 #define DEFAULT_WM_HI                  90
 #define DEFAULT_TIER_MODE              TIER_MODE_TEST
+#define DEFAULT_COMP_MODE              _gf_true
 #define DEFAULT_TIER_MAX_MIGRATE_MB    1000
 #define DEFAULT_TIER_MAX_MIGRATE_FILES 5000
+#define DEFAULT_TIER_QUERY_LIMIT       100
 
 #endif

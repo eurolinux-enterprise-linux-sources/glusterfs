@@ -1,0 +1,36 @@
+From 5c5283f873e72d7305953ca357b709a3ab1919f4 Mon Sep 17 00:00:00 2001
+From: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Date: Tue, 10 May 2016 12:37:23 -0400
+Subject: [PATCH 19/74] build: dependency error during upgrade
+
+Not sure who thought config params in the form without_foo were a
+good idea. Trying to parse !without_tiering conditionals makes my
+head hurt.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Ie1c43fc60d6f747c27b22e3a1c40539aba3d2cad
+Signed-off-by: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74041
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+---
+ glusterfs.spec.in | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index fe566e5..f83ae5e 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1234,6 +1234,9 @@ exit 0
+ %else
+ %exclude %{_libdir}/pkgconfig/libgfchangelog.pc
+ %endif
++%if ( 0%{!?_without_tiering:1} && ! 0%{?_build_server})
++%exclude %{_libdir}/libgfdb.so
++%endif
+ %if ( 0%{!?_without_tiering:1} && 0%{?_build_server})
+ %{_libdir}/pkgconfig/libgfdb.pc
+ %else
+-- 
+1.8.3.1
+

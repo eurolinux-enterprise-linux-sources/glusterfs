@@ -12,11 +12,6 @@
 #ifndef __AFR_H__
 #define __AFR_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "call-stub.h"
 #include "compat-errno.h"
 #include "afr-mem-types.h"
@@ -28,7 +23,6 @@
 #include "afr-self-heald.h"
 #include "afr-messages.h"
 
-#define AFR_XATTR_PREFIX "trusted.afr"
 #define AFR_PATHINFO_HEADER "REPLICATE:"
 #define AFR_SH_READDIR_SIZE_KEY "self-heal-readdir-size"
 #define AFR_SH_DATA_DOMAIN_FMT "%s:self-heal"
@@ -50,11 +44,41 @@ typedef int (*afr_inode_refresh_cbk_t) (call_frame_t *frame, xlator_t *this, int
 
 typedef int (*afr_changelog_resume_t) (call_frame_t *frame, xlator_t *this);
 
-#define alloca0(size) ({void *__ptr; __ptr = alloca(size); memset(__ptr, 0, size); __ptr;})
+typedef int (*afr_compound_cbk_t) (call_frame_t *frame, void *cookie,
+                                   xlator_t *this, int op_ret, int op_errno,
+                                   void *data, dict_t *xdata);
+
 #define AFR_COUNT(array,max) ({int __i; int __res = 0; for (__i = 0; __i < max; __i++) if (array[__i]) __res++; __res;})
 #define AFR_INTERSECT(dst,src1,src2,max) ({int __i; for (__i = 0; __i < max; __i++) dst[__i] = src1[__i] && src2[__i];})
 #define AFR_CMP(a1,a2,len) ({int __cmp = 0; int __i; for (__i = 0; __i < len; __i++) if (a1[__i] != a2[__i]) { __cmp = 1; break;} __cmp;})
 #define AFR_IS_ARBITER_BRICK(priv, index) ((priv->arbiter_count == 1) && (index == ARBITER_BRICK_INDEX))
+
+#define AFR_SET_ERROR_AND_CHECK_SPLIT_BRAIN(ret, errnum)                       \
+        do {                                                                   \
+                local->op_ret = ret;                                           \
+                local->op_errno = errnum;                                      \
+                if (local->op_errno == EIO)                                    \
+                        gf_msg (this->name, GF_LOG_ERROR, local->op_errno,     \
+                                AFR_MSG_SPLIT_BRAIN, "Failing %s on gfid %s: " \
+                                "split-brain observed.",                       \
+                                gf_fop_list[local->op],                        \
+                                uuid_utoa (local->inode->gfid));               \
+        } while (0)
+
+typedef enum {
+        AFR_FAV_CHILD_NONE,
+        AFR_FAV_CHILD_BY_SIZE,
+        AFR_FAV_CHILD_BY_CTIME,
+        AFR_FAV_CHILD_BY_MTIME,
+        AFR_FAV_CHILD_BY_MAJORITY,
+        AFR_FAV_CHILD_POLICY_MAX,
+} afr_favorite_child_policy;
+
+struct afr_nfsd {
+        gf_boolean_t     iamnfsd;
+        uint32_t         halo_max_latency_msec;
+};
+
 typedef struct _afr_private {
         gf_lock_t lock;               /* to guard access to child_count, etc */
         unsigned int child_count;     /* total number of children   */
@@ -66,6 +90,8 @@ typedef struct _afr_private {
         inode_t *root_inode;
 
         unsigned char *child_up;
+        int64_t *child_latency;
+        unsigned char *local;
 
         char **pending_key;
 
@@ -74,8 +100,17 @@ typedef struct _afr_private {
         unsigned int data_self_heal_window_size;  /* max number of pipelined
                                                      read/writes */
 
-        unsigned int background_self_heal_count;
-        unsigned int background_self_heals_started;
+        struct list_head heal_waiting; /*queue for files that need heal*/
+        uint32_t  heal_wait_qlen; /*configurable queue length for heal_waiting*/
+        int32_t  heal_waiters; /* No. of elements currently in wait queue.*/
+
+        struct list_head healing;/* queue for files that are undergoing
+                                    background heal*/
+        uint32_t  background_self_heal_count;/*configurable queue length for
+                                               healing queue*/
+        int32_t  healers;/* No. of elements currently undergoing background
+                          heal*/
+
         gf_boolean_t metadata_self_heal;   /* on/off */
         gf_boolean_t entry_self_heal;      /* on/off */
 
@@ -89,13 +124,15 @@ typedef struct _afr_private {
         int favorite_child;  /* subvolume to be preferred in resolving
                                          split-brain cases */
 
+        afr_favorite_child_policy fav_child_policy;/*Policy to use for automatic
+                                                 resolution of split-brains.*/
+
         gf_boolean_t inodelk_trace;
         gf_boolean_t entrylk_trace;
 
         unsigned int wait_count;      /* # of servers to wait for success */
 
-        uint64_t up_count;      /* number of CHILD_UPs we have seen */
-        uint64_t down_count;    /* number of CHILD_DOWNs we have seen */
+        gf_timer_t *timer;      /* launched when parent up is received */
 
         gf_boolean_t      optimistic_change_log;
         gf_boolean_t      eager_lock;
@@ -124,15 +161,26 @@ typedef struct _afr_private {
         gf_boolean_t           ensure_durability;
         char                   *sh_domain;
 	char                   *afr_dirty;
+        gf_boolean_t           halo_enabled;
 
-	afr_self_heald_t       shd;
+        uint32_t               halo_max_latency_msec;
+        uint32_t               halo_max_replicas;
+        uint32_t               halo_min_replicas;
+
+        afr_self_heald_t       shd;
+        struct afr_nfsd        nfsd;
+
+        gf_boolean_t           consistent_metadata;
+        uint64_t               spb_choice_timeout;
+        gf_boolean_t           need_heal;
 
 	/* pump dependencies */
 	void                   *pump_private;
 	gf_boolean_t           use_afr_in_pump;
-        gf_boolean_t           consistent_metadata;
-        uint64_t               spb_choice_timeout;
-        gf_boolean_t           need_heal;
+	char                   *locking_scheme;
+        gf_boolean_t            esh_granular;
+        gf_boolean_t           consistent_io;
+        gf_boolean_t            use_compound_fops;
 } afr_private_t;
 
 
@@ -323,6 +371,11 @@ typedef struct {
 	int readdir_subvol;
 } afr_fd_ctx_t;
 
+typedef enum {
+        AFR_FOP_LOCK_PARALLEL,
+        AFR_FOP_LOCK_SERIAL,
+        AFR_FOP_LOCK_QUORUM_FAILED,
+} afr_fop_lock_state_t;
 
 typedef struct _afr_local {
 	glusterfs_fop_t  op;
@@ -406,6 +459,7 @@ typedef struct _afr_local {
 	   performed. This is the output of afr_inode_refresh()
 	*/
 	unsigned char *readable;
+	unsigned char *readable2; /*For rename transaction*/
 
 	afr_inode_refresh_cbk_t refreshfn;
 
@@ -414,6 +468,9 @@ typedef struct _afr_local {
 	   Inode currently getting refreshed.
 	*/
 	inode_t *refreshinode;
+
+        /*To handle setattr/setxattr on yet to be linked inode from dht*/
+        uuid_t  refreshgfid;
 
 	/*
 	  @pre_op_compat:
@@ -636,8 +693,25 @@ typedef struct _afr_local {
                 struct {
                         char *volume;
                         int32_t cmd;
+                        int32_t in_cmd;
+                        struct gf_flock in_flock;
                         struct gf_flock flock;
+                        void *xdata;
                 } inodelk;
+
+                struct {
+                        char *volume;
+                        char *basename;
+                        entrylk_cmd in_cmd;
+                        entrylk_cmd cmd;
+                        entrylk_type type;
+                        void *xdata;
+                } entrylk;
+
+                struct {
+                        off_t offset;
+                        gf_seek_what_t what;
+                } seek;
 
         } cont;
 
@@ -707,10 +781,17 @@ typedef struct _afr_local {
 		gf_boolean_t uninherit_done;
 		gf_boolean_t uninherit_value;
 
+                gf_boolean_t in_flight_sb; /* Indicator for occurrence of
+                                              split-brain while in the middle of
+                                              a txn. */
+                int32_t in_flight_sb_errno; /* This is where the cause of the
+                                               failure on the last good copy of
+                                               the file is stored.
+                                               */
+
 		/* @changelog_resume: function to be called after changlogging
 		   (either pre-op or post-op) is done
 		*/
-
 		afr_changelog_resume_t changelog_resume;
 
                 call_frame_t *main_frame;
@@ -740,6 +821,17 @@ typedef struct _afr_local {
         int             xflag;
         gf_boolean_t    do_discovery;
 	struct afr_reply *replies;
+
+        /* For  client side background heals. */
+        struct list_head healer;
+        call_frame_t *heal_frame;
+
+        gf_boolean_t need_full_crawl;
+        gf_boolean_t compound;
+        afr_fop_lock_state_t fop_lock_state;
+        compound_args_t *c_args;
+
+        gf_boolean_t is_read_txn;
 } afr_local_t;
 
 
@@ -747,6 +839,7 @@ typedef struct _afr_inode_ctx {
         uint64_t        read_subvol;
         int             spb_choice;
         gf_timer_t      *timer;
+        gf_boolean_t    need_refresh;
 } afr_inode_ctx_t;
 
 typedef struct afr_spbc_timeout {
@@ -762,21 +855,25 @@ typedef struct afr_spb_status {
         loc_t        *loc;
 } afr_spb_status_t;
 
-typedef struct afr_replace_brick_args {
+typedef struct afr_empty_brick_args {
         call_frame_t *frame;
         loc_t loc;
-        int rb_index;
-} afr_replace_brick_args_t;
+        int empty_index;
+        char *op_type;
+} afr_empty_brick_args_t;
 
 typedef struct afr_read_subvol_args {
         ia_type_t ia_type;
         uuid_t gfid;
 } afr_read_subvol_args_t;
 
-/* did a call fail due to a child failing? */
-#define child_went_down(op_ret, op_errno) (((op_ret) < 0) &&            \
-                                           ((op_errno == ENOTCONN) ||   \
-                                            (op_errno == EBADFD)))
+typedef struct afr_granular_esh_args {
+        fd_t *heal_fd;
+        xlator_t *xl;
+        call_frame_t *frame;
+        gf_boolean_t mismatch; /* flag to represent occurrence of type/gfid
+                                  mismatch */
+} afr_granular_esh_args_t;
 
 int
 afr_inode_get_readable (call_frame_t *frame, inode_t *inode, xlator_t *this,
@@ -804,7 +901,7 @@ afr_inode_read_subvol_set (inode_t *inode, xlator_t *this,
 			   int event_generation);
 
 int
-afr_inode_read_subvol_reset (inode_t *inode, xlator_t *this);
+afr_inode_event_gen_reset (inode_t *inode, xlator_t *this);
 
 int
 afr_read_subvol_select_by_policy (inode_t *inode, xlator_t *this,
@@ -817,18 +914,19 @@ afr_inode_read_subvol_type_get (inode_t *inode, xlator_t *this,
 				int type);
 int
 afr_read_subvol_get (inode_t *inode, xlator_t *this, int *subvol_p,
+                     unsigned char *readables,
 		     int *event_p, afr_transaction_type type,
                      afr_read_subvol_args_t *args);
 
-#define afr_data_subvol_get(i, t, s, e, a) \
-	afr_read_subvol_get(i, t, s, e, AFR_DATA_TRANSACTION, a)
+#define afr_data_subvol_get(i, t, s, r, e, a) \
+	afr_read_subvol_get(i, t, s, r, e, AFR_DATA_TRANSACTION, a)
 
-#define afr_metadata_subvol_get(i, t, s, e, a) \
-	afr_read_subvol_get(i, t, s, e, AFR_METADATA_TRANSACTION, a)
+#define afr_metadata_subvol_get(i, t, s, r, e, a) \
+	afr_read_subvol_get(i, t, s, r, e, AFR_METADATA_TRANSACTION, a)
 
 int
 afr_inode_refresh (call_frame_t *frame, xlator_t *this, inode_t *inode,
-		   afr_inode_refresh_cbk_t cbk);
+                   uuid_t gfid, afr_inode_refresh_cbk_t cbk);
 
 int32_t
 afr_notify (xlator_t *this, int32_t event, void *data, void *data2);
@@ -878,9 +976,6 @@ afr_lk_transfer_datalock (call_frame_t *dst, call_frame_t *src, char *dom,
 int
 __afr_fd_ctx_set (xlator_t *this, fd_t *fd);
 
-int
-afr_fd_ctx_set (xlator_t *this, fd_t *fd);
-
 afr_fd_ctx_t *
 afr_fd_ctx_get (fd_t *fd, xlator_t *this);
 
@@ -891,7 +986,8 @@ int
 afr_locked_nodes_count (unsigned char *locked_nodes, int child_count);
 
 int
-afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode);
+afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode,
+                       gf_boolean_t *start_heal);
 
 void
 afr_local_replies_wipe (afr_local_t *local, afr_private_t *priv);
@@ -912,16 +1008,25 @@ afr_local_transaction_cleanup (afr_local_t *local, xlator_t *this);
 int
 afr_cleanup_fd_ctx (xlator_t *this, fd_t *fd);
 
-#define AFR_STACK_UNWIND(fop, frame, params ...)                \
+#define AFR_STACK_UNWIND(fop, frame, op_ret, op_errno, params ...)\
         do {                                                    \
                 afr_local_t *__local = NULL;                    \
                 xlator_t    *__this = NULL;                     \
+                int32_t     __op_ret   = 0;                     \
+                int32_t     __op_errno = 0;                     \
+                                                                \
+                __op_ret = op_ret;                              \
+                __op_errno = op_errno;                          \
                 if (frame) {                                    \
                         __local = frame->local;                 \
                         __this = frame->this;                   \
+                        afr_handle_inconsistent_fop (frame, &__op_ret,\
+                                                     &__op_errno);\
                         frame->local = NULL;                    \
                 }                                               \
-                STACK_UNWIND_STRICT (fop, frame, params);       \
+                                                                \
+                STACK_UNWIND_STRICT (fop, frame, __op_ret,      \
+                                     __op_errno, params);       \
                 if (__local) {                                  \
                         afr_local_cleanup (__local, __this);    \
                         mem_put (__local);                      \
@@ -1054,6 +1159,9 @@ void
 afr_remove_eager_lock_stub (afr_local_t *local);
 
 void
+afr_reply_wipe (struct afr_reply *reply);
+
+void
 afr_replies_wipe (struct afr_reply *replies, int count);
 
 gf_boolean_t
@@ -1101,4 +1209,57 @@ afr_set_need_heal (xlator_t *this, afr_local_t *local);
 int
 afr_selfheal_data_open (xlator_t *this, inode_t *inode, fd_t **fd);
 
+int
+afr_get_msg_id (char *op_type);
+
+int
+afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+                             inode_t *inode);
+
+int32_t
+afr_quorum_errno (afr_private_t *priv);
+
+gf_boolean_t
+afr_is_consistent_io_possible (afr_local_t *local, afr_private_t *priv,
+                               int32_t *op_errno);
+void
+afr_handle_inconsistent_fop (call_frame_t *frame, int32_t *op_ret,
+                             int32_t *op_errno);
+
+void
+afr_inode_write_fill (call_frame_t *frame, xlator_t *this, int child_index,
+                     int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
+                     struct iatt *postbuf, dict_t *xdata);
+void
+afr_process_post_writev (call_frame_t *frame, xlator_t *this);
+
+void
+afr_writev_unwind (call_frame_t *frame, xlator_t *this);
+
+void
+afr_writev_copy_outvars (call_frame_t *src_frame, call_frame_t *dst_frame);
+
+void
+afr_update_uninodelk (afr_local_t *local, afr_internal_lock_t *int_lock,
+                    int32_t child_index);
+gf_boolean_t
+afr_can_compound_pre_op_and_op (afr_private_t *priv, glusterfs_fop_t fop);
+
+afr_compound_cbk_t
+afr_pack_fop_args (call_frame_t *frame, compound_args_t *args,
+                   glusterfs_fop_t fop, int index);
+int
+afr_is_inodelk_transaction(afr_local_t *local);
+
+afr_fd_ctx_t *
+__afr_fd_ctx_get (fd_t *fd, xlator_t *this);
+
+gf_boolean_t
+afr_is_inode_refresh_reqd (inode_t *inode, xlator_t *this,
+                           int event_gen1, int event_gen2);
+
+int
+afr_serialize_xattrs_with_delimiter (call_frame_t *frame, xlator_t *this,
+                                     char *buf, const char *default_str,
+                                     int32_t *serz_len, char delimiter);
 #endif /* __AFR_H__ */

@@ -1,0 +1,67 @@
+From d41cb3f53614dcf514d96717b5bde67b8d4c1335 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Niklas=20Hamb=C3=BCchen?= <mail@nh2.me>
+Date: Mon, 12 Feb 2018 17:58:48 +0530
+Subject: [PATCH 152/180] glusterfind: Speed up gfid lookup 100x by using an
+ SQL index
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fixes #1529883.
+
+This fixes some bits of `glusterfind`'s horrible performance,
+making it 100x faster.
+
+Until now, glusterfind was, for each line in each CHANGELOG.* file,
+linearly reading the entire contents of the sqlite database in
+4096-bytes-sized pread64() syscalls when executing the
+
+  SELECT COUNT(1) FROM %s WHERE 1=1 AND gfid = ?
+
+query through the code path:
+
+  get_changes()
+    parse_changelog_to_db()
+      when_data_meta()
+        gfidpath_exists()
+          _exists()
+
+In a quick benchmark on my laptop, doing one such `SELECT` query
+took ~75ms on a 10MB-sized sqlite DB, while doing the same query
+with an index took < 1ms.
+
+mainline:
+> BUG: 1529883
+> Reviewed-on: https://review.gluster.org/19114
+> Reviewed-by: Aravinda VK <avishwan@redhat.com>
+> Signed-off-by: Niklas Hambüchen <mail@nh2.me>
+(cherry picked from commit 14dbd5da1cae64e6d4d2c69966e19844d090ce98)
+
+Change-Id: I8e7fe60f1f45a06c102f56b54d2ead9e0377794e
+Signed-off-by: Niklas Hambüchen <mail@nh2.me>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130064
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+Tested-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ tools/glusterfind/src/changelogdata.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/tools/glusterfind/src/changelogdata.py b/tools/glusterfind/src/changelogdata.py
+index 3140d94..641593c 100644
+--- a/tools/glusterfind/src/changelogdata.py
++++ b/tools/glusterfind/src/changelogdata.py
+@@ -112,6 +112,11 @@ class ChangelogData(object):
+         """
+         self.cursor.execute(create_table)
+ 
++        create_index = """
++        CREATE INDEX gfid_index ON gfidpath(gfid);
++        """
++        self.cursor.execute(create_index)
++
+     def _create_table_inodegfid(self):
+         drop_table = "DROP TABLE IF EXISTS inodegfid"
+         self.cursor.execute(drop_table)
+-- 
+1.8.3.1
+

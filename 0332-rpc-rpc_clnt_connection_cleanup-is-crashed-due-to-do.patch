@@ -1,0 +1,67 @@
+From 76823d120518528c4edad4af6f4c1cdd50f5b398 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawal@redhat.com>
+Date: Tue, 24 Jul 2018 14:48:35 +0530
+Subject: [PATCH 332/333] rpc: rpc_clnt_connection_cleanup is crashed due to
+ double free
+
+Problem: gfapi client is getting crashed in rpc_clnt_connection_cleanup
+         at the time of destroying saved_frames
+
+Solution: gfapi client is getting crashed because saved_frame ptr is
+          already freed in rpc_clnt_destroy.To avoid the same update
+          code in rpc_clnt_destroy
+
+> Change-Id: Id8cce102b49f26cfd86ef88257032ed98f43192b
+> fixes: bz#1607783
+> (cherry picked from commit abd7b1393294d29eef6913e7f93ab76040c90428)
+> (Reviewed on upstream link https://review.gluster.org/#/c/20557/)
+
+Change-Id: Id3200e36acc1c49a8f5d39a1cc5053864899754c
+BUG: 1600790
+Signed-off-by: Mohit Agrawal <moagrawal@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/145377
+Tested-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ rpc/rpc-lib/src/rpc-clnt.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/rpc/rpc-lib/src/rpc-clnt.c b/rpc/rpc-lib/src/rpc-clnt.c
+index 1ea8099..fd7e3ec 100644
+--- a/rpc/rpc-lib/src/rpc-clnt.c
++++ b/rpc/rpc-lib/src/rpc-clnt.c
+@@ -1771,13 +1771,27 @@ rpc_clnt_trigger_destroy (struct rpc_clnt *rpc)
+ static void
+ rpc_clnt_destroy (struct rpc_clnt *rpc)
+ {
+-        rpcclnt_cb_program_t *program = NULL;
+-        rpcclnt_cb_program_t *tmp = NULL;
++        rpcclnt_cb_program_t   *program = NULL;
++        rpcclnt_cb_program_t   *tmp = NULL;
++        struct saved_frames    *saved_frames = NULL;
++        rpc_clnt_connection_t  *conn = NULL;
+ 
+         if (!rpc)
+                 return;
+ 
+-        saved_frames_destroy (rpc->conn.saved_frames);
++        conn = &rpc->conn;
++        /* Access saved_frames in critical-section to avoid
++           crash in rpc_clnt_connection_cleanup at the time
++           of destroying saved frames
++        */
++        pthread_mutex_lock (&conn->lock);
++        {
++                saved_frames = conn->saved_frames;
++                conn->saved_frames = NULL;
++        }
++        pthread_mutex_unlock (&conn->lock);
++
++        saved_frames_destroy (saved_frames);
+         pthread_mutex_destroy (&rpc->lock);
+         pthread_mutex_destroy (&rpc->conn.lock);
+ 
+-- 
+1.8.3.1
+

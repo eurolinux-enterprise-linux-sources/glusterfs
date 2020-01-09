@@ -10,11 +10,6 @@
 #ifndef _GLUSTERD_OP_SM_H_
 #define _GLUSTERD_OP_SM_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 
 #include <pthread.h>
 #include "compat-uuid.h"
@@ -96,7 +91,8 @@ struct glusterd_op_info_ {
         int32_t                         pending_count;
         int32_t                         brick_pending_count;
         int32_t                         op_count;
-        glusterd_op_t                   op;
+        /* op is an enum, glusterd_op_t or glusterd_op_sm_state_info_t */
+        int                             op;
         struct cds_list_head            op_peers;
         void                            *op_ctx;
         rpcsvc_request_t                *req;
@@ -170,7 +166,8 @@ typedef enum cli_cmd_type_ {
  } cli_cmd_type;
 
 typedef struct glusterd_all_volume_options {
-        char          *option;
+        char    *option;
+        char    *dflt_val;
 } glusterd_all_vol_opts;
 
 int
@@ -264,6 +261,12 @@ glusterd_op_init_commit_rsp_dict (glusterd_op_t op);
 void
 glusterd_op_modify_op_ctx (glusterd_op_t op, void *op_ctx);
 
+void
+glusterd_op_perform_detach_tier (glusterd_volinfo_t *volinfo);
+
+int
+glusterd_set_detach_bricks (dict_t *dict, glusterd_volinfo_t *volinfo);
+
 int32_t
 glusterd_volume_stats_read_perf (char *brick_path, int32_t blk_size,
                 int32_t blk_count, double *throughput, double *time);
@@ -303,4 +306,7 @@ glusterd_set_opinfo (char *errstr, int32_t op_errno, int32_t op_ret);
 
 int
 glusterd_dict_set_volid (dict_t *dict, char *volname, char **op_errstr);
+
+int32_t
+glusterd_tier_op (xlator_t *this, void *data);
 #endif

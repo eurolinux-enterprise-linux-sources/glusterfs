@@ -1,0 +1,86 @@
+From 712e62721d7d95c05d87510eb1fbe5d12381e1ab Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Mon, 18 Sep 2017 16:01:34 +0530
+Subject: [PATCH 111/128] cluster/dht: don't overfill the buffer in readdir(p)
+
+Superflous dentries that cannot be fit in the buffer size provided by
+kernel are thrown away by fuse-bridge. This means,
+
+* the next readdir(p) seen by readdir-ahead would have an offset of a
+dentry returned in a previous readdir(p) response. When readdir-ahead
+detects non-monotonic offset it turns itself off which can result in
+poor readdir performance.
+
+* readdirp can be cpu-intensive on brick and there is no point to read
+ all those dentries just to be thrown away by fuse-bridge.
+
+So, the best strategy would be to fill the buffer optimally - neither
+overfill nor underfill.
+
+Change-Id: Idb3d85dd4c08fdc4526b2df801d49e69e439ba84
+BUG: 1264911
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+upstream patch: https://review.gluster.org/18312
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126504
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index f611278..b55cb36 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -5238,6 +5238,13 @@ list:
+         }
+ 
+ done:
++        if ((op_ret == 0) && op_errno != ENOENT) {
++                /* remaining buffer size is not enough to hold even one
++                 * dentry
++                 */
++                goto unwind;
++        }
++
+         if ((count == 0) || (local && (local->filled < local->size))) {
+                 if ((next_offset == 0) || (op_errno == ENOENT)) {
+                         next_offset = 0;
+@@ -5268,8 +5275,8 @@ done:
+ 
+                 STACK_WIND_COOKIE (frame, dht_readdirp_cbk, next_subvol,
+                                    next_subvol, next_subvol->fops->readdirp,
+-                                   local->fd, local->size, next_offset,
+-                                   local->xattr);
++                                   local->fd, (local->size - local->filled),
++                                   next_offset, local->xattr);
+                 return 0;
+         }
+ 
+@@ -5359,6 +5366,13 @@ dht_readdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         }
+ 
+ done:
++        if ((op_ret == 0) && op_errno != ENOENT) {
++                /* remaining buffer size is not enough to hold even one
++                 * dentry
++                 */
++                goto unwind;
++        }
++
+         if ((count == 0) || (local && (local->filled < local->size))) {
+                 if ((op_ret <= 0) || (op_errno == ENOENT)) {
+                         next_subvol = dht_subvol_next (this, prev);
+@@ -5372,7 +5386,8 @@ done:
+ 
+                 STACK_WIND_COOKIE (frame, dht_readdir_cbk, next_subvol,
+                                    next_subvol, next_subvol->fops->readdir,
+-                                   local->fd, local->size, next_offset, NULL);
++                                   local->fd, (local->size - local->filled),
++                                   next_offset, NULL);
+                 return 0;
+         }
+ 
+-- 
+1.8.3.1
+

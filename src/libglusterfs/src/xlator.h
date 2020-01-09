@@ -11,11 +11,6 @@
 #ifndef _XLATOR_H
 #define _XLATOR_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -48,10 +43,10 @@
 
 struct _xlator;
 typedef struct _xlator xlator_t;
-struct _dir_entry_t;
-typedef struct _dir_entry_t dir_entry_t;
-struct _gf_dirent_t;
-typedef struct _gf_dirent_t gf_dirent_t;
+struct _dir_entry;
+typedef struct _dir_entry dir_entry_t;
+struct _gf_dirent;
+typedef struct _gf_dirent gf_dirent_t;
 struct _loc;
 typedef struct _loc loc_t;
 
@@ -448,6 +443,30 @@ typedef int32_t (*fop_ipc_cbk_t) (call_frame_t *frame, void *cookie,
                                  xlator_t *this, int32_t op_ret,
                                  int32_t op_errno, dict_t *xdata);
 
+typedef int32_t (*fop_seek_cbk_t) (call_frame_t *frame, void *cookie,
+                                   xlator_t *this, int32_t op_ret,
+                                   int32_t op_errno, off_t offset,
+                                   dict_t *xdata);
+
+typedef int32_t (*fop_lease_cbk_t) (call_frame_t *frame, void *cookie,
+                                    xlator_t *this, int32_t op_ret,
+                                    int32_t op_errno, struct gf_lease *lease,
+                                    dict_t *xdata);
+typedef int32_t (*fop_compound_cbk_t) (call_frame_t *frame,
+                                       void *cookie, xlator_t *this,
+                                       int32_t op_ret, int32_t op_errno,
+                                       void *data, dict_t *xdata);
+
+typedef int32_t (*fop_getactivelk_cbk_t) (call_frame_t *frame, void *cookie,
+                                           xlator_t *this, int32_t op_ret,
+                                           int32_t op_errno,
+                                           lock_migration_info_t *locklist,
+                                           dict_t *xdata);
+
+typedef int32_t (*fop_setactivelk_cbk_t) (call_frame_t *frame, void *cookie,
+                                            xlator_t *this, int32_t op_ret,
+                                            int32_t op_errno, dict_t *xdata);
+
 typedef int32_t (*fop_lookup_t) (call_frame_t *frame,
                                  xlator_t *this,
                                  loc_t *loc,
@@ -690,6 +709,24 @@ typedef int32_t (*fop_zerofill_t) (call_frame_t *frame,
 typedef int32_t (*fop_ipc_t) (call_frame_t *frame, xlator_t *this, int32_t op,
                               dict_t *xdata);
 
+typedef int32_t (*fop_seek_t) (call_frame_t *frame, xlator_t *this, fd_t *fd,
+                               off_t offset, gf_seek_what_t what,
+                               dict_t *xdata);
+
+typedef int32_t (*fop_lease_t) (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                                struct gf_lease *lease, dict_t *xdata);
+
+typedef int32_t (*fop_compound_t) (call_frame_t *frame, xlator_t *this,
+                                   void *args, dict_t *xdata);
+
+typedef int32_t (*fop_getactivelk_t) (call_frame_t *frame, xlator_t *this,
+                                       loc_t *loc, dict_t *xdata);
+
+typedef int32_t (*fop_setactivelk_t) (call_frame_t *frame, xlator_t *this,
+                                      loc_t *loc,
+                                      lock_migration_info_t *locklist,
+                                      dict_t *xdata);
+
 struct xlator_fops {
         fop_lookup_t         lookup;
         fop_stat_t           stat;
@@ -737,6 +774,11 @@ struct xlator_fops {
 	fop_discard_t	     discard;
         fop_zerofill_t       zerofill;
         fop_ipc_t            ipc;
+        fop_seek_t           seek;
+        fop_lease_t          lease;
+        fop_compound_t       compound;
+        fop_getactivelk_t   getactivelk;
+        fop_setactivelk_t  setactivelk;
 
         /* these entries are used for a typechecking hack in STACK_WIND _only_ */
         fop_lookup_cbk_t         lookup_cbk;
@@ -785,6 +827,11 @@ struct xlator_fops {
 	fop_discard_cbk_t	 discard_cbk;
         fop_zerofill_cbk_t       zerofill_cbk;
         fop_ipc_cbk_t            ipc_cbk;
+        fop_seek_cbk_t           seek_cbk;
+        fop_lease_cbk_t          lease_cbk;
+        fop_compound_cbk_t       compound_cbk;
+        fop_getactivelk_cbk_t   getactivelk_cbk;
+        fop_setactivelk_cbk_t  setactivelk_cbk;
 };
 
 typedef int32_t (*cbk_forget_t) (xlator_t *this,
@@ -800,6 +847,10 @@ typedef int32_t (*cbk_client_t)(xlator_t *this, client_t *client);
 typedef void (*cbk_ictxmerge_t) (xlator_t *this, fd_t *fd,
                                  inode_t *inode, inode_t *linked_inode);
 
+typedef size_t (*cbk_inodectx_size_t)(xlator_t *this, inode_t *inode);
+
+typedef size_t (*cbk_fdctx_size_t)(xlator_t *this, fd_t *fd);
+
 struct xlator_cbks {
         cbk_forget_t             forget;
         cbk_release_t            release;
@@ -808,6 +859,8 @@ struct xlator_cbks {
         cbk_client_t             client_destroy;
         cbk_client_t             client_disconnect;
         cbk_ictxmerge_t          ictxmerge;
+        cbk_inodectx_size_t      ictxsize;
+        cbk_fdctx_size_t         fdctxsize;
 };
 
 typedef int32_t (*dumpop_priv_t) (xlator_t *this);
@@ -858,6 +911,7 @@ struct _xlator {
         /* Built during parsing */
         char          *name;
         char          *type;
+        char          *instance_name;  /* Used for multi NFSd */
         xlator_t      *next;
         xlator_t      *prev;
         xlator_list_t *parents;
@@ -879,6 +933,7 @@ struct _xlator {
 
         gf_loglevel_t    loglevel;   /* Log level for translator */
 
+        int64_t             client_latency;
         /* for latency measurement */
         fop_latency_t latencies[GF_FOP_MAXVALUE];
 
@@ -896,6 +951,12 @@ struct _xlator {
         /* for the memory pool of 'frame->local' */
         struct mem_pool    *local_pool;
         gf_boolean_t        is_autoloaded;
+
+        /* Saved volfile ID (used for multiplexing) */
+        char               *volfile_id;
+
+        /* Its used as an index to inode_ctx*/
+        uint32_t            xl_id;
 };
 
 typedef struct {
@@ -950,6 +1011,8 @@ void xlator_foreach_depth_first (xlator_t *this,
 				 void *data);
 
 xlator_t *xlator_search_by_name (xlator_t *any, const char *name);
+xlator_t *get_xlator_by_name (xlator_t *this, char *target);
+xlator_t *get_xlator_by_type (xlator_t *this, char *target);
 
 void
 xlator_set_inode_lru_limit (xlator_t *this, void *data);
@@ -963,9 +1026,11 @@ int loc_copy_overload_parent (loc_t *dst,
 void loc_wipe (loc_t *loc);
 int loc_path (loc_t *loc, const char *bname);
 void loc_gfid (loc_t *loc, uuid_t gfid);
+void loc_pargfid (loc_t *loc, uuid_t pargfid);
 char* loc_gfid_utoa (loc_t *loc);
 gf_boolean_t loc_is_root (loc_t *loc);
 int32_t loc_build_child (loc_t *child, loc_t *parent, char *name);
+gf_boolean_t loc_is_nameless (loc_t *loc);
 int xlator_mem_acct_init (xlator_t *xl, int num_types);
 int is_gf_log_command (xlator_t *trans, const char *name, char *value);
 int glusterd_check_log_level (const char *value);
@@ -978,8 +1043,11 @@ enum gf_hdsk_event_notify_op {
 gf_boolean_t
 is_graph_topology_equal (glusterfs_graph_t *graph1, glusterfs_graph_t *graph2);
 int
-glusterfs_volfile_reconfigure (int oldvollen, FILE *newvolfile_fp,
-                               glusterfs_ctx_t *ctx, const char *oldvolfile);
+glusterfs_volfile_reconfigure (FILE *newvolfile_fp, glusterfs_ctx_t *ctx);
+
+int
+gf_volfile_reconfigure (int oldvollen, FILE *newvolfile_fp,
+                        glusterfs_ctx_t *ctx, const char *oldvolfile);
 
 int
 loc_touchup (loc_t *loc, const char *name);
@@ -992,5 +1060,14 @@ glusterfs_reachable_leaves(xlator_t *base, dict_t *leaves);
 
 int
 xlator_subvolume_count (xlator_t *this);
+
+void xlator_init_lock (void);
+void xlator_init_unlock (void);
+int
+copy_opts_to_child (xlator_t *src, xlator_t *dst, char *glob);
+
+int
+glusterfs_delete_volfile_checksum (glusterfs_ctx_t *ctx,
+                                   const char *volfile_id);
 
 #endif /* _XLATOR_H */

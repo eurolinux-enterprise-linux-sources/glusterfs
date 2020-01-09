@@ -1,0 +1,133 @@
+From 85d0f78a989304cfe4ee74840f22bacf6685a659 Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Tue, 2 Jan 2018 12:25:33 +0530
+Subject: [PATCH 118/128] snapshot : after brick reset/replace snapshot
+ creation fails
+
+Problem : after brick reset/replace snapshot creation fails
+
+Solution : During brick reset/replace when we validate and aggrigate
+           dictionary data from another node it was rewriting
+           'mount_dir' value to NULL which is critical for snapshot
+           creation.
+
+Upstream patch : https://review.gluster.org/c/19049/
+
+>BUG: 1512451
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+
+Change-Id: Iabefbfcef7d8ac4cbd2a241e821c0e51492c093e
+BUG: 1507394
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126712
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-replace-brick.c | 30 +++++++++++++++-------
+ xlators/mgmt/glusterd/src/glusterd-reset-brick.c   | 27 ++++++++++++-------
+ xlators/mgmt/glusterd/src/glusterd-utils.c         |  9 -------
+ 3 files changed, 39 insertions(+), 27 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+index 0e28608..b11adf1 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+@@ -309,16 +309,28 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
+                 /* A bricks mount dir is required only by snapshots which were
+                  * introduced in gluster-3.6.0
+                  */
+-                ret = glusterd_get_brick_mount_dir (dst_brickinfo->path,
+-                                                    dst_brickinfo->hostname,
+-                                                    dst_brickinfo->mount_dir);
+-                if (ret) {
+-                        gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                GD_MSG_BRICK_MOUNTDIR_GET_FAIL,
+-                                "Failed to get brick mount_dir");
+-                        goto out;
+-                }
+ 
++                if (!(gf_uuid_compare (dst_brickinfo->uuid, MY_UUID))) {
++                        ret = glusterd_get_brick_mount_dir
++                                        (dst_brickinfo->path,
++                                         dst_brickinfo->hostname,
++                                         dst_brickinfo->mount_dir);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_BRICK_MOUNTDIR_GET_FAIL,
++                                        "Failed to get brick mount_dir");
++                                goto out;
++                        }
++                        ret = dict_set_dynstr_with_alloc
++                                        (rsp_dict, "brick1.mount_dir",
++                                         dst_brickinfo->mount_dir);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_DICT_SET_FAILED,
++                                        "Failed to set brick.mount_dir");
++                                goto out;
++                        }
++                }
+ 
+                 ret = dict_set_int32 (rsp_dict, "brick_count", 1);
+                 if (ret) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-reset-brick.c b/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
+index 10ee6f4..c1de043 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
+@@ -197,15 +197,24 @@ glusterd_reset_brick_prevalidate (dict_t *dict, char **op_errstr,
+ 
+         }
+ 
+-        ret = glusterd_get_brick_mount_dir
+-                        (dst_brickinfo->path,
+-                         dst_brickinfo->hostname,
+-                         dst_brickinfo->mount_dir);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                        GD_MSG_BRICK_MOUNTDIR_GET_FAIL,
+-                        "Failed to get brick mount_dir.");
+-                goto out;
++        if (!(gf_uuid_compare (dst_brickinfo->uuid, MY_UUID))) {
++                ret = glusterd_get_brick_mount_dir (dst_brickinfo->path,
++                                                    dst_brickinfo->hostname,
++                                                    dst_brickinfo->mount_dir);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_BRICK_MOUNTDIR_GET_FAIL,
++                                "Failed to get brick mount_dir");
++                        goto out;
++                }
++                ret = dict_set_dynstr_with_alloc (rsp_dict, "brick1.mount_dir",
++                                                  dst_brickinfo->mount_dir);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DICT_SET_FAILED,
++                                "Failed to set brick.mount_dir");
++                        goto out;
++                }
+         }
+ 
+         ret = dict_set_int32 (rsp_dict, "brick_count", 1);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 4b53898..1b2cc43 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -13696,15 +13696,6 @@ glusterd_brick_op_prerequisites (dict_t *dict,
+                                         (*src_brickinfo)->port);
+                         }
+                 }
+-                /* setting mount_dir */
+-                ret = dict_set_dynstr_with_alloc (rsp_dict, "brick1.mount_dir",
+-                                                  (*src_brickinfo)->mount_dir);
+-                if (ret) {
+-                        gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                GD_MSG_DICT_SET_FAILED,
+-                                "Failed to set brick1.mount_dir");
+-                        goto out;
+-                }
+ 
+                 v = *volinfo;
+                 b = *src_brickinfo;
+-- 
+1.8.3.1
+

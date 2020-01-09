@@ -1,0 +1,38 @@
+From 084b4754afedff7b3f96f17c6ca19b818b0d5767 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 2 Jan 2018 20:26:31 +0530
+Subject: [PATCH 136/139] glusterd: Nullify pmap entry for bricks belonging to
+ same port
+
+Commit 30e0b86 tried to address all the stale port issues glusterd had
+in case of a brick is abruptly killed. For brick multiplexing case
+because of a bug the portmap entry was not getting removed. This patch
+addresses the same.
+
+>upstream mainline patch : https://review.gluster.org/#/c/19119
+
+Change-Id: Ib020b967a9b92f1abae9cab9492f0cacec59aaa1
+BUG: 1530325
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/128884
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-pmap.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-pmap.c b/xlators/mgmt/glusterd/src/glusterd-pmap.c
+index 4f045ab..c9e6c1b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-pmap.c
++++ b/xlators/mgmt/glusterd/src/glusterd-pmap.c
+@@ -392,7 +392,7 @@ remove:
+          * there's no xprt either, then we have nothing left worth saving and
+          * can delete the entire entry.
+          */
+-        if (!pmap->ports[p].xprt) {
++        if (brick_disconnect || !pmap->ports[p].xprt) {
+                 /* If the signout call is being triggered by brick disconnect
+                  * then clean up all the bricks (in case of brick mux)
+                  */
+-- 
+1.8.3.1
+

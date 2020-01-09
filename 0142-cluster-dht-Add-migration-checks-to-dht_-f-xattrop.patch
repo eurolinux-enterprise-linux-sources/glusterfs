@@ -1,0 +1,701 @@
+From 4f5197f585ce4117e29e6b6af0e6d91c19eb34ea Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Wed, 3 Jan 2018 10:36:58 +0530
+Subject: [PATCH 142/148] cluster/dht: Add migration checks to dht_(f)xattrop
+
+The dht_(f)xattrop implementation did not implement
+migration phase1/phase2 checks which could cause issues
+with rebalance on sharded volumes.
+This does not solve the issue where fops may reach the target
+out of order.
+
+upstream : https://review.gluster.org/#/c/17776
+
+> Change-Id: I2416fc35115e60659e35b4b717fd51f20746586c
+> BUG: 1471031
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I95b453421809c543ba8e4febd9a12c84e9439a29
+BUG: 1530146
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126959
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ libglusterfs/src/glusterfs.h              |   1 +
+ xlators/cluster/dht/src/dht-common.c      |  48 +++++-
+ xlators/cluster/dht/src/dht-common.h      |  10 ++
+ xlators/cluster/dht/src/dht-helper.c      |   3 +
+ xlators/cluster/dht/src/dht-inode-read.c  | 241 +++++++++++++++++++++++++++---
+ xlators/cluster/dht/src/dht-rebalance.c   |  86 +++++------
+ xlators/cluster/dht/src/dht-selfheal.c    |   1 -
+ xlators/storage/posix/src/posix-helpers.c |  31 ++++
+ xlators/storage/posix/src/posix.c         |   2 +
+ xlators/storage/posix/src/posix.h         |   4 +
+ 10 files changed, 366 insertions(+), 61 deletions(-)
+
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index 18256aa..c8835d9 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -272,6 +272,7 @@
+ #define TIER_LINKFILE_GFID           "tier-linkfile-gfid"
+ #define DHT_SKIP_OPEN_FD_UNLINK     "dont-unlink-for-open-fd"
+ #define DHT_IATT_IN_XDATA_KEY       "dht-get-iatt-in-xattr"
++#define DHT_MODE_IN_XDATA_KEY       "dht-get-mode-in-xattr"
+ #define GET_LINK_COUNT              "get-link-count"
+ #define GF_GET_SIZE                 "get-size"
+ 
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index b55cb36..c2d0827 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -18,7 +18,6 @@
+ #include "dht-lock.h"
+ #include "defaults.h"
+ #include "byte-order.h"
+-#include "glusterfs-acl.h"
+ #include "quota-common-utils.h"
+ #include "upcall-utils.h"
+ 
+@@ -46,6 +45,11 @@ int
+ dht_rmdir_readdirp_do (call_frame_t *readdirp_frame, xlator_t *this);
+ 
+ 
++int
++dht_common_xattrop_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                        int32_t op_ret, int32_t op_errno, dict_t *dict,
++                        dict_t *xdata);
++
+ 
+ /* Sets the blocks and size values to fixed values. This is to be called
+  * only for dirs. The caller is responsible for checking the type
+@@ -61,6 +65,48 @@ int32_t dht_set_fixed_dir_stat (struct iatt *stat)
+ }
+ 
+ 
++/* Set both DHT_IATT_IN_XDATA_KEY and DHT_MODE_IN_XDATA_KEY
++ * Use DHT_MODE_IN_XDATA_KEY if available. Else fall back to
++ * DHT_IATT_IN_XDATA_KEY
++ */
++int dht_request_iatt_in_xdata (xlator_t *this, dict_t *xattr_req)
++{
++        int ret = -1;
++
++        ret = dict_set_int8 (xattr_req, DHT_MODE_IN_XDATA_KEY, 1);
++        ret = dict_set_int8 (xattr_req, DHT_IATT_IN_XDATA_KEY, 1);
++
++        /* At least one call succeeded */
++        return ret;
++}
++
++
++/* Get both DHT_IATT_IN_XDATA_KEY and DHT_MODE_IN_XDATA_KEY
++ * Use DHT_MODE_IN_XDATA_KEY if available, else fall back to
++ * DHT_IATT_IN_XDATA_KEY
++ * This will return a dummy iatt with only the mode and type set
++ */
++int dht_read_iatt_from_xdata (xlator_t *this, dict_t *xdata,
++                              struct iatt *stbuf)
++{
++        int ret = -1;
++        int32_t mode = 0;
++
++        ret = dict_get_int32 (xdata, DHT_MODE_IN_XDATA_KEY, &mode);
++
++        if (ret) {
++                ret = dict_get_bin (xdata, DHT_IATT_IN_XDATA_KEY,
++                                    (void **)&stbuf);
++        } else {
++                stbuf->ia_prot = ia_prot_from_st_mode (mode);
++                stbuf->ia_type = ia_type_from_st_mode (mode);
++        }
++
++        return ret;
++}
++
++
++
+ int
+ dht_rmdir_unlock (call_frame_t *frame, xlator_t *this);
+ 
+diff --git a/xlators/cluster/dht/src/dht-common.h b/xlators/cluster/dht/src/dht-common.h
+index e2afd6c..47a2e23 100644
+--- a/xlators/cluster/dht/src/dht-common.h
++++ b/xlators/cluster/dht/src/dht-common.h
+@@ -20,6 +20,7 @@
+ #include "refcount.h"
+ #include "timer.h"
+ #include "protocol-common.h"
++#include "glusterfs-acl.h"
+ 
+ #ifndef _DHT_H
+ #define _DHT_H
+@@ -146,6 +147,7 @@ struct dht_rebalance_ {
+         dht_defrag_cbk_fn_t  target_op_fn;
+         dict_t              *xdata;
+         dict_t              *xattr;
++        dict_t              *dict;
+         int32_t              set;
+         struct gf_flock      flock;
+         int                  lock_cmd;
+@@ -1416,4 +1418,12 @@ dht_file_removexattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ int
+ dht_file_setxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                        int op_ret, int op_errno, dict_t *xdata);
++
++/* Abstract out the DHT-IATT-IN-DICT */
++
++
++int dht_request_iatt_in_xdata (xlator_t *this, dict_t *xattr_req);
++
++int dht_read_iatt_from_xdata (xlator_t *this, dict_t *xdata,
++                              struct iatt *stbuf);
+ #endif/* _DHT_H */
+diff --git a/xlators/cluster/dht/src/dht-helper.c b/xlators/cluster/dht/src/dht-helper.c
+index cca2bfe..e56a085 100644
+--- a/xlators/cluster/dht/src/dht-helper.c
++++ b/xlators/cluster/dht/src/dht-helper.c
+@@ -797,6 +797,9 @@ dht_local_wipe (xlator_t *this, dht_local_t *local)
+         if (local->rebalance.xattr)
+                 dict_unref (local->rebalance.xattr);
+ 
++        if (local->rebalance.dict)
++                dict_unref (local->rebalance.dict);
++
+         GF_FREE (local->rebalance.vector);
+ 
+         if (local->rebalance.iobref)
+diff --git a/xlators/cluster/dht/src/dht-inode-read.c b/xlators/cluster/dht/src/dht-inode-read.c
+index a9e4766..fa63fef 100644
+--- a/xlators/cluster/dht/src/dht-inode-read.c
++++ b/xlators/cluster/dht/src/dht-inode-read.c
+@@ -24,8 +24,9 @@ int dht_lk2 (xlator_t *this, xlator_t *dst_node,
+              call_frame_t *frame, int ret);
+ int dht_fsync2 (xlator_t *this, xlator_t *dst_node,
+                 call_frame_t *frame, int ret);
+-
+-
++int
++dht_common_xattrop2 (xlator_t *this, xlator_t *subvol, call_frame_t *frame,
++                     int ret);
+ 
+ int
+ dht_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+@@ -1246,13 +1247,163 @@ err:
+         return 0;
+ }
+ 
+-/* Currently no translators on top of 'distribute' will be using
+- * below fops, hence not implementing 'migration' related checks
+- */
++
++int
++dht_common_xattrop_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                        int32_t op_ret, int32_t op_errno, dict_t *dict,
++                        dict_t *xdata)
++{
++        dht_local_t  *local          = NULL;
++        call_frame_t *call_frame     = NULL;
++        xlator_t     *prev           = NULL;
++        xlator_t     *src_subvol     = NULL;
++        xlator_t     *dst_subvol     = NULL;
++        struct iatt   stbuf          = {0,};
++        int           ret            = -1;
++        inode_t      *inode          = NULL;
++
++        local = frame->local;
++        call_frame = cookie;
++        prev = call_frame->this;
++
++        local->op_errno = op_errno;
++
++        if ((op_ret == -1) && !dht_inode_missing (op_errno)) {
++                gf_msg_debug (this->name, op_errno,
++                              "subvolume %s returned -1.",
++                              prev->name);
++                goto out;
++        }
++
++        if (local->call_cnt != 1)
++                goto out;
++
++        ret = dht_read_iatt_from_xdata (this, xdata, &stbuf);
++
++        if ((!op_ret) && (ret)) {
++                /* This is a potential problem and can cause corruption
++                 * with sharding.
++                 * Oh well. We tried.
++                 */
++                goto out;
++        }
++
++        local->op_ret = op_ret;
++        local->rebalance.target_op_fn = dht_common_xattrop2;
++        if (xdata)
++                local->rebalance.xdata = dict_ref (xdata);
++
++        if (dict)
++                local->rebalance.dict = dict_ref (dict);
++
++        /* Phase 2 of migration */
++        if ((op_ret == -1) || IS_DHT_MIGRATION_PHASE2 (&stbuf)) {
++                ret = dht_rebalance_complete_check (this, frame);
++                if (!ret)
++                        return 0;
++        }
++
++        /* Check if the rebalance phase1 is true */
++        if (IS_DHT_MIGRATION_PHASE1 (&stbuf)) {
++
++                inode = local->loc.inode ? local->loc.inode : local->fd->inode;
++                dht_inode_ctx_get_mig_info (this, inode, &src_subvol,
++                                            &dst_subvol);
++
++                if (dht_mig_info_is_invalid (local->cached_subvol, src_subvol,
++                                             dst_subvol) ||
++                      !dht_fd_open_on_dst (this, local->fd, dst_subvol)) {
++
++                        ret = dht_rebalance_in_progress_check (this, frame);
++                        if (!ret)
++                                return 0;
++                } else {
++                        dht_common_xattrop2 (this, dst_subvol, frame, 0);
++                        return 0;
++                }
++        }
++
++
++out:
++        if (local->fop == GF_FOP_XATTROP) {
++                DHT_STACK_UNWIND (xattrop, frame, op_ret, op_errno,
++                                  dict, xdata);
++        } else {
++                DHT_STACK_UNWIND (fxattrop, frame, op_ret, op_errno,
++                                  dict, xdata);
++        }
++
++        return 0;
++}
++
++
++int
++dht_common_xattrop2 (xlator_t *this, xlator_t *subvol, call_frame_t *frame,
++                     int ret)
++{
++        dht_local_t *local    = NULL;
++        int32_t      op_errno = EINVAL;
++
++        if ((frame == NULL) || (frame->local == NULL))
++                goto out;
++
++        local = frame->local;
++        op_errno = local->op_errno;
++
++        if (we_are_not_migrating (ret)) {
++                /* This dht xlator is not migrating the file. Unwind and
++                 * pass on the original mode bits so the higher DHT layer
++                 * can handle this.
++                 */
++                if (local->fop == GF_FOP_XATTROP) {
++                        DHT_STACK_UNWIND (xattrop, frame, local->op_ret,
++                                          op_errno, local->rebalance.dict,
++                                          local->rebalance.xdata);
++                } else {
++                        DHT_STACK_UNWIND (fxattrop, frame, local->op_ret,
++                                          op_errno, local->rebalance.dict,
++                                          local->rebalance.xdata);
++                }
++
++                return 0;
++        }
++
++        if (subvol == NULL)
++                goto out;
++
++        local->call_cnt = 2; /* This is the second attempt */
++
++        if (local->fop == GF_FOP_XATTROP) {
++                STACK_WIND (frame, dht_common_xattrop_cbk, subvol,
++                            subvol->fops->xattrop, &local->loc,
++                            local->rebalance.flags, local->rebalance.xattr,
++                            local->xattr_req);
++        } else {
++                STACK_WIND (frame, dht_common_xattrop_cbk, subvol,
++                            subvol->fops->fxattrop, local->fd,
++                            local->rebalance.flags, local->rebalance.xattr,
++                            local->xattr_req);
++        }
++
++        return 0;
++
++out:
++
++        /* If local is unavailable we could be unwinding the wrong
++         * function here */
++
++        if (local && (local->fop == GF_FOP_XATTROP)) {
++                DHT_STACK_UNWIND (xattrop, frame, -1, op_errno, NULL, NULL);
++        } else {
++                DHT_STACK_UNWIND (fxattrop, frame, -1, op_errno, NULL, NULL);
++        }
++        return 0;
++}
++
+ 
+ int
+ dht_xattrop_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+-                 int32_t op_ret, int32_t op_errno, dict_t *dict, dict_t *xdata)
++                  int32_t op_ret, int32_t op_errno, dict_t *dict, dict_t *xdata)
+ {
+         DHT_STACK_UNWIND (xattrop, frame, op_ret, op_errno, dict, xdata);
+         return 0;
+@@ -1263,9 +1414,10 @@ int
+ dht_xattrop (call_frame_t *frame, xlator_t *this, loc_t *loc,
+              gf_xattrop_flags_t flags, dict_t *dict, dict_t *xdata)
+ {
+-        xlator_t     *subvol = NULL;
++        xlator_t     *subvol   = NULL;
+         int           op_errno = -1;
+-        dht_local_t  *local = NULL;
++        dht_local_t  *local    = NULL;
++        int           ret      = -1;
+ 
+         VALIDATE_OR_GOTO (frame, err);
+         VALIDATE_OR_GOTO (this, err);
+@@ -1287,11 +1439,33 @@ dht_xattrop (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                 goto err;
+         }
+ 
+-        local->call_cnt = 1;
++        /* Todo : Handle dirs as well. At the moment the only xlator above dht
++         * that uses xattrop is sharding and that is only for files */
++
++        if (IA_ISDIR (loc->inode->ia_type)) {
++                STACK_WIND (frame, dht_xattrop_cbk, subvol,
++                            subvol->fops->xattrop, loc, flags, dict, xdata);
++
++        } else {
++                local->xattr_req = xdata ? dict_ref(xdata) : dict_new ();
++                local->call_cnt = 1;
+ 
+-        STACK_WIND (frame, dht_xattrop_cbk,
+-                    subvol, subvol->fops->xattrop,
+-                    loc, flags, dict, xdata);
++                local->rebalance.xattr = dict_ref (dict);
++                local->rebalance.flags = flags;
++
++                ret = dht_request_iatt_in_xdata (this, local->xattr_req);
++
++                if (ret) {
++                        gf_msg_debug (this->name, 0,
++                                      "Failed to set dictionary key %s file=%s",
++                                      DHT_IATT_IN_XDATA_KEY, loc->path);
++                }
++
++                STACK_WIND (frame, dht_common_xattrop_cbk, subvol,
++                            subvol->fops->xattrop, loc,
++                            local->rebalance.flags, local->rebalance.xattr,
++                            local->xattr_req);
++        }
+ 
+         return 0;
+ 
+@@ -1318,6 +1492,8 @@ dht_fxattrop (call_frame_t *frame, xlator_t *this,
+ {
+         xlator_t     *subvol = NULL;
+         int           op_errno = -1;
++        dht_local_t  *local    = NULL;
++        int           ret      = -1;
+ 
+         VALIDATE_OR_GOTO (frame, err);
+         VALIDATE_OR_GOTO (this, err);
+@@ -1331,10 +1507,39 @@ dht_fxattrop (call_frame_t *frame, xlator_t *this,
+                 goto err;
+         }
+ 
+-        STACK_WIND (frame,
+-                    dht_fxattrop_cbk,
+-                    subvol, subvol->fops->fxattrop,
+-                    fd, flags, dict, xdata);
++        local = dht_local_init (frame, NULL, fd, GF_FOP_FXATTROP);
++        if (!local) {
++                op_errno = ENOMEM;
++                goto err;
++        }
++
++        /* Todo : Handle dirs as well. At the moment the only xlator above dht
++         * that uses xattrop is sharding and that is only for files */
++
++        if (IA_ISDIR (fd->inode->ia_type)) {
++                STACK_WIND (frame, dht_fxattrop_cbk, subvol,
++                            subvol->fops->fxattrop, fd, flags, dict, xdata);
++
++        } else {
++                local->xattr_req = xdata ? dict_ref(xdata) : dict_new ();
++                local->call_cnt = 1;
++
++                local->rebalance.xattr = dict_ref (dict);
++                local->rebalance.flags = flags;
++
++                ret = dht_request_iatt_in_xdata (this, local->xattr_req);
++
++                if (ret) {
++                        gf_msg_debug (this->name, 0,
++                                      "Failed to set dictionary key %s fd=%p",
++                                      DHT_IATT_IN_XDATA_KEY, fd);
++                }
++
++                STACK_WIND (frame, dht_common_xattrop_cbk, subvol,
++                            subvol->fops->fxattrop, fd,
++                            local->rebalance.flags, local->rebalance.xattr,
++                            local->xattr_req);
++        }
+ 
+         return 0;
+ 
+@@ -1345,6 +1550,9 @@ err:
+         return 0;
+ }
+ 
++/* Currently no translators on top of 'distribute' will be using
++ * below fops, hence not implementing 'migration' related checks
++ */
+ 
+ int
+ dht_inodelk_cbk (call_frame_t *frame, void *cookie,
+@@ -1406,7 +1614,6 @@ dht_finodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                   int32_t op_ret, int32_t op_errno, dict_t *xdata)
+ 
+ {
+-
+         dht_lk_inode_unref (frame, op_ret);
+         DHT_STACK_UNWIND (finodelk, frame, op_ret, op_errno, xdata);
+         return 0;
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index ae367d7..3343a2b 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -168,7 +168,7 @@ dht_strip_out_acls (dict_t *dict)
+ {
+         if (dict) {
+                 dict_del (dict, "trusted.SGI_ACL_FILE");
+-                dict_del (dict, "POSIX_ACL_ACCESS_XATTR");
++                dict_del (dict, POSIX_ACL_ACCESS_XATTR);
+         }
+ }
+ 
+@@ -665,7 +665,7 @@ out:
+ static int
+ __dht_rebalance_create_dst_file (xlator_t *this, xlator_t *to, xlator_t *from,
+                                  loc_t *loc, struct iatt *stbuf, fd_t **dst_fd,
+-                                 dict_t *xattr, int *fop_errno)
++                                 int *fop_errno)
+ {
+         int          ret  = -1;
+         fd_t        *fd   = NULL;
+@@ -810,28 +810,6 @@ __dht_rebalance_create_dst_file (xlator_t *this, xlator_t *to, xlator_t *from,
+                 goto out;
+         }
+ 
+-        ret = syncop_fsetxattr (to, fd, xattr, 0, NULL, NULL);
+-        if (ret < 0) {
+-                *fop_errno = -ret;
+-                gf_msg (this->name, GF_LOG_WARNING, -ret,
+-                        DHT_MSG_MIGRATE_FILE_FAILED,
+-                        "%s: failed to set xattr on %s",
+-                        loc->path, to->name);
+-
+-        }
+-
+-        /* TODO: Need to add a detailed comment about why we moved away from
+-        ftruncate.
+-
+-        ret = syncop_ftruncate (to, fd, stbuf->ia_size, NULL, NULL);
+-        if (ret < 0) {
+-                *fop_errno = -ret;
+-                gf_msg (this->name, GF_LOG_ERROR, -ret,
+-                        DHT_MSG_MIGRATE_FILE_FAILED,
+-                        "ftruncate failed for %s on %s",
+-                        loc->path, to->name);
+-        */
+-
+         ret = syncop_fsetattr (to, fd, stbuf,
+                                (GF_SET_ATTR_UID | GF_SET_ATTR_GID),
+                                 NULL, NULL, NULL, NULL);
+@@ -1620,24 +1598,10 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+         }
+ 
+ 
+-        /* TODO: move all xattr related operations to fd based operations */
+-        ret = syncop_listxattr (from, loc, &xattr, NULL, NULL);
+-        if (ret < 0) {
+-                *fop_errno = -ret;
+-                ret = -1;
+-                gf_msg (this->name, GF_LOG_WARNING, *fop_errno,
+-                        DHT_MSG_MIGRATE_FILE_FAILED,
+-                        "Migrate file failed:"
+-                        "%s: failed to get xattr from %s",
+-                        loc->path, from->name);
+-        }
+-
+-        /* Copying posix acls to the linkto file messes up the permissions*/
+-        dht_strip_out_acls (xattr);
+ 
+         /* create the destination, with required modes/xattr */
+         ret = __dht_rebalance_create_dst_file (this, to, from, loc, &stbuf,
+-                                               &dst_fd, xattr, fop_errno);
++                                               &dst_fd, fop_errno);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0, 0, "Create dst failed"
+                         " on - %s for file - %s", to->name, loc->path);
+@@ -1683,7 +1647,7 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+                  * as in case of failure the linkto needs to point to the source
+                  * subvol */
+                 ret = __dht_rebalance_create_dst_file (this, to, from, loc, &stbuf,
+-                                                       &dst_fd, xattr, fop_errno);
++                                                       &dst_fd, fop_errno);
+                 if (ret) {
+                         gf_log (this->name, GF_LOG_ERROR, "Create dst failed"
+                                 " on - %s for file - %s", to->name, loc->path);
+@@ -1709,8 +1673,44 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+                         loc->path, from->name);
+                 goto out;
+         }
++
++        /* TODO: move all xattr related operations to fd based operations */
++        ret = syncop_listxattr (from, loc, &xattr, NULL, NULL);
++        if (ret < 0) {
++                *fop_errno = -ret;
++                gf_msg (this->name, GF_LOG_WARNING, *fop_errno,
++                        DHT_MSG_MIGRATE_FILE_FAILED,
++                        "Migrate file failed:"
++                        "%s: failed to get xattr from %s",
++                        loc->path, from->name);
++                ret = -1;
++                goto out;
++        }
++
++        /* Copying posix acls to the linkto file messes up the permissions*/
++        dht_strip_out_acls (xattr);
++
++        /* Remove the linkto xattr as we don't want to overwrite the value
++         * set on the dst.
++         */
++        dict_del (xattr, conf->link_xattr_name);
++
++        /* We need to error out if this fails as having the wrong shard xattrs
++         * set on the dst could cause data corruption
++         */
++        ret = syncop_fsetxattr (to, dst_fd, xattr, 0, NULL, NULL);
++        if (ret < 0) {
++                *fop_errno = -ret;
++                gf_msg (this->name, GF_LOG_WARNING, -ret,
++                        DHT_MSG_MIGRATE_FILE_FAILED,
++                        "%s: failed to set xattr on %s",
++                        loc->path, to->name);
++                ret = -1;
++                goto out;
++        }
++
+         if (xattr_rsp) {
+-                /* we no more require this key */
++                /* we no longer require this key */
+                 dict_del (dict, conf->link_xattr_name);
+                 dict_unref (xattr_rsp);
+         }
+@@ -2011,7 +2011,9 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+                 xattr = NULL;
+         }
+ 
+-        ret = syncop_listxattr (from, loc, &xattr, NULL, NULL);
++        /* Set only the Posix ACLs this time */
++        ret = syncop_getxattr (from, loc, &xattr, POSIX_ACL_ACCESS_XATTR,
++                               NULL, NULL);
+         if (ret < 0) {
+                 gf_msg (this->name, GF_LOG_WARNING, -ret,
+                         DHT_MSG_MIGRATE_FILE_FAILED,
+diff --git a/xlators/cluster/dht/src/dht-selfheal.c b/xlators/cluster/dht/src/dht-selfheal.c
+index 1577d03..3b9fcf1 100644
+--- a/xlators/cluster/dht/src/dht-selfheal.c
++++ b/xlators/cluster/dht/src/dht-selfheal.c
+@@ -14,7 +14,6 @@
+ #include "dht-common.h"
+ #include "dht-messages.h"
+ #include "dht-lock.h"
+-#include "glusterfs-acl.h"
+ 
+ #define DHT_SET_LAYOUT_RANGE(layout,i,srt,chunk,path)    do {           \
+                 layout->list[i].start = srt;                            \
+diff --git a/xlators/storage/posix/src/posix-helpers.c b/xlators/storage/posix/src/posix-helpers.c
+index f8d8fed..bc97206 100644
+--- a/xlators/storage/posix/src/posix-helpers.c
++++ b/xlators/storage/posix/src/posix-helpers.c
+@@ -150,6 +150,37 @@ out:
+         return ret;
+ }
+ 
++int32_t
++posix_set_mode_in_dict (dict_t *in_dict, dict_t *out_dict,
++                        struct iatt *in_stbuf)
++{
++        int ret             = -1;
++        mode_t mode         = 0;
++
++        if ((!in_dict) || (!in_stbuf) || (!out_dict)) {
++                goto out;
++        }
++
++        /* We need this only for files */
++        if (!(IA_ISREG (in_stbuf->ia_type))) {
++                ret = 0;
++                goto out;
++        }
++
++        /* Nobody asked for this */
++        if (!dict_get (in_dict, DHT_MODE_IN_XDATA_KEY)) {
++                ret = 0;
++                goto out;
++        }
++        mode = st_mode_from_ia (in_stbuf->ia_prot, in_stbuf->ia_type);
++
++        ret = dict_set_int32 (out_dict, DHT_MODE_IN_XDATA_KEY, mode);
++
++out:
++        return ret;
++}
++
++
+ static gf_boolean_t
+ posix_xattr_ignorable (char *key)
+ {
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 8aeca3b..a412e6d 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -6146,7 +6146,9 @@ do_xattrop (call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+         if (!xdata_rsp) {
+                 op_ret = -1;
+                 op_errno = ENOMEM;
++                goto out;
+         }
++        posix_set_mode_in_dict (xdata, xdata_rsp, &stbuf);
+ out:
+ 
+         STACK_UNWIND_STRICT (xattrop, frame, op_ret, op_errno, xattr_rsp,
+diff --git a/xlators/storage/posix/src/posix.h b/xlators/storage/posix/src/posix.h
+index ae9fb08..8e40e6f 100644
+--- a/xlators/storage/posix/src/posix.h
++++ b/xlators/storage/posix/src/posix.h
+@@ -353,4 +353,8 @@ posix_fdget_objectsignature (int, dict_t *);
+ 
+ gf_boolean_t
+ posix_is_bulk_removexattr (char *name, dict_t *dict);
++
++int32_t
++posix_set_mode_in_dict (dict_t *in_dict, dict_t *out_dict,
++                        struct iatt *in_stbuf);
+ #endif /* _POSIX_H */
+-- 
+1.8.3.1
+

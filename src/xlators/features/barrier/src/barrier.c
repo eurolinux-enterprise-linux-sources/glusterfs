@@ -8,11 +8,6 @@
    cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "barrier.h"
 #include "defaults.h"
 #include "call-stub.h"
@@ -478,7 +473,7 @@ notify (xlator_t *this, int event, void *data, ...)
         dict_t          *dict                   = NULL;
         gf_boolean_t     past                   = _gf_false;
         int              ret                    = -1;
-        gf_boolean_t     barrier_enabled        = _gf_false;
+        int              barrier_enabled        = _gf_false;
         struct list_head queue                  = {0,};
 
         priv = this->private;

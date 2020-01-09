@@ -1,0 +1,331 @@
+From 2c8b94fb5359424a17dc0380b86cb17058f07bf6 Mon Sep 17 00:00:00 2001
+From: Sachin Prabhu <sprabhu@redhat.com>
+Date: Wed, 14 Feb 2018 10:36:27 +0530
+Subject: [PATCH 200/201] quick-read: Discard cache for fallocate, zerofill and
+ discard ops
+
+The fallocate, zerofill and discard modify file data on the server thus
+rendering stale any cache held by the xlator on the client.
+
+mainline:
+> BUG: 1524252
+> Reviewed-on: https://review.gluster.org/19018
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+> Signed-off-by: Sachin Prabhu <sprabhu@redhat.com>
+(cherry picked from commit 429f2436b33793136836042ccc43ce4cfd7f89f3)
+
+BUG: 1523599
+Change-Id: I432146c6390a0cd5869420c373f598da43915f3f
+Signed-off-by: Sachin Prabhu <sprabhu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130229
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ tests/bugs/quick-read/bz1523599/bz1523599.t      |  32 ++++
+ tests/bugs/quick-read/bz1523599/test_bz1523599.c | 196 +++++++++++++++++++++++
+ xlators/performance/quick-read/src/quick-read.c  |  40 ++++-
+ 3 files changed, 267 insertions(+), 1 deletion(-)
+ create mode 100755 tests/bugs/quick-read/bz1523599/bz1523599.t
+ create mode 100644 tests/bugs/quick-read/bz1523599/test_bz1523599.c
+
+diff --git a/tests/bugs/quick-read/bz1523599/bz1523599.t b/tests/bugs/quick-read/bz1523599/bz1523599.t
+new file mode 100755
+index 0000000..5027efe
+--- /dev/null
++++ b/tests/bugs/quick-read/bz1523599/bz1523599.t
+@@ -0,0 +1,32 @@
++#!/bin/bash
++
++. $(dirname $0)/../../../include.rc
++. $(dirname $0)/../../../volume.rc
++. $(dirname $0)/../../../fileio.rc
++
++cleanup;
++
++TEST glusterd
++TEST pidof glusterd
++
++TEST $CLI volume create $V0 $H0:$B0/brick1;
++EXPECT 'Created' volinfo_field $V0 'Status';
++
++TEST $CLI volume start $V0;
++EXPECT 'Started' volinfo_field $V0 'Status';
++
++logdir=`gluster --print-logdir`
++
++TEST build_tester $(dirname $0)/test_bz1523599.c -lgfapi -o $(dirname $0)/test_bz1523599
++TEST ./$(dirname $0)/test_bz1523599 0 $H0 $V0 test_bz1523599 $logdir/bz1523599.log
++TEST ./$(dirname $0)/test_bz1523599 1 $H0 $V0 test_bz1523599 $logdir/bz1523599.log
++TEST ./$(dirname $0)/test_bz1523599 0 $H0 $V0 test_bz1523599 $logdir/bz1523599.log
++TEST ./$(dirname $0)/test_bz1523599 2 $H0 $V0 test_bz1523599 $logdir/bz1523599.log
++
++cleanup_tester $(dirname $0)/test_bz1523599
++
++TEST $CLI volume stop $V0
++TEST $CLI volume delete $V0
++
++cleanup;
++
+diff --git a/tests/bugs/quick-read/bz1523599/test_bz1523599.c b/tests/bugs/quick-read/bz1523599/test_bz1523599.c
+new file mode 100644
+index 0000000..f0166e1
+--- /dev/null
++++ b/tests/bugs/quick-read/bz1523599/test_bz1523599.c
+@@ -0,0 +1,196 @@
++/*
++ * ./test_bz1523599 0 vm140-111 gv0 test211 log
++ * ./test_bz1523599 1 vm140-111 gv0 test211 log
++ * Open - Discard - Read - Then check read information to see if the initial TEST_STR_LEN/2 bytes read zero
++ */
++
++#define _GNU_SOURCE
++#include <stdio.h>
++#include <stdlib.h>
++#include <glusterfs/api/glfs.h>
++#include <glusterfs/api/glfs-handles.h>
++#include <errno.h>
++#include <sys/uio.h>
++
++#define TEST_STR_LEN 2048
++
++enum fallocate_flag {
++        TEST_WRITE,
++        TEST_DISCARD,
++        TEST_ZEROFILL,
++};
++
++void print_str(char *str, int len)
++{
++        int i, addr;
++
++        printf("%07x\t", 0);
++        for (i = 0; i < len; i++) {
++                printf("%02x", str[i]);
++                if (i) {
++                        if ((i + 1) % 16 == 0)
++                                printf("\n%07x\t", i+1);
++                        else if ((i + 1) % 4 == 0)
++                                printf(" ");
++                }
++        }
++        printf("\n");
++}
++
++int
++test_read(char *str, int total_length, int len_zero)
++{
++        int i;
++        int ret = 0;
++
++        for (i = 0; i < len_zero; i++) {
++                if (str[i]) {
++                        fprintf(stderr, "char at position %d not zeroed out\n",
++                                i);
++                        ret = -EIO;
++                        goto out;
++                }
++        }
++
++        for (i = len_zero; i < total_length; i++) {
++                if (str[i] != 0x11) {
++                        fprintf(stderr,
++                                "char at position %d does not contain pattern\n",
++                                i);
++                        ret = -EIO;
++                        goto out;
++                }
++        }
++out:
++        return ret;
++}
++
++int main(int argc, char *argv[])
++{
++        int opcode;
++        char *host_name, *volume_name, *file_path, *glfs_log_path;
++        glfs_t *fs = NULL;
++        glfs_fd_t *fd = NULL;
++        off_t offset = 0;
++        size_t len_zero = TEST_STR_LEN / 2;
++        char writestr[TEST_STR_LEN];
++        char readstr[TEST_STR_LEN];
++        struct iovec iov = {&readstr, TEST_STR_LEN};
++        int i;
++        int ret = 1;
++
++        for (i = 0; i < TEST_STR_LEN; i++)
++                writestr[i] = 0x11;
++        for (i = 0; i < TEST_STR_LEN; i++)
++                readstr[i] = 0x22;
++
++        if (argc != 6) {
++                fprintf(stderr,
++                        "Syntax: %s <test type> <host> <volname> <file-path> <log-file>\n",
++                        argv[0]);
++                return 1;
++        }
++
++        opcode = atoi(argv[1]);
++        host_name = argv[2];
++        volume_name = argv[3];
++        file_path = argv[4];
++        glfs_log_path = argv[5];
++
++        fs = glfs_new(volume_name);
++        if (!fs) {
++                perror("glfs_new");
++                return 1;
++        }
++
++        ret = glfs_set_volfile_server(fs, "tcp", host_name, 24007);
++        if (ret != 0) {
++                perror("glfs_set_volfile_server");
++                goto out;
++        }
++
++        ret = glfs_set_logging(fs, glfs_log_path, 7);
++        if (ret != 0) {
++                perror("glfs_set_logging");
++                goto out;
++        }
++
++        ret = glfs_init(fs);
++        if (ret != 0) {
++                perror("glfs_init");
++                goto out;
++        }
++
++        fd = glfs_creat(fs, file_path, O_RDWR, 0777);
++        if (fd == NULL) {
++                perror("glfs_creat");
++                ret = -1;
++                goto out;
++        }
++
++        switch (opcode) {
++        case TEST_WRITE:
++                fprintf(stderr, "Test Write\n");
++                ret = glfs_write(fd, writestr, TEST_STR_LEN, 0);
++                if (ret < 0) {
++                        perror("glfs_write");
++                        goto out;
++                } else if (ret != TEST_STR_LEN) {
++                        fprintf(stderr, "insufficient data written %d \n", ret);
++                        ret = -EIO;
++                        goto out;
++                }
++                ret = 0;
++                goto out;
++        case TEST_DISCARD:
++                fprintf(stderr, "Test Discard\n");
++                ret = glfs_discard(fd, offset, len_zero);
++                if (ret < 0) {
++                        if (errno == EOPNOTSUPP) {
++                                fprintf(stderr, "Operation not supported\n");
++                                ret = 0;
++                                goto out;
++                        }
++                        perror("glfs_discard");
++                        goto out;
++                }
++                goto test_read;
++        case TEST_ZEROFILL:
++                fprintf(stderr, "Test Zerofill\n");
++                ret = glfs_zerofill(fd, offset, len_zero);
++                if (ret < 0) {
++                        if (errno == EOPNOTSUPP) {
++                                fprintf(stderr, "Operation not supported\n");
++                                ret = 0;
++                                goto out;
++                        }
++                        perror("glfs_zerofill");
++                        goto out;
++                }
++                goto test_read;
++        default:
++                ret = -1;
++                fprintf(stderr, "Incorrect test code %d\n", opcode);
++                goto out;
++        }
++
++test_read:
++        ret = glfs_readv(fd, &iov, 1, 0);
++        if (ret < 0) {
++                perror("glfs_readv");
++                goto out;
++        }
++
++        /* printf("Read str\n"); print_str(readstr, TEST_STR_LEN); printf("\n"); */
++        ret = test_read(readstr, TEST_STR_LEN, len_zero);
++
++out:
++        if (fd)
++                glfs_close(fd);
++        glfs_fini(fs);
++
++        if (ret)
++                return -1;
++
++        return 0;
++}
+diff --git a/xlators/performance/quick-read/src/quick-read.c b/xlators/performance/quick-read/src/quick-read.c
+index 92b2f82..61232c1 100644
+--- a/xlators/performance/quick-read/src/quick-read.c
++++ b/xlators/performance/quick-read/src/quick-read.c
+@@ -668,6 +668,41 @@ qr_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+ 	return 0;
+ }
+ 
++static int
++qr_fallocate (call_frame_t *frame, xlator_t *this, fd_t *fd, int keep_size,
++              off_t offset, size_t len, dict_t *xdata)
++{
++        qr_inode_prune (this, fd->inode);
++
++        STACK_WIND (frame, default_fallocate_cbk,
++                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->fallocate,
++                    fd, keep_size, offset, len, xdata);
++        return 0;
++}
++
++static int
++qr_discard (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
++              size_t len, dict_t *xdata)
++{
++        qr_inode_prune (this, fd->inode);
++
++        STACK_WIND (frame, default_discard_cbk,
++                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->discard,
++                    fd, offset, len, xdata);
++        return 0;
++}
++
++static int
++qr_zerofill (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
++              off_t len, dict_t *xdata)
++{
++        qr_inode_prune (this, fd->inode);
++
++        STACK_WIND (frame, default_zerofill_cbk,
++                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->zerofill,
++                    fd, offset, len, xdata);
++        return 0;
++}
+ 
+ int
+ qr_open (call_frame_t *frame, xlator_t *this, loc_t *loc, int flags,
+@@ -1128,7 +1163,10 @@ struct xlator_fops fops = {
+         .readv       = qr_readv,
+ 	.writev      = qr_writev,
+ 	.truncate    = qr_truncate,
+-	.ftruncate   = qr_ftruncate
++        .ftruncate   = qr_ftruncate,
++        .fallocate   = qr_fallocate,
++        .discard     = qr_discard,
++        .zerofill    = qr_zerofill
+ };
+ 
+ struct xlator_cbks cbks = {
+-- 
+1.8.3.1
+

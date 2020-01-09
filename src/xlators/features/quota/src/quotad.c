@@ -106,11 +106,9 @@ qd_nameless_lookup (xlator_t *this, call_frame_t *frame, gfs3_lookup_req *req,
         int                        op_errno    = 0, ret = -1;
         loc_t                      loc         = {0, };
         quotad_aggregator_state_t *state       = NULL;
-        quota_priv_t              *priv        = NULL;
         xlator_t                  *subvol      = NULL;
         char                      *volume_uuid = NULL;
 
-        priv = this->private;
         state = frame->root->state;
 
         frame->root->op = GF_FOP_LOOKUP;
@@ -126,6 +124,14 @@ qd_nameless_lookup (xlator_t *this, call_frame_t *frame, gfs3_lookup_req *req,
         ret = dict_get_str (xdata, "volume-uuid", &volume_uuid);
         if (ret < 0) {
                 op_errno = EINVAL;
+                goto out;
+        }
+
+        ret = dict_set_int8 (xdata, QUOTA_READ_ONLY_KEY, 1);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_WARNING, ENOMEM,
+                        Q_MSG_ENOMEM, "dict set failed");
+                ret = -ENOMEM;
                 goto out;
         }
 

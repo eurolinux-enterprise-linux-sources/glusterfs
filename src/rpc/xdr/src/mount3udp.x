@@ -8,9 +8,16 @@
   cases as published by the Free Software Foundation.
 */
 
+#ifdef RPC_XDR
+%#include "rpc-pragmas.h"
+#endif
+%#include "compat.h"
+
 /* This is used by rpcgen to auto generate the rpc stubs.
  * mount3udp_svc.c is heavily modified though
  */
+
+%#include "xdr-nfs3.h"
 
 const MNTUDPPATHLEN = 1024;
 

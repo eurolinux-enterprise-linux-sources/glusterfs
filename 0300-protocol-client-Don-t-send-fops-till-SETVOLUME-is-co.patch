@@ -1,0 +1,89 @@
+From 267c65ef6369f9becac151b1b517e0c74a1c8e8d Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Wed, 30 May 2018 09:34:44 +0530
+Subject: [PATCH 300/305] protocol/client: Don't send fops till SETVOLUME is
+ complete
+
+An earlier commit set conf->connected just after rpc layer sends
+RPC_CLNT_CONNECT event. However, success of socket level connection
+connection doesn't indicate brick stack is ready to receive fops, as
+an handshake has to be done b/w client and server after
+RPC_CLNT_CONNECT event. Any fop sent to brick in the window between,
+* protocol/client receiving RPC_CLNT_CONNECT event
+* protocol/client receiving a successful setvolume response
+
+can end up accessing an uninitialized brick stack. So, set
+conf->connected only after a successful SETVOLUME.
+
+>Change-Id: I139a03d2da6b0d95a0d68391fcf54b00e749decf
+>fixes: bz#1583937
+>Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+
+upstream patch: https://review.gluster.org/20101/
+BUG: 1588408
+Change-Id: I51a15a89afd1d275a44e5f279f1a685f64f10ced
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140963
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/protocol/client/src/client.c | 7 ++++---
+ xlators/protocol/client/src/client.h | 5 +++++
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/protocol/client/src/client.c b/xlators/protocol/client/src/client.c
+index 6cb5b6b..26b0907 100644
+--- a/xlators/protocol/client/src/client.c
++++ b/xlators/protocol/client/src/client.c
+@@ -2234,7 +2234,7 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
+         }
+         case RPC_CLNT_CONNECT:
+         {
+-                conf->connected = 1;
++                conf->can_log_disconnect = 1;
+                 // connect happened, send 'get_supported_versions' mop
+ 
+                 gf_msg_debug (this->name, 0, "got RPC_CLNT_CONNECT");
+@@ -2274,7 +2274,7 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
+                         client_register_grace_timer (this, conf);
+ 
+                 if (!conf->skip_notify) {
+-                        if (conf->connected) {
++                        if (conf->can_log_disconnect) {
+                                 if (!conf->disconnect_err_logged) {
+                                         gf_msg (this->name, GF_LOG_INFO, 0,
+                                                 PC_MSG_CLIENT_DISCONNECTED,
+@@ -2309,12 +2309,13 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
+                                         "CHILD_DOWN notify failed");
+ 
+                 } else {
+-                        if (conf->connected)
++                        if (conf->can_log_disconnect)
+                                 gf_msg_debug (this->name, 0,
+                                               "disconnected (skipped notify)");
+                 }
+ 
+                 conf->connected = 0;
++                conf->can_log_disconnect = 0;
+                 conf->skip_notify = 0;
+ 
+                 if (conf->quick_reconnect) {
+diff --git a/xlators/protocol/client/src/client.h b/xlators/protocol/client/src/client.h
+index c025b98..7e2c03c 100644
+--- a/xlators/protocol/client/src/client.h
++++ b/xlators/protocol/client/src/client.h
+@@ -204,6 +204,11 @@ typedef struct clnt_conf {
+ 
+         gf_boolean_t           child_up; /* Set to true, when child is up, and
+                                           * false, when child is down */
++
++        gf_boolean_t           can_log_disconnect; /* socket level connection is
++                                                    * up, disconnects can be
++                                                    * logged
++                                                    */
+ } clnt_conf_t;
+ 
+ typedef struct _client_fd_ctx {
+-- 
+1.8.3.1
+

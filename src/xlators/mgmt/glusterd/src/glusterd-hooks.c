@@ -8,11 +8,6 @@
    cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "globals.h"
 #include "glusterfs.h"
 #include "dict.h"
@@ -20,6 +15,7 @@
 #include "logging.h"
 #include "run.h"
 #include "defaults.h"
+#include "syscall.h"
 #include "compat.h"
 #include "compat-errno.h"
 #include "glusterd.h"
@@ -61,6 +57,7 @@ char glusterd_hook_dirnames[GD_OP_MAX][256] =
         [GD_OP_LIST_VOLUME]             = EMPTY,
         [GD_OP_CLEARLOCKS_VOLUME]       = EMPTY,
         [GD_OP_DEFRAG_BRICK_VOLUME]     = EMPTY,
+        [GD_OP_RESET_BRICK]             = EMPTY,
 };
 #undef EMPTY
 
@@ -240,7 +237,6 @@ static int
 glusterd_hooks_add_op_args (runner_t *runner, glusterd_op_t op,
                             dict_t *op_ctx, glusterd_commit_hook_type_t type)
 {
-        char                   *hooks_args       = NULL;
         int                     vol_count        = 0;
         gf_boolean_t            truth            = _gf_false;
         glusterd_volinfo_t      *voliter         = NULL;
@@ -326,19 +322,18 @@ glusterd_hooks_run_hooks (char *hooks_path, glusterd_op_t op, dict_t *op_ctx,
                           glusterd_commit_hook_type_t type)
 {
         xlator_t        *this                   = NULL;
-        glusterd_conf_t *priv                   = NULL;
-        runner_t        runner                  = {0, };
-        struct dirent   *entry                  = NULL;
+        runner_t         runner                 = {0,};
         DIR             *hookdir                = NULL;
+        struct dirent   *entry                  = NULL;
+        struct dirent    scratch[2]             = {{0,},};
         char            *volname                = NULL;
-        char            **lines                 = NULL;
-        int             N                       = 8; /*arbitrary*/
-        int             lineno                  = 0;
-        int             line_count              = 0;
-        int             ret                     = -1;
+        char           **lines                  = NULL;
+        int              N                      = 8; /*arbitrary*/
+        int              lineno                 = 0;
+        int              line_count             = 0;
+        int              ret                    = -1;
 
         this = THIS;
-        priv = this->private;
 
         ret = dict_get_str (op_ctx, "volname", &volname);
         if (ret) {
@@ -348,7 +343,7 @@ glusterd_hooks_run_hooks (char *hooks_path, glusterd_op_t op, dict_t *op_ctx,
                 goto out;
         }
 
-        hookdir = opendir (hooks_path);
+        hookdir = sys_opendir (hooks_path);
         if (!hookdir) {
                 ret = -1;
                 gf_msg (this->name, GF_LOG_ERROR, errno,
@@ -366,7 +361,7 @@ glusterd_hooks_run_hooks (char *hooks_path, glusterd_op_t op, dict_t *op_ctx,
 
         ret = -1;
         line_count = 0;
-        GF_FOR_EACH_ENTRY_IN_DIR (entry, hookdir);
+        GF_FOR_EACH_ENTRY_IN_DIR (entry, hookdir, scratch);
         while (entry) {
                 if (line_count == N-1) {
                         N *= 2;
@@ -380,7 +375,7 @@ glusterd_hooks_run_hooks (char *hooks_path, glusterd_op_t op, dict_t *op_ctx,
                         line_count++;
                 }
 
-                GF_FOR_EACH_ENTRY_IN_DIR (entry, hookdir);
+                GF_FOR_EACH_ENTRY_IN_DIR (entry, hookdir, scratch);
         }
 
         lines[line_count] = NULL;
@@ -425,7 +420,7 @@ out:
         }
 
         if (hookdir)
-                closedir (hookdir);
+                sys_closedir (hookdir);
 
         return ret;
 }
@@ -590,8 +585,8 @@ glusterd_hooks_spawn_worker (xlator_t *this)
 
         conf = this->private;
         conf->hooks_priv = hooks_priv;
-        ret = pthread_create (&hooks_priv->worker, NULL, hooks_worker,
-                              (void *)this);
+        ret = gf_thread_create (&hooks_priv->worker, NULL, hooks_worker,
+                                (void *)this, "gdhooks");
         if (ret)
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_SPAWN_THREADS_FAIL, "Failed to spawn post "

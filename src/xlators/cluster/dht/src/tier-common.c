@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "xlator.h"
 #include "libxlator.h"
@@ -172,7 +167,7 @@ tier_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                  fd_t *fd, inode_t *inode, struct iatt *stbuf,
                  struct iatt *preparent, struct iatt *postparent, dict_t *xdata)
 {
-        call_frame_t *prev           = NULL;
+        xlator_t     *prev           = NULL;
         int           ret            = -1;
         dht_local_t  *local          = NULL;
         xlator_t     *hashed_subvol  = NULL;
@@ -223,11 +218,11 @@ tier_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                            postparent, 1);
         }
 
-        ret = dht_layout_preset (this, prev->this, inode);
+        ret = dht_layout_preset (this, prev, inode);
         if (ret != 0) {
                 gf_msg_debug (this->name, 0,
                               "could not set preset layout for subvol %s",
-                              prev->this->name);
+                              prev->name);
                 op_ret   = -1;
                 op_errno = EINVAL;
                 goto out;
@@ -361,10 +356,10 @@ tier_create_linkfile_create_cbk (call_frame_t *frame, void *cookie,
                         " : key = %s", TIER_LINKFILE_GFID);
         }
 
-        STACK_WIND (frame, tier_create_cbk,
-                    cached_subvol, cached_subvol->fops->create,
-                    &local->loc, local->flags, local->mode,
-                    local->umask, local->fd, local->params);
+        STACK_WIND_COOKIE (frame, tier_create_cbk, cached_subvol,
+                           cached_subvol, cached_subvol->fops->create,
+                           &local->loc, local->flags, local->mode,
+                           local->umask, local->fd, local->params);
 
         return 0;
 err:
@@ -436,9 +431,9 @@ tier_create (call_frame_t *frame, xlator_t *this,
                               "creating %s on %s", loc->path,
                               cold_subvol->name);
 
-                STACK_WIND (frame, tier_create_cbk,
-                            cold_subvol, cold_subvol->fops->create,
-                            loc, flags, mode, umask, fd, params);
+                STACK_WIND_COOKIE (frame, tier_create_cbk, cold_subvol,
+                                   cold_subvol, cold_subvol->fops->create,
+                                   loc, flags, mode, umask, fd, params);
         } else {
                 local->params = dict_ref (params);
                 local->flags = flags;
@@ -475,7 +470,7 @@ tier_unlink_nonhashed_linkfile_cbk (call_frame_t *frame, void *cookie,
                                     struct iatt *postparent, dict_t *xdata)
 {
         dht_local_t  *local = NULL;
-        call_frame_t *prev = NULL;
+        xlator_t     *prev = NULL;
 
         local = frame->local;
         prev  = cookie;
@@ -488,7 +483,7 @@ tier_unlink_nonhashed_linkfile_cbk (call_frame_t *frame, void *cookie,
                         gf_msg_debug (this->name, op_errno,
                                       "Unlink link: subvolume %s"
                                       " returned -1",
-                                      prev->this->name);
+                                      prev->name);
                         goto unlock;
                 }
 
@@ -518,7 +513,7 @@ tier_unlink_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         struct iatt *postparent)
 {
         dht_local_t             *local             = NULL;
-        call_frame_t            *prev              = NULL;
+        xlator_t                *prev              = NULL;
         dht_conf_t              *conf              = NULL;
         xlator_t                *hot_subvol        = NULL;
 
@@ -531,9 +526,9 @@ tier_unlink_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 /*
                  * linkfile present on hot tier. unlinking the linkfile
                  */
-                STACK_WIND (frame, tier_unlink_nonhashed_linkfile_cbk,
-                            hot_subvol, hot_subvol->fops->unlink,
-                            &local->loc, local->flags, NULL);
+                STACK_WIND_COOKIE (frame, tier_unlink_nonhashed_linkfile_cbk,
+                                   hot_subvol, hot_subvol, hot_subvol->fops->unlink,
+                                   &local->loc, local->flags, NULL);
                 return 0;
         }
 
@@ -548,7 +543,7 @@ tier_unlink_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 }
                 gf_msg_debug (this->name, op_errno,
                               "Lookup : subvolume %s returned -1",
-                               prev->this->name);
+                               prev->name);
         }
 
         UNLOCK (&frame->lock);
@@ -565,7 +560,7 @@ tier_unlink_linkfile_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                          struct iatt *postparent, dict_t *xdata)
 {
         dht_local_t  *local = NULL;
-        call_frame_t *prev = NULL;
+        xlator_t     *prev = NULL;
 
         local = frame->local;
         prev  = cookie;
@@ -581,7 +576,7 @@ tier_unlink_linkfile_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         gf_msg_debug (this->name, op_errno,
                                       "Unlink link: subvolume %s"
                                       " returned -1",
-                                      prev->this->name);
+                                      prev->name);
                         goto unlock;
                 }
 
@@ -610,7 +605,7 @@ tier_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 struct iatt *postparent, dict_t *xdata)
 {
         dht_local_t     *local          = NULL;
-        call_frame_t    *prev           = NULL;
+        xlator_t        *prev           = NULL;
         struct iatt     *stbuf          = NULL;
         dht_conf_t      *conf           = NULL;
         int              ret            = -1;
@@ -636,7 +631,7 @@ tier_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         gf_msg_debug (this->name, op_errno,
                                       "Unlink: subvolume %s returned -1"
                                       " with errno = %d",
-                                       prev->this->name, op_errno);
+                                       prev->name, op_errno);
                         goto unlock;
                 }
 
@@ -664,10 +659,10 @@ unlock:
                  * a link file on cold tier, deleting the linkfile
                  * from cold tier
                  */
-                STACK_WIND (frame, tier_unlink_linkfile_cbk,
-                            cold_tier,
-                            cold_tier->fops->unlink, &local->loc,
-                            local->flags, xdata);
+                STACK_WIND_COOKIE (frame, tier_unlink_linkfile_cbk, cold_tier,
+                                   cold_tier, cold_tier->fops->unlink,
+                                   &local->loc,
+                                   local->flags, xdata);
                 return 0;
         }
 
@@ -678,10 +673,9 @@ unlock:
                  * File is migrating from cold to hot tier.
                  * Delete the destination linkfile.
                  */
-                STACK_WIND (frame, tier_unlink_lookup_cbk,
-                            hot_tier,
-                            hot_tier->fops->lookup,
-                            &local->loc, NULL);
+                STACK_WIND_COOKIE (frame, tier_unlink_lookup_cbk, hot_tier,
+                                   hot_tier, hot_tier->fops->lookup,
+                                   &local->loc, NULL);
                 return 0;
 
         }
@@ -741,8 +735,7 @@ tier_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
                  */
                 xdata = xdata ? dict_ref (xdata) : dict_new ();
                 if (xdata) {
-                        ret = dict_set_dynstr_with_alloc (xdata,
-                                DHT_IATT_IN_XDATA_KEY, "yes");
+                        ret = dict_set_int8 (xdata, DHT_IATT_IN_XDATA_KEY, 1);
                         if (ret) {
                                 gf_msg_debug (this->name, 0,
                                         "Failed to set dictionary key %s",
@@ -755,9 +748,9 @@ tier_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
          * File is on hot tier, delete the data file first, then
          * linkfile from cold.
          */
-        STACK_WIND (frame, tier_unlink_cbk,
-                    cached_subvol, cached_subvol->fops->unlink, loc,
-                    xflag, xdata);
+        STACK_WIND_COOKIE (frame, tier_unlink_cbk, cached_subvol,
+                           cached_subvol, cached_subvol->fops->unlink, loc,
+                           xflag, xdata);
         if (xdata)
                 dict_unref (xdata);
         return 0;
@@ -777,7 +770,7 @@ tier_readdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         gf_dirent_t   entries;
         gf_dirent_t  *orig_entry = NULL;
         gf_dirent_t  *entry = NULL;
-        call_frame_t *prev = NULL;
+        xlator_t     *prev = NULL;
         xlator_t     *next_subvol = NULL;
         off_t         next_offset = 0;
         int           count = 0;
@@ -816,14 +809,14 @@ done:
                    EOF is not yet hit on the current subvol
                 */
                 if (next_offset != 0) {
-                        next_subvol = prev->this;
+                        next_subvol = prev;
                 } else {
                         goto unwind;
                 }
 
-                STACK_WIND (frame, tier_readdir_cbk,
-                            next_subvol, next_subvol->fops->readdir,
-                            local->fd, local->size, next_offset, NULL);
+                STACK_WIND_COOKIE (frame, tier_readdir_cbk, next_subvol,
+                                   next_subvol, next_subvol->fops->readdir,
+                                   local->fd, local->size, next_offset, NULL);
                 return 0;
         }
 
@@ -846,7 +839,7 @@ tier_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret
         gf_dirent_t   entries;
         gf_dirent_t  *orig_entry = NULL;
         gf_dirent_t  *entry = NULL;
-        call_frame_t *prev = NULL;
+        xlator_t     *prev = NULL;
         xlator_t     *next_subvol = NULL;
         off_t         next_offset = 0;
         int           count = 0;
@@ -892,21 +885,7 @@ tier_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret
                 if (check_is_linkfile (NULL, (&orig_entry->d_stat),
                                        orig_entry->dict,
                                        conf->link_xattr_name)) {
-                        inode = inode_find (itable,
-                                            orig_entry->d_stat.ia_gfid);
-                        if (inode) {
-                                ret = dht_layout_preset
-                                        (this, TIER_UNHASHED_SUBVOL,
-                                         inode);
-                                if (ret)
-                                        gf_msg (this->name,
-                                                GF_LOG_WARNING, 0,
-                                                DHT_MSG_LAYOUT_SET_FAILED,
-                                                "failed to link the layout"
-                                                " in inode");
-                                inode_unref (inode);
-                                inode = NULL;
-                        }
+                        goto entries;
 
                 } else if (IA_ISDIR(entry->d_stat.ia_type)) {
                         if (orig_entry->inode) {
@@ -916,7 +895,7 @@ tier_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret
                         }
                 } else {
                         if (orig_entry->inode) {
-                                ret = dht_layout_preset (this, prev->this,
+                                ret = dht_layout_preset (this, prev,
                                                          orig_entry->inode);
                                 if (ret)
                                         gf_msg (this->name, GF_LOG_WARNING, 0,
@@ -951,6 +930,8 @@ tier_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret
                                 }
                         }
                 }
+
+entries:
                 list_add_tail (&entry->list, &entries.list);
                 count++;
         }
@@ -962,15 +943,15 @@ done:
                    EOF is not yet hit on the current subvol
                 */
                 if (next_offset != 0) {
-                        next_subvol = prev->this;
+                        next_subvol = prev;
                 } else {
                         goto unwind;
                 }
 
-                STACK_WIND (frame, tier_readdirp_cbk,
-                            next_subvol, next_subvol->fops->readdirp,
-                            local->fd, local->size, next_offset,
-                            local->xattr);
+                STACK_WIND_COOKIE (frame, tier_readdirp_cbk, next_subvol,
+                                   next_subvol, next_subvol->fops->readdirp,
+                                   local->fd, local->size, next_offset,
+                                   local->xattr);
                 return 0;
         }
 
@@ -1034,14 +1015,14 @@ tier_do_readdir (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 
                 }
 
-                STACK_WIND (frame, tier_readdirp_cbk, hashed_subvol,
-                            hashed_subvol->fops->readdirp,
-                            fd, size, yoff, local->xattr);
+                STACK_WIND_COOKIE (frame, tier_readdirp_cbk, hashed_subvol,
+                                   hashed_subvol, hashed_subvol->fops->readdirp,
+                                   fd, size, yoff, local->xattr);
 
         } else {
-                STACK_WIND (frame, tier_readdir_cbk, hashed_subvol,
-                            hashed_subvol->fops->readdir,
-                            fd, size, yoff, local->xattr);
+                STACK_WIND_COOKIE (frame, tier_readdir_cbk, hashed_subvol,
+                                   hashed_subvol, hashed_subvol->fops->readdir,
+                                   fd, size, yoff, local->xattr);
         }
 
         return 0;
@@ -1085,5 +1066,217 @@ tier_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
                off_t yoff, dict_t *dict)
 {
         tier_do_readdir (frame, this, fd, size, yoff, GF_FOP_READDIRP, dict);
+        return 0;
+}
+
+int
+tier_statfs_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                int op_ret, int op_errno, struct statvfs *statvfs,
+                dict_t *xdata)
+{
+        gf_boolean_t            event              = _gf_false;
+        qdstatfs_action_t       action             = qdstatfs_action_OFF;
+        dht_local_t             *local             = NULL;
+        int                     this_call_cnt      = 0;
+        int                     bsize              = 0;
+        int                     frsize             = 0;
+        GF_UNUSED int           ret                = 0;
+        unsigned long           new_usage          = 0;
+        unsigned long           cur_usage          = 0;
+        xlator_t                *prev              = NULL;
+        dht_conf_t              *conf              = NULL;
+        tier_statvfs_t          *tier_stat         = NULL;
+
+        prev = cookie;
+        local = frame->local;
+        GF_ASSERT (local);
+
+        conf = this->private;
+
+        if (xdata)
+                ret = dict_get_int8 (xdata, "quota-deem-statfs",
+                                     (int8_t *)&event);
+
+        tier_stat = &local->tier_statvfs;
+
+        LOCK (&frame->lock);
+        {
+                if (op_ret == -1) {
+                        local->op_errno = op_errno;
+                        goto unlock;
+                }
+                if (!statvfs) {
+                        op_errno = EINVAL;
+                        local->op_ret = -1;
+                        goto unlock;
+                }
+                local->op_ret = 0;
+
+                switch (local->quota_deem_statfs) {
+                case _gf_true:
+                        if (event == _gf_true)
+                                action = qdstatfs_action_COMPARE;
+                        else
+                                action = qdstatfs_action_NEGLECT;
+                        break;
+
+                case _gf_false:
+                        if (event == _gf_true) {
+                                action = qdstatfs_action_REPLACE;
+                                local->quota_deem_statfs = _gf_true;
+                        }
+                        break;
+
+                default:
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                DHT_MSG_INVALID_VALUE,
+                                "Encountered third "
+                                "value for boolean variable %d",
+                                local->quota_deem_statfs);
+                        break;
+                }
+
+                if (local->quota_deem_statfs) {
+                        switch (action) {
+                        case qdstatfs_action_NEGLECT:
+                                goto unlock;
+
+                        case qdstatfs_action_REPLACE:
+                                local->statvfs = *statvfs;
+                                goto unlock;
+
+                        case qdstatfs_action_COMPARE:
+                                new_usage = statvfs->f_blocks -
+                                             statvfs->f_bfree;
+                                cur_usage = local->statvfs.f_blocks -
+                                             local->statvfs.f_bfree;
+
+                                /* Take the max of the usage from subvols */
+                                if (new_usage >= cur_usage)
+                                        local->statvfs = *statvfs;
+                                goto unlock;
+
+                        default:
+                                break;
+                        }
+                }
+
+                if (local->statvfs.f_bsize != 0) {
+                        bsize = max(local->statvfs.f_bsize, statvfs->f_bsize);
+                        frsize = max(local->statvfs.f_frsize, statvfs->f_frsize);
+                        dht_normalize_stats(&local->statvfs, bsize, frsize);
+                        dht_normalize_stats(statvfs, bsize, frsize);
+                } else {
+                        local->statvfs.f_bsize    = statvfs->f_bsize;
+                        local->statvfs.f_frsize   = statvfs->f_frsize;
+                }
+
+                if (prev == TIER_HASHED_SUBVOL) {
+                        local->statvfs.f_blocks   = statvfs->f_blocks;
+                        local->statvfs.f_files    = statvfs->f_files;
+                        local->statvfs.f_fsid     = statvfs->f_fsid;
+                        local->statvfs.f_flag     = statvfs->f_flag;
+                        local->statvfs.f_namemax  = statvfs->f_namemax;
+                        tier_stat->blocks_used    = (statvfs->f_blocks - statvfs->f_bfree);
+                        tier_stat->pblocks_used   = (statvfs->f_blocks - statvfs->f_bavail);
+                        tier_stat->files_used     = (statvfs->f_files - statvfs->f_ffree);
+                        tier_stat->pfiles_used    = (statvfs->f_files - statvfs->f_favail);
+                        tier_stat->hashed_fsid    = statvfs->f_fsid;
+                } else {
+                        tier_stat->unhashed_fsid      = statvfs->f_fsid;
+                        tier_stat->unhashed_blocks_used    = (statvfs->f_blocks - statvfs->f_bfree);
+                        tier_stat->unhashed_pblocks_used   = (statvfs->f_blocks - statvfs->f_bavail);
+                        tier_stat->unhashed_files_used     = (statvfs->f_files - statvfs->f_ffree);
+                        tier_stat->unhashed_pfiles_used    = (statvfs->f_files - statvfs->f_favail);
+                }
+
+        }
+unlock:
+        UNLOCK (&frame->lock);
+
+        this_call_cnt = dht_frame_return (frame);
+        if (is_last_call (this_call_cnt)) {
+                if (tier_stat->unhashed_fsid != tier_stat->hashed_fsid) {
+                        tier_stat->blocks_used    += tier_stat->unhashed_blocks_used;
+                        tier_stat->pblocks_used   += tier_stat->unhashed_pblocks_used;
+                        tier_stat->files_used     += tier_stat->unhashed_files_used;
+                        tier_stat->pfiles_used    += tier_stat->unhashed_pfiles_used;
+                }
+                local->statvfs.f_bfree = local->statvfs.f_blocks -
+                        tier_stat->blocks_used;
+                local->statvfs.f_bavail = local->statvfs.f_blocks -
+                        tier_stat->pblocks_used;
+                local->statvfs.f_ffree = local->statvfs.f_files -
+                        tier_stat->files_used;
+                local->statvfs.f_favail = local->statvfs.f_files -
+                        tier_stat->pfiles_used;
+                DHT_STACK_UNWIND (statfs, frame, local->op_ret, local->op_errno,
+                                  &local->statvfs, xdata);
+        }
+
+        return 0;
+}
+
+
+int
+tier_statfs (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
+{
+        dht_local_t      *local  = NULL;
+        dht_conf_t       *conf = NULL;
+        int               op_errno = -1;
+        int               i = -1;
+        inode_t          *inode         = NULL;
+        inode_table_t    *itable        = NULL;
+        uuid_t            root_gfid     = {0, };
+        loc_t             newloc        = {0, };
+
+        VALIDATE_OR_GOTO (frame, err);
+        VALIDATE_OR_GOTO (this, err);
+        VALIDATE_OR_GOTO (loc, err);
+        VALIDATE_OR_GOTO (this->private, err);
+
+        conf = this->private;
+
+        local = dht_local_init (frame, NULL, NULL, GF_FOP_STATFS);
+        if (!local) {
+                op_errno = ENOMEM;
+                goto err;
+        }
+
+        if (loc->inode && !IA_ISDIR (loc->inode->ia_type)) {
+                itable = loc->inode->table;
+                if (!itable) {
+                        op_errno = EINVAL;
+                        goto err;
+                }
+
+                loc = &local->loc2;
+                root_gfid[15] = 1;
+
+                inode = inode_find (itable, root_gfid);
+                if (!inode) {
+                        op_errno = EINVAL;
+                        goto err;
+                }
+
+                dht_build_root_loc (inode, &newloc);
+                loc = &newloc;
+        }
+
+        local->call_cnt = conf->subvolume_cnt;
+
+        for (i = 0; i < conf->subvolume_cnt; i++) {
+                STACK_WIND_COOKIE (frame, tier_statfs_cbk, conf->subvolumes[i],
+                                   conf->subvolumes[i],
+                                   conf->subvolumes[i]->fops->statfs, loc,
+                                   xdata);
+        }
+
+        return 0;
+
+err:
+        op_errno = (op_errno == -1) ? errno : op_errno;
+        DHT_STACK_UNWIND (statfs, frame, -1, op_errno, NULL, NULL);
+
         return 0;
 }

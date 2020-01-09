@@ -1,0 +1,383 @@
+From 09698d53b91786c990a0f7bc067e5c13551b0b12 Mon Sep 17 00:00:00 2001
+From: Xavi Hernandez <jahernan@redhat.com>
+Date: Wed, 21 Feb 2018 17:47:37 +0100
+Subject: [PATCH 199/201] cluster/ec: avoid delays in self-heal
+
+Self-heal creates a thread per brick to sweep the index looking for
+files that need to be healed. These threads are started before the
+volume comes online, so nothing is done but waiting for the next
+sweep. This happens once per minute.
+
+When a replace brick command is executed, the new graph is loaded and
+all index sweeper threads started. When all bricks have reported, a
+getxattr request is sent to the root directory of the volume. This
+causes a heal on it (because the new brick doesn't have good data),
+and marks its contents as pending to be healed. This is done by the
+index sweeper thread on the next round, one minute later.
+
+This patch solves this problem by waking all index sweeper threads
+after a successful check on the root directory.
+
+Additionally, the index sweep thread scans the index directory
+sequentially, but it might happen that after healing a directory entry
+more index entries are created but skipped by the current directory
+scan. This causes the remaining entries to be processed on the next
+round, one minute later. The same can happen in the next round, so
+the heal is running in bursts and taking a lot to finish, specially
+on volumes with many directory levels.
+
+This patch solves this problem by immediately restarting the index
+sweep if a directory has been healed.
+
+> Upstream patch: https://review.gluster.org/19718
+> master patch: https://review.gluster.org/#/c/19609/
+
+Change-Id: I58d9ab6ef17b30f704dc322e1d3d53b904e5f30e
+BUG: 1555261
+Signed-off-by: Xavi Hernandez <jahernan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/133570
+Reviewed-by: Ashish Pandey <aspandey@redhat.com>
+Tested-by: Ashish Pandey <aspandey@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ tests/bugs/ec/bug-1547662.t       |  41 ++++++++++++++++
+ xlators/cluster/ec/src/ec-heal.c  |   9 ++++
+ xlators/cluster/ec/src/ec-heald.c |  27 +++++++---
+ xlators/cluster/ec/src/ec-heald.h |   4 +-
+ xlators/cluster/ec/src/ec.c       | 101 ++++++++++++++++++++++----------------
+ 5 files changed, 134 insertions(+), 48 deletions(-)
+ create mode 100644 tests/bugs/ec/bug-1547662.t
+
+diff --git a/tests/bugs/ec/bug-1547662.t b/tests/bugs/ec/bug-1547662.t
+new file mode 100644
+index 0000000..5748218
+--- /dev/null
++++ b/tests/bugs/ec/bug-1547662.t
+@@ -0,0 +1,41 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++# Immediately after replace-brick, trusted.ec.version will be absent, so if it
++# is present we can assume that heal was started on root
++function root_heal_attempted {
++        if [ -z $(get_hex_xattr trusted.ec.version $1) ]; then
++                echo "N"
++        else
++                echo "Y"
++        fi
++}
++
++cleanup
++
++TEST glusterd
++TEST pidof glusterd
++TEST ${CLI} volume create ${V0} disperse 6 redundancy 2 ${H0}:${B0}/${V0}{0..5}
++TEST ${CLI} volume start ${V0}
++TEST ${GFS} --volfile-server ${H0} --volfile-id ${V0} ${M0}
++EXPECT_WITHIN ${CHILD_UP_TIMEOUT} "6" ec_child_up_count ${V0} 0
++
++TEST mkdir ${M0}/base
++TEST mkdir ${M0}/base/dir.{1,2}
++TEST mkdir ${M0}/base/dir.{1,2}/dir.{1,2}
++TEST mkdir ${M0}/base/dir.{1,2}/dir.{1,2}/dir.{1,2}
++TEST mkdir ${M0}/base/dir.{1,2}/dir.{1,2}/dir.{1,2}/dir.{1,2}
++TEST mkdir ${M0}/base/dir.{1,2}/dir.{1,2}/dir.{1,2}/dir.{1,2}/dir.{1,2}
++TEST mkdir ${M0}/base/dir.{1,2}/dir.{1,2}/dir.{1,2}/dir.{1,2}/dir.{1,2}/dir.{1,2}
++
++TEST ${CLI} volume replace-brick ${V0} ${H0}:${B0}/${V0}5 ${H0}:${B0}/${V0}6 commit force
++EXPECT_WITHIN ${CHILD_UP_TIMEOUT} "6" ec_child_up_count ${V0} 0
++EXPECT_WITHIN ${PROCESS_UP_TIMEOUT} "Y" glustershd_up_status
++EXPECT_WITHIN ${CHILD_UP_TIMEOUT} "6" ec_child_up_count_shd ${V0} 0
++EXPECT_WITHIN ${HEAL_TIMEOUT} "Y" root_heal_attempted ${B0}/${V0}6
++EXPECT_WITHIN ${HEAL_TIMEOUT} "^0$" get_pending_heal_count ${V0}
++EXPECT "^127$" echo $(find ${B0}/${V0}6/base -type d | wc -l)
++
++cleanup;
+diff --git a/xlators/cluster/ec/src/ec-heal.c b/xlators/cluster/ec/src/ec-heal.c
+index b8518d6..8e02986 100644
+--- a/xlators/cluster/ec/src/ec-heal.c
++++ b/xlators/cluster/ec/src/ec-heal.c
+@@ -25,6 +25,7 @@
+ #include "ec-combine.h"
+ #include "ec-method.h"
+ #include "ec-fops.h"
++#include "ec-heald.h"
+ 
+ #define alloca0(size) ({void *__ptr; __ptr = alloca(size); memset(__ptr, 0, size); __ptr; })
+ #define EC_COUNT(array, max) ({int __i; int __res = 0; for (__i = 0; __i < max; __i++) if (array[__i]) __res++; __res; })
+@@ -2752,6 +2753,14 @@ ec_replace_heal (ec_t *ec, inode_t *inode)
+                 gf_msg_debug (ec->xl->name, 0,
+                         "Heal failed for replace brick ret = %d", ret);
+ 
++        /* Once the root inode has been checked, it might have triggered a
++         * self-heal on it after a replace brick command or for some other
++         * reason. It can also happen that the volume already had damaged
++         * files in the index, even if the heal on the root directory failed.
++         * In both cases we need to wake all index healers to continue
++         * healing remaining entries that are marked as dirty. */
++        ec_shd_index_healer_wake(ec);
++
+         loc_wipe (&loc);
+         return ret;
+ }
+diff --git a/xlators/cluster/ec/src/ec-heald.c b/xlators/cluster/ec/src/ec-heald.c
+index b4fa6f8..a703379 100644
+--- a/xlators/cluster/ec/src/ec-heald.c
++++ b/xlators/cluster/ec/src/ec-heald.c
+@@ -184,8 +184,19 @@ ec_shd_index_purge (xlator_t *subvol, inode_t *inode, char *name)
+ int
+ ec_shd_selfheal (struct subvol_healer *healer, int child, loc_t *loc)
+ {
+-        return syncop_getxattr (healer->this, loc, NULL, EC_XATTR_HEAL, NULL,
+-                                NULL);
++        int32_t ret;
++
++        ret = syncop_getxattr (healer->this, loc, NULL, EC_XATTR_HEAL, NULL,
++                               NULL);
++        if ((ret >= 0) && (loc->inode->ia_type == IA_IFDIR)) {
++                /* If we have just healed a directory, it's possible that
++                 * other index entries have appeared to be healed. We put a
++                 * mark so that we can check it later and restart a scan
++                 * without delay. */
++                healer->rerun = _gf_true;
++        }
++
++        return ret;
+ }
+ 
+ 
+@@ -472,11 +483,15 @@ ec_shd_index_healer_spawn (xlator_t *this, int subvol)
+ }
+ 
+ void
+-ec_selfheal_childup (ec_t *ec, int child)
++ec_shd_index_healer_wake(ec_t *ec)
+ {
+-        if (!ec->shd.iamshd)
+-                return;
+-        ec_shd_index_healer_spawn (ec->xl, child);
++        int32_t i;
++
++        for (i = 0; i < ec->nodes; i++) {
++                if (((ec->xl_up >> i) & 1) != 0) {
++                        ec_shd_index_healer_spawn(ec->xl, i);
++                }
++        }
+ }
+ 
+ int
+diff --git a/xlators/cluster/ec/src/ec-heald.h b/xlators/cluster/ec/src/ec-heald.h
+index 4ae02e2..2a84881 100644
+--- a/xlators/cluster/ec/src/ec-heald.h
++++ b/xlators/cluster/ec/src/ec-heald.h
+@@ -20,6 +20,8 @@ ec_xl_op (xlator_t *this, dict_t *input, dict_t *output);
+ 
+ int
+ ec_selfheal_daemon_init (xlator_t *this);
+-void ec_selfheal_childup (ec_t *ec, int child);
++
++void
++ec_shd_index_healer_wake(ec_t *ec);
+ 
+ #endif /* __EC_HEALD_H__ */
+diff --git a/xlators/cluster/ec/src/ec.c b/xlators/cluster/ec/src/ec.c
+index bfdca64..956b45b 100644
+--- a/xlators/cluster/ec/src/ec.c
++++ b/xlators/cluster/ec/src/ec.c
+@@ -322,7 +322,7 @@ ec_get_event_from_state (ec_t *ec)
+                 /* If ec is up but some subvolumes are yet to notify, give
+                  * grace time for other subvols to notify to prevent start of
+                  * I/O which may result in self-heals */
+-                if (ec->timer && ec->xl_notify_count < ec->nodes)
++                if (ec->xl_notify_count < ec->nodes)
+                         return GF_EVENT_MAXVAL;
+ 
+                 return GF_EVENT_CHILD_UP;
+@@ -344,8 +344,8 @@ ec_up (xlator_t *this, ec_t *ec)
+         }
+ 
+         ec->up = 1;
+-        gf_msg (this->name, GF_LOG_INFO, 0,
+-                EC_MSG_EC_UP, "Going UP");
++        gf_msg (this->name, GF_LOG_INFO, 0, EC_MSG_EC_UP, "Going UP");
++
+         gf_event (EVENT_EC_MIN_BRICKS_UP, "subvol=%s", this->name);
+ }
+ 
+@@ -358,8 +358,8 @@ ec_down (xlator_t *this, ec_t *ec)
+         }
+ 
+         ec->up = 0;
+-        gf_msg (this->name, GF_LOG_INFO, 0,
+-                EC_MSG_EC_DOWN, "Going DOWN");
++        gf_msg (this->name, GF_LOG_INFO, 0, EC_MSG_EC_DOWN, "Going DOWN");
++
+         gf_event (EVENT_EC_MIN_BRICKS_NOT_UP, "subvol=%s", this->name);
+ }
+ 
+@@ -383,31 +383,38 @@ ec_notify_cbk (void *data)
+                 gf_timer_call_cancel (ec->xl->ctx, ec->timer);
+                 ec->timer = NULL;
+ 
++                /* The timeout has expired, so any subvolume that has not
++                 * already reported its state, will be considered to be down.
++                 * We mark as if all bricks had reported. */
++                ec->xl_notify = (1ULL << ec->nodes) - 1ULL;
++                ec->xl_notify_count = ec->nodes;
++
++                /* Since we have marked all subvolumes as notified, it's
++                 * guaranteed that ec_get_event_from_state() will return
++                 * CHILD_UP or CHILD_DOWN, but not MAXVAL. */
+                 event = ec_get_event_from_state (ec);
+-                /* If event is still MAXVAL then enough subvolumes didn't
+-                 * notify, treat it as CHILD_DOWN. */
+-                if (event == GF_EVENT_MAXVAL) {
+-                        event = GF_EVENT_CHILD_DOWN;
+-                        ec->xl_notify = (1ULL << ec->nodes) - 1ULL;
+-                        ec->xl_notify_count = ec->nodes;
+-                } else if (event == GF_EVENT_CHILD_UP) {
+-                        /* Rest of the bricks are still not coming up,
+-                         * notify that ec is up. Files/directories will be
+-                         * healed as in when they come up. */
++                if (event == GF_EVENT_CHILD_UP) {
++                        /* We are ready to bring the volume up. If there are
++                         * still bricks DOWN, they will be healed when they
++                         * come up. */
+                         ec_up (ec->xl, ec);
+                 }
+ 
+-                /* CHILD_DOWN should not come here as no grace period is given
+-                 * for notifying CHILD_DOWN. */
+-
+                 propagate = _gf_true;
+         }
+ unlock:
+         UNLOCK(&ec->lock);
+ 
+         if (propagate) {
++                if ((event == GF_EVENT_CHILD_UP) && ec->shd.iamshd) {
++                        /* We have just brought the volume UP, so we trigger
++                         * a self-heal check on the root directory. */
++                        ec_launch_replace_heal (ec);
++                }
++
+                 default_notify (ec->xl, event, NULL);
+         }
++
+ }
+ 
+ void
+@@ -442,7 +449,7 @@ ec_pending_fops_completed(ec_t *ec)
+         }
+ }
+ 
+-static void
++static gf_boolean_t
+ ec_set_up_state(ec_t *ec, uintptr_t index_mask, uintptr_t new_state)
+ {
+         uintptr_t current_state = 0;
+@@ -455,23 +462,28 @@ ec_set_up_state(ec_t *ec, uintptr_t index_mask, uintptr_t new_state)
+         if (current_state != new_state) {
+                 ec->xl_up ^= index_mask;
+                 ec->xl_up_count += (current_state ? -1 : 1);
++
++                return _gf_true;
+         }
++
++        return _gf_false;
+ }
+ 
+ int32_t
+ ec_notify (xlator_t *this, int32_t event, void *data, void *data2)
+ {
+-        ec_t             *ec        = this->private;
+-        int32_t           idx       = 0;
+-        int32_t           error     = 0;
+-        glusterfs_event_t old_event = GF_EVENT_MAXVAL;
+-        dict_t            *input    = NULL;
+-        dict_t            *output   = NULL;
+-        gf_boolean_t      propagate = _gf_true;
+-        int32_t           orig_event = event;
++        ec_t             *ec              = this->private;
++        int32_t           idx             = 0;
++        int32_t           error           = 0;
++        glusterfs_event_t old_event       = GF_EVENT_MAXVAL;
++        dict_t            *input          = NULL;
++        dict_t            *output         = NULL;
++        gf_boolean_t      propagate       = _gf_true;
++        gf_boolean_t      needs_shd_check = _gf_false;
++        int32_t           orig_event      = event;
+         struct gf_upcall *up_data   = NULL;
+         struct gf_upcall_cache_invalidation *up_ci = NULL;
+-        uintptr_t mask = 0;
++        uintptr_t         mask            = 0;
+ 
+         gf_msg_trace (this->name, 0, "NOTIFY(%d): %p, %p",
+                 event, data, data2);
+@@ -498,8 +510,6 @@ ec_notify (xlator_t *this, int32_t event, void *data, void *data2)
+ 
+         for (idx = 0; idx < ec->nodes; idx++) {
+                 if (ec->xl_list[idx] == data) {
+-                        if (event == GF_EVENT_CHILD_UP)
+-                                ec_selfheal_childup (ec, idx);
+                         break;
+                 }
+         }
+@@ -525,17 +535,27 @@ ec_notify (xlator_t *this, int32_t event, void *data, void *data2)
+ 
+                 mask = 1ULL << idx;
+                 if (event == GF_EVENT_CHILD_UP) {
+-                    ec_set_up_state(ec, mask, mask);
++                        /* We need to trigger a selfheal if a brick changes
++                         * to UP state. */
++                        needs_shd_check = ec_set_up_state(ec, mask, mask);
+                 } else if (event == GF_EVENT_CHILD_DOWN) {
+-                    ec_set_up_state(ec, mask, 0);
++                        ec_set_up_state(ec, mask, 0);
+                 }
+ 
+                 event = ec_get_event_from_state (ec);
+ 
+-                if (event == GF_EVENT_CHILD_UP && !ec->up) {
+-                        ec_up (this, ec);
+-                } else if (event == GF_EVENT_CHILD_DOWN && ec->up) {
+-                        ec_down (this, ec);
++                if (event == GF_EVENT_CHILD_UP) {
++                        if (!ec->up) {
++                                ec_up (this, ec);
++                        }
++                } else {
++                        /* If the volume is not UP, it's irrelevant if one
++                         * brick has come up. We cannot heal anything. */
++                        needs_shd_check = _gf_false;
++
++                        if ((event == GF_EVENT_CHILD_DOWN) && ec->up) {
++                                ec_down (this, ec);
++                        }
+                 }
+ 
+                 if (event != GF_EVENT_MAXVAL) {
+@@ -554,14 +574,13 @@ unlock:
+ 
+ done:
+         if (propagate) {
++                if (needs_shd_check && ec->shd.iamshd) {
++                        ec_launch_replace_heal (ec);
++                }
++
+                 error = default_notify (this, event, data);
+         }
+ 
+-        if (ec->shd.iamshd &&
+-            ec->xl_notify_count == ec->nodes &&
+-            event == GF_EVENT_CHILD_UP) {
+-                ec_launch_replace_heal (ec);
+-        }
+ out:
+         return error;
+ }
+-- 
+1.8.3.1
+

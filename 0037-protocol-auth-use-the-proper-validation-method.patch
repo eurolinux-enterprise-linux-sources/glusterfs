@@ -1,0 +1,141 @@
+From 6d6e3a4100fcb9333d82618d64e96e49ddddcbf4 Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Mon, 16 Oct 2017 11:44:59 +0530
+Subject: [PATCH 37/74] protocol-auth: use the proper validation method
+
+Currently, server protocol's init and glusterd's option
+validation methods are different, causing an issue. They
+should be same for having consistent behavior
+
+> Upstream:
+> Change-Id: Ibbf9a18c7192b2d77f9b7675ae7da9b8d2fe5de4
+> URL: https://review.gluster.org/#/c/18489/
+
+Change-Id: Id595a1032b14233ca8f31d20813dca98476b2468
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/120558
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ libglusterfs/src/options.c           |  4 ++--
+ libglusterfs/src/options.h           |  5 +++++
+ tests/features/subdir-mount.t        |  4 ++++
+ xlators/protocol/server/src/server.c | 40 +++++++-----------------------------
+ 4 files changed, 18 insertions(+), 35 deletions(-)
+
+diff --git a/libglusterfs/src/options.c b/libglusterfs/src/options.c
+index f0292ea..a0f04c7 100644
+--- a/libglusterfs/src/options.c
++++ b/libglusterfs/src/options.c
+@@ -590,7 +590,7 @@ xlator_option_validate_addr (xlator_t *xl, const char *key, const char *value,
+         return ret;
+ }
+ 
+-static int
++int
+ xlator_option_validate_addr_list (xlator_t *xl, const char *key,
+                                   const char *value, volume_option_t *opt,
+                                   char **op_errstr)
+@@ -668,7 +668,7 @@ xlator_option_validate_addr_list (xlator_t *xl, const char *key,
+ out:
+         if (ret) {
+                 snprintf (errstr, sizeof (errstr), "option %s %s: '%s' is not "
+-                "a valid internet-address-list", key, value, value);
++                          "a valid internet-address-list", key, value, value);
+                 gf_msg (xl->name, GF_LOG_ERROR, 0, LG_MSG_INVALID_ENTRY, "%s",
+                         errstr);
+                 if (op_errstr)
+diff --git a/libglusterfs/src/options.h b/libglusterfs/src/options.h
+index 3154dce..d259d44 100644
+--- a/libglusterfs/src/options.h
++++ b/libglusterfs/src/options.h
+@@ -87,6 +87,11 @@ int xlator_options_validate_list (xlator_t *xl, dict_t *options,
+ int xlator_option_validate (xlator_t *xl, char *key, char *value,
+                             volume_option_t *opt, char **op_errstr);
+ int xlator_options_validate (xlator_t *xl, dict_t *options, char **errstr);
++
++int xlator_option_validate_addr_list (xlator_t *xl, const char *key,
++                                      const char *value, volume_option_t *opt,
++                                      char **op_errstr);
++
+ volume_option_t *
+ xlator_volume_option_get (xlator_t *xl, const char *key);
+ 
+diff --git a/tests/features/subdir-mount.t b/tests/features/subdir-mount.t
+index 2fb0be4..ab7ef35 100644
+--- a/tests/features/subdir-mount.t
++++ b/tests/features/subdir-mount.t
+@@ -78,6 +78,10 @@ TEST ! $CLI volume set $V0 auth.allow "subdir2\(1.2.3.4\)"
+ # support subdir inside subdir
+ TEST $CLI volume set $V0 auth.allow '/subdir1/subdir1.1/subdir1.2/\(1.2.3.4\|::1\),/\(192.168.10.1\|192.168.11.1\),/subdir2\(1.2.3.4\)'
+ 
++TEST $CLI volume stop $V0
++
++TEST $CLI volume start $V0
++
+ # /subdir2 has not allowed IP
+ TEST $GFS --subdir-mount /subdir2 -s $H0 --volfile-id $V0 $M1
+ TEST stat $M1
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index e47acb2..6dc9d0f 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -386,9 +386,6 @@ _check_for_auth_option (dict_t *d, char *k, data_t *v,
+         int       ret           = 0;
+         xlator_t *xl            = NULL;
+         char     *tail          = NULL;
+-        char     *tmp_addr_list = NULL;
+-        char     *addr          = NULL;
+-        char     *tmp_str       = NULL;
+ 
+         xl = tmp;
+ 
+@@ -417,38 +414,15 @@ _check_for_auth_option (dict_t *d, char *k, data_t *v,
+                  * valid auth.allow.<xlator>
+                  * Now we verify the ip address
+                  */
+-                if (!strcmp (v->data, "*")) {
+-                        ret = 0;
+-                        goto out;
+-                }
+-
+-                /* TODO-SUBDIR-MOUNT: fix the format */
+-                tmp_addr_list = gf_strdup (v->data);
+-                addr = strtok_r (tmp_addr_list, ",", &tmp_str);
+-                if (!addr)
+-                        addr = v->data;
+-
+-                while (addr) {
+-                        if (valid_internet_address (addr, _gf_true)) {
+-                                ret = 0;
+-                        } else {
+-                                ret = -1;
+-                                gf_msg (xl->name, GF_LOG_ERROR, 0,
+-                                        PS_MSG_INTERNET_ADDR_ERROR,
+-                                        "internet address '%s'"
+-                                        " does not conform to"
+-                                        " standards.", addr);
+-                                goto out;
+-                        }
+-                        if (tmp_str)
+-                                addr = strtok_r (NULL, ",", &tmp_str);
+-                        else
+-                                addr = NULL;
+-                }
++                ret = xlator_option_validate_addr_list (xl, "auth-*", v->data,
++                                                        NULL, NULL);
++                if (ret)
++                        gf_msg (xl->name, GF_LOG_ERROR, 0,
++                                PS_MSG_INTERNET_ADDR_ERROR,
++                                "internet address '%s' does not conform "
++                                "to standards.", v->data);
+         }
+ out:
+-        GF_FREE (tmp_addr_list);
+-
+         return ret;
+ }
+ 
+-- 
+1.8.3.1
+

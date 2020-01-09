@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "server.h"
 #include "server-helpers.h"
 #include "server-messages.h"
@@ -35,8 +30,6 @@ resolve_loc_touchup (call_frame_t *frame)
         server_state_t       *state = NULL;
         server_resolve_t     *resolve = NULL;
         loc_t                *loc = NULL;
-        char                 *path = NULL;
-        int                   ret = 0;
 
         state = CALL_STATE (frame);
 
@@ -162,7 +155,8 @@ resolve_gfid_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         resolve_loc->name = resolve->bname;
 
-        resolve_loc->inode = inode_new (state->itable);
+        resolve_loc->inode = server_inode_new (state->itable,
+                                               resolve_loc->gfid);
 
         inode_path (resolve_loc->parent, resolve_loc->name,
                     (char **) &resolve_loc->path);
@@ -196,7 +190,6 @@ resolve_gfid (call_frame_t *frame)
         xlator_t             *this = NULL;
         server_resolve_t     *resolve = NULL;
         loc_t                *resolve_loc = NULL;
-        int                   ret = 0;
         dict_t               *xdata = NULL;
 
         state = CALL_STATE (frame);
@@ -209,8 +202,9 @@ resolve_gfid (call_frame_t *frame)
         else if (!gf_uuid_is_null (resolve->gfid))
                 gf_uuid_copy (resolve_loc->gfid, resolve->gfid);
 
-        resolve_loc->inode = inode_new (state->itable);
-        ret = loc_path (resolve_loc, NULL);
+        resolve_loc->inode = server_inode_new (state->itable,
+                                               resolve_loc->gfid);
+        (void) loc_path (resolve_loc, NULL);
 
         if (state->xdata) {
                 xdata = dict_copy_with_ref (state->xdata, NULL);
@@ -456,14 +450,17 @@ resolve_anonfd_simple (call_frame_t *frame)
 
         ret = 0;
 
-        state->fd = fd_anonymous (inode);
+        if (frame->root->op == GF_FOP_READ || frame->root->op == GF_FOP_WRITE)
+                state->fd = fd_anonymous_with_flags (inode, state->flags);
+        else
+                state->fd = fd_anonymous (inode);
 out:
         if (inode)
                 inode_unref (inode);
 
         if (ret != 0)
-                gf_msg_debug ("server", 0, "inode for the gfid (%s) is "
-                              "not found. anonymous fd creation failed",
+                gf_msg_debug ("server", 0, "inode for the gfid"
+                              "(%s) is not found. anonymous fd creation failed",
                               uuid_utoa (resolve->gfid));
         return ret;
 }

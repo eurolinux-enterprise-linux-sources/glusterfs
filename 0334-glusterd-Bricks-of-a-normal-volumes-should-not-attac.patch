@@ -1,0 +1,127 @@
+From e849b8d24e97b7e8e9f0bd0ab7d49c748a5897fa Mon Sep 17 00:00:00 2001
+From: Sanju Rakonde <srakonde@redhat.com>
+Date: Wed, 1 Aug 2018 15:09:08 +0530
+Subject: [PATCH 334/351] glusterd: Bricks of a normal volumes should not
+ attach to gluster_shared_storage bricks
+
+Problem: In a brick multiplexing environment, Bricks of a normal volume
+created by user are getting attached to the bricks of a volume
+"gluster_shared_storage" which is created by enabling the
+enable-shared-storage option. Mounting gluster_shared_storage
+has strict authentication checks. when we attach bricks of a normal
+volume to bricks of gluster_shared_storage, mounting the normal
+volume created by user will fail due to strict authentication checks.
+
+Solution: We should not attach bricks of a normal volume to brick
+process of gluster_shared_storage volume and vice versa.
+
+>fixes: bz#1610726
+>Change-Id: If1b5a2a02675789a2915ba480fb48c145449163d
+>Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/20604/
+
+Change-Id: If1b5a2a02675789a2915ba480fb48c145449163d
+BUG: 1609163
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146221
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ .../glusterd/brick-mux-validation-in-cluster.t     | 51 ++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-utils.c         | 14 ++++++
+ 2 files changed, 65 insertions(+)
+ create mode 100644 tests/bugs/glusterd/brick-mux-validation-in-cluster.t
+
+diff --git a/tests/bugs/glusterd/brick-mux-validation-in-cluster.t b/tests/bugs/glusterd/brick-mux-validation-in-cluster.t
+new file mode 100644
+index 0000000..4e57038
+--- /dev/null
++++ b/tests/bugs/glusterd/brick-mux-validation-in-cluster.t
+@@ -0,0 +1,51 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../cluster.rc
++
++function count_brick_processes {
++        pgrep glusterfsd | wc -l
++}
++
++cleanup;
++
++TEST launch_cluster 3
++TEST $CLI_1 peer probe $H2;
++EXPECT_WITHIN $PROBE_TIMEOUT 1 peer_count
++
++TEST $CLI_1 peer probe $H3;
++EXPECT_WITHIN $PROBE_TIMEOUT 2 peer_count
++
++TEST $CLI_1 volume set all cluster.brick-multiplex on
++#bug-1609163 - bricks of normal volume should not attach to bricks of gluster_shared_storage volume
++
++##Create, start and mount meta_volume i.e., shared_storage
++TEST $CLI_1 volume create $META_VOL replica 3 $H1:$B1/${META_VOL}1 $H2:$B2/${META_VOL}1 $H3:$B3/${META_VOL}1
++TEST $CLI_1 volume start $META_VOL
++TEST mkdir -p $META_MNT
++TEST glusterfs -s $H1 --volfile-id $META_VOL $META_MNT
++
++TEST $CLI_1 volume info gluster_shared_storage
++
++EXPECT 3 count_brick_processes
++
++#create and start a new volume
++TEST $CLI_1 volume create $V0 replica 3 $H1:$B1/${V0}{1..3} $H2:$B2/${V0}{1..3}
++TEST $CLI_1 volume start $V0
++
++# bricks of normal volume should not attach to bricks of gluster_shared_storage volume
++EXPECT 5 count_brick_processes
++
++#bug-1549996 - stale brick processes on the nodes after volume deletion
++
++TEST $CLI_1 volume create $V1 replica 3 $H1:$B1/${V1}{1..3} $H2:$B2/${V1}{1..3}
++TEST $CLI_1 volume start $V1
++
++EXPECT 5 count_brick_processes
++
++TEST $CLI_1 volume stop $V0
++TEST $CLI_1 volume stop $V1
++
++EXPECT 3 count_brick_processes
++
++cleanup
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index fe9cc75..80204e4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -5710,6 +5710,7 @@ find_compat_brick_in_vol (glusterd_conf_t *conf,
+         int                     mux_limit               = -1;
+         int                     ret                     = -1;
+         gf_boolean_t            brick_status            = _gf_false;
++        gf_boolean_t            is_shared_storage       = _gf_false;
+ 
+         /*
+          * If comp_vol is provided, we have to check *volume* compatibility
+@@ -5717,6 +5718,19 @@ find_compat_brick_in_vol (glusterd_conf_t *conf,
+          */
+         if (comp_vol) {
+                 /*
++                 * We should not attach bricks of a normal volume to bricks
++                 * of shared storage volume.
++                 */
++                if (!strcmp (srch_vol->volname, GLUSTER_SHARED_STORAGE))
++                        is_shared_storage = _gf_true;
++
++                if (!strcmp (comp_vol->volname, GLUSTER_SHARED_STORAGE)) {
++                        if (!is_shared_storage)
++                                return NULL;
++                } else if (is_shared_storage)
++                        return NULL;
++
++                /*
+                  * It's kind of a shame that we have to do this check in both
+                  * directions, but an option might only exist on one of the two
+                  * dictionaries and dict_foreach_match will only find that one.
+-- 
+1.8.3.1
+

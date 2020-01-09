@@ -1,0 +1,105 @@
+From ad7ea067e2f7f9e7fb533ddf67e9c1f3c70e222f Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Thu, 7 Dec 2017 10:32:05 +0530
+Subject: [PATCH 105/128] glusterd : Fix glusterd mem leaks
+
+Problem:   glusterd eats a huge amount of meory during volume set/stop/start.
+
+Solution:  At the time of compare graph topology create a graph and populate
+           key values in the dictionary, after finished graph comparison we
+           do destroy the new graph.At the time of construct graph we don't take
+           any reference and for server xlators we do take reference in
+           server_setvolume so in glusterd we do take reference after prepare
+           a new graph while we do create a graph to compare graph topology.
+
+> BUG: 1520245
+> Change-Id: I573133d57771b7dc431a04422c5001a06b7dda9a
+> Reviewed on https://review.gluster.org/#/c/18915/
+> Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+> (cherry pick from commit e016bcaf8171373cbc327faf42a6b2f2c5449b0e)
+
+BUG: 1512470
+Change-Id: Id9aa37146f3ae887f4d06492edad6dedcafc6681
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126229
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handshake.c |  3 +++
+ xlators/mgmt/glusterd/src/glusterd-utils.c     | 34 ++++++++++++++++++++++++++
+ 2 files changed, 37 insertions(+)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handshake.c b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+index 8dfb528..35aeca3 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handshake.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+@@ -1256,6 +1256,9 @@ out:
+         if (rsp.hndsk.hndsk_val)
+                 GF_FREE (rsp.hndsk.hndsk_val);
+ 
++        if (args_dict)
++                dict_unref (args_dict);
++
+         return ret;
+ }
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 504e5af..1434d64 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -8971,6 +8971,36 @@ glusterd_defrag_volume_status_update (glusterd_volinfo_t *volinfo,
+ 
+         return ret;
+ }
++/*
++   The function is required to take dict ref for every xlator at graph.
++   At the time of compare graph topology create a graph and populate
++   key values in the dictionary, after finished graph comparison we do destroy
++   the new graph.At the time of construct graph we don't take any reference
++   so to avoid leak due to ref counter underflow we need to call dict_ref here.
++
++*/
++
++void
++glusterd_graph_take_reference (xlator_t *tree)
++{        xlator_t *trav = tree;
++         xlator_t *prev = tree;
++
++        if (!tree) {
++                gf_msg ("parser", GF_LOG_ERROR, 0, LG_MSG_TREE_NOT_FOUND,
++                        "Translator tree not found");
++                return;
++        }
++
++        while (prev) {
++                trav = prev->next;
++                if (prev->options)
++                        dict_ref (prev->options);
++                prev = trav;
++        }
++        return;
++}
++
++
+ 
+ int
+ glusterd_check_topology_identical (const char   *filename1,
+@@ -9018,11 +9048,15 @@ glusterd_check_topology_identical (const char   *filename1,
+         if (grph1 == NULL)
+                 goto out;
+ 
++        glusterd_graph_take_reference (grph1->first);
++
+         /* create the graph for filename2 */
+         grph2 = glusterfs_graph_construct(fp2);
+         if (grph2 == NULL)
+                 goto out;
+ 
++        glusterd_graph_take_reference (grph2->first);
++
+         /* compare the graph topology */
+         *identical = is_graph_topology_equal(grph1, grph2);
+         ret = 0; /* SUCCESS */
+-- 
+1.8.3.1
+

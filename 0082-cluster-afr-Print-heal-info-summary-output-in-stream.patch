@@ -1,0 +1,41 @@
+From 931b40987fa4e2d4f7ddf561fd413663129e9072 Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Mon, 27 Nov 2017 11:54:25 +0530
+Subject: [PATCH 082/128] cluster/afr: Print heal info summary output in stream
+ fashion
+
+Problem:
+The heal info summary was printing the output at the end after
+crawling for pending heal entries completes on all the bricks.
+
+Fix:
+Printing the output immediately after the crawl on individual brick
+completes, so that it won't give the impression of CLI being hung.
+
+Upstream patch: https://review.gluster.org/#/c/18832/
+
+Change-Id: Ieaf5718736a7ee6837bac02bd30a95836e605dab
+BUG: 1419438
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124283
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ heal/src/glfs-heal.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/heal/src/glfs-heal.c b/heal/src/glfs-heal.c
+index 27a9624..22c9395 100644
+--- a/heal/src/glfs-heal.c
++++ b/heal/src/glfs-heal.c
+@@ -422,6 +422,7 @@ glfsh_print_hr_heal_op_summary (int ret, num_entries_t *num_entries)
+         }
+ out:
+         printf ("\n");
++        fflush (stdout);
+         return 0;
+ }
+ 
+-- 
+1.8.3.1
+

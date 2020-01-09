@@ -1,0 +1,58 @@
+From 6ba6401d26486920ed7c30025c1c3a941fb7bb00 Mon Sep 17 00:00:00 2001
+From: Sanju Rakonde <srakonde@redhat.com>
+Date: Mon, 21 May 2018 16:18:53 +0530
+Subject: [PATCH 286/305] glusterd: memory leak in geo-rep status
+
+>Fixes: bz#1580352
+>Change-Id: I9648e73090f5a2edbac663a6fb49acdb702cdc49
+>Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/20046/
+
+Change-Id: I9648e73090f5a2edbac663a6fb49acdb702cdc49
+BUG: 1575539
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139986
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-geo-rep.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+index a1251ae..eef347c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
++++ b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+@@ -512,8 +512,10 @@ glusterd_urltransform (runner_t *runner, char ***linearrp)
+                 }
+ 
+                 if (fgets (line, 1024, runner_chio (runner, STDOUT_FILENO)) ==
+-                    NULL)
++                    NULL) {
++                        GF_FREE (line);
+                         break;
++                }
+ 
+                 len = strlen (line);
+                 if (len == 0 || line[len - 1] != '\n') {
+@@ -638,7 +640,7 @@ glusterd_get_slave (glusterd_volinfo_t *vol, const char *slaveurl, char **slavek
+                 if (strcmp (linearr[i], linearr[n - 1]) == 0)
+                         break;
+         }
+-        glusterd_urltransform_free (linearr, i);
++        glusterd_urltransform_free (linearr, n);
+ 
+         if (i < n - 1)
+                 *slavekey = dict_get_by_index (vol->gsync_slaves, i);
+@@ -5870,6 +5872,8 @@ glusterd_get_slave_info (char *slave,
+         }
+ 
+ out:
++        if (linearr)
++                glusterd_urltransform_free (linearr, 1);
+         gf_msg_debug (this->name, 0, "Returning %d", ret);
+         return ret;
+ }
+-- 
+1.8.3.1
+

@@ -65,7 +65,7 @@ exec 5>&-
 exec 6>&-
 
 TEST $CLI volume stop $V0
-EXPECT "1" get_aux
 
 rm -f $QDD
 cleanup;
+#G_TESTDEF_TEST_STATUS_NETBSD7=BAD_TEST,BUG=1332020

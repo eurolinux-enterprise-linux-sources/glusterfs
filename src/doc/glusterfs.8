@@ -53,6 +53,9 @@ Maximum number of connect attempts to server. This option should be provided wit
 \fB\-\-acl\fR
 Mount the filesystem with POSIX ACL support.
 .TP
+\fB\-L, \fB\-\-localtime\-logging=on|off\fR
+Enable or disable localtime log timestamps. Valid options are on and off (the default is off).
+.TP
 \fB\-\-debug\fR
 Run in debug mode.  This option sets \fB\-\-no\-daemon\fR, \fB\-\-log\-level\fR to DEBUG,
 and \fB\-\-log\-file\fR to console.
@@ -98,6 +101,9 @@ Mount the filesystem in 'worm' mode.
 .TP
 \fB\-\-xlator\-option=VOLUME\-NAME.OPTION=VALUE\fR
 Add/Override a translator option for a volume with the specified value.
+.TP
+\fB\-\-subdir\-mount=SUBDIR\-MOUNT\-PATH\fR
+Mount subdirectory instead of the '/' of volume.
 
 .SS "Fuse options"
 .PP

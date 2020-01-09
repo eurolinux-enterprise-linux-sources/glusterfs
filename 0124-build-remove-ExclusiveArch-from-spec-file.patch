@@ -1,0 +1,48 @@
+From 319f93e9f83681d754e76db104b63a4a5200aad7 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Wed, 20 Dec 2017 14:02:17 +0530
+Subject: [PATCH 124/128] build: remove ExclusiveArch from spec file
+
+ExclusiveArch directive limits builds for specific architectures.
+This gets in the way of building for non-x86_64 architectures.
+
+So, removing the directive keeps the sources open to be built
+for non-x86_64 architectures as well.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Id178e30658b03a48acfa97c0e7556c1f5a8b533c
+BUG: 1534253
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126251
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ glusterfs.spec.in | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 56a62a9..2ac9a60b0 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -193,7 +193,6 @@ Release:          0.1%{?prereltag:.%{prereltag}}%{?dist}
+ Name:             @PACKAGE_NAME@
+ Version:          @PACKAGE_VERSION@
+ Release:          @PACKAGE_RELEASE@%{?dist}
+-ExclusiveArch:    x86_64 aarch64
+ %endif
+ License:          GPLv2 or LGPLv3+
+ Group:            System Environment/Base
+@@ -2180,6 +2179,9 @@ fi
+ %endif
+ 
+ %changelog
++* Wed Dec 20 2017 Milind Changire <mchangir@redhat.com>
++- Remove ExclusiveArch directive to help building on non-x86_64 arches (#1527772)
++
+ * Fri Dec 01 2017 Mohit Agrawal <moagrawa@redhat.com>
+ - Added control-cpu-load.sh and control-mem.sh scripts to glusterfs-server section(#1484446)
+ 
+-- 
+1.8.3.1
+

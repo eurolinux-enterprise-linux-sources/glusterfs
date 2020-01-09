@@ -12,21 +12,15 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <assert.h>
+#include "locking.h"
 
-#ifndef __FreeBSD__
-#ifdef __NetBSD__
-#include <sys/xattr.h>
-#else
-#include <attr/xattr.h>
-#endif /* __NetBSD__ */
-#endif /* __FreeBSD__ */
-
+#include "compat.h"
 #include "list.h"
+#include "syscall.h"
 
 #define THREAD_MAX 32
 #define BUMP(name) INC(name, 1)
@@ -312,12 +306,12 @@ xworker_do_crawl (struct xwork *xwork, struct dirjob *job)
         int             ret = -1;
         int             boff;
         int             plen;
-        struct dirent  *result;
-        char            dbuf[512];
         char           *path = NULL;
         struct dirjob  *cjob = NULL;
         struct stat     statbuf = {0,};
-        char            gfid_path[4096] = {0,};
+        struct dirent  *entry;
+        struct dirent   scratch[2] = {{0,},};
+        char            gfid_path[PATH_MAX] = {0,};
 
 
         plen = strlen (job->dirname) + 256 + 2;
@@ -325,7 +319,7 @@ xworker_do_crawl (struct xwork *xwork, struct dirjob *job)
 
         tdbg ("Entering: %s\n", job->dirname);
 
-        dirp = opendir (job->dirname);
+        dirp = sys_opendir (job->dirname);
         if (!dirp) {
                 terr ("opendir failed on %s (%s)\n", job->dirname,
                      strerror (errno));
@@ -335,27 +329,29 @@ xworker_do_crawl (struct xwork *xwork, struct dirjob *job)
         boff = sprintf (path, "%s/", job->dirname);
 
         for (;;) {
-                ret = readdir_r (dirp, (struct dirent *)dbuf, &result);
-                if (ret) {
-                        err ("readdir_r(%s): %s\n", job->dirname,
-                             strerror (errno));
-                        goto out;
+                errno = 0;
+                entry = sys_readdir (dirp, scratch);
+                if (!entry || errno != 0) {
+                        if (errno != 0) {
+                                err ("readdir(%s): %s\n", job->dirname,
+                                     strerror (errno));
+                                ret = errno;
+                                goto out;
+                        }
+                        break;
                 }
 
-                if (!result) /* EOF */
-                        break;
-
-                if (result->d_ino == 0)
+                if (entry->d_ino == 0)
                         continue;
 
-                if (skip_name (job->dirname, result->d_name))
+                if (skip_name (job->dirname, entry->d_name))
                         continue;
 
                 /* It is sure that, children and grandchildren of .glusterfs
                  * are directories, just add them to global queue.
                  */
-                if (skip_stat (job, result->d_name)) {
-                        strncpy (path + boff, result->d_name, (plen-boff));
+                if (skip_stat (job, entry->d_name)) {
+                        strncpy (path + boff, entry->d_name, (plen-boff));
                         cjob = dirjob_new (path, job);
                         if (!cjob) {
                                 err ("dirjob_new(%s): %s\n",
@@ -367,13 +363,12 @@ xworker_do_crawl (struct xwork *xwork, struct dirjob *job)
                         continue;
                 }
 
-                strcpy (gfid_path, slavemnt);
-                strcat (gfid_path, "/.gfid/");
-                strcat (gfid_path, result->d_name);
-                ret = lstat (gfid_path, &statbuf);
+                (void) snprintf (gfid_path, sizeof(gfid_path), "%s/.gfid/%s",
+                                 slavemnt, entry->d_name);
+                ret = sys_lstat (gfid_path, &statbuf);
 
                 if (ret && errno == ENOENT) {
-                        out ("%s\n", result->d_name);
+                        out ("%s\n", entry->d_name);
                         BUMP (skipped_gfids);
                 }
 
@@ -387,7 +382,7 @@ xworker_do_crawl (struct xwork *xwork, struct dirjob *job)
         ret = 0;
 out:
         if (dirp)
-                closedir (dirp);
+                (void) sys_closedir (dirp);
 
         return ret;
 }
@@ -527,15 +522,15 @@ parse_and_validate_args (int argc, char *argv[])
         }
 
         basedir = argv[1];
-        ret = lstat (basedir, &d);
+        ret = sys_lstat (basedir, &d);
         if (ret) {
                 err ("%s: %s\n", basedir, strerror (errno));
                 return NULL;
         }
 
 #ifndef __FreeBSD__
-        ret = lgetxattr (basedir, "trusted.glusterfs.volume-id",
-                         volume_id, 16);
+        ret = sys_lgetxattr (basedir, "trusted.glusterfs.volume-id",
+                             volume_id, 16);
         if (ret != 16) {
                 err ("%s:Not a valid brick path.\n", basedir);
                 return NULL;
@@ -543,7 +538,7 @@ parse_and_validate_args (int argc, char *argv[])
 #endif /* __FreeBSD__ */
 
         slv_mnt = argv[2];
-        ret = lstat (slv_mnt, &d);
+        ret = sys_lstat (slv_mnt, &d);
         if (ret) {
                 err ("%s: %s\n", slv_mnt, strerror (errno));
                 return NULL;

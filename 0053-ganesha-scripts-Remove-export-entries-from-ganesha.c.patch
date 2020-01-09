@@ -1,0 +1,33 @@
+From bfad2cafc9cbb58161386ee71dd086f01176558e Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Wed, 22 Feb 2017 14:37:04 +0530
+Subject: [PATCH 53/74] ganesha/scripts : Remove export entries from
+ ganesha.conf during cleanup
+
+Change-Id: I288f7c9ced23d258a7ce1242d8efe03a4bf6f746
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://review.gluster.org/16708
+Smoke: Gluster Build System <jenkins@build.gluster.org>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+Reviewed-by: soumya k <skoduri@redhat.com>
+Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+---
+ extras/ganesha/scripts/ganesha-ha.sh | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/extras/ganesha/scripts/ganesha-ha.sh b/extras/ganesha/scripts/ganesha-ha.sh
+index d4844e4..2d6b06f 100644
+--- a/extras/ganesha/scripts/ganesha-ha.sh
++++ b/extras/ganesha/scripts/ganesha-ha.sh
+@@ -342,6 +342,7 @@ cleanup_ganesha_config ()
+     rm -f /etc/corosync/corosync.conf
+     rm -rf /etc/cluster/cluster.conf*
+     rm -rf /var/lib/pacemaker/cib/*
++    sed -r -i -e '/^%include[[:space:]]+".+\.conf"$/d'  $HA_CONFDIR/ganesha.conf
+ }
+ 
+ do_create_virt_ip_constraints()
+-- 
+1.8.3.1
+

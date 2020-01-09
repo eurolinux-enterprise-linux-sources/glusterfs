@@ -8,25 +8,11 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "arbiter.h"
 #include "arbiter-mem-types.h"
 #include "glusterfs.h"
 #include "xlator.h"
 #include "logging.h"
-
-void
-arbiter_inode_ctx_destroy (arbiter_inode_ctx_t *ctx)
-{
-        if (!ctx)
-                return;
-        GF_FREE (ctx->iattbuf);
-        GF_FREE (ctx);
-}
 
 static arbiter_inode_ctx_t *
 __arbiter_inode_ctx_get (inode_t *inode, xlator_t *this)
@@ -44,23 +30,18 @@ __arbiter_inode_ctx_get (inode_t *inode, xlator_t *this)
 
         ctx = GF_CALLOC (1, sizeof (*ctx), gf_arbiter_mt_inode_ctx_t);
         if (!ctx)
-                goto fail;
-        ctx->iattbuf = GF_CALLOC (1, sizeof (*ctx->iattbuf),
-                                  gf_arbiter_mt_iatt);
-        if (!ctx->iattbuf)
-                goto fail;
+                goto out;
+
         ret = __inode_ctx_put (inode, this, (uint64_t)ctx);
         if (ret) {
+                GF_FREE (ctx);
+                ctx = NULL;
                 gf_log_callingfn (this->name, GF_LOG_ERROR, "failed to "
                                   "set the inode ctx (%s)",
                                   uuid_utoa (inode->gfid));
-                goto fail;
         }
 out:
         return ctx;
-fail:
-        arbiter_inode_ctx_destroy (ctx);
-        return NULL;
 }
 
 static arbiter_inode_ctx_t *
@@ -91,7 +72,7 @@ arbiter_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 op_errno = ENOMEM;
                 goto unwind;
         }
-        memcpy (ctx->iattbuf, buf, sizeof (*ctx->iattbuf));
+        memcpy (&ctx->iattbuf, buf, sizeof (ctx->iattbuf));
 
 unwind:
         STACK_UNWIND_STRICT (lookup, frame, op_ret, op_errno, inode, buf,
@@ -104,15 +85,6 @@ arbiter_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
 {
         STACK_WIND (frame, arbiter_lookup_cbk, FIRST_CHILD(this),
                          FIRST_CHILD(this)->fops->lookup, loc, xdata);
-        return 0;
-}
-
-int32_t
-arbiter_readv (call_frame_t *frame,  xlator_t *this, fd_t *fd, size_t size,
-               off_t offset, uint32_t flags, dict_t *xdata)
-{
-        STACK_UNWIND_STRICT (readv, frame, -1, ENOTCONN, NULL, 0, NULL, NULL,
-                             NULL);
         return 0;
 }
 
@@ -131,10 +103,9 @@ arbiter_truncate (call_frame_t *frame, xlator_t *this, loc_t *loc, off_t offset,
                 op_errno = ENOMEM;
                 goto unwind;
         }
-        buf = ctx->iattbuf;
+        buf = &ctx->iattbuf;
 unwind:
-        STACK_UNWIND_STRICT (truncate, frame, op_ret, op_errno, buf, buf,
-                             xdata);
+        STACK_UNWIND_STRICT (truncate, frame, op_ret, op_errno, buf, buf, NULL);
         return 0;
 }
 
@@ -154,11 +125,49 @@ arbiter_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
                 op_errno = ENOMEM;
                 goto unwind;
         }
-        buf = ctx->iattbuf;
+        buf = &ctx->iattbuf;
 unwind:
         STACK_UNWIND_STRICT (ftruncate, frame, op_ret, op_errno, buf, buf,
-                             xdata);
+                             NULL);
         return 0;
+}
+
+dict_t*
+arbiter_fill_writev_xdata (fd_t *fd, dict_t *xdata, xlator_t *this)
+{
+        dict_t  *rsp_xdata = NULL;
+        int32_t ret = 0;
+        int is_append = 1;
+
+        if (!fd || !fd->inode || gf_uuid_is_null (fd->inode->gfid)) {
+                goto out;
+        }
+
+        if (!xdata)
+                goto out;
+
+        rsp_xdata = dict_new();
+        if (!rsp_xdata)
+                goto out;
+
+        if (dict_get (xdata, GLUSTERFS_OPEN_FD_COUNT)) {
+                ret = dict_set_uint32 (rsp_xdata, GLUSTERFS_OPEN_FD_COUNT,
+                                       fd->inode->fd_count);
+                if (ret < 0) {
+                        gf_msg_debug (this->name, 0, "Failed to set dict value"
+                                      " for GLUSTERFS_OPEN_FD_COUNT");
+                }
+        }
+        if (dict_get (xdata, GLUSTERFS_WRITE_IS_APPEND)) {
+                ret = dict_set_uint32 (rsp_xdata, GLUSTERFS_WRITE_IS_APPEND,
+                                       is_append);
+                if (ret < 0) {
+                        gf_msg_debug (this->name, 0, "Failed to set dict value"
+                                      " for GLUSTERFS_WRITE_IS_APPEND");
+                }
+        }
+out:
+        return rsp_xdata;
 }
 
 int32_t
@@ -168,6 +177,7 @@ arbiter_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
 {
         arbiter_inode_ctx_t *ctx      = NULL;
         struct iatt         *buf      = NULL;
+        dict_t           *rsp_xdata   = NULL;
         int                  op_ret   = 0;
         int                  op_errno = 0;
 
@@ -177,10 +187,14 @@ arbiter_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
                 op_errno = ENOMEM;
                 goto unwind;
         }
-        buf = ctx->iattbuf;
+        buf = &ctx->iattbuf;
         op_ret = iov_length (vector, count);
+        rsp_xdata = arbiter_fill_writev_xdata (fd, xdata, this);
 unwind:
-        STACK_UNWIND_STRICT (writev, frame, op_ret, op_errno, buf, buf, xdata);
+        STACK_UNWIND_STRICT (writev, frame, op_ret, op_errno, buf, buf,
+                             rsp_xdata);
+        if (rsp_xdata)
+                dict_unref (rsp_xdata);
         return 0;
 }
 
@@ -199,10 +213,9 @@ arbiter_fallocate (call_frame_t *frame, xlator_t *this, fd_t *fd,
                 op_errno = ENOMEM;
                 goto unwind;
         }
-        buf = ctx->iattbuf;
+        buf = &ctx->iattbuf;
 unwind:
-        STACK_UNWIND_STRICT(fallocate, frame, op_ret, op_errno, buf, buf,
-                            xdata);
+        STACK_UNWIND_STRICT(fallocate, frame, op_ret, op_errno, buf, buf, NULL);
         return 0;
 }
 
@@ -221,9 +234,9 @@ arbiter_discard (call_frame_t *frame, xlator_t *this, fd_t *fd,
                 op_errno = ENOMEM;
                 goto unwind;
         }
-        buf = ctx->iattbuf;
+        buf = &ctx->iattbuf;
 unwind:
-        STACK_UNWIND_STRICT(discard, frame, op_ret, op_errno, buf, buf, xdata);
+        STACK_UNWIND_STRICT(discard, frame, op_ret, op_errno, buf, buf, NULL);
         return 0;
 }
 
@@ -242,9 +255,26 @@ arbiter_zerofill (call_frame_t *frame, xlator_t *this, fd_t *fd,
                 op_errno = ENOMEM;
                 goto unwind;
         }
-        buf = ctx->iattbuf;
+        buf = &ctx->iattbuf;
 unwind:
-        STACK_UNWIND_STRICT(zerofill, frame, op_ret, op_errno, buf, buf, xdata);
+        STACK_UNWIND_STRICT(zerofill, frame, op_ret, op_errno, buf, buf, NULL);
+        return 0;
+}
+
+static int32_t
+arbiter_readv (call_frame_t *frame,  xlator_t *this, fd_t *fd, size_t size,
+               off_t offset, uint32_t flags, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (readv, frame, -1, ENOSYS, NULL, 0, NULL, NULL,
+                             NULL);
+        return 0;
+}
+
+static int32_t
+arbiter_seek (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+              gf_seek_what_t what, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT (seek, frame, -1, ENOSYS, 0, xdata);
         return 0;
 }
 
@@ -306,13 +336,30 @@ fini (xlator_t *this)
 
 struct xlator_fops fops = {
         .lookup = arbiter_lookup,
-        .readv  = arbiter_readv,
+
+        /* Return success for these inode write FOPS without winding it down to
+         * posix; this is needed for AFR write transaction logic to work.*/
         .truncate = arbiter_truncate,
         .writev = arbiter_writev,
         .ftruncate = arbiter_ftruncate,
         .fallocate = arbiter_fallocate,
         .discard = arbiter_discard,
         .zerofill = arbiter_zerofill,
+
+        /* AFR is not expected to wind these inode read FOPS initiated by the
+         * application to the arbiter brick. But in case a bug causes them
+         * to be called, we return ENOSYS. */
+        .readv = arbiter_readv,
+        .seek = arbiter_seek,
+
+        /* The following inode read FOPS initiated by the application are not
+         * wound by AFR either but internal logic like  shd, glfsheal and
+         * client side healing in AFR will send them for selfheal/ inode refresh
+         * operations etc.,so we need to wind them down to posix:
+         *
+         * (f)stat, readdir(p), readlink, (f)getxattr.*/
+
+        /* All other FOPs not listed here are safe to be wound down to posix.*/
 };
 
 struct xlator_cbks cbks = {

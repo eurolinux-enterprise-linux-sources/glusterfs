@@ -18,8 +18,11 @@
 #include "glusterd-quotad-svc.h"
 #include "glusterd-nfs-svc.h"
 #include "glusterd-bitd-svc.h"
+#include "glusterd-tierd-svc.h"
+#include "glusterd-tierd-svc-helper.h"
 #include "glusterd-scrub-svc.h"
 #include "glusterd-svc-helper.h"
+#include "syscall.h"
 
 int
 glusterd_svcs_reconfigure ()
@@ -27,16 +30,19 @@ glusterd_svcs_reconfigure ()
         int              ret  = 0;
         xlator_t        *this = THIS;
         glusterd_conf_t *conf = NULL;
+        char            *svc_name = NULL;
 
         GF_ASSERT (this);
 
         conf = this->private;
         GF_ASSERT (conf);
 
+        svc_name = "nfs";
         ret = glusterd_nfssvc_reconfigure ();
         if (ret)
                 goto out;
 
+        svc_name = "self-heald";
         ret = glusterd_shdsvc_reconfigure ();
         if (ret)
                 goto out;
@@ -44,18 +50,22 @@ glusterd_svcs_reconfigure ()
         if (conf->op_version == GD_OP_VERSION_MIN)
                 goto out;
 
+        svc_name = "quotad";
         ret = glusterd_quotadsvc_reconfigure ();
         if (ret)
                 goto out;
 
+        svc_name = "bitd";
         ret = glusterd_bitdsvc_reconfigure ();
         if (ret)
                 goto out;
 
+        svc_name = "scrubber";
         ret = glusterd_scrubsvc_reconfigure ();
-        if (ret)
-                goto out;
 out:
+        if (ret && svc_name)
+                gf_event (EVENT_SVC_RECONFIGURE_FAILED, "svc_name=%s",
+                          svc_name);
         return ret;
 }
 
@@ -89,7 +99,6 @@ glusterd_svcs_stop ()
                 goto out;
 
         ret = glusterd_svc_stop (&(priv->scrub_svc), SIGTERM);
-
 out:
         return ret;
 }
@@ -142,7 +151,6 @@ glusterd_svcs_manager (glusterd_volinfo_t *volinfo)
                                        PROC_START_NO_WAIT);
         if (ret == -EINVAL)
                 ret = 0;
-
 out:
         return ret;
 }
@@ -182,22 +190,18 @@ glusterd_svc_check_volfile_identical (char *svc_name,
 
         need_unlink = 1;
 
-        ret = glusterd_create_global_volfile (builder,
-                                              tmpvol, NULL);
+        ret = glusterd_create_global_volfile (builder, tmpvol, NULL);
         if (ret)
                 goto out;
 
-        ret = glusterd_check_files_identical (orgvol, tmpvol,
-                                              identical);
-        if (ret)
-                goto out;
+        ret = glusterd_check_files_identical (orgvol, tmpvol, identical);
 
 out:
         if (need_unlink)
-                unlink (tmpvol);
+                sys_unlink (tmpvol);
 
         if (tmp_fd >= 0)
-                close (tmp_fd);
+                sys_close (tmp_fd);
 
         return ret;
 }
@@ -247,8 +251,8 @@ glusterd_svc_check_topology_identical (char *svc_name,
                                                  identical);
 out:
         if (tmpfd >= 0)
-                close (tmpfd);
+                sys_close (tmpfd);
         if (tmpclean)
-                unlink (tmpvol);
+                sys_unlink (tmpvol);
         return ret;
 }

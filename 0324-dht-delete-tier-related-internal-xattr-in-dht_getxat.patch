@@ -1,0 +1,57 @@
+From 2a26ea5a3ee33ba5e6baedca8b18e29277ff385a Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Tue, 3 Jul 2018 13:58:23 +0530
+Subject: [PATCH 324/325] dht: delete tier related internal xattr in
+ dht_getxattr_cbk
+
+Problem :  Hot and Cold tier brick changelogs report rsync failure
+
+Solution : georep session is failing to sync directory
+           from master volume to slave volume due to lot
+           of changelog retries, solution would be to ignore tier
+           related internal xattrs trusted.tier.fix.layout.complete and
+           trusted.tier.tier-dht.commithash in dht_getxattr_cbk.
+
+Upstream Patch : https://review.gluster.org/#/c/20450/ and
+                 https://review.gluster.org/#/c/20520/
+>fixes: bz#1597563
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+
+Change-Id: I3530ffe7c4157584b439486f33ecd82ed8d66aee
+BUG: 1581047
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144024
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 23049b6..2207708 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -4606,6 +4606,20 @@ dht_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                         dict_del (xattr, conf->mds_xattr_key);
+                 }
+ 
++                /* filter out following two xattrs that need not
++                 * be visible on the mount point for geo-rep -
++                 * trusted.tier.fix.layout.complete and
++                 * trusted.tier.tier-dht.commithash
++                 */
++
++                if (dict_get (xattr, conf->commithash_xattr_name)) {
++                        dict_del (xattr, conf->commithash_xattr_name);
++                }
++
++                if (frame->root->pid >= 0 && dht_is_tier_xlator (this)) {
++                        dict_del(xattr, GF_XATTR_TIER_LAYOUT_FIXED_KEY);
++                }
++
+                 if (frame->root->pid >= 0) {
+                         GF_REMOVE_INTERNAL_XATTR
+                                 ("trusted.glusterfs.quota*", xattr);
+-- 
+1.8.3.1
+

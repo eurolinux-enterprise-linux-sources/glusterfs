@@ -1,0 +1,54 @@
+From a3cfdb4e3f32336f2fd16ac68bc4dc5a33e7f26e Mon Sep 17 00:00:00 2001
+From: Xavi Hernandez <xhernandez@redhat.com>
+Date: Thu, 12 Apr 2018 23:31:37 +0200
+Subject: [PATCH 233/236] libglusterfs: fix comparison of a NULL dict with a
+ non-NULL dict
+
+Function are_dicts_equal() had a bug when the first argument was NULL and
+the second one wasn't NULL. In this case it incorrectly returned that the
+dicts were different when they could be equal.
+
+Upstream-patch: https://review.gluster.org/19861
+BUG: 1569457
+Change-Id: I0fc245c2e7d1395865a76405dbd05e5d34db3273
+Signed-off-by: Xavi Hernandez <xhernandez@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136332
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ libglusterfs/src/dict.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/libglusterfs/src/dict.c b/libglusterfs/src/dict.c
+index ebcf694..36d91a7 100644
+--- a/libglusterfs/src/dict.c
++++ b/libglusterfs/src/dict.c
+@@ -188,17 +188,17 @@ are_dicts_equal (dict_t *one, dict_t *two,
+         if (!match)
+                 match = dict_match_everything;
+ 
+-        cmp.dict = two;
+-        cmp.value_ignore = value_ignore;
+-        if (!two) {
+-                num_matches1 = dict_foreach_match (one, match, NULL,
+-                                                   dict_null_foreach_fn, NULL);
++        if ((one == NULL) || (two == NULL)) {
++                num_matches1 = dict_foreach_match(one ? one : two, match, NULL,
++                                                  dict_null_foreach_fn, NULL);
+                 goto done;
+-        } else {
+-                num_matches1 = dict_foreach_match (one, match, NULL,
+-                                                   key_value_cmp, &cmp);
+         }
+ 
++        cmp.dict = two;
++        cmp.value_ignore = value_ignore;
++        num_matches1 = dict_foreach_match (one, match, NULL, key_value_cmp,
++                                           &cmp);
++
+         if (num_matches1 == -1)
+                 return _gf_false;
+ 
+-- 
+1.8.3.1
+

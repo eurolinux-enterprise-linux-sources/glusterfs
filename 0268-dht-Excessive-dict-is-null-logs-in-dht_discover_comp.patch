@@ -1,0 +1,44 @@
+From 717fab7db9afb3d2f512fcdb7a952eb57b67e8dd Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Thu, 10 May 2018 16:54:44 +0530
+Subject: [PATCH 268/271] dht: Excessive 'dict is null' logs in
+ dht_discover_complete
+
+Problem: In Geo-Rep setup excessive "dict is null" logs in
+         dht_discover_complete while xattr is NULL
+
+Solution: To avoid the logs update a condition in dht_discover_complete
+
+> BUG: 1576767
+> Change-Id: Ic7aad712d9b6d69b85b76e4fdf2881adb0512237
+> fixes: bz#1576767
+> (cherry pick from commit 08dcb1c2bf02bba313d3bfc8fbc1c8ea63296321)
+> (Upstream review link https://review.gluster.org/#/c/20001/)
+
+BUG: 1565577
+Change-Id: I1b1327eeef05fa261c814069a3bdd75653b37bd1
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138490
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index ec1628a..feeaa3f 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -748,7 +748,8 @@ cleanup:
+ done:
+         dht_set_fixed_dir_stat (&local->postparent);
+         /* Delete mds xattr at the time of STACK UNWIND */
+-        GF_REMOVE_INTERNAL_XATTR (conf->mds_xattr_key, local->xattr);
++        if (local->xattr)
++                GF_REMOVE_INTERNAL_XATTR (conf->mds_xattr_key, local->xattr);
+ 
+         DHT_STACK_UNWIND (lookup, main_frame, local->op_ret, local->op_errno,
+                           local->inode, &local->stbuf, local->xattr,
+-- 
+1.8.3.1
+

@@ -8,6 +8,7 @@
   cases as published by the Free Software Foundation.
 */
 
+#include <math.h>
 #include "quick-read.h"
 #include "statedump.h"
 #include "quick-read-messages.h"
@@ -267,17 +268,19 @@ qr_content_extract (dict_t *xdata)
 	data_t  *data = NULL;
 	void    *content = NULL;
 
-	data = dict_get (xdata, GF_CONTENT_KEY);
+	dict_get_with_ref (xdata, GF_CONTENT_KEY, &data);
 	if (!data)
 		return NULL;
 
 	content = GF_CALLOC (1, data->len, gf_qr_mt_content_t);
 	if (!content)
-		return NULL;
+		goto out;
 
 	memcpy (content, data->data, data->len);
 
-	return content;
+out:
+        data_unref (data);
+        return content;
 }
 
 
@@ -1144,7 +1147,7 @@ struct volume_options options[] = {
         { .key  = {"cache-size"},
           .type = GF_OPTION_TYPE_SIZET,
           .min  = 0,
-          .max  = 32 * GF_UNIT_GB,
+          .max  = INFINITY,
           .default_value = "128MB",
           .description = "Size of the read cache."
         },

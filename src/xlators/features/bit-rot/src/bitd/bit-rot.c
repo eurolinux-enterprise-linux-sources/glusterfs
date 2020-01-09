@@ -8,11 +8,6 @@
    cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <ctype.h>
 #include <sys/uio.h>
 
@@ -25,8 +20,6 @@
 #include "bit-rot-scrub.h"
 #include <pthread.h>
 #include "bit-rot-bitd-messages.h"
-
-#include "tw.h"
 
 #define BR_HASH_CALC_READ_SIZE  (128 * 1024)
 
@@ -283,7 +276,7 @@ br_object_read_block_and_sign (xlator_t *this, fd_t *fd, br_child_t *child,
                                off_t offset, size_t size, SHA256_CTX *sha256)
 {
         int32_t        ret    = -1;
-        br_tbf_t      *tbf    = NULL;
+        tbf_t      *tbf    = NULL;
         struct iovec  *iovec  = NULL;
         struct iobref *iobref = NULL;
         br_private_t  *priv   = NULL;
@@ -316,12 +309,12 @@ br_object_read_block_and_sign (xlator_t *this, fd_t *fd, br_child_t *child,
                 goto out;
 
         for (i = 0; i < count; i++) {
-                TBF_THROTTLE_BEGIN (tbf, BR_TBF_OP_HASH, iovec[i].iov_len);
+                TBF_THROTTLE_BEGIN (tbf, TBF_OP_HASH, iovec[i].iov_len);
                 {
                         SHA256_Update (sha256, (const unsigned char *)
                                        (iovec[i].iov_base), iovec[i].iov_len);
                 }
-                TBF_THROTTLE_BEGIN (tbf, BR_TBF_OP_HASH, iovec[i].iov_len);
+                TBF_THROTTLE_BEGIN (tbf, TBF_OP_HASH, iovec[i].iov_len);
         }
 
  out:
@@ -428,7 +421,7 @@ br_object_read_sign (inode_t *linked_inode, fd_t *fd, br_object_t *object,
 
         xattr = dict_for_key_value
                 (GLUSTERFS_SET_OBJECT_SIGNATURE,
-                 (void *)sign, signature_size (SHA256_DIGEST_LENGTH));
+                 (void *)sign, signature_size (SHA256_DIGEST_LENGTH), _gf_true);
 
         if (!xattr) {
                 gf_msg (this->name, GF_LOG_ERROR, 0, BRB_MSG_SET_SIGN_FAILED,
@@ -1097,21 +1090,11 @@ br_oneshot_signer (void *arg)
 static void
 br_set_child_state (br_child_t *child, br_child_state_t state)
 {
-        LOCK (&child->lock);
+        pthread_mutex_lock (&child->lock);
         {
                 _br_set_child_state (child, state);
         }
-        UNLOCK (&child->lock);
-}
-
-static void
-br_set_scrub_state (br_child_t *child, br_scrub_state_t state)
-{
-        LOCK (&child->lock);
-        {
-                _br_child_set_scrub_state (child, state);
-        }
-        UNLOCK (&child->lock);
+        pthread_mutex_unlock (&child->lock);
 }
 
 /**
@@ -1150,7 +1133,8 @@ br_enact_signer (xlator_t *this, br_child_t *child, br_stub_init_t *stub)
         }
 
         child->threadrunning = 0;
-        ret = gf_thread_create (&child->thread, NULL, br_oneshot_signer, child);
+        ret = gf_thread_create (&child->thread, NULL, br_oneshot_signer, child,
+                                "brosign");
         if (ret)
                 gf_msg (this->name, GF_LOG_WARNING, 0, BRB_MSG_SPAWN_FAILED,
                         "failed to spawn FS crawler thread");
@@ -1173,12 +1157,13 @@ br_launch_scrubber (xlator_t *this, br_child_t *child,
 {
         int32_t ret = -1;
         br_private_t *priv = NULL;
+        struct br_monitor *scrub_monitor = NULL;
 
         priv = this->private;
 
-        fsscan->kick = _gf_false;
-        fsscan->over = _gf_false;
-        ret = gf_thread_create (&child->thread, NULL, br_fsscanner, child);
+        scrub_monitor = &priv->scrub_monitor;
+        ret = gf_thread_create (&child->thread, NULL, br_fsscanner, child,
+                                "brfsscan");
         if (ret != 0) {
                 gf_msg (this->name, GF_LOG_ALERT, 0, BRB_MSG_SPAWN_FAILED,
                         "failed to spawn bitrot scrubber daemon [Brick: %s]",
@@ -1186,14 +1171,14 @@ br_launch_scrubber (xlator_t *this, br_child_t *child,
                 goto error_return;
         }
 
-        /* this needs to be serialized with reconfigure() */
-        pthread_mutex_lock (&priv->lock);
+        /* Signal monitor to kick off state machine*/
+        pthread_mutex_lock (&scrub_monitor->mutex);
         {
-                ret = br_scrub_state_machine (this, child);
+                if (!scrub_monitor->inited)
+                        pthread_cond_signal (&scrub_monitor->cond);
+                scrub_monitor->inited = _gf_true;
         }
-        pthread_mutex_unlock (&priv->lock);
-        if (ret)
-                goto cleanup_thread;
+        pthread_mutex_unlock (&scrub_monitor->mutex);
 
         /**
          * Everything has been setup.. add this subvolume to scrubbers
@@ -1208,8 +1193,6 @@ br_launch_scrubber (xlator_t *this, br_child_t *child,
 
         return 0;
 
- cleanup_thread:
-        (void) gf_thread_cleanup_xint (child->thread);
  error_return:
         return -1;
 }
@@ -1228,7 +1211,7 @@ br_enact_scrubber (xlator_t *this, br_child_t *child)
         fsscrub = &priv->fsscrub;
 
         /**
-         * if this child already witnesses a successfull connection earlier
+         * if this child already witnesses a successful connection earlier
          * there's no need to initialize mutexes, condvars, etc..
          */
         if (_br_child_witnessed_connection (child))
@@ -1241,10 +1224,6 @@ br_enact_scrubber (xlator_t *this, br_child_t *child)
         fsscan->entries = 0;
         INIT_LIST_HEAD (&fsscan->queued);
         INIT_LIST_HEAD (&fsscan->ready);
-
-        /* init scheduler related variables */
-        pthread_mutex_init (&fsscan->wakelock, NULL);
-        pthread_cond_init (&fsscan->wakecond, NULL);
 
         ret = br_launch_scrubber (this, child, fsscan, fsscrub);
         if (ret)
@@ -1266,7 +1245,7 @@ br_child_enaction (xlator_t *this, br_child_t *child, br_stub_init_t *stub)
         int32_t ret = -1;
         br_private_t *priv = this->private;
 
-        LOCK (&child->lock);
+        pthread_mutex_lock (&child->lock);
         {
                 if (priv->iamscrubber)
                         ret = br_enact_scrubber (this, child);
@@ -1281,7 +1260,7 @@ br_child_enaction (xlator_t *this, br_child_t *child, br_stub_init_t *stub)
                                 "Connected to brick %s..", child->brick_path);
                 }
         }
-        UNLOCK (&child->lock);
+        pthread_mutex_unlock (&child->lock);
 
         return ret;
 }
@@ -1308,6 +1287,7 @@ br_brick_connect (xlator_t *this, br_child_t *child)
         GF_VALIDATE_OR_GOTO (this->name, child, out);
         GF_VALIDATE_OR_GOTO (this->name, this->private, out);
 
+        br_child_set_scrub_state (child, _gf_false);
         br_set_child_state (child, BR_CHILD_STATE_INITIALIZING);
 
         loc.inode = inode_ref (child->table->root);
@@ -1369,12 +1349,17 @@ br_cleanup_scrubber (xlator_t *this, br_child_t *child)
 {
         int32_t ret = 0;
         br_private_t *priv = NULL;
-        struct br_scanfs *fsscan = NULL;
         struct br_scrubber *fsscrub = NULL;
+        struct br_monitor *scrub_monitor = NULL;
 
         priv    = this->private;
-        fsscan  = &child->fsscan;
         fsscrub = &priv->fsscrub;
+        scrub_monitor = &priv->scrub_monitor;
+
+        if (_br_is_child_scrub_active (child)) {
+                scrub_monitor->active_child_count--;
+                br_child_set_scrub_state (child, _gf_false);
+        }
 
         /**
          * 0x0: child (brick) goes out of rotation
@@ -1406,21 +1391,6 @@ br_cleanup_scrubber (xlator_t *this, br_child_t *child)
                         0, BRB_MSG_SCRUB_THREAD_CLEANUP,
                         "Error cleaning up scanner thread");
 
-        /**
-         * 0x2: free()up resources
-         */
-        if (fsscan->timer) {
-                (void) gf_tw_del_timer (priv->timer_wheel, fsscan->timer);
-
-                GF_FREE (fsscan->timer);
-                fsscan->timer = NULL;
-        }
-
-        /**
-         * 0x3: reset scrubber state
-         */
-        _br_child_set_scrub_state (child, BR_SCRUB_STATE_INACTIVE);
-
         gf_msg (this->name, GF_LOG_INFO,
                 0, BRB_MSG_SCRUBBER_CLEANED,
                 "Cleaned up scrubber for brick [%s]", child->brick_path);
@@ -1437,23 +1407,33 @@ int32_t
 br_brick_disconnect (xlator_t *this, br_child_t *child)
 {
         int32_t ret = 0;
+        struct br_monitor *scrub_monitor = NULL;
         br_private_t *priv = this->private;
 
-        LOCK (&child->lock);
+        scrub_monitor = &priv->scrub_monitor;
+
+        /* Lock order should be wakelock and then child lock to
+         * dead locks.
+         */
+        pthread_mutex_lock (&scrub_monitor->wakelock);
         {
-                if (!_br_is_child_connected (child))
-                        goto unblock;
+                pthread_mutex_lock (&child->lock);
+                {
+                        if (!_br_is_child_connected (child))
+                                goto unblock;
 
-                /* child is on death row.. */
-                _br_set_child_state (child, BR_CHILD_STATE_DISCONNECTED);
+                        /* child is on death row.. */
+                        _br_set_child_state (child, BR_CHILD_STATE_DISCONNECTED);
 
-                if (priv->iamscrubber)
-                        ret = br_cleanup_scrubber (this, child);
-                else
-                        ret = br_cleanup_signer (this, child);
-        }
+                        if (priv->iamscrubber)
+                                ret = br_cleanup_scrubber (this, child);
+                        else
+                                ret = br_cleanup_signer (this, child);
+                }
  unblock:
-        UNLOCK (&child->lock);
+                pthread_mutex_unlock (&child->lock);
+        }
+        pthread_mutex_unlock (&scrub_monitor->wakelock);
 
          return ret;
 }
@@ -1554,9 +1534,7 @@ _br_qchild_event (xlator_t *this, br_child_t *child, br_child_handler *call)
 int
 br_scrubber_status_get (xlator_t *this, dict_t **dict)
 {
-
         int                    ret          = -1;
-        char                   key[256]     = {0,};
         br_private_t          *priv         = NULL;
         struct br_scrub_stats *scrub_stats  = NULL;
 
@@ -1572,33 +1550,35 @@ br_scrubber_status_get (xlator_t *this, dict_t **dict)
                               "files");
         }
 
-        memset (key, 0, 256);
-        snprintf (key, 256, "scrubbed-files");
-        ret = dict_set_uint32 (*dict, key, scrub_stats->scrubbed_files);
+        ret = dict_set_int8 (*dict, "scrub-running",
+                             scrub_stats->scrub_running);
+        if (ret) {
+                gf_msg_debug (this->name, 0, "Failed setting scrub_running "
+                              "entry to the dictionary");
+        }
+
+        ret = dict_set_uint64 (*dict, "scrubbed-files",
+                               scrub_stats->scrubbed_files);
         if (ret) {
                 gf_msg_debug (this->name, 0, "Failed to setting scrubbed file "
                               "entry to the dictionary");
         }
 
-        memset (key, 0, 256);
-        snprintf (key, 256, "unsigned-files");
-        ret = dict_set_uint32 (*dict, key, scrub_stats->unsigned_files);
+        ret = dict_set_uint64 (*dict, "unsigned-files",
+                               scrub_stats->unsigned_files);
         if (ret) {
                 gf_msg_debug (this->name, 0, "Failed to set unsigned file count"
                               " entry to the dictionary");
         }
 
-        memset (key, 0, 256);
-        snprintf (key, 256, "scrub-duration");
-        ret = dict_set_uint32 (*dict, key, scrub_stats->scrub_duration);
+        ret = dict_set_uint64 (*dict, "scrub-duration",
+                               scrub_stats->scrub_duration);
         if (ret) {
                 gf_msg_debug (this->name, 0, "Failed to set scrub duration"
                               " entry to the dictionary");
         }
 
-        memset (key, 0, 256);
-        snprintf (key, 256, "last-scrub-time");
-        ret = dict_set_dynstr_with_alloc (*dict, key,
+        ret = dict_set_dynstr_with_alloc (*dict, "last-scrub-time",
                                           scrub_stats->last_scrub_time);
         if (ret) {
                 gf_msg_debug (this->name, 0, "Failed to set "
@@ -1619,9 +1599,11 @@ notify (xlator_t *this, int32_t event, void *data, ...)
         br_private_t *priv   = NULL;
         dict_t       *output = NULL;
         va_list       ap;
+        struct br_monitor  *scrub_monitor = NULL;
 
         subvol = (xlator_t *)data;
         priv = this->private;
+        scrub_monitor = &priv->scrub_monitor;
 
         gf_msg_trace (this->name, 0, "Notification received: %d", event);
 
@@ -1690,8 +1672,39 @@ notify (xlator_t *this, int32_t event, void *data, ...)
                               "called");
                 va_start (ap, data);
                 output = va_arg (ap, dict_t *);
+                va_end (ap);
 
                 ret = br_scrubber_status_get (this, &output);
+                gf_msg_debug (this->name, 0, "returning %d", ret);
+                break;
+
+        case GF_EVENT_SCRUB_ONDEMAND:
+                gf_log (this->name, GF_LOG_INFO, "BitRot scrub ondemand "
+                              "called");
+
+                if (scrub_monitor->state != BR_SCRUB_STATE_PENDING) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                BRB_MSG_RESCHEDULE_SCRUBBER_FAILED,
+                                "on demand scrub schedule failed. Scrubber is "
+                                "not in pending state. Current state is %d",
+                                 scrub_monitor->state);
+                        return -2;
+                }
+
+                /* Needs synchronization with reconfigure thread */
+                pthread_mutex_lock (&priv->lock);
+                {
+                        ret = br_scrub_state_machine (this, _gf_true);
+                }
+                pthread_mutex_unlock (&priv->lock);
+
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                BRB_MSG_RESCHEDULE_SCRUBBER_FAILED,
+                                "Could not schedule ondemand scrubbing. "
+                                "Scrubbing will continue according to "
+                                "old frequency.");
+                }
                 gf_msg_debug (this->name, 0, "returning %d", ret);
                 break;
         default:
@@ -1739,7 +1752,7 @@ br_init_signer (xlator_t *this, br_private_t *priv)
 
         for (i = 0; i < BR_WORKERS; i++) {
                 ret = gf_thread_create (&priv->obj_queue->workers[i], NULL,
-                                        br_process_object, this);
+                                        br_process_object, this, "brpobj");
                 if (ret != 0) {
                         gf_msg (this->name, GF_LOG_ERROR, -ret,
                                 BRB_MSG_SPAWN_FAILED, "thread creation"
@@ -1774,13 +1787,31 @@ static int32_t
 br_rate_limit_signer (xlator_t *this, int child_count, int numbricks)
 {
         br_private_t *priv = NULL;
-        br_tbf_opspec_t spec = {0,};
+        tbf_opspec_t spec = {0,};
 
         priv = this->private;
 
-        spec.op       = BR_TBF_OP_HASH;
+        spec.op       = TBF_OP_HASH;
         spec.rate     = 0;
         spec.maxlimit = 0;
+
+/**
+ * OK. Most implementations of TBF I've come across generate tokens
+ * every second (UML, etc..) and some chose sub-second granularity
+ * (blk-iothrottle cgroups). TBF algorithm itself does not enforce
+ * any logic for choosing generation interval and it seems pretty
+ * logical as one could jack up token count per interval w.r.t.
+ * generation rate.
+ *
+ * Value used here is chosen based on a series of test(s) performed
+ * to balance object signing time and not maxing out on all available
+ * CPU cores. It's obvious to have seconds granularity and jack up
+ * token count per interval, thereby achieving close to similar
+ * results. Let's stick to this as it seems to be working fine for
+ * the set of ops that are throttled.
+ **/
+        spec.token_gen_interval = 600000; /* In usec */
+
 
 #ifdef BR_RATE_LIMIT_SIGNER
 
@@ -1801,7 +1832,7 @@ br_rate_limit_signer (xlator_t *this, int child_count, int numbricks)
                         "[Rate Limit Info] \"tokens/sec (rate): %lu, "
                         "maxlimit: %lu\"", spec.rate, spec.maxlimit);
 
-        priv->tbf = br_tbf_init (&spec, 1);
+        priv->tbf = tbf_init (&spec, 1);
         return priv->tbf ? 0 : -1;
 }
 
@@ -1848,6 +1879,33 @@ br_signer_init (xlator_t *this, br_private_t *priv)
 }
 
 static void
+br_free_scrubber_monitor (xlator_t *this, br_private_t *priv)
+{
+        struct br_monitor *scrub_monitor = &priv->scrub_monitor;
+
+        if (scrub_monitor->timer) {
+                (void) gf_tw_del_timer (priv->timer_wheel, scrub_monitor->timer);
+
+                GF_FREE (scrub_monitor->timer);
+                scrub_monitor->timer = NULL;
+        }
+
+        (void) gf_thread_cleanup_xint (scrub_monitor->thread);
+
+        /* Clean up cond and mutex variables */
+        pthread_mutex_destroy (&scrub_monitor->mutex);
+        pthread_cond_destroy (&scrub_monitor->cond);
+
+        pthread_mutex_destroy (&scrub_monitor->wakelock);
+        pthread_cond_destroy (&scrub_monitor->wakecond);
+
+        pthread_mutex_destroy (&scrub_monitor->donelock);
+        pthread_cond_destroy (&scrub_monitor->donecond);
+
+        LOCK_DESTROY (&scrub_monitor->lock);
+}
+
+static void
 br_free_children (xlator_t *this, br_private_t *priv, int count)
 {
         br_child_t *child = NULL;
@@ -1855,7 +1913,7 @@ br_free_children (xlator_t *this, br_private_t *priv, int count)
         for (--count; count >= 0; count--) {
                 child = &priv->children[count];
                 mem_pool_destroy (child->timer_pool);
-                LOCK_DESTROY (&child->lock);
+                pthread_mutex_destroy (&child->lock);
         }
 
         GF_FREE (priv->children);
@@ -1879,10 +1937,9 @@ br_init_children (xlator_t *this, br_private_t *priv)
         while (trav) {
                 child = &priv->children[i];
 
-                LOCK_INIT (&child->lock);
+                pthread_mutex_init (&child->lock, NULL);
                 child->witnessed = 0;
 
-                br_set_scrub_state (child, BR_SCRUB_STATE_INACTIVE);
                 br_set_child_state (child, BR_CHILD_STATE_DISCONNECTED);
 
                 child->this = this;
@@ -1943,7 +2000,7 @@ init (xlator_t *this)
         INIT_LIST_HEAD (&priv->bricks);
         INIT_LIST_HEAD (&priv->signing);
 
-        priv->timer_wheel = glusterfs_global_timer_wheel (this);
+        priv->timer_wheel = glusterfs_ctx_tw_get (this->ctx);
         if (!priv->timer_wheel) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         BRB_MSG_TIMER_WHEEL_UNAVAILABLE,
@@ -1966,7 +2023,8 @@ init (xlator_t *this)
         if (ret)
                 goto cleanup;
 
-        ret = gf_thread_create (&priv->thread, NULL, br_handle_events, this);
+        ret = gf_thread_create (&priv->thread, NULL, br_handle_events, this,
+                                "brhevent");
         if (ret != 0) {
                 gf_msg (this->name, GF_LOG_ERROR, -ret,
                         BRB_MSG_SPAWN_FAILED, "thread creation failed");
@@ -2003,35 +2061,37 @@ fini (xlator_t *this)
 
         if (!priv->iamscrubber)
                 br_fini_signer (this, priv);
+        else
+                (void) br_free_scrubber_monitor (this, priv);
+
         br_free_children (this, priv, priv->child_count);
 
         this->private = NULL;
 	GF_FREE (priv);
 
+        glusterfs_ctx_tw_put (this->ctx);
+
 	return;
 }
 
 static void
-br_reconfigure_child (xlator_t *this, br_child_t *child)
+br_reconfigure_monitor (xlator_t *this)
 {
         int32_t ret = 0;
 
-        ret = br_scrub_state_machine (this, child);
+        ret = br_scrub_state_machine (this, _gf_false);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         BRB_MSG_RESCHEDULE_SCRUBBER_FAILED,
-                        "Could not reschedule scrubber for brick: %s. Scubbing "
-                        "will continue according to old frequency.",
-                        child->brick_path);
+                        "Could not reschedule scrubber for the volume. Scrubbing "
+                        "will continue according to old frequency.");
         }
 }
 
 static int
 br_reconfigure_scrubber (xlator_t *this, dict_t *options)
 {
-        int           i     = 0;
         int32_t       ret   = -1;
-        br_child_t   *child = NULL;
         br_private_t *priv  = NULL;
 
         priv = this->private;
@@ -2046,32 +2106,11 @@ br_reconfigure_scrubber (xlator_t *this, dict_t *options)
                 goto err;
 
         /* change state for all _up_ subvolume(s) */
-        for (; i < priv->child_count; i++) {
-                child = &priv->children[i];
-
-                LOCK (&child->lock);
-                {
-                        if (_br_child_failed_conn (child)) {
-                                gf_msg (this->name, GF_LOG_INFO,
-                                        0, BRB_MSG_BRICK_INFO,
-                                        "Scrubber for brick [%s] failed "
-                                        "initialization, rescheduling is "
-                                        "skipped", child->brick_path);
-                                goto unblock;
-                        }
-
-                        if (_br_is_child_connected (child))
-                                br_reconfigure_child (this, child);
-
-                        /**
-                         * for the rest.. either the child is in initialization
-                         * phase or is disconnected. either way, updated values
-                         * would be reflected on successful connection.
-                         */
-                }
-        unblock:
-                UNLOCK (&child->lock);
+        pthread_mutex_lock (&priv->lock);
+        {
+                br_reconfigure_monitor (this);
         }
+        pthread_mutex_unlock (&priv->lock);
 
  err:
         return ret;

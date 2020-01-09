@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "compat.h"
 #include "xlator.h"
@@ -22,18 +17,6 @@
 
 #include "locks.h"
 #include "common.h"
-
-void
-__delete_reserve_lock (posix_lock_t *lock)
-{
-        list_del (&lock->list);
-}
-
-void
-__destroy_reserve_lock (posix_lock_t *lock)
-{
-        GF_FREE (lock);
-}
 
 /* Return true if the two reservelks have exactly same lock boundaries */
 int
@@ -115,7 +98,7 @@ __reservelk_conflict (xlator_t *this, pl_inode_t *pl_inode,
                         list_del_init (&conf->list);
                         gf_log (this->name, GF_LOG_TRACE,
                                 "Removing the matching reservelk for setlk to progress");
-                        GF_FREE (conf);
+                        __destroy_lock(conf);
                         ret = 0;
                 } else {
                         gf_log (this->name, GF_LOG_TRACE,
@@ -222,7 +205,7 @@ __reserve_unlock_lock (xlator_t *this, posix_lock_t *lock, pl_inode_t *pl_inode)
                         " Matching lock not found for unlock");
                 goto out;
         }
-        __delete_reserve_lock (conf);
+        __delete_lock(conf);
         gf_log (this->name, GF_LOG_DEBUG,
                 " Matching lock found for unlock");
 
@@ -397,7 +380,7 @@ pl_reserve_unlock (xlator_t *this, pl_inode_t *pl_inode, posix_lock_t *lock)
 
                 gf_log (this->name, GF_LOG_TRACE,
                         "Reservelk Unlock successful");
-                __destroy_reserve_lock (retlock);
+                __destroy_lock(retlock);
                 ret = 0;
         }
 out:

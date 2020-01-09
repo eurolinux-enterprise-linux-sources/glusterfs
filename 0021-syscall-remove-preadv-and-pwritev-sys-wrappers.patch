@@ -1,0 +1,86 @@
+From ab44b5af9915e15dbe679ac5a16a80d7b0ae45cc Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 20 Sep 2016 03:09:08 +0530
+Subject: [PATCH 21/74] syscall: remove preadv and pwritev sys wrappers
+
+Commit 76f1680 introduced sys wrappers for preadv and pwritev where these
+syscalls are not supported for RHEL5. These functions are of actually no use
+w.r.t downstream code as sys_pwritev is used only in bd xlator which is not
+supported in downstream
+
+Label: DOWNSTREAM ONLY
+Change-Id: Ifdc798f1fa74affd77abb06dd14cf9b51f484fe7
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ libglusterfs/src/syscall.c  | 14 --------------
+ libglusterfs/src/syscall.h  |  6 ------
+ xlators/storage/bd/src/bd.c |  4 ++--
+ 3 files changed, 2 insertions(+), 22 deletions(-)
+
+diff --git a/libglusterfs/src/syscall.c b/libglusterfs/src/syscall.c
+index a7d4402..90ef39a 100644
+--- a/libglusterfs/src/syscall.c
++++ b/libglusterfs/src/syscall.c
+@@ -318,20 +318,6 @@ sys_write (int fd, const void *buf, size_t count)
+ 
+ 
+ ssize_t
+-sys_preadv (int fd, const struct iovec *iov, int iovcnt, off_t offset)
+-{
+-        return preadv (fd, iov, iovcnt, offset);
+-}
+-
+-
+-ssize_t
+-sys_pwritev (int fd, const struct iovec *iov, int iovcnt, off_t offset)
+-{
+-        return pwritev (fd, iov, iovcnt, offset);
+-}
+-
+-
+-ssize_t
+ sys_pread (int fd, void *buf, size_t count, off_t offset)
+ {
+         return pread (fd, buf, count, offset);
+diff --git a/libglusterfs/src/syscall.h b/libglusterfs/src/syscall.h
+index 0cb61b6..da816cb 100644
+--- a/libglusterfs/src/syscall.h
++++ b/libglusterfs/src/syscall.h
+@@ -208,12 +208,6 @@ int
+ sys_fallocate(int fd, int mode, off_t offset, off_t len);
+ 
+ ssize_t
+-sys_preadv (int fd, const struct iovec *iov, int iovcnt, off_t offset);
+-
+-ssize_t
+-sys_pwritev (int fd, const struct iovec *iov, int iovcnt, off_t offset);
+-
+-ssize_t
+ sys_pread(int fd, void *buf, size_t count, off_t offset);
+ 
+ ssize_t
+diff --git a/xlators/storage/bd/src/bd.c b/xlators/storage/bd/src/bd.c
+index 07b7ecd..af3ac84 100644
+--- a/xlators/storage/bd/src/bd.c
++++ b/xlators/storage/bd/src/bd.c
+@@ -1782,7 +1782,7 @@ __bd_pwritev (int fd, struct iovec *vector, int count, off_t offset,
+         if (!vector)
+                 return -EFAULT;
+ 
+-        retval = sys_pwritev (fd, vector, count, offset);
++        retval = pwritev (fd, vector, count, offset);
+         if (retval == -1) {
+                 int64_t off = offset;
+                 gf_log (THIS->name, GF_LOG_WARNING,
+@@ -1805,7 +1805,7 @@ __bd_pwritev (int fd, struct iovec *vector, int count, off_t offset,
+                         vector[index].iov_len = bd_size - internal_offset;
+                         no_space = 1;
+                 }
+-                retval = sys_pwritev (fd, vector[index].iov_base,
++                retval = pwritev (fd, vector[index].iov_base,
+                                       vector[index].iov_len, internal_offset);
+                 if (retval == -1) {
+                         gf_log (THIS->name, GF_LOG_WARNING,
+-- 
+1.8.3.1
+

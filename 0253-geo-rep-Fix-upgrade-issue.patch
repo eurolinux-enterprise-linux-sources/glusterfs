@@ -1,0 +1,59 @@
+From 2d1c394b7ea9913c69445d865fb8762ecb4917ce Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Mon, 7 May 2018 01:23:46 -0400
+Subject: [PATCH 253/260] geo-rep: Fix upgrade issue
+
+Cause and Analysis:
+The last synced changelog for entry operations is
+marked in current version to avoid re-processing
+of already processed entry operations in a batch
+during crash/restart of geo-rep. This was not
+present in previous versoins.
+
+The marker is maintained in the dictionary with the
+key 'last_synced_entry' and dictionary is persisted
+into status file. So upgrading to current version in
+which the marker is present was failing with KeyError.
+
+Solution:
+Load the dictionary with default keys first which
+contains all the keys including latest ones and then
+load the values from status file instead of doing
+otherwise.
+
+Upstream reference:
+  > fixes: bz#1575490
+  > Patch: https://review.gluster.org/19969
+
+BUG: 1569490
+Change-Id: Ic654e6f9a3c97f616761f1362f890352a2186fb4
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/137909
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ geo-replication/syncdaemon/gsyncdstatus.py | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gsyncdstatus.py b/geo-replication/syncdaemon/gsyncdstatus.py
+index 38ca92c..909c669 100644
+--- a/geo-replication/syncdaemon/gsyncdstatus.py
++++ b/geo-replication/syncdaemon/gsyncdstatus.py
+@@ -152,11 +152,12 @@ class GeorepStatus(object):
+                  **kwargs)
+ 
+     def _update(self, mergerfunc):
++        data = self.default_values
+         with LockedOpen(self.filename, 'r+') as f:
+             try:
+-                data = json.load(f)
++                data.update(json.load(f))
+             except ValueError:
+-                data = self.default_values
++                pass
+ 
+             data = mergerfunc(data)
+             # If Data is not changed by merger func
+-- 
+1.8.3.1
+

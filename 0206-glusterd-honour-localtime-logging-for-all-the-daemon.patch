@@ -1,0 +1,123 @@
+From ed84bfec039d2f3d63902dfe3bade2fe6eb6c31e Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 3 Apr 2018 21:28:37 +0530
+Subject: [PATCH 206/212] glusterd: honour localtime-logging for all the
+ daemons
+
+>upstream patch : https://review.gluster.org/#/c/19814/
+
+>Change-Id: I97a70d29365b0a454241ac5f5cae56d93eefd73a
+>Fixes: bz#1563334
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I97a70d29365b0a454241ac5f5cae56d93eefd73a
+BUG: 958062
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134447
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-rebalance.c | 6 ++++++
+ xlators/mgmt/glusterd/src/glusterd-snapd-svc.c | 6 ++++++
+ xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c  | 6 ++++++
+ xlators/mgmt/glusterd/src/glusterd-tierd-svc.c | 6 ++++++
+ 4 files changed, 24 insertions(+)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rebalance.c b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+index 76191c4..848e689 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rebalance.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+@@ -196,6 +196,7 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
+         char                   volname[PATH_MAX] = {0,};
+         char                   valgrind_logfile[PATH_MAX] = {0,};
+         char                   *volfileserver = NULL;
++        char                   *localtime_logging = NULL;
+ 
+         this    = THIS;
+         GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+@@ -312,6 +313,11 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
+         runner_argprintf (&runner, logfile);
+         if (volinfo->memory_accounting)
+                 runner_add_arg (&runner, "--mem-accounting");
++        if (dict_get_str (priv->opts, GLUSTERD_LOCALTIME_LOGGING_KEY,
++                          &localtime_logging) == 0) {
++                if (strcmp (localtime_logging, "enable") == 0)
++                        runner_add_arg (&runner, "--localtime-logging");
++        }
+ 
+         ret = runner_run_nowait (&runner);
+         if (ret) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c b/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c
+index 5621852..bd1c02e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c
+@@ -226,6 +226,7 @@ glusterd_snapdsvc_start (glusterd_svc_t *svc, int flags)
+         char                 snapd_id[PATH_MAX]         = {0,};
+         glusterd_volinfo_t  *volinfo                    = NULL;
+         glusterd_snapdsvc_t *snapd                      = NULL;
++        char                *localtime_logging          = NULL;
+ 
+         this = THIS;
+         GF_ASSERT(this);
+@@ -298,6 +299,11 @@ glusterd_snapdsvc_start (glusterd_svc_t *svc, int flags)
+                          "-l", svc->proc.logfile,
+                          "--brick-name", snapd_id,
+                          "-S", svc->conn.sockpath, NULL);
++        if (dict_get_str (priv->opts, GLUSTERD_LOCALTIME_LOGGING_KEY,
++                          &localtime_logging) == 0) {
++                if (strcmp (localtime_logging, "enable") == 0)
++                        runner_add_arg (&runner, "--localtime-logging");
++        }
+ 
+         snapd_port = pmap_assign_port (THIS, volinfo->snapd.port, snapd_id);
+         if (!snapd_port) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c b/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c
+index f229865..ba948b4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c
++++ b/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c
+@@ -150,6 +150,7 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
+         glusterd_conf_t     *priv                       = NULL;
+         xlator_t            *this                       = NULL;
+         char                 valgrind_logfile[PATH_MAX] = {0};
++        char                *localtime_logging          = NULL;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -190,6 +191,11 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
+                          "-S", svc->conn.sockpath,
+                          NULL);
+ 
++        if (dict_get_str (priv->opts, GLUSTERD_LOCALTIME_LOGGING_KEY,
++                          &localtime_logging) == 0) {
++                if (strcmp (localtime_logging, "enable") == 0)
++                        runner_add_arg (&runner, "--localtime-logging");
++        }
+         if (cmdline)
+                 dict_foreach (cmdline, svc_add_args, (void *) &runner);
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-tierd-svc.c b/xlators/mgmt/glusterd/src/glusterd-tierd-svc.c
+index a2876ae..2c556fc 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-tierd-svc.c
++++ b/xlators/mgmt/glusterd/src/glusterd-tierd-svc.c
+@@ -259,6 +259,7 @@ glusterd_tierdsvc_start (glusterd_svc_t *svc, int flags)
+         glusterd_volinfo_t  *volinfo                    = NULL;
+         glusterd_tierdsvc_t *tierd                      = NULL;
+         int                  cmd                        = GF_DEFRAG_CMD_START_TIER;
++        char                *localtime_logging          = NULL;
+ 
+         this = THIS;
+         GF_VALIDATE_OR_GOTO (THIS->name, this, out);
+@@ -353,6 +354,11 @@ glusterd_tierdsvc_start (glusterd_svc_t *svc, int flags)
+                           volinfo->rebal.commit_hash);
+         if (volinfo->memory_accounting)
+                 runner_add_arg (&runner, "--mem-accounting");
++        if (dict_get_str (priv->opts, GLUSTERD_LOCALTIME_LOGGING_KEY,
++                          &localtime_logging) == 0) {
++                if (strcmp (localtime_logging, "enable") == 0)
++                        runner_add_arg (&runner, "--localtime-logging");
++        }
+ 
+         snprintf (msg, sizeof (msg),
+                   "Starting the tierd service for volume %s", volinfo->volname);
+-- 
+1.8.3.1
+

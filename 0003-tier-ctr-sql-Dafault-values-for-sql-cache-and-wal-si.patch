@@ -1,0 +1,56 @@
+From 8fa58c563cf01934a64773e814f74727ee009b42 Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Wed, 30 Dec 2015 16:53:25 +0530
+Subject: [PATCH 03/74] tier/ctr/sql : Dafault values for sql cache and wal
+ size
+
+Setting default values for sql cache and wal size
+cache : 12500 pages
+wal   : 25000 pages
+1 pages - 4096 bytes
+
+Porting this downstream 3.1.2 patch to 3.1.3
+
+Label: DOWNSTREAM ONLY
+
+> Change-Id: Iae3927e021af2e3f7617d45f84e81de3b7d93f1c
+> BUG: 1282729
+> Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+> Reviewed-on: https://code.engineering.redhat.com/gerrit/64642
+> Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+> Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: Ib3cd951709dff25157371006637b8c0d881f5d61
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/70346
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 982275e..93ef85c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -3152,7 +3152,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+                          "changetimerecorder xlator."
+                          "The input to this option is in pages."
+                          "Each page is 4096 bytes. Default value is 12500 "
+-                         "pages."
++                         "pages i.e ~ 49 MB. "
+                          "The max value is 262144 pages i.e 1 GB and "
+                          "the min value is 1000 pages i.e ~ 4 MB. "
+         },
+@@ -3166,7 +3166,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+                          " changetimerecorder. "
+                          "The input to this option is in pages. "
+                          "Each page is 4096 bytes. Default value is 25000 "
+-                         "pages."
++                         "pages i.e ~ 98 MB."
+                          "The max value is 262144 pages i.e 1 GB and "
+                          "the min value is 1000 pages i.e ~4 MB."
+         },
+-- 
+1.8.3.1
+

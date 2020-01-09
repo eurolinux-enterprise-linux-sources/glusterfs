@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2012-2014 DataLab, s.l. <http://www.datalab.es>
+  Copyright (c) 2012-2015 DataLab, s.l. <http://www.datalab.es>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -11,21 +11,26 @@
 #include "defaults.h"
 #include "statedump.h"
 #include "compat-errno.h"
+#include "upcall-utils.h"
 
+#include "ec.h"
+#include "ec-messages.h"
 #include "ec-mem-types.h"
+#include "ec-types.h"
 #include "ec-helpers.h"
 #include "ec-common.h"
 #include "ec-fops.h"
 #include "ec-method.h"
-#include "ec.h"
-#include "ec-messages.h"
+#include "ec-code.h"
 #include "ec-heald.h"
+#include "events.h"
 
 static char *ec_read_policies[EC_READ_POLICY_MAX + 1] = {
         [EC_ROUND_ROBIN] = "round-robin",
         [EC_GFID_HASH] = "gfid-hash",
         [EC_READ_POLICY_MAX] = NULL
 };
+
 #define EC_MAX_FRAGMENTS EC_METHOD_MAX_FRAGMENTS
 /* The maximum number of nodes is derived from the maximum allowed fragments
  * using the rule that redundancy cannot be equal or greater than the number
@@ -206,6 +211,9 @@ void __ec_destroy_private(xlator_t * this)
 
         if (ec->leaf_to_subvolid)
                 dict_unref (ec->leaf_to_subvolid);
+
+        ec_method_fini(&ec->matrix);
+
         GF_FREE(ec);
     }
 }
@@ -254,26 +262,51 @@ reconfigure (xlator_t *this, dict_t *options)
 {
         ec_t     *ec              = this->private;
         char     *read_policy     = NULL;
+        char     *extensions      = NULL;
         uint32_t heal_wait_qlen   = 0;
         uint32_t background_heals = 0;
+        int32_t  ret              = -1;
+        int32_t  err;
+
+        GF_OPTION_RECONF ("cpu-extensions", extensions, options, str, failed);
 
         GF_OPTION_RECONF ("self-heal-daemon", ec->shd.enabled, options, bool,
                           failed);
         GF_OPTION_RECONF ("iam-self-heal-daemon", ec->shd.iamshd, options,
                           bool, failed);
+        GF_OPTION_RECONF ("eager-lock", ec->eager_lock, options,
+                          bool, failed);
         GF_OPTION_RECONF ("background-heals", background_heals, options,
                           uint32, failed);
         GF_OPTION_RECONF ("heal-wait-qlength", heal_wait_qlen, options,
                           uint32, failed);
+        GF_OPTION_RECONF ("self-heal-window-size", ec->self_heal_window_size,
+                          options, uint32, failed);
+        GF_OPTION_RECONF ("heal-timeout", ec->shd.timeout, options,
+                          int32, failed);
         ec_configure_background_heal_opts (ec, background_heals,
                                            heal_wait_qlen);
-        GF_OPTION_RECONF ("read-policy", read_policy, options, str, failed);
-        if (ec_assign_read_policy (ec, read_policy))
-                goto failed;
+        GF_OPTION_RECONF ("shd-max-threads", ec->shd.max_threads,
+                          options, uint32, failed);
+        GF_OPTION_RECONF ("shd-wait-qlength", ec->shd.wait_qlength,
+                          options, uint32, failed);
 
-        return 0;
+        GF_OPTION_RECONF ("read-policy", read_policy, options, str, failed);
+
+        GF_OPTION_RECONF ("optimistic-change-log", ec->optimistic_changelog,
+                          options, bool, failed);
+        ret = 0;
+        if (ec_assign_read_policy (ec, read_policy)) {
+                ret = -1;
+        }
+
+        err = ec_method_update(this, &ec->matrix, extensions);
+        if (err != 0) {
+                ret = -1;
+        }
+
 failed:
-        return -1;
+        return ret;
 }
 
 glusterfs_event_t
@@ -309,6 +342,7 @@ ec_up (xlator_t *this, ec_t *ec)
         ec->up = 1;
         gf_msg (this->name, GF_LOG_INFO, 0,
                 EC_MSG_EC_UP, "Going UP");
+        gf_event (EVENT_EC_MIN_BRICKS_UP, "subvol=%s", this->name);
 }
 
 void
@@ -322,6 +356,7 @@ ec_down (xlator_t *this, ec_t *ec)
         ec->up = 0;
         gf_msg (this->name, GF_LOG_INFO, 0,
                 EC_MSG_EC_DOWN, "Going DOWN");
+        gf_event (EVENT_EC_MIN_BRICKS_NOT_UP, "subvol=%s", this->name);
 }
 
 void
@@ -387,36 +422,6 @@ ec_launch_notify_timer (xlator_t *this, ec_t *ec)
         }
 }
 
-void
-ec_handle_up (xlator_t *this, ec_t *ec, int32_t idx)
-{
-        if (((ec->xl_notify >> idx) & 1) == 0) {
-                ec->xl_notify |= 1ULL << idx;
-                ec->xl_notify_count++;
-        }
-
-        if (((ec->xl_up >> idx) & 1) == 0) { /* Duplicate event */
-                ec->xl_up |= 1ULL << idx;
-                ec->xl_up_count++;
-        }
-}
-
-void
-ec_handle_down (xlator_t *this, ec_t *ec, int32_t idx)
-{
-        if (((ec->xl_notify >> idx) & 1) == 0) {
-                ec->xl_notify |= 1ULL << idx;
-                ec->xl_notify_count++;
-        }
-
-        if (((ec->xl_up >> idx) & 1) != 0) { /* Duplicate event */
-                gf_msg_debug (this->name, 0, "Child %d is DOWN", idx);
-
-                ec->xl_up ^= 1ULL << idx;
-                ec->xl_up_count--;
-        }
-}
-
 gf_boolean_t
 ec_disable_delays(ec_t *ec)
 {
@@ -429,7 +434,23 @@ void
 ec_pending_fops_completed(ec_t *ec)
 {
         if (ec->shutdown) {
-                default_notify(ec->xl, GF_EVENT_PARENT_DOWN, NULL);
+                default_notify (ec->xl, GF_EVENT_PARENT_DOWN, NULL);
+        }
+}
+
+static void
+ec_set_up_state(ec_t *ec, uintptr_t index_mask, uintptr_t new_state)
+{
+        uintptr_t current_state = 0;
+
+        if ((ec->xl_notify & index_mask) == 0) {
+                ec->xl_notify |= index_mask;
+                ec->xl_notify_count++;
+        }
+        current_state = ec->xl_up & index_mask;
+        if (current_state != new_state) {
+                ec->xl_up ^= index_mask;
+                ec->xl_up_count += (current_state ? -1 : 1);
         }
 }
 
@@ -443,9 +464,22 @@ ec_notify (xlator_t *this, int32_t event, void *data, void *data2)
         dict_t            *input    = NULL;
         dict_t            *output   = NULL;
         gf_boolean_t      propagate = _gf_true;
+        int32_t           orig_event = event;
+        struct gf_upcall *up_data   = NULL;
+        struct gf_upcall_cache_invalidation *up_ci = NULL;
+        uintptr_t mask = 0;
 
         gf_msg_trace (this->name, 0, "NOTIFY(%d): %p, %p",
                 event, data, data2);
+
+        if (event == GF_EVENT_UPCALL) {
+                up_data = (struct gf_upcall *)data;
+                if (up_data->event_type == GF_UPCALL_CACHE_INVALIDATION) {
+                        up_ci = (struct gf_upcall_cache_invalidation *)up_data->data;
+                        up_ci->flags |= UP_INVAL_ATTR;
+                }
+                goto done;
+        }
 
         if (event == GF_EVENT_TRANSLATOR_OP) {
                 if (!ec->up) {
@@ -485,10 +519,11 @@ ec_notify (xlator_t *this, int32_t event, void *data, void *data2)
         if (idx < ec->nodes) { /* CHILD_* events */
                 old_event = ec_get_event_from_state (ec);
 
+                mask = 1ULL << idx;
                 if (event == GF_EVENT_CHILD_UP) {
-                        ec_handle_up (this, ec, idx);
+                    ec_set_up_state(ec, mask, mask);
                 } else if (event == GF_EVENT_CHILD_DOWN) {
-                        ec_handle_down (this, ec, idx);
+                    ec_set_up_state(ec, mask, 0);
                 }
 
                 event = ec_get_event_from_state (ec);
@@ -501,7 +536,10 @@ ec_notify (xlator_t *this, int32_t event, void *data, void *data2)
 
                 if (event != GF_EVENT_MAXVAL) {
                         if (event == old_event) {
-                                event = GF_EVENT_CHILD_MODIFIED;
+                                if (orig_event == GF_EVENT_CHILD_UP)
+                                        event = GF_EVENT_SOME_DESCENDENT_UP;
+                                else /* orig_event has to be GF_EVENT_CHILD_DOWN */
+                                        event = GF_EVENT_SOME_DESCENDENT_DOWN;
                         }
                 } else {
                         propagate = _gf_false;
@@ -510,12 +548,14 @@ ec_notify (xlator_t *this, int32_t event, void *data, void *data2)
 unlock:
         UNLOCK (&ec->lock);
 
+done:
         if (propagate) {
                 error = default_notify (this, event, data);
         }
 
         if (ec->shd.iamshd &&
-            ec->xl_notify_count == ec->nodes) {
+            ec->xl_notify_count == ec->nodes &&
+            event == GF_EVENT_CHILD_UP) {
                 ec_launch_replace_heal (ec);
         }
 out:
@@ -542,6 +582,8 @@ init (xlator_t *this)
 {
     ec_t *ec          = NULL;
     char *read_policy = NULL;
+    char *extensions  = NULL;
+    int32_t err;
 
     if (this->parents == NULL)
     {
@@ -596,16 +638,33 @@ init (xlator_t *this)
         goto failed;
     }
 
-    ec_method_initialize();
+    GF_OPTION_INIT("cpu-extensions", extensions, str, failed);
+
+    err = ec_method_init(this, &ec->matrix, ec->fragments, ec->nodes,
+                         ec->nodes * 2, extensions);
+    if (err != 0) {
+        gf_msg (this->name, GF_LOG_ERROR, -err, EC_MSG_MATRIX_FAILED,
+                "Failed to initialize matrix management");
+
+        goto failed;
+    }
+
     GF_OPTION_INIT ("self-heal-daemon", ec->shd.enabled, bool, failed);
     GF_OPTION_INIT ("iam-self-heal-daemon", ec->shd.iamshd, bool, failed);
+    GF_OPTION_INIT ("eager-lock", ec->eager_lock, bool, failed);
     GF_OPTION_INIT ("background-heals", ec->background_heals, uint32, failed);
     GF_OPTION_INIT ("heal-wait-qlength", ec->heal_wait_qlen, uint32, failed);
+    GF_OPTION_INIT ("self-heal-window-size", ec->self_heal_window_size, uint32,
+                    failed);
     ec_configure_background_heal_opts (ec, ec->background_heals,
                                        ec->heal_wait_qlen);
     GF_OPTION_INIT ("read-policy", read_policy, str, failed);
     if (ec_assign_read_policy (ec, read_policy))
             goto failed;
+
+    GF_OPTION_INIT ("shd-max-threads", ec->shd.max_threads, uint32, failed);
+    GF_OPTION_INIT ("shd-wait-qlength", ec->shd.wait_qlength, uint32, failed);
+    GF_OPTION_INIT ("optimistic-change-log", ec->optimistic_changelog, bool, failed);
 
     this->itable = inode_table_new (EC_SHD_INODE_LRU_LIMIT, this);
     if (!this->itable)
@@ -699,10 +758,11 @@ int32_t ec_gf_fentrylk(call_frame_t * frame, xlator_t * this,
 }
 
 int32_t ec_gf_fallocate(call_frame_t * frame, xlator_t * this, fd_t * fd,
-                        int32_t keep_size, off_t offset, size_t len,
+                        int32_t mode, off_t offset, size_t len,
                         dict_t * xdata)
 {
-    default_fallocate_failure_cbk(frame, ENOTSUP);
+    ec_fallocate(frame, this, -1, EC_MINIMUM_MIN, default_fallocate_cbk,
+                 NULL, fd, mode, offset, len, xdata);
 
     return 0;
 }
@@ -763,13 +823,11 @@ ec_handle_heal_commands (call_frame_t *frame, xlator_t *this, loc_t *loc,
         if (!name || strcmp (name, GF_HEAL_INFO))
                 return -1;
 
-        dict_rsp = dict_new ();
-        if (dict_rsp == NULL)
-                goto out;
+        op_errno = -ec_get_heal_info (this, loc, &dict_rsp);
+        if (op_errno <= 0) {
+                op_errno = op_ret = 0;
+        }
 
-        if (dict_set_str (dict_rsp, "heal-info", "heal") == 0)
-                op_ret = 0;
-out:
         STACK_UNWIND_STRICT (getxattr, frame, op_ret, op_errno, dict_rsp, NULL);
         if (dict_rsp)
                 dict_unref (dict_rsp);
@@ -795,8 +853,11 @@ ec_gf_getxattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
                                             NULL, ec_marker_populate_args) == 0)
                 return 0;
 
-        if (name && (fnmatch (GF_XATTR_STIME_PATTERN, name, 0) == 0))
+        if (name &&
+            ((fnmatch (GF_XATTR_STIME_PATTERN, name, 0) == 0) ||
+             (XATTR_IS_NODE_UUID(name)))) {
                 minimum = EC_MINIMUM_ALL;
+        }
 
         ec_getxattr (frame, this, -1, minimum, default_getxattr_cbk,
                      NULL, loc, name, xdata);
@@ -833,8 +894,8 @@ int32_t ec_gf_inodelk(call_frame_t * frame, xlator_t * this,
     if (flock->l_type == F_UNLCK)
             minimum = EC_MINIMUM_ONE;
 
-    ec_inodelk(frame, this, -1, minimum, default_inodelk_cbk, NULL,
-               volume, loc, cmd, flock, xdata);
+    ec_inodelk(frame, this, &frame->root->lk_owner, -1, minimum,
+               default_inodelk_cbk, NULL, volume, loc, cmd, flock, xdata);
 
     return 0;
 }
@@ -846,8 +907,8 @@ int32_t ec_gf_finodelk(call_frame_t * frame, xlator_t * this,
     int32_t minimum = EC_MINIMUM_ALL;
     if (flock->l_type == F_UNLCK)
             minimum = EC_MINIMUM_ONE;
-    ec_finodelk(frame, this, -1, minimum, default_finodelk_cbk, NULL,
-                volume, fd, cmd, flock, xdata);
+    ec_finodelk(frame, this, &frame->root->lk_owner, -1, minimum,
+                default_finodelk_cbk, NULL, volume, fd, cmd, flock, xdata);
 
     return 0;
 }
@@ -1160,6 +1221,22 @@ int32_t ec_gf_zerofill(call_frame_t * frame, xlator_t * this, fd_t * fd,
     return 0;
 }
 
+int32_t ec_gf_seek(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+                   gf_seek_what_t what, dict_t *xdata)
+{
+    ec_seek(frame, this, -1, EC_MINIMUM_ONE, default_seek_cbk, NULL, fd,
+            offset, what, xdata);
+
+    return 0;
+}
+
+int32_t ec_gf_ipc(call_frame_t *frame, xlator_t *this, int32_t op,
+                  dict_t *xdata)
+{
+    ec_ipc(frame, this, -1, EC_MINIMUM_MIN, default_ipc_cbk, NULL, op, xdata);
+    return 0;
+}
+
 int32_t ec_gf_forget(xlator_t * this, inode_t * inode)
 {
     uint64_t value = 0;
@@ -1223,6 +1300,8 @@ int32_t ec_dump_private(xlator_t *this)
                        ec_bin(tmp, sizeof(tmp), ec->xl_up, ec->nodes));
     gf_proc_dump_write("background-heals", "%d", ec->background_heals);
     gf_proc_dump_write("heal-wait-qlength", "%d", ec->heal_wait_qlen);
+    gf_proc_dump_write("self-heal-window-size", "%"PRIu32,
+                       ec->self_heal_window_size);
     gf_proc_dump_write("healers", "%d", ec->healers);
     gf_proc_dump_write("heal-waiters", "%d", ec->heal_waiters);
     gf_proc_dump_write("read-policy", "%s", ec_read_policies[ec->read_policy]);
@@ -1274,7 +1353,9 @@ struct xlator_fops fops =
     .fsetattr     = ec_gf_fsetattr,
     .fallocate    = ec_gf_fallocate,
     .discard      = ec_gf_discard,
-    .zerofill     = ec_gf_zerofill
+    .zerofill     = ec_gf_zerofill,
+    .seek         = ec_gf_seek,
+    .ipc          = ec_gf_ipc
 };
 
 struct xlator_cbks cbks =
@@ -1309,6 +1390,22 @@ struct volume_options options[] =
                      "translator is running as part of self-heal-daemon "
                      "or not."
     },
+    { .key = {"eager-lock"},
+      .type = GF_OPTION_TYPE_BOOL,
+      .default_value = "on",
+      .description = "Enable/Disable eager lock for disperse volume. "
+                     "If a fop takes a lock and completes its operation, "
+                     "it waits for next 1 second before releasing the lock, "
+                     "to see if the lock can be reused for next fop from "
+                     "the same client. If ec finds any lock contention within "
+                     "1 second it releases the lock immediately before time "
+                     "expires. This improves the performance of file operations."
+                     "However, as it takes lock on first brick, for few operations "
+                     "like read, discovery of lock contention might take long time "
+                     "and can actually degrade the performance. "
+                     "If eager lock is disabled, lock will be released as soon as fop "
+                     "completes. "
+    },
     { .key = {"background-heals"},
       .type = GF_OPTION_TYPE_INT,
       .min = 0,/*Disabling background heals*/
@@ -1325,6 +1422,14 @@ struct volume_options options[] =
       .description = "This option can be used to control number of heals"
                      " that can wait",
     },
+    { .key  = {"heal-timeout"},
+      .type = GF_OPTION_TYPE_INT,
+      .min  = 60,
+      .max  = INT_MAX,
+      .default_value = "600",
+      .description = "time interval for checking the need to self-heal "
+                     "in self-heal-daemon"
+    },
     { .key = {"read-policy" },
       .type = GF_OPTION_TYPE_STR,
       .value = {"round-robin", "gfid-hash"},
@@ -1334,5 +1439,55 @@ struct volume_options options[] =
               " subvolume using round-robin algo. 'gfid-hash' selects read"
               " subvolume based on hash of the gfid of that file/directory.",
     },
-    { }
+    { .key   = {"shd-max-threads"},
+      .type  = GF_OPTION_TYPE_INT,
+      .min   = 1,
+      .max   = 64,
+      .default_value = "1",
+      .description = "Maximum number of parallel heals SHD can do per local "
+                      "brick.  This can substantially lower heal times, "
+                      "but can also crush your bricks if you don't have "
+                      "the storage hardware to support this."
+    },
+    { .key   = {"shd-wait-qlength"},
+      .type  = GF_OPTION_TYPE_INT,
+      .min   = 1,
+      .max   = 655536,
+      .default_value = "1024",
+      .description = "This option can be used to control number of heals"
+                     " that can wait in SHD per subvolume"
+    },
+    {
+        .key = { "cpu-extensions" },
+        .type = GF_OPTION_TYPE_STR,
+        .value = { "none", "auto", "x64", "sse", "avx" },
+        .default_value = "auto",
+        .description = "force the cpu extensions to be used to accelerate the "
+                       "galois field computations."
+    },
+    { .key  = {"self-heal-window-size"},
+        .type = GF_OPTION_TYPE_INT,
+        .min  = 1,
+        .max  = 1024,
+        .default_value = "1",
+        .description = "Maximum number blocks(128KB) per file for which "
+                       "self-heal process would be applied simultaneously."
+    },
+    {   .key = {"optimistic-change-log"},
+        .type = GF_OPTION_TYPE_BOOL,
+        .default_value = "on",
+        .description =  "Set/Unset dirty flag for every update fop at the start"
+                        "of the fop. If OFF, this option impacts performance of"
+                        "entry  operations or metadata operations as it will"
+                        "set dirty flag at the start and unset it at the end of"
+                        "ALL update fop. If ON and all the bricks are good,"
+                        "dirty flag will be set at the start only for file fops"
+                        "For metadata and entry fops dirty flag will not be set"
+                        "at the start, if all the bricks are good. This does"
+                        "not impact performance for metadata operations and"
+                        "entry operation but has a very small window to miss"
+                        "marking entry as dirty in case it is required to be"
+                        "healed"
+    },
+    { .key = {NULL} }
 };

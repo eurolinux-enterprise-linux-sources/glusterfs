@@ -1,0 +1,155 @@
+From df907fc49b6ecddd20fa06558c36e779521e85f3 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Tue, 3 Jul 2018 14:14:59 +0530
+Subject: [PATCH 312/325] glusterd: show brick online after port registration
+ even in brick-mux
+
+	Upstream-patch: https://review.gluster.org/20451
+
+Problem:
+With brick-mux even before brick attach is complete on the bricks
+glusterd marks them as online. This can lead to a race where
+scripts that check if the bricks are online to assume that the
+brick is online before it is completely online.
+
+Fix:
+Wait for the callback from the brick before marking the port
+as registered so that volume status will show the correct status
+of the brick.
+
+ >fixes bz#1597568
+BUG: 1598356
+Change-Id: Icd3dc62506af0cf75195e96746695db823312051
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143592
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c    | 36 +++++++++++++++++++++------
+ xlators/mgmt/glusterd/src/glusterd-utils.h    |  3 ++-
+ 3 files changed, 31 insertions(+), 10 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index 5bdf27f..84335ef 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -2844,7 +2844,7 @@ glusterd_do_lvm_snapshot_remove (glusterd_volinfo_t *snap_vol,
+         GLUSTERD_GET_BRICK_PIDFILE (pidfile, snap_vol, brickinfo, priv);
+         if (gf_is_service_running (pidfile, &pid)) {
+                 (void) send_attach_req (this, brickinfo->rpc,
+-                                        brickinfo->path,
++                                        brickinfo->path, NULL,
+                                         GLUSTERD_BRICK_TERMINATE);
+                 brickinfo->status = GF_BRICK_STOPPED;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index e08c053..f62c917 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -93,9 +93,6 @@
+ #define NLMV4_VERSION       4
+ #define NLMV1_VERSION       1
+ 
+-int
+-send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path, int op);
+-
+ gf_boolean_t
+ is_brick_mx_enabled (void)
+ {
+@@ -2481,7 +2478,7 @@ glusterd_volume_stop_glusterfs (glusterd_volinfo_t *volinfo,
+                                       brickinfo->hostname, brickinfo->path);
+ 
+                         (void) send_attach_req (this, brickinfo->rpc,
+-                                                brickinfo->path,
++                                                brickinfo->path, NULL,
+                                                 GLUSTERD_BRICK_TERMINATE);
+                 } else {
+                         gf_msg_debug (this->name, 0, "About to stop glusterfsd"
+@@ -5403,8 +5400,27 @@ my_callback (struct rpc_req *req, struct iovec *iov, int count, void *v_frame)
+         return 0;
+ }
+ 
++static int32_t
++attach_brick_callback (struct rpc_req *req, struct iovec *iov, int count,
++                       void *v_frame)
++{
++        call_frame_t    *frame  = v_frame;
++        glusterd_conf_t *conf   = frame->this->private;
++        glusterd_brickinfo_t *brickinfo = frame->local;
++
++        frame->local = NULL;
++        brickinfo->port_registered = _gf_true;
++        synclock_lock (&conf->big_lock);
++        --(conf->blockers);
++        synclock_unlock (&conf->big_lock);
++
++        STACK_DESTROY (frame->root);
++        return 0;
++}
++
+ int
+-send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path, int op)
++send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path,
++                 glusterd_brickinfo_t *brickinfo, int op)
+ {
+         int                             ret      = -1;
+         struct iobuf                    *iobuf    = NULL;
+@@ -5418,6 +5434,7 @@ send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path, int op)
+         struct rpc_clnt_connection      *conn;
+         glusterd_conf_t                 *conf     = this->private;
+         extern struct rpc_clnt_program  gd_brick_prog;
++        fop_cbk_fn_t cbkfn = my_callback;
+ 
+         if (!rpc) {
+                 gf_log (this->name, GF_LOG_ERROR, "called with null rpc");
+@@ -5475,10 +5492,14 @@ send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path, int op)
+ 
+         iov.iov_len = ret;
+ 
++        if (op == GLUSTERD_BRICK_ATTACH) {
++                frame->local = brickinfo;
++                cbkfn = attach_brick_callback;
++        }
+         /* Send the msg */
+         ++(conf->blockers);
+         ret = rpc_clnt_submit (rpc, &gd_brick_prog, op,
+-                               my_callback, &iov, 1, NULL, 0, iobref,
++                               cbkfn, &iov, 1, NULL, 0, iobref,
+                                frame, NULL, 0, NULL, 0, NULL);
+         return ret;
+ 
+@@ -5538,7 +5559,7 @@ attach_brick (xlator_t *this,
+         for (tries = 15; tries > 0; --tries) {
+                 rpc = rpc_clnt_ref (other_brick->rpc);
+                 if (rpc) {
+-                        ret = send_attach_req (this, rpc, path,
++                        ret = send_attach_req (this, rpc, path, brickinfo,
+                                                GLUSTERD_BRICK_ATTACH);
+                         rpc_clnt_unref (rpc);
+                         if (!ret) {
+@@ -5558,7 +5579,6 @@ attach_brick (xlator_t *this,
+                                 brickinfo->status = GF_BRICK_STARTED;
+                                 brickinfo->rpc =
+                                         rpc_clnt_ref (other_brick->rpc);
+-                                brickinfo->port_registered = _gf_true;
+                                 ret = glusterd_brick_process_add_brick (brickinfo,
+                                                                         volinfo);
+                                 if (ret) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.h b/xlators/mgmt/glusterd/src/glusterd-utils.h
+index e69a779..4c9561e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.h
+@@ -199,7 +199,8 @@ glusterd_volume_stop_glusterfs (glusterd_volinfo_t *volinfo,
+                                 gf_boolean_t del_brick);
+ 
+ int
+-send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path, int op);
++send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path,
++                 glusterd_brickinfo_t *brick, int op);
+ 
+ glusterd_volinfo_t *
+ glusterd_volinfo_ref (glusterd_volinfo_t *volinfo);
+-- 
+1.8.3.1
+

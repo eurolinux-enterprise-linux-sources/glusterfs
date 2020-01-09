@@ -1,0 +1,272 @@
+From 14a8e47839a955cd693616c7497b93ddc9584478 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Tue, 25 Jul 2017 11:54:09 +0200
+Subject: [PATCH 140/148] md-cache: Add additional samba and macOS specific EAs
+ to mdcache
+
+Samba ships with a server implementation of the Apple Create Context
+extension (AAPL) as negotiated by all modern Apple clients. With the
+support of the AAPL extension, Apple clients will integrate better with
+Samba servers. The AAPL implementation itself is contained in the Samba
+vfs_fruit(8) module which has to be activated in Samba. This vfs_fruit
+module also provides support for macOS alternate data streams which will
+be represented in EAs. Two standard data streams ("AFP_AfpInfo" and
+"AFP_Resource") will be stored in the following EAs:
+
+* user.org.netatalk.Metadata
+* user.org.netatalk.ResourceFork
+
+For all other data streams, vfs_fruit relies on another Samba vfs
+module, vfs_streams_xattr(8), to handle these. Although configurable, by
+default the vfs_streams_xattr module will build EA keynames with a
+"user.DosStream." prefix. Please note that we have to deal with only one
+known prefix key, as macOS will happily compose EA keynames like:
+
+* user.DosStream.com.apple.diskimages.fsck:$DATA
+* user.DosStream.com.apple.diskimages.recentcksum:$DATA
+* user.DosStream.com.apple.metadata:kMDItemWhereFroms:$DATA
+* user.DosStream.com.apple.quarantine:$DATA
+* etc.
+
+Caching of vfs_fruit specific EAs is crucial for SMB performance and is
+controlled with the same configuration option
+"performance.cache-samba-metadata".
+
+> Signed-off-by: Guenther Deschner <gd@samba.org>
+> Change-Id: Ia7aa341234dc13e1c0057f3d658b7ef711b5d31e
+> BUG: 1499933
+> Reviewed-on: https://review.gluster.org/#/c/18455/
+> Reviewed-by: Jeff Darcy
+> Reviewed-by: Niels de Vos
+> Smoke: Gluster Build System <jenkins@build.gluster.org>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+> (cherry picked from commit ae9b006f23b1408ff548348440369d056becdc1d)
+
+Change-Id: Ia7aa341234dc13e1c0057f3d658b7ef711b5d31e
+BUG: 1446125
+Signed-off-by: Guenther Deschner <gd@samba.org>
+Signed-off-by: Poornima G <pgurusid@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/128479
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Gunther Deschner <gdeschne@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/bugs/md-cache/bug-1211863.t           | 16 +++----
+ xlators/performance/md-cache/src/md-cache.c | 66 ++++++++++++++++++++++++++---
+ 2 files changed, 68 insertions(+), 14 deletions(-)
+
+diff --git a/tests/bugs/md-cache/bug-1211863.t b/tests/bugs/md-cache/bug-1211863.t
+index ece42fe..b89d7f5 100755
+--- a/tests/bugs/md-cache/bug-1211863.t
++++ b/tests/bugs/md-cache/bug-1211863.t
+@@ -26,15 +26,15 @@ TEST glusterfs --volfile-id=/$V0 --volfile-server=$H0 $M1
+ TEST touch $M0/file1
+ 
+ ## 9. Setxattr from mount-0
+-TEST "setfattr -n user.DOSATTRIB -v "abc" $M0/file1"
++TEST "setfattr -n user.DosStream.abc -v "abc" $M0/file1"
+ ## 10. Getxattr from mount-1, this should return the correct value as it is a fresh getxattr
+-TEST "getfattr -n user.DOSATTRIB $M1/file1 | grep -q abc"
++TEST "getfattr -n user.DosStream.abc $M1/file1 | grep -q abc"
+ 
+ ## 11. Now modify the same xattr from mount-0 again
+-TEST "setfattr -n user.DOSATTRIB -v "xyz" $M0/file1"
++TEST "setfattr -n user.DosStream.abc -v "xyz" $M0/file1"
+ ## 12. Since the xattr is already cached in mount-1 it returns the old xattr
+        #value, until the timeout (600)
+-TEST "getfattr -n user.DOSATTRIB $M1/file1 | grep -q abc"
++TEST "getfattr -n user.DosStream.abc $M1/file1 | grep -q abc"
+ 
+ ## 13. Unmount to clean all the cache
+ EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+@@ -54,14 +54,14 @@ TEST glusterfs --volfile-id=/$V0 --volfile-server=$H0 $M1
+ 
+ ## 23. Repeat the tests 11-14, but this time since cache invalidation is on,
+        #the getxattr will reflect the new value
+-TEST "setfattr -n user.DOSATTRIB -v "abc" $M0/file1"
+-TEST "getfattr -n user.DOSATTRIB $M1/file1 | grep -q abc"
+-TEST "setfattr -n user.DOSATTRIB -v "xyz" $M0/file1"
++TEST "setfattr -n user.DosStream.abc -v "abc" $M0/file1"
++TEST "getfattr -n user.DosStream.abc $M1/file1 | grep -q abc"
++TEST "setfattr -n user.DosStream.abc -v "xyz" $M0/file1"
+ sleep 2; #There can be a very very small window where the next getxattr
+          #reaches md-cache, before the cache-invalidation caused by previous
+          #setxattr, reaches md-cache. Hence sleeping for 2 sec.
+          #Also it should not be > 600.
+-TEST "getfattr -n user.DOSATTRIB $M1/file1 | grep -q xyz"
++TEST "getfattr -n user.DosStream.abc $M1/file1 | grep -q xyz"
+ 
+ TEST $CLI volume set $V0 cache-samba-metadata off
+ EXPECT 'off' volinfo_field $V0 'performance.cache-samba-metadata'
+diff --git a/xlators/performance/md-cache/src/md-cache.c b/xlators/performance/md-cache/src/md-cache.c
+index 1ca7727..feab357 100644
+--- a/xlators/performance/md-cache/src/md-cache.c
++++ b/xlators/performance/md-cache/src/md-cache.c
+@@ -72,56 +72,85 @@ static struct mdc_key {
+ 	const char *name;
+ 	int         load;
+ 	int         check;
++	int         prefix_match;
+ } mdc_keys[] = {
+ 	{
+ 		.name = POSIX_ACL_ACCESS_XATTR,
+ 		.load = 0,
+ 		.check = 1,
++		.prefix_match = 0,
+ 	},
+ 	{
+ 		.name = POSIX_ACL_DEFAULT_XATTR,
+ 		.load = 0,
+ 		.check = 1,
++		.prefix_match = 0,
+ 	},
+ 	{
+ 		.name = GF_POSIX_ACL_ACCESS,
+ 		.load = 0,
+ 		.check = 1,
++		.prefix_match = 0,
+ 	},
+ 	{
+ 		.name = GF_POSIX_ACL_DEFAULT,
+ 		.load = 0,
+ 		.check = 1,
++		.prefix_match = 0,
+ 	},
+ 	{
+ 		.name = GF_SELINUX_XATTR_KEY,
+ 		.load = 0,
+ 		.check = 1,
++		.prefix_match = 0,
+ 	},
+         {
+                 .name = "user.swift.metadata",
+                 .load = 0,
+                 .check = 1,
++                .prefix_match = 0,
+         },
+         {
+                 .name = "user.DOSATTRIB",
+                 .load = 0,
+                 .check = 1,
++                .prefix_match = 0,
++        },
++        {
++                .name = "user.DosStream.*",
++                .load = 0,
++                .check = 1,
++                .prefix_match = 1,
++        },
++        {
++                .name = "user.org.netatalk.Metadata",
++                .load = 0,
++                .check = 1,
++                .prefix_match = 0,
++        },
++        {
++                .name = "user.org.netatalk.ResourceFork",
++                .load = 0,
++                .check = 1,
++                .prefix_match = 0,
+         },
+         {
+                 .name = "security.NTACL",
+                 .load = 0,
+                 .check = 1,
++                .prefix_match = 0,
+         },
+ 	{
+ 		.name = "security.capability",
+ 		.load = 0,
+ 		.check = 1,
++		.prefix_match = 0,
+ 	},
+ 	{
+ 		.name = "gfid-req",
+ 		.load = 0,
+ 		.check = 1,
++		.prefix_match = 0,
+ 	},
+         {
+                 .name = "security.ima",
+@@ -132,6 +161,7 @@ static struct mdc_key {
+                 .name = NULL,
+                 .load = 0,
+                 .check = 0,
++                .prefix_match = 0,
+         }
+ };
+ 
+@@ -606,8 +636,14 @@ updatefn(dict_t *dict, char *key, data_t *value, void *data)
+ 	for (mdc_key = mdc_keys[i].name; (mdc_key = mdc_keys[i].name); i++) {
+ 		if (!mdc_keys[i].check)
+ 			continue;
+-		if (strcmp(mdc_key, key))
+-			continue;
++
++		if (mdc_keys[i].prefix_match) {
++			if (strncmp (mdc_key, key, (strlen(mdc_key) - 1)))
++				continue;
++		} else {
++			if (strcmp(mdc_key, key))
++				continue;
++		}
+ 
+ 		if (!u->dict) {
+ 			u->dict = dict_new();
+@@ -986,8 +1022,13 @@ is_mdc_key_satisfied (const char *key)
+ 	for (mdc_key = mdc_keys[i].name; (mdc_key = mdc_keys[i].name); i++) {
+ 		if (!mdc_keys[i].load)
+ 			continue;
+-		if (strcmp (mdc_key, key) == 0)
+-			return 1;
++		if (mdc_keys[i].prefix_match) {
++			if (strncmp (mdc_key, key, (strlen(mdc_key) - 1)) == 0)
++				return 1;
++		} else {
++			if (strcmp (mdc_key, key) == 0)
++				return 1;
++		}
+ 	}
+ 
+         gf_msg_trace ("md-cache", 0, "xattr key %s doesn't satisfy "
+@@ -2902,6 +2943,12 @@ reconfigure (xlator_t *this, dict_t *options)
+                           options, bool, out);
+         mdc_key_load_set (mdc_keys, "user.DOSATTRIB",
+                           conf->cache_samba_metadata);
++        mdc_key_load_set (mdc_keys, "user.DosStream.",
++                          conf->cache_samba_metadata);
++        mdc_key_load_set (mdc_keys, "user.org.netatalk.Metadata",
++                          conf->cache_samba_metadata);
++        mdc_key_load_set (mdc_keys, "user.org.netatalk.ResourceFork",
++                          conf->cache_samba_metadata);
+         mdc_key_load_set (mdc_keys, "security.NTACL",
+                           conf->cache_samba_metadata);
+ 
+@@ -2973,6 +3020,12 @@ init (xlator_t *this)
+                         bool, out);
+         mdc_key_load_set (mdc_keys, "user.DOSATTRIB",
+                           conf->cache_samba_metadata);
++        mdc_key_load_set (mdc_keys, "user.DosStream.",
++                          conf->cache_samba_metadata);
++        mdc_key_load_set (mdc_keys, "user.org.netatalk.Metadata",
++                          conf->cache_samba_metadata);
++        mdc_key_load_set (mdc_keys, "user.org.netatalk.ResourceFork",
++                          conf->cache_samba_metadata);
+         mdc_key_load_set (mdc_keys, "security.NTACL",
+                           conf->cache_samba_metadata);
+ 
+@@ -3131,8 +3184,9 @@ struct volume_options options[] = {
+         { .key = {"cache-samba-metadata"},
+           .type = GF_OPTION_TYPE_BOOL,
+           .default_value = "false",
+-          .description = "Cache samba metadata (user.DOSATTRIB, security.NTACL"
+-                         " xattrs)",
++          .description = "Cache samba metadata (user.DOSATTRIB, security.NTACL,"
++                         " org.netatalk.Metadata, org.netatalk.ResourceFork, "
++                         "and user.DosStream. xattrs)",
+         },
+ 	{ .key = {"cache-posix-acl"},
+ 	  .type = GF_OPTION_TYPE_BOOL,
+-- 
+1.8.3.1
+

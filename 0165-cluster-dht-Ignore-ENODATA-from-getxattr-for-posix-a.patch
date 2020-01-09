@@ -1,0 +1,54 @@
+From cba83bafc87af2b635c24d1be2d7224a01901c73 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Tue, 20 Feb 2018 20:08:11 +0530
+Subject: [PATCH 165/180] cluster/dht: Ignore ENODATA from getxattr for posix
+ acls
+
+dht_migrate_file no longer prints an error if getxattr for
+posix acls fails with ENODATA/ENOATTR.
+
+upstream: https://review.gluster.org/#/c/19603/
+
+> Change-Id: Id9ecf6852cb5294c1c154b28d609889ea3420e1c
+> BUG: 1546954
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: Id9ecf6852cb5294c1c154b28d609889ea3420e1c
+BUG: 1546945
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130975
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Amar Tumballi <amarts@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index e620005..9770359 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -2029,13 +2029,14 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+         ret = syncop_getxattr (from, loc, &xattr, POSIX_ACL_ACCESS_XATTR,
+                                NULL, NULL);
+         if (ret < 0) {
+-                gf_msg (this->name, GF_LOG_WARNING, -ret,
+-                        DHT_MSG_MIGRATE_FILE_FAILED,
+-                        "Migrate file failed:"
+-                        "%s: failed to get xattr from %s",
+-                        loc->path, from->name);
+-                *fop_errno = -ret;
+-                ret = -1;
++                if ((-ret != ENODATA) && (-ret != ENOATTR)) {
++                        gf_msg (this->name, GF_LOG_WARNING, -ret,
++                                DHT_MSG_MIGRATE_FILE_FAILED,
++                                "Migrate file failed:"
++                                "%s: failed to get xattr from %s",
++                                loc->path, from->name);
++                        *fop_errno = -ret;
++                }
+         } else {
+                 ret = syncop_setxattr (to, loc, xattr, 0, NULL, NULL);
+                 if (ret < 0) {
+-- 
+1.8.3.1
+

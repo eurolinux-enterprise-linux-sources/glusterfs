@@ -1,0 +1,55 @@
+From 669cc980d642af5bac1d41e3671822321b6bc986 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Tue, 29 May 2018 14:57:44 +0530
+Subject: [PATCH 295/305] dht: Excessive 'dict is null' logs in
+ dht_revalidate_cbk
+
+Problem: In case of error(ESTALE/ENOENT) dht_revalidate_cbk
+         throws "dict is null" error because xattr is not available
+
+Solution: To avoid the logs update condition in dht_revalidate_cbk
+          and dht_lookup_dir_cbk
+
+> BUG: 1583565
+> Change-Id: Ife6b3eeb6d91bf24403ed3100e237bb5d15b4357
+> fixes: bz#1583565
+> (Cherry pick from commit 052fce3f31d856fce10e07eda5f5c49ad3390d3a)
+> (Upstream review link https://review.gluster.org/#/c/20096/)
+
+BUG: 1581553
+Change-Id: Ib86e7a14f30b7357ebdffd42fe91ee295e152e64
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140185
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index feeaa3f..5f246b1 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -1499,7 +1499,8 @@ unlock:
+                 DHT_STRIP_PHASE1_FLAGS (&local->stbuf);
+                 dht_set_fixed_dir_stat (&local->postparent);
+                 /* Delete mds xattr at the time of STACK UNWIND */
+-                GF_REMOVE_INTERNAL_XATTR (conf->mds_xattr_key, local->xattr);
++                if (local->xattr)
++                        GF_REMOVE_INTERNAL_XATTR (conf->mds_xattr_key, local->xattr);
+                 DHT_STACK_UNWIND (lookup, frame, local->op_ret, local->op_errno,
+                                   local->inode, &local->stbuf, local->xattr,
+                                   &local->postparent);
+@@ -1902,7 +1903,8 @@ cont:
+                         local->op_errno = ESTALE;
+                 }
+                 /* Delete mds xattr at the time of STACK UNWIND */
+-                GF_REMOVE_INTERNAL_XATTR (conf->mds_xattr_key, local->xattr);
++                if (local->xattr)
++                        GF_REMOVE_INTERNAL_XATTR (conf->mds_xattr_key, local->xattr);
+ 
+                 DHT_STACK_UNWIND (lookup, frame, local->op_ret, local->op_errno,
+                                   local->inode, &local->stbuf, local->xattr,
+-- 
+1.8.3.1
+

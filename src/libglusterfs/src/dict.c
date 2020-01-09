@@ -16,17 +16,13 @@
 #include <limits.h>
 #include <fnmatch.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "common-utils.h"
 #include "dict.h"
 #include "hashfn.h"
 #include "logging.h"
 #include "compat.h"
+#include "compat-errno.h"
 #include "byte-order.h"
 #include "globals.h"
 #include "statedump.h"
@@ -227,14 +223,8 @@ data_destroy (data_t *data)
         if (data) {
                 LOCK_DESTROY (&data->lock);
 
-                if (!data->is_static) {
-                        if (data->data) {
-                                if (data->is_stdalloc)
-                                        free (data->data);
-                                else
-                                        GF_FREE (data->data);
-                        }
-                }
+                if (!data->is_static)
+                        GF_FREE (data->data);
 
                 data->len = 0xbabababa;
                 if (!data->is_const)
@@ -269,17 +259,17 @@ data_copy (data_t *old)
         return newdata;
 
 err_out:
-
-        FREE (newdata->data);
         mem_put (newdata);
 
         return NULL;
 }
 
 static data_pair_t *
-_dict_lookup (dict_t *this, char *key)
+dict_lookup_common (dict_t *this, char *key, uint32_t hash)
 {
         int hashval = 0;
+        data_pair_t *pair;
+
         if (!this || !key) {
                 gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
                                   LG_MSG_INVALID_ARG,
@@ -291,12 +281,11 @@ _dict_lookup (dict_t *this, char *key)
          * in such case avoid hash calculation.
          */
         if (this->hash_size != 1)
-                hashval = SuperFastHash (key, strlen (key)) % this->hash_size;
-
-        data_pair_t *pair;
+                hashval = hash % this->hash_size;
 
         for (pair = this->members[hashval]; pair != NULL; pair = pair->hash_next) {
-                if (pair->key && !strcmp (pair->key, key))
+                if (pair->key && (hash == pair->key_hash) &&
+                    !strcmp (pair->key, key))
                         return pair;
         }
 
@@ -314,9 +303,13 @@ dict_lookup (dict_t *this, char *key, data_t **data)
         }
 
         data_pair_t *tmp = NULL;
+        uint32_t hash = 0;
+
+        hash = SuperFastHash (key, strlen (key));
+
         LOCK (&this->lock);
         {
-                tmp = _dict_lookup (this, key);
+                tmp = dict_lookup_common (this, key, hash);
         }
         UNLOCK (&this->lock);
 
@@ -328,13 +321,13 @@ dict_lookup (dict_t *this, char *key, data_t **data)
 }
 
 static int32_t
-_dict_set (dict_t *this, char *key, data_t *value, gf_boolean_t replace)
+dict_set_lk (dict_t *this, char *key, data_t *value, gf_boolean_t replace)
 {
         int hashval = 0;
         data_pair_t *pair;
         char key_free = 0;
-        int tmp = 0;
         int ret = 0;
+        uint32_t hash = 0;
 
         if (!key) {
                 ret = gf_asprintf (&key, "ref:%p", value);
@@ -347,14 +340,14 @@ _dict_set (dict_t *this, char *key, data_t *value, gf_boolean_t replace)
         /* If the divisor is 1, the modulo is always 0,
          * in such case avoid hash calculation.
          */
+        hash = SuperFastHash (key, strlen (key));
         if (this->hash_size != 1) {
-                tmp = SuperFastHash (key, strlen (key));
-                hashval = (tmp % this->hash_size);
+                hashval = (hash % this->hash_size);
         }
 
         /* Search for a existing key if 'replace' is asked for */
         if (replace) {
-                pair = _dict_lookup (this, key);
+                pair = dict_lookup_common (this, key, hash);
 
                 if (pair) {
                         data_t *unref_data = pair->value;
@@ -399,6 +392,7 @@ _dict_set (dict_t *this, char *key, data_t *value, gf_boolean_t replace)
                 }
                 strcpy (pair->key, key);
         }
+        pair->key_hash = hash;
         pair->value = data_ref (value);
 
         pair->hash_next = this->members[hashval];
@@ -413,6 +407,9 @@ _dict_set (dict_t *this, char *key, data_t *value, gf_boolean_t replace)
 
         if (key_free)
                 GF_FREE (key);
+
+        if (this->max_count < this->count)
+                this->max_count = this->count;
         return 0;
 }
 
@@ -432,7 +429,7 @@ dict_set (dict_t *this,
 
         LOCK (&this->lock);
 
-        ret = _dict_set (this, key, value, 1);
+        ret = dict_set_lk (this, key, value, 1);
 
         UNLOCK (&this->lock);
 
@@ -454,7 +451,7 @@ dict_add (dict_t *this, char *key, data_t *value)
 
         LOCK (&this->lock);
 
-        ret = _dict_set (this, key, value, 0);
+        ret = dict_set_lk (this, key, value, 0);
 
         UNLOCK (&this->lock);
 
@@ -466,6 +463,7 @@ data_t *
 dict_get (dict_t *this, char *key)
 {
         data_pair_t *pair;
+        uint32_t hash = 0;
 
         if (!this || !key) {
                 gf_msg_callingfn ("dict", GF_LOG_INFO, EINVAL,
@@ -474,10 +472,12 @@ dict_get (dict_t *this, char *key)
                 return NULL;
         }
 
+        hash = SuperFastHash (key, strlen (key));
+
         LOCK (&this->lock);
-
-        pair = _dict_lookup (this, key);
-
+        {
+                pair = dict_lookup_common (this, key, hash);
+        }
         UNLOCK (&this->lock);
 
         if (pair)
@@ -486,10 +486,31 @@ dict_get (dict_t *this, char *key)
         return NULL;
 }
 
+int
+dict_key_count (dict_t *this)
+{
+        int ret = -1;
+
+        if (!this) {
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict passed is NULL");
+                return ret;
+        }
+
+        LOCK (&this->lock);
+        {
+                ret = this->count;
+        }
+        UNLOCK (&this->lock);
+
+        return ret;
+}
+
 void
 dict_del (dict_t *this, char *key)
 {
         int hashval = 0;
+        uint32_t hash = 0;
 
         if (!this || !key) {
                 gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
@@ -502,14 +523,15 @@ dict_del (dict_t *this, char *key)
         /* If the divisor is 1, the modulo is always 0,
          * in such case avoid hash calculation.
          */
+        hash = SuperFastHash (key, strlen (key));
         if (this->hash_size != 1)
-                hashval = SuperFastHash (key, strlen (key)) % this->hash_size;
+                hashval = hash % this->hash_size;
 
         data_pair_t *pair = this->members[hashval];
         data_pair_t *prev = NULL;
 
         while (pair) {
-                if (strcmp (pair->key, key) == 0) {
+                if ((hash == pair->key_hash) && strcmp (pair->key, key) == 0) {
                         if (prev)
                                 prev->hash_next = pair->hash_next;
                         else
@@ -556,6 +578,9 @@ dict_destroy (dict_t *this)
 
         data_pair_t *pair = this->members_list;
         data_pair_t *prev = this->members_list;
+        glusterfs_ctx_t *ctx = NULL;
+        uint32_t total_pairs = 0;
+        uint64_t current_max = 0;
 
         LOCK_DESTROY (&this->lock);
 
@@ -566,6 +591,7 @@ dict_destroy (dict_t *this)
                 if (prev != &this->free_pair) {
                         mem_put (prev);
                 }
+                total_pairs++;
                 prev = pair;
         }
 
@@ -575,6 +601,24 @@ dict_destroy (dict_t *this)
 
         GF_FREE (this->extra_free);
         free (this->extra_stdfree);
+
+        /* update 'ctx->stats.dict.details' using max_count */
+        ctx = THIS->ctx;
+
+        /* NOTE: below logic is not totaly race proof */
+        /* thread0 and thread1 gets current_max as 10 */
+        /* thread0 has 'this->max_count as 11 */
+        /* thread1 has 'this->max_count as 20 */
+        /* thread1 goes ahead and sets the max_dict_pairs to 20 */
+        /* thread0 then goes and sets it to 11 */
+        /* As it is for information purpose only, no functionality will be
+           broken by this, but a point to consider about ATOMIC macros. */
+        current_max = GF_ATOMIC_GET (ctx->stats.max_dict_pairs);
+        if (current_max < this->max_count)
+                GF_ATOMIC_INIT (ctx->stats.max_dict_pairs, this->max_count);
+
+        GF_ATOMIC_ADD (ctx->stats.total_pairs_used, total_pairs);
+        GF_ATOMIC_INC (ctx->stats.total_dicts_used);
 
         if (!this->is_static)
                 mem_put (this);
@@ -844,46 +888,18 @@ data_from_uint16 (uint16_t value)
         return data;
 }
 
-
-data_t *
-data_from_ptr (void *value)
+static data_t *
+data_from_ptr_common (void *value, gf_boolean_t is_static)
 {
-        if (!value) {
-                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
-                                  LG_MSG_INVALID_ARG, "value is NULL");
-                return NULL;
-        }
+        /* it is valid to set 0/NULL as a value, no need to check *value */
 
         data_t *data = get_new_data ();
-
         if (!data) {
                 return NULL;
         }
 
         data->data = value;
-        return data;
-}
-
-data_t *
-data_from_static_ptr (void *value)
-{
-/*
-  this is valid to set 0 as value..
-
-  if (!value) {
-  gf_log ("dict", GF_LOG_CRITICAL,
-  "@value=%p", value);
-  return NULL;
-  }
-*/
-        data_t *data = get_new_data ();
-
-        if (!data) {
-                return NULL;
-        }
-
-        data->is_static = 1;
-        data->data = value;
+        data->is_static = is_static;
 
         return data;
 }
@@ -924,26 +940,6 @@ data_from_dynstr (char *value)
                 return NULL;
         data->len = strlen (value) + 1;
         data->data = value;
-
-        return data;
-}
-
-data_t *
-data_from_dynmstr (char *value)
-{
-        if (!value) {
-                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
-                                  LG_MSG_INVALID_ARG, "value is NULL");
-                return NULL;
-        }
-
-        data_t *data = get_new_data ();
-
-        if (!data)
-                return NULL;
-        data->len = strlen (value) + 1;
-        data->data = value;
-        data->is_stdalloc = 1;
 
         return data;
 }
@@ -1368,10 +1364,7 @@ dict_keys_join (void *value, int size, dict_t *dict,
 }
 
 static int
-_copy (dict_t *unused,
-       char *key,
-       data_t *value,
-       void *newdict)
+dict_copy_one (dict_t *unused, char *key, data_t *value, void *newdict)
 {
         return dict_set ((dict_t *)newdict, key, (value));
 }
@@ -1389,7 +1382,7 @@ dict_copy (dict_t *dict,
         if (!new)
                 new = get_new_dict_full (dict->hash_size);
 
-        dict_foreach (dict, _copy, new);
+        dict_foreach (dict, dict_copy_one, new);
 
         return new;
 }
@@ -1423,7 +1416,7 @@ dict_copy_with_ref (dict_t *dict,
                 new = local_new;
         }
 
-        dict_foreach (dict, _copy, new);
+        dict_foreach (dict, dict_copy_one, new);
 fail:
         return new;
 }
@@ -1440,11 +1433,12 @@ fail:
  */
 
 
-static int
+int
 dict_get_with_ref (dict_t *this, char *key, data_t **data)
 {
         data_pair_t * pair = NULL;
         int           ret  = -ENOENT;
+        uint32_t      hash = 0;
 
         if (!this || !key || !data) {
                 gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
@@ -1454,23 +1448,24 @@ dict_get_with_ref (dict_t *this, char *key, data_t **data)
                 goto err;
         }
 
+        hash = SuperFastHash (key, strlen (key));
+
         LOCK (&this->lock);
         {
-                pair = _dict_lookup (this, key);
+                pair = dict_lookup_common (this, key, hash);
+
+                if (pair) {
+                        ret = 0;
+                        *data = data_ref (pair->value);
+                 }
         }
         UNLOCK (&this->lock);
-
-        if (pair) {
-                ret = 0;
-                *data = data_ref (pair->value);
-        }
-
 err:
         return ret;
 }
 
 static int
-_data_to_ptr (data_t *data, void **val)
+data_to_ptr_common (data_t *data, void **val)
 {
         int ret = 0;
 
@@ -1486,7 +1481,7 @@ err:
 
 
 static int
-_data_to_int8 (data_t *data, int8_t *val)
+data_to_int8_ptr (data_t *data, int8_t *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1514,7 +1509,7 @@ err:
 }
 
 static int
-_data_to_int16 (data_t *data, int16_t *val)
+data_to_int16_ptr (data_t *data, int16_t *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1542,7 +1537,7 @@ err:
 }
 
 static int
-_data_to_int32 (data_t *data, int32_t *val)
+data_to_int32_ptr (data_t *data, int32_t *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1570,7 +1565,7 @@ err:
 }
 
 static int
-_data_to_int64 (data_t *data, int64_t *val)
+data_to_int64_ptr (data_t *data, int64_t *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1598,7 +1593,7 @@ err:
 }
 
 static int
-_data_to_uint16 (data_t *data, uint16_t *val)
+data_to_uint16_ptr (data_t *data, uint16_t *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1626,7 +1621,7 @@ err:
 }
 
 static int
-_data_to_uint32 (data_t *data, uint32_t *val)
+data_to_uint32_ptr (data_t *data, uint32_t *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1654,7 +1649,7 @@ err:
 }
 
 static int
-_data_to_uint64 (data_t *data, uint64_t *val)
+data_to_uint64_ptr (data_t *data, uint64_t *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1682,7 +1677,7 @@ err:
 }
 
 static int
-_data_to_double (data_t *data, double *val)
+data_to_double_ptr (data_t *data, double *val)
 {
         int    ret = 0;
         char * str = NULL;
@@ -1725,7 +1720,7 @@ dict_get_int8 (dict_t *this, char *key, int8_t *val)
                 goto err;
         }
 
-        ret = _data_to_int8 (data, val);
+        ret = data_to_int8_ptr (data, val);
 
 err:
         if (data)
@@ -1770,7 +1765,7 @@ dict_get_int16 (dict_t *this, char *key, int16_t *val)
                 goto err;
         }
 
-        ret = _data_to_int16 (data, val);
+        ret = data_to_int16_ptr (data, val);
 
 err:
         if (data)
@@ -1815,7 +1810,7 @@ dict_get_int32 (dict_t *this, char *key, int32_t *val)
                 goto err;
         }
 
-        ret = _data_to_int32 (data, val);
+        ret = data_to_int32_ptr (data, val);
 
 err:
         if (data)
@@ -1860,7 +1855,7 @@ dict_get_int64 (dict_t *this, char *key, int64_t *val)
                 goto err;
         }
 
-        ret = _data_to_int64 (data, val);
+        ret = data_to_int64_ptr (data, val);
 
 err:
         if (data)
@@ -1905,7 +1900,7 @@ dict_get_uint16 (dict_t *this, char *key, uint16_t *val)
                 goto err;
         }
 
-        ret = _data_to_uint16 (data, val);
+        ret = data_to_uint16_ptr (data, val);
 
 err:
         if (data)
@@ -1950,7 +1945,7 @@ dict_get_uint32 (dict_t *this, char *key, uint32_t *val)
                 goto err;
         }
 
-        ret = _data_to_uint32 (data, val);
+        ret = data_to_uint32_ptr (data, val);
 
 err:
         if (data)
@@ -1996,7 +1991,7 @@ dict_get_uint64 (dict_t *this, char *key, uint64_t *val)
                 goto err;
         }
 
-        ret = _data_to_uint64 (data, val);
+        ret = data_to_uint64_ptr (data, val);
 
 err:
         if (data)
@@ -2041,7 +2036,7 @@ dict_get_double (dict_t *this, char *key, double *val)
                 goto err;
         }
 
-        ret = _data_to_double (data, val);
+        ret = data_to_double_ptr (data, val);
 
 err:
         if (data)
@@ -2075,7 +2070,7 @@ dict_set_static_ptr (dict_t *this, char *key, void *ptr)
         data_t * data = NULL;
         int      ret  = 0;
 
-        data = data_from_static_ptr (ptr);
+        data = data_from_ptr_common (ptr, _gf_true);
         if (!data) {
                 ret = -EINVAL;
                 goto err;
@@ -2125,7 +2120,7 @@ dict_get_ptr (dict_t *this, char *key, void **ptr)
                 goto err;
         }
 
-        ret = _data_to_ptr (data, ptr);
+        ret = data_to_ptr_common (data, ptr);
         if (ret != 0) {
                 goto err;
         }
@@ -2155,7 +2150,7 @@ dict_get_ptr_and_len (dict_t *this, char *key, void **ptr, int *len)
 
 	*len = data->len;
 
-        ret = _data_to_ptr (data, ptr);
+        ret = data_to_ptr_common (data, ptr);
         if (ret != 0) {
                 goto err;
         }
@@ -2173,7 +2168,7 @@ dict_set_ptr (dict_t *this, char *key, void *ptr)
         data_t * data = NULL;
         int      ret  = 0;
 
-        data = data_from_ptr (ptr);
+        data = data_from_ptr_common (ptr, _gf_false);
         if (!data) {
                 ret = -EINVAL;
                 goto err;
@@ -2298,29 +2293,6 @@ out:
         return ret;
 }
 
-/*
-  for malloced strings we should do a free instead of GF_FREE
-*/
-int
-dict_set_dynmstr (dict_t *this, char *key, char *str)
-{
-        data_t * data = NULL;
-        int      ret  = 0;
-
-        data = data_from_dynmstr (str);
-        if (!data) {
-                ret = -EINVAL;
-                goto err;
-        }
-
-        ret = dict_set (this, key, data);
-        if (ret < 0)
-                data_destroy (data);
-
-err:
-        return ret;
-}
-
 
 int
 dict_get_bin (dict_t *this, char *key, void **bin)
@@ -2349,9 +2321,18 @@ err:
         return ret;
 }
 
-
-int
-dict_set_bin (dict_t *this, char *key, void *ptr, size_t size)
+/********************************************************************
+ *
+ * dict_set_bin_common:
+ *      This is the common function to set key and its value in
+ *      dictionary. Flag(is_static) should be set appropriately based
+ *      on the type of memory type used for value(*ptr). If flag is set
+ *      to false value(*ptr) will be freed using GF_FREE() on destroy.
+ *
+ *******************************************************************/
+static int
+dict_set_bin_common (dict_t *this, char *key, void *ptr, size_t size,
+                     gf_boolean_t is_static)
 {
         data_t * data = NULL;
         int      ret  = 0;
@@ -2367,46 +2348,43 @@ dict_set_bin (dict_t *this, char *key, void *ptr, size_t size)
                 goto err;
         }
 
-        data->data = ptr;
-        data->len  = size;
-        data->is_static = 0;
+        data->is_static = is_static;
 
         ret = dict_set (this, key, data);
-        if (ret < 0)
+        if (ret < 0) {
+                /* don't free data->data, let callers handle it */
+                data->data = NULL;
                 data_destroy (data);
+        }
 
 err:
         return ret;
 }
 
+/********************************************************************
+ *
+ * dict_set_bin:
+ *      Set key and its value in the dictionary. This function should
+ *      be called if the value is stored in dynamic memory.
+ *
+ *******************************************************************/
+int
+dict_set_bin (dict_t *this, char *key, void *ptr, size_t size)
+{
+        return dict_set_bin_common (this, key, ptr, size, _gf_false);
+}
 
+/********************************************************************
+ *
+ * dict_set_static_bin:
+ *      Set key and its value in the dictionary. This function should
+ *      be called if the value is stored in static memory.
+ *
+ *******************************************************************/
 int
 dict_set_static_bin (dict_t *this, char *key, void *ptr, size_t size)
 {
-        data_t * data = NULL;
-        int      ret  = 0;
-
-        if (!ptr || (size > ULONG_MAX)) {
-                ret = -EINVAL;
-                goto err;
-        }
-
-        data = bin_to_data (ptr, size);
-        if (!data) {
-                ret = -EINVAL;
-                goto err;
-        }
-
-        data->data = ptr;
-        data->len  = size;
-        data->is_static = 1;
-
-        ret = dict_set (this, key, data);
-        if (ret < 0)
-                data_destroy (data);
-
-err:
-        return ret;
+        return dict_set_bin_common (this, key, ptr, size, _gf_true);
 }
 
 
@@ -2469,6 +2447,36 @@ err:
         return ret;
 }
 
+int
+dict_rename_key (dict_t *this, char *key, char *replace_key)
+{
+        data_pair_t *pair = NULL;
+        int          ret  = -EINVAL;
+        uint32_t     hash = 0;
+
+        /* replacing a key by itself is a NO-OP */
+        if (strcmp (key, replace_key) == 0)
+                return 0;
+
+        hash = SuperFastHash (key, strlen (key));
+
+        LOCK (&this->lock);
+        {
+                /* no need to data_ref(pair->value), dict_set_lk() does it */
+                pair = dict_lookup_common (this, key, hash);
+                if (!pair)
+                        ret = -ENODATA;
+                else
+                        ret = dict_set_lk (this, replace_key, pair->value, 1);
+        }
+        UNLOCK (&this->lock);
+
+        if (!ret)
+                /* only delete the key on success */
+                dict_del (this, key);
+
+        return ret;
+}
 
 /**
  * Serialization format:
@@ -2483,8 +2491,8 @@ err:
 #define DICT_DATA_HDR_VAL_LEN      4
 
 /**
- * _dict_serialized_length - return the length of serialized dict. This
- *                           procedure has to be called with this->lock held.
+ * dict_serialized_length_lk - return the length of serialized dict. This
+ *                             procedure has to be called with this->lock held.
  *
  * @this  : dict to be serialized
  * @return: success: len
@@ -2492,7 +2500,7 @@ err:
  */
 
 int
-_dict_serialized_length (dict_t *this)
+dict_serialized_length_lk (dict_t *this)
 {
         int ret            = -EINVAL;
         int count          = 0;
@@ -2553,8 +2561,8 @@ out:
 }
 
 /**
- * _dict_serialize - serialize a dictionary into a buffer. This procedure has
- *                   to be called with this->lock held.
+ * dict_serialize_lk - serialize a dictionary into a buffer. This procedure has
+ *                     to be called with this->lock held.
  *
  * @this: dict to serialize
  * @buf:  buffer to serialize into. This must be
@@ -2565,7 +2573,7 @@ out:
  */
 
 int
-_dict_serialize (dict_t *this, char *buf)
+dict_serialize_lk (dict_t *this, char *buf)
 {
         int           ret     = -1;
         data_pair_t * pair    = NULL;
@@ -2665,7 +2673,7 @@ dict_serialized_length (dict_t *this)
 
         LOCK (&this->lock);
         {
-                ret = _dict_serialized_length (this);
+                ret = dict_serialized_length_lk (this);
         }
         UNLOCK (&this->lock);
 
@@ -2697,7 +2705,7 @@ dict_serialize (dict_t *this, char *buf)
 
         LOCK (&this->lock);
         {
-                ret = _dict_serialize (this, buf);
+                ret = dict_serialize_lk (this, buf);
         }
         UNLOCK (&this->lock);
 out:
@@ -2827,6 +2835,11 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
                         goto out;
                 }
                 value = get_new_data ();
+
+                if (!value) {
+                        ret = -1;
+                        goto out;
+                }
                 value->len  = vallen;
                 value->data = memdup (buf, vallen);
                 value->is_static = 0;
@@ -2865,7 +2878,7 @@ dict_allocate_and_serialize (dict_t *this, char **buf, u_int *length)
 
         LOCK (&this->lock);
         {
-                len = _dict_serialized_length (this);
+                len = dict_serialized_length_lk (this);
                 if (len < 0) {
                         ret = len;
                         goto unlock;
@@ -2877,7 +2890,7 @@ dict_allocate_and_serialize (dict_t *this, char **buf, u_int *length)
                         goto unlock;
                 }
 
-                ret = _dict_serialize (this, *buf);
+                ret = dict_serialize_lk (this, *buf);
                 if (ret < 0) {
                         GF_FREE (*buf);
                         *buf = NULL;
@@ -2895,7 +2908,7 @@ out:
 }
 
 /**
- * _dict_serialize_value_with_delim: serialize the values in the dictionary
+ * dict_serialize_value_with_delim_lk: serialize the values in the dictionary
  * into a buffer separated by delimiter (except the last)
  *
  * @this      : dictionary to serialize
@@ -2907,8 +2920,8 @@ out:
  *            : -errno -> faliure
  */
 int
-_dict_serialize_value_with_delim (dict_t *this, char *buf, int32_t *serz_len,
-                                  char delimiter)
+dict_serialize_value_with_delim_lk (dict_t *this, char *buf, int32_t *serz_len,
+                                    char delimiter)
 {
         int          ret       = -1;
         int32_t      count     = 0;
@@ -2989,7 +3002,8 @@ dict_serialize_value_with_delim (dict_t *this, char *buf, int32_t *serz_len,
 
         LOCK (&this->lock);
         {
-                ret = _dict_serialize_value_with_delim (this, buf, serz_len, delimiter);
+                ret = dict_serialize_value_with_delim_lk (this, buf, serz_len,
+                                                          delimiter);
         }
         UNLOCK (&this->lock);
 out:
@@ -3059,14 +3073,15 @@ dict_dump_to_statedump (dict_t *dict, char *dict_name, char *domain)
                         "Failed to log dictionary %s", dict_name);
                 return;
         }
-        gf_proc_dump_build_key (key, domain, dict_name);
+        gf_proc_dump_build_key (key, domain, "%s", dict_name);
         gf_proc_dump_write (key, "%s", dump);
 
         return;
 }
 
 dict_t *
-dict_for_key_value (const char *name, const char *value, size_t size)
+dict_for_key_value (const char *name, const char *value, size_t size,
+                    gf_boolean_t is_static)
 {
 	dict_t *xattr = NULL;
 	int     ret = 0;
@@ -3075,11 +3090,44 @@ dict_for_key_value (const char *name, const char *value, size_t size)
 	if (!xattr)
 		return NULL;
 
-	ret = dict_set_static_bin (xattr, (char *)name, (void *)value, size);
+        if (is_static)
+                ret = dict_set_static_bin (xattr, (char *)name, (void *)value,
+                                           size);
+        else
+                ret = dict_set_bin (xattr, (char *)name, (void *)value, size);
+
 	if (ret) {
 		dict_destroy (xattr);
 		xattr = NULL;
 	}
 
 	return xattr;
+}
+
+/*
+ * "strings" should be NULL terminated strings array.
+ */
+int
+dict_has_key_from_array (dict_t *dict, char **strings, gf_boolean_t *result)
+{
+        int      i    = 0;
+        uint32_t hash = 0;
+
+        if (!dict || !strings || !result)
+                return -EINVAL;
+
+        LOCK (&dict->lock);
+        {
+                for (i = 0; strings[i]; i++) {
+                        hash = SuperFastHash (strings[i], strlen (strings[i]));
+                        if (dict_lookup_common (dict, strings[i], hash)) {
+                                *result = _gf_true;
+                                goto unlock;
+                        }
+                }
+                *result = _gf_false;
+        }
+unlock:
+        UNLOCK (&dict->lock);
+        return 0;
 }

@@ -10,22 +10,13 @@
 
 #include "globals.h"
 #include "run.h"
+#include "syscall.h"
 #include "glusterd.h"
 #include "glusterd-utils.h"
 #include "glusterd-volgen.h"
 #include "glusterd-nfs-svc.h"
 #include "glusterd-messages.h"
 #include "glusterd-svc-helper.h"
-
-char *nfs_svc_name = "nfs";
-
-void
-glusterd_nfssvc_build (glusterd_svc_t *svc)
-{
-        svc->manager = glusterd_nfssvc_manager;
-        svc->start = glusterd_nfssvc_start;
-        svc->stop = glusterd_nfssvc_stop;
-}
 
 static gf_boolean_t
 glusterd_nfssvc_need_start ()
@@ -40,7 +31,7 @@ glusterd_nfssvc_need_start ()
                 if (!glusterd_is_volume_started (volinfo))
                         continue;
 
-                if (dict_get_str_boolean (volinfo->dict, "nfs.disable", 0))
+                if (dict_get_str_boolean (volinfo->dict, NFS_DISABLE_MAP_KEY, 1))
                         continue;
                 start = _gf_true;
                 break;
@@ -49,45 +40,48 @@ glusterd_nfssvc_need_start ()
         return start;
 }
 
-int
-glusterd_nfssvc_init (glusterd_svc_t *svc)
-{
-        return glusterd_svc_init (svc, nfs_svc_name);
-}
-
 static int
 glusterd_nfssvc_create_volfile ()
 {
         char            filepath[PATH_MAX] = {0,};
         glusterd_conf_t *conf = THIS->private;
 
-        glusterd_svc_build_volfile_path (nfs_svc_name, conf->workdir,
+        glusterd_svc_build_volfile_path (conf->nfs_svc.name, conf->workdir,
                                          filepath, sizeof (filepath));
         return glusterd_create_global_volfile (build_nfs_graph,
                                                filepath, NULL);
 }
 
-int
+static int
 glusterd_nfssvc_manager (glusterd_svc_t *svc, void *data, int flags)
 {
         int                 ret     = -1;
 
         if (!svc->inited) {
-                ret = glusterd_nfssvc_init (svc);
+                ret = glusterd_svc_init (svc, "nfs");
                 if (ret) {
                         gf_msg (THIS->name, GF_LOG_ERROR, 0,
-                                GD_MSG_FAILED_INIT_NFSSVC, "Failed to init nfs "
-                                "service");
+                                GD_MSG_FAILED_INIT_NFSSVC,
+                                "Failed to init nfs service");
                         goto out;
                 } else {
                         svc->inited = _gf_true;
-                        gf_msg_debug (THIS->name, 0, "nfs service initialized");
+                        gf_msg_debug (THIS->name, 0,
+                                      "nfs service initialized");
                 }
         }
 
         ret = svc->stop (svc, SIGKILL);
         if (ret)
                 goto out;
+
+        /* not an error, or a (very) soft error at best */
+        if (sys_access (XLATORDIR "/nfs/server.so", R_OK) != 0) {
+                gf_msg (THIS->name, GF_LOG_INFO, 0,
+                        GD_MSG_GNFS_XLATOR_NOT_INSTALLED,
+                        "nfs/server.so xlator is not installed");
+                goto out;
+        }
 
         ret = glusterd_nfssvc_create_volfile ();
         if (ret)
@@ -103,20 +97,21 @@ glusterd_nfssvc_manager (glusterd_svc_t *svc, void *data, int flags)
                         goto out;
         }
 out:
+        if (ret)
+                gf_event (EVENT_SVC_MANAGER_FAILED, "svc_name=%s", svc->name);
+
         gf_msg_debug (THIS->name, 0, "Returning %d", ret);
 
         return ret;
 }
 
-int
+static int
 glusterd_nfssvc_start (glusterd_svc_t *svc, int flags)
 {
         return glusterd_svc_start (svc, flags, NULL);
-
-        return 0;
 }
 
-int
+static int
 glusterd_nfssvc_stop (glusterd_svc_t *svc, int sig)
 {
         int                    ret        = -1;
@@ -137,6 +132,14 @@ out:
         return ret;
 }
 
+void
+glusterd_nfssvc_build (glusterd_svc_t *svc)
+{
+        svc->manager = glusterd_nfssvc_manager;
+        svc->start = glusterd_nfssvc_start;
+        svc->stop = glusterd_nfssvc_stop;
+}
+
 int
 glusterd_nfssvc_reconfigure ()
 {
@@ -144,17 +147,41 @@ glusterd_nfssvc_reconfigure ()
         xlator_t        *this            = NULL;
         glusterd_conf_t *priv            = NULL;
         gf_boolean_t     identical       = _gf_false;
+        gf_boolean_t     vol_started     = _gf_false;
+        glusterd_volinfo_t *volinfo      = NULL;
 
         this = THIS;
         GF_VALIDATE_OR_GOTO (this->name, this, out);
 
         priv = this->private;
         GF_VALIDATE_OR_GOTO (this->name, priv, out);
+
+       /* not an error, or a (very) soft error at best */
+        if (sys_access (XLATORDIR "/nfs/server.so", R_OK) != 0) {
+                gf_msg (THIS->name, GF_LOG_INFO, 0,
+                        GD_MSG_GNFS_XLATOR_NOT_INSTALLED,
+                        "nfs/server.so xlator is not installed");
+                ret = 0;
+                goto out;
+        }
+
+        cds_list_for_each_entry (volinfo, &priv->volumes, vol_list) {
+                if (GLUSTERD_STATUS_STARTED == volinfo->status) {
+                        vol_started = _gf_true;
+                        break;
+                }
+        }
+        if (!vol_started) {
+                ret = 0;
+                goto out;
+        }
+
         /*
          * Check both OLD and NEW volfiles, if they are SAME by size
          * and cksum i.e. "character-by-character". If YES, then
          * NOTHING has been changed, just return.
          */
+
         ret = glusterd_svc_check_volfile_identical (priv->nfs_svc.name,
                                                     build_nfs_graph,
                                                     &identical);

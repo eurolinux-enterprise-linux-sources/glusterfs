@@ -41,6 +41,7 @@
 #include <sys/cdefs.h>
 #include <dirent.h>
 #include <sys/statvfs.h>
+#include <inttypes.h>
 
 #if defined(HAVE_SYS_ACL_H) || (defined(USE_POSIX_ACLS) && USE_POSIX_ACLS)
 #include <sys/acl.h>
@@ -71,7 +72,6 @@ __BEGIN_DECLS
 /* The filesystem object. One object per 'virtual mount' */
 struct glfs;
 typedef struct glfs glfs_t;
-
 
 /*
   SYNOPSIS
@@ -161,10 +161,9 @@ int glfs_set_volfile (glfs_t *fs, const char *volfile) __THROW
        specification file.
 
   @transport: String specifying the transport used to connect to the
-              management daemon. Specifying NULL will result in the usage
-              of the default (tcp) transport type. Permitted values
-              are those what you specify as transport-type in a volume
-              specification file (e.g "tcp", "rdma", "unix" etc.)
+              management daemon. Specifying NULL will result in the
+              usage of the default (tcp) transport type. Permitted
+              values are "tcp" or "unix".
 
   @host:      String specifying the address where to find the management daemon.
               Socket path, while using Unix domain socket as transport type.
@@ -468,7 +467,7 @@ glfs_t *glfs_from_glfd (glfs_fd_t *fd) __THROW
 
 int glfs_set_xlator_option (glfs_t *fs, const char *xlator, const char *key,
 			    const char *value) __THROW
-        GFAPI_PUBLIC(glfs_set_xlator_options, 3.4.0);
+        GFAPI_PUBLIC(glfs_set_xlator_option, 3.4.0);
 
 /*
 
@@ -562,7 +561,7 @@ off_t glfs_lseek (glfs_fd_t *fd, off_t offset, int whence) __THROW
         GFAPI_PUBLIC(glfs_lseek, 3.4.0);
 
 int glfs_truncate (glfs_t *fs, const char *path, off_t length) __THROW
-        GFAPI_PUBLIC(glfs_truncate, 3.4.0);
+        GFAPI_PUBLIC(glfs_truncate, 3.7.15);
 
 int glfs_ftruncate (glfs_fd_t *fd, off_t length) __THROW
         GFAPI_PUBLIC(glfs_ftruncate, 3.4.0);
@@ -675,14 +674,14 @@ int glfs_fchown (glfs_fd_t *fd, uid_t uid, gid_t gid) __THROW
         GFAPI_PUBLIC(glfs_fchown, 3.4.0);
 
 int glfs_utimens (glfs_t *fs, const char *path,
-                  struct timespec times[2]) __THROW
+                  const struct timespec times[2]) __THROW
         GFAPI_PUBLIC(glfs_utimens, 3.4.0);
 
 int glfs_lutimens (glfs_t *fs, const char *path,
-                   struct timespec times[2]) __THROW
+                   const struct timespec times[2]) __THROW
         GFAPI_PUBLIC(glfs_lutimens, 3.4.0);
 
-int glfs_futimens (glfs_fd_t *fd, struct timespec times[2]) __THROW
+int glfs_futimens (glfs_fd_t *fd, const struct timespec times[2]) __THROW
         GFAPI_PUBLIC(glfs_futimens, 3.4.0);
 
 ssize_t glfs_getxattr (glfs_t *fs, const char *path, const char *name,
@@ -757,9 +756,11 @@ int glfs_chdir (glfs_t *fs, const char *path) __THROW
 int glfs_fchdir (glfs_fd_t *fd) __THROW
         GFAPI_PUBLIC(glfs_fchdir, 3.4.0);
 
-char *glfs_realpath (glfs_t *fs, const char *path, char *resolved_path) __THROW
+char *glfs_realpath34 (glfs_t *fs, const char *path, char *resolved_path) __THROW
         GFAPI_PUBLIC(glfs_realpath, 3.4.0);
 
+char *glfs_realpath (glfs_t *fs, const char *path, char *resolved_path) __THROW
+        GFAPI_PUBLIC(glfs_realpath, 3.7.17);
 /*
  * @cmd and @flock are as specified in man fcntl(2).
  */
@@ -769,13 +770,90 @@ int glfs_posix_lock (glfs_fd_t *fd, int cmd, struct flock *flock) __THROW
 glfs_fd_t *glfs_dup (glfs_fd_t *fd) __THROW
         GFAPI_PUBLIC(glfs_dup, 3.4.0);
 
+void glfs_free (void *ptr) __THROW
+        GFAPI_PUBLIC(glfs_free, 3.7.16);
+
 /*
- * No xdata support for now.  Nobody needs this call at all yet except for the
- * test script, and that doesn't need xdata.  Adding dict_t support and a new
- * header-file requirement doesn't seem worth it until the need is greater.
+ * glfs_sysrq: send a system request to the @fs instance
+ *
+ * Different commands for @sysrq are possible, the defines for these are listed
+ * below the function definition.
+ *
+ * This function always returns success if the @sysrq is recognized. The return
+ * value does not way anythin about the result of the @sysrq execution. Not all
+ * @sysrq command will be able to return a success/failure status.
  */
-int glfs_ipc (glfs_fd_t *fd, int cmd) __THROW
-        GFAPI_PUBLIC(glfs_ipc, 3.7.0);
+int glfs_sysrq (glfs_t *fs, char sysrq) __THROW
+        GFAPI_PUBLIC(glfs_sysrq, 3.10.0);
+
+#define GLFS_SYSRQ_HELP 'h' /* log a message with supported sysrq commands */
+#define GLFS_SYSRQ_STATEDUMP 's' /* create a statedump */
+
+
+/*
+ * Structure returned as part of xreaddirplus
+ */
+struct glfs_xreaddirp_stat;
+
+/* Request flags to be used in XREADDIRP operation */
+#define GFAPI_XREADDIRP_NULL    0x00000000 /* by default, no stat will be fetched */
+#define GFAPI_XREADDIRP_STAT    0x00000001 /* Get stat */
+#define GFAPI_XREADDIRP_HANDLE  0x00000002 /* Get object handle */
+
+/*
+ * This stat structure returned gets freed as part of glfs_free(xstat)
+ */
+struct stat*
+glfs_xreaddirplus_get_stat (struct glfs_xreaddirp_stat *xstat) __THROW
+        GFAPI_PUBLIC(glfs_xreaddirplus_get_stat, 3.11.0);
+
+/*
+ * SYNOPSIS
+ *
+ * glfs_xreaddirplus_r: Extended Readirplus operation
+ *
+ * DESCRIPTION
+ *
+ * This API does readdirplus operation, but along with stat it can fetch other
+ * extra information like object handles etc for each of the dirents returned
+ * based on requested flags. On success it returns the set of flags successfully
+ * processed.
+ *
+ * Note that there are chances that some of the requested information may not be
+ * available or returned (for example if reached EOD). Ensure to validate the
+ * returned value to determine what flags have been successfully processed
+ * & set.
+ *
+ * PARAMETERS
+ *
+ * INPUT:
+ * @glfd: GFAPI file descriptor of the directory
+ * @flags: Flags determining xreaddirp_stat requested
+ *         Current available values are:
+ *              GFAPI_XREADDIRP_NULL
+ *              GFAPI_XREADDIRP_STAT
+ *              GFAPI_XREADDIRP_HANDLE
+ * @ext: Dirent struture to copy the values to
+ *       (though optional recommended to be allocated by application
+ *        esp., in multi-threaded environement)
+ *
+ * OUTPUT:
+ * @res: to store the next dirent value. If NULL and return value is '0',
+ *       it means it reached end of the directory.
+ * @xstat_p: Pointer to contain all the requested data returned
+ *           for that dirent. Application should make use of glfs_free() API
+ *           to free this pointer and the variables returned by
+ *           glfs_xreaddirplus_get_*() APIs.
+ *
+ * RETURN VALUE:
+ * >=0: SUCCESS (value contains the flags successfully processed)
+ *  -1: FAILURE
+ */
+int
+glfs_xreaddirplus_r (struct glfs_fd *glfd, uint32_t flags,
+                     struct glfs_xreaddirp_stat **xstat_p,
+                     struct dirent *ext, struct dirent **res);
+        GFAPI_PUBLIC(glfs_xreaddirplus_r, 3.11.0);
 
 __END_DECLS
 

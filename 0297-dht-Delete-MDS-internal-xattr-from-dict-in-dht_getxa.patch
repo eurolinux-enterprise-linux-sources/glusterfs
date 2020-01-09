@@ -1,0 +1,104 @@
+From bffd85fc848a02b69db27c8f4d9d0882e2859fc9 Mon Sep 17 00:00:00 2001
+From: moagrawa <moagrawa@redhat.com>
+Date: Wed, 6 Jun 2018 07:39:29 +0530
+Subject: [PATCH 297/305] dht: Delete MDS internal xattr from dict in
+ dht_getxattr_cbk
+
+Problem: At the time of fetching xattr to heal xattr by afr
+         it is not able to fetch xattr because posix_getxattr
+         has a check to ignore if xattr name is MDS
+
+Solution: To ignore same xattr update a check in dht_getxattr_cbk
+          instead of having a check in posix_getxattr
+
+> BUG: 1584098
+> Change-Id: I86cd2b2ee08488cb6c12f407694219d57c5361dc
+> fixes: bz#1584098
+> cherry pick from commit 2c1131e5868e46cfc806fb3a1cb63a5e554b4d6c
+> (Upstream review link https://review.gluster.org/#/c/20102/)
+
+BUG: 1582119
+Change-Id: I71894c0754a09994a3fe69915fb17b6adf2b86c5
+Signed-off-by: moagrawa <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140773
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c |  4 ++++
+ xlators/storage/posix/src/posix.c    | 31 -------------------------------
+ 2 files changed, 4 insertions(+), 31 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 5f246b1..c6adce4 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -4537,6 +4537,10 @@ dht_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                         dict_del (xattr, conf->xattr_name);
+                 }
+ 
++                if (dict_get (xattr,  conf->mds_xattr_key)) {
++                        dict_del (xattr, conf->mds_xattr_key);
++                }
++
+                 if (frame->root->pid >= 0) {
+                         GF_REMOVE_INTERNAL_XATTR
+                                 ("trusted.glusterfs.quota*", xattr);
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 416d9e4..6aa64f9 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -4626,26 +4626,6 @@ out:
+         return ret;
+ }
+ 
+-gf_boolean_t
+-posix_is_mds_xattr (const char *name)
+-{
+-        regex_t regcmpl;
+-        char *key = {"trusted.glusterfs.*.mds$"};
+-        regmatch_t result[1] = {{0} };
+-        gf_boolean_t status = _gf_false;
+-
+-        if (regcomp (&regcmpl, key, REG_EXTENDED)) {
+-                goto out;
+-        }
+-        if (!regexec (&regcmpl, name, 1, result, 0)) {
+-                status = _gf_true;
+-                goto out;
+-        }
+-out:
+-        regfree(&regcmpl);
+-        return status;
+-}
+-
+ 
+ /**
+  * posix_getxattr - this function returns a dictionary with all the
+@@ -4702,13 +4682,6 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
+                 goto out;
+         }
+ 
+-        if (name && posix_is_mds_xattr (name)) {
+-                op_ret = -1;
+-                op_errno = ENOATTR;
+-                goto out;
+-        }
+-
+-
+         if (loc->inode && IA_ISDIR(loc->inode->ia_type) && name &&
+             ZR_FILE_CONTENT_REQUEST(name)) {
+                 ret = posix_get_file_contents (this, loc->gfid, &name[15],
+@@ -5078,10 +5051,6 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
+                         goto ignore;
+                 }
+ 
+-                if (posix_is_mds_xattr (keybuffer)) {
+-                        goto ignore;
+-                }
+-
+                 memset (value_buf, '\0', sizeof(value_buf));
+                 have_val = _gf_false;
+                 size = sys_lgetxattr (real_path, keybuffer, value_buf,
+-- 
+1.8.3.1
+

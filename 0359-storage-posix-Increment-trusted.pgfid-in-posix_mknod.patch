@@ -1,0 +1,137 @@
+From 5b628662aa823770179c5592c182dd8b6acc9b1d Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Thu, 23 Aug 2018 18:38:01 +0530
+Subject: [PATCH 359/359] storage/posix: Increment trusted.pgfid in posix_mknod
+
+The value of trusted.pgfid.xx was always set to 1
+in posix_mknod. This is incorrect if posix_mknod
+calls posix_create_link_if_gfid_exists.
+
+upstream patch: https://review.gluster.org/#/c/glusterfs/+/20875/
+
+> Change-Id: Ibe87ca6f155846b9a7c7abbfb1eb8b6a99a5eb68
+> fixes: bz#1619720
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: Iaa7ad44b918eed28718f62c312f2d8edf01b9256
+BUG: 1620765
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147891
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ tests/bugs/posix/bug-1619720.t    | 57 +++++++++++++++++++++++++++++++++++++++
+ xlators/storage/posix/src/posix.c | 18 ++++++++++---
+ 2 files changed, 71 insertions(+), 4 deletions(-)
+ create mode 100755 tests/bugs/posix/bug-1619720.t
+
+diff --git a/tests/bugs/posix/bug-1619720.t b/tests/bugs/posix/bug-1619720.t
+new file mode 100755
+index 0000000..5e0d0f7
+--- /dev/null
++++ b/tests/bugs/posix/bug-1619720.t
+@@ -0,0 +1,57 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../dht.rc
++
++cleanup;
++
++
++# Test steps:
++# The test checks to make sure that the trusted.pgfid.xx xattr is set on
++# both the linkto and data files post the final rename.
++# The test creates files file-1 and file-3 so that src_hashed = dst_hashed,
++# src_cached = dst_cached and xxx_hashed != xxx_cached.
++# It then renames file-1 to file-3 which triggers the posix_mknod call
++# which updates the trusted.pgfid.xx xattr.
++
++
++TEST glusterd
++TEST pidof glusterd
++
++TEST $CLI volume create $V0 $H0:$B0/${V0}0 $H0:$B0/${V0}1
++TEST $CLI volume start $V0
++TEST $CLI volume set $V0 storage.build-pgfid on
++
++## Mount FUSE
++TEST glusterfs -s $H0 --volfile-id $V0 $M0;
++
++TEST mkdir $M0/tmp
++
++
++
++# Not the best way to do this but I need files which hash to the same subvol and
++# whose cached subvols are the same.
++# In a 2 subvol distributed volume, file-{1,3} hash to the same subvol.
++# file-2 will hash to the other subvol
++
++TEST touch $M0/tmp/file-2
++pgfid_xattr_name=$(getfattr -m "trusted.pgfid.*" $B0/${V0}1/tmp/file-2 | grep "trusted.pgfid")
++echo $pgfid_xattr_name
++
++
++TEST mv $M0/tmp/file-2 $M0/tmp/file-1
++TEST touch $M0/tmp/file-2
++TEST mv $M0/tmp/file-2 $M0/tmp/file-3
++
++# At this point, both the file-1 and file-3 data files exist on one subvol
++# and both linkto files on the other
++
++TEST mv -f $M0/tmp/file-1 $M0/tmp/file-3
++
++TEST getfattr -n $pgfid_xattr_name $B0/${V0}0/tmp/file-3
++TEST getfattr -n $pgfid_xattr_name $B0/${V0}1/tmp/file-3
++
++# Not required for the test but an extra check if required.
++# The linkto file was not renamed Without the fix.
++#TEST mv $M0/tmp/file-3 $M0/tmp/file-6
++cleanup;
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 28d2e6f..5088469 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -1427,6 +1427,7 @@ posix_mknod (call_frame_t *frame, xlator_t *this,
+         gf_boolean_t          entry_created   = _gf_false, gfid_set = _gf_false;
+         gf_boolean_t          linked          = _gf_false;
+         gf_loglevel_t         level           = GF_LOG_NONE;
++        posix_inode_ctx_t     *ctx            = NULL;
+ 
+         DECLARE_OLD_FS_ID_VAR;
+ 
+@@ -1556,10 +1557,20 @@ post_op:
+         if (priv->update_pgfid_nlinks) {
+                 MAKE_PGFID_XATTR_KEY (pgfid_xattr_key, PGFID_XATTR_KEY_PREFIX,
+                                       loc->pargfid);
+-                nlink_samepgfid = 1;
++                op_ret = posix_inode_ctx_get_all (loc->inode, this, &ctx);
++                if (op_ret < 0) {
++                        op_errno = ENOMEM;
++                        goto out;
++                }
+ 
+-                SET_PGFID_XATTR (real_path, pgfid_xattr_key, nlink_samepgfid,
+-                                 XATTR_CREATE, op_ret, this, ignore);
++                pthread_mutex_lock (&ctx->pgfid_lock);
++                {
++                        LINK_MODIFY_PGFID_XATTR (real_path, pgfid_xattr_key,
++                                                 nlink_samepgfid, 0, op_ret,
++                                                 this, unlock);
++                }
++unlock:
++                pthread_mutex_unlock (&ctx->pgfid_lock);
+         }
+ 
+         if (priv->gfid2path) {
+@@ -1567,7 +1578,6 @@ post_op:
+                                            loc->name);
+         }
+ 
+-ignore:
+         op_ret = posix_entry_create_xattr_set (this, real_path, xdata);
+         if (op_ret) {
+                 if (errno != EEXIST)
+-- 
+1.8.3.1
+

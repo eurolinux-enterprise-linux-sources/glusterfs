@@ -1,0 +1,31 @@
+From 05942267fc5d33be457cf07f95d9dae2341e1050 Mon Sep 17 00:00:00 2001
+From: Sunil Kumar Acharya <sheggodu@redhat.com>
+Date: Wed, 25 Apr 2018 14:56:55 +0530
+Subject: [PATCH 242/260] feature/changelog: remove unused variable
+
+Fix removes unsed variable in notify().
+
+BUG: 1571645
+Change-Id: I60fb61ae4ed3e80e2ecf93935477db0fcb2cd156
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136830
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/features/changelog/src/changelog.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/xlators/features/changelog/src/changelog.c b/xlators/features/changelog/src/changelog.c
+index 121ab04..7e36172 100644
+--- a/xlators/features/changelog/src/changelog.c
++++ b/xlators/features/changelog/src/changelog.c
+@@ -2102,7 +2102,6 @@ notify (xlator_t *this, int event, void *data, ...)
+         int                     ret             = 0;
+         int                     ret1            = 0;
+         struct list_head        queue           = {0, };
+-        int                     i               = 0;
+ 
+         INIT_LIST_HEAD (&queue);
+ 
+-- 
+1.8.3.1
+

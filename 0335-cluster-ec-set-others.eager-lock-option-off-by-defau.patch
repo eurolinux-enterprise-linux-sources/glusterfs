@@ -1,0 +1,44 @@
+From 9408859ce233c84f94fe4b7dd73cbbdc09fac10c Mon Sep 17 00:00:00 2001
+From: Ashish Pandey <aspandey@redhat.com>
+Date: Thu, 2 Aug 2018 10:54:52 +0530
+Subject: [PATCH 335/351] cluster/ec: set others.eager-lock option off by
+ default
+
+This patch is only for downstream.
+We will revert the changes back to ON once we take
+lock contention feature for downstream, which is already present
+in upstream.
+
+Change-Id: I4619eb692fe66732d5373dd63afd28b44467027a
+BUG: 1611151
+Signed-off-by: Ashish Pandey <aspandey@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/145842
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/ec/src/ec.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/ec/src/ec.c b/xlators/cluster/ec/src/ec.c
+index 0d59efd..9a23a45 100644
+--- a/xlators/cluster/ec/src/ec.c
++++ b/xlators/cluster/ec/src/ec.c
+@@ -1434,9 +1434,13 @@ struct volume_options options[] =
+                      "disabled, lock will be released as soon as fop "
+                      "completes."
+     },
++    /* Keeping this option OFF by default. Once we take lock
++     * contention notification feature (upstream patch #14736) in for
++     * downstream we can revert this to ON.
++     */
+     { .key = {"other-eager-lock"},
+       .type = GF_OPTION_TYPE_BOOL,
+-      .default_value = "on",
++      .default_value = "off",
+       .description = "It's equivalent to the eager-lock option but for non "
+                      "regular files."
+     },
+-- 
+1.8.3.1
+

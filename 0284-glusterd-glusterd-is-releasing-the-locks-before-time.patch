@@ -1,0 +1,264 @@
+From 123f052f7925074087e4393b22f68b9eb510936d Mon Sep 17 00:00:00 2001
+From: Sanju Rakonde <srakonde@redhat.com>
+Date: Tue, 17 Apr 2018 18:10:01 +0530
+Subject: [PATCH 284/305] glusterd: glusterd is releasing the locks before
+ timeout
+
+Problem: We introduced lock timer in mgmt v3, which will realease
+the lock after 3 minutes from command execution. Some commands related
+to heal/profile will take more time to execute. For these comands
+timeout is set to 10 minutes. As the lock timer is set to 3 minutes
+glusterd is releasing the lock after 3 minutes. That means locks are
+released before the command is completed its execution.
+
+Solution: Pass a timeout parameter from cli to glusterd, when there
+is a change in default timeout value(i.e, default timeout value can
+be changed through command line or for the commands related to profile/heal
+we will change the default timeout value to 10 minutes.) glusterd will
+set the lock timer timeout according to the timeout value passed.
+
+>Change-Id: I7b7a9a4f95ed44aca39ef9d9907f546bca99c69d
+>fixes: bz#1577731
+>Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/19890/
+
+Change-Id: I7b7a9a4f95ed44aca39ef9d9907f546bca99c69d
+BUG: 1575557
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140025
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ cli/src/cli-rpc-ops.c                             | 22 ++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-handler.c      | 10 ++++++++++
+ xlators/mgmt/glusterd/src/glusterd-locks.c        |  2 ++
+ xlators/mgmt/glusterd/src/glusterd-mgmt-handler.c | 13 +++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-mgmt.c         | 10 ++++++++++
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c        | 14 ++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-syncop.c       |  9 +++++++++
+ 7 files changed, 80 insertions(+)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 1bb01e8..54b61ee65 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -91,6 +91,9 @@ cli_to_glusterd (gf_cli_req *req, call_frame_t *frame, fop_cbk_fn_t cbkfn,
+                  xdrproc_t xdrproc, dict_t *dict, int procnum, xlator_t *this,
+                  rpc_clnt_prog_t *prog, struct iobref *iobref);
+ 
++int
++add_cli_cmd_timeout_to_dict (dict_t *dict);
++
+ rpc_clnt_prog_t cli_handshake_prog = {
+         .progname  = "cli handshake",
+         .prognum   = GLUSTER_HNDSK_PROGRAM,
+@@ -4131,6 +4134,8 @@ cli_quotad_getlimit (call_frame_t *frame, xlator_t *this, void *data)
+         }
+ 
+         dict = data;
++        ret = add_cli_cmd_timeout_to_dict (dict);
++
+         ret = dict_allocate_and_serialize (dict, &req.dict.dict_val,
+                                            &req.dict.dict_len);
+         if (ret < 0) {
+@@ -11650,6 +11655,21 @@ out:
+ }
+ 
+ int
++add_cli_cmd_timeout_to_dict (dict_t *dict)
++{
++        int      ret     = 0;
++
++        if (cli_default_conn_timeout > 120) {
++                ret = dict_set_uint32 (dict, "timeout", cli_default_conn_timeout);
++                if (ret) {
++                        gf_log ("cli", GF_LOG_INFO, "Failed to save"
++                                "timeout to dict");
++                }
++        }
++        return ret;
++}
++
++int
+ cli_to_glusterd (gf_cli_req *req, call_frame_t *frame,
+                  fop_cbk_fn_t cbkfn, xdrproc_t xdrproc, dict_t *dict,
+                  int procnum, xlator_t *this, rpc_clnt_prog_t *prog,
+@@ -11703,6 +11723,8 @@ cli_to_glusterd (gf_cli_req *req, call_frame_t *frame,
+         if (ret)
+                 goto out;
+ 
++        ret = add_cli_cmd_timeout_to_dict (dict);
++
+         ret = dict_allocate_and_serialize (dict, &(req->dict).dict_val,
+                                            &(req->dict).dict_len);
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index 962c87e..c072b05 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -718,6 +718,7 @@ glusterd_op_txn_begin (rpcsvc_request_t *req, glusterd_op_t op, void *ctx,
+         glusterd_op_info_t          txn_op_info     = {{0},};
+         glusterd_op_sm_event_type_t event_type      = GD_OP_EVENT_NONE;
+         uint32_t                    op_errno        = 0;
++        uint32_t                    timeout          = 0;
+ 
+         GF_ASSERT (req);
+         GF_ASSERT ((op > GD_OP_NONE) && (op < GD_OP_MAX));
+@@ -785,6 +786,15 @@ glusterd_op_txn_begin (rpcsvc_request_t *req, glusterd_op_t op, void *ctx,
+                                 goto out;
+                 }
+ 
++                /* Cli will add timeout key to dict if the default timeout is
++                 * other than 2 minutes. Here we use this value to check whether
++                 * mgmt_v3_lock_timeout should be set to default value or we
++                 * need to change the value according to timeout value
++                 * i.e, timeout + 120 seconds. */
++                ret = dict_get_uint32 (dict, "timeout", &timeout);
++                if (!ret)
++                        priv->mgmt_v3_lock_timeout = timeout + 120;
++
+                 ret = glusterd_mgmt_v3_lock (volname, MY_UUID, &op_errno,
+                                              "vol");
+                 if (ret) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-locks.c b/xlators/mgmt/glusterd/src/glusterd-locks.c
+index a19d688..831be20 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-locks.c
++++ b/xlators/mgmt/glusterd/src/glusterd-locks.c
+@@ -656,6 +656,8 @@ glusterd_mgmt_v3_lock (const char *name, uuid_t uuid, uint32_t *op_errno,
+         key_dup = gf_strdup (key);
+         delay.tv_sec = priv->mgmt_v3_lock_timeout;
+         delay.tv_nsec = 0;
++        /*changing to default timeout value*/
++        priv->mgmt_v3_lock_timeout = GF_LOCK_TIMER;
+ 
+         ret = -1;
+         mgmt_lock_timer_xl = mgmt_lock_timer->xl;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-mgmt-handler.c b/xlators/mgmt/glusterd/src/glusterd-mgmt-handler.c
+index 5b7f0fa..993f12a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-mgmt-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-mgmt-handler.c
+@@ -132,8 +132,12 @@ glusterd_handle_mgmt_v3_lock_fn (rpcsvc_request_t *req)
+         xlator_t               *this            = NULL;
+         gf_boolean_t            is_synctasked   = _gf_false;
+         gf_boolean_t            free_ctx        = _gf_false;
++        glusterd_conf_t        *conf            = NULL;
++        uint32_t                timeout         = 0;
+ 
+         this = THIS;
++        conf = this->private;
++        GF_ASSERT (conf);
+         GF_ASSERT (this);
+         GF_ASSERT (req);
+ 
+@@ -183,6 +187,15 @@ glusterd_handle_mgmt_v3_lock_fn (rpcsvc_request_t *req)
+                 goto out;
+         }
+ 
++        /* Cli will add timeout key to dict if the default timeout is
++         * other than 2 minutes. Here we use this value to check whether
++         * mgmt_v3_lock_timeout should be set to default value or we
++         * need to change the value according to timeout value
++         * i.e, timeout + 120 seconds. */
++        ret = dict_get_uint32 (ctx->dict, "timeout", &timeout);
++        if (!ret)
++                conf->mgmt_v3_lock_timeout = timeout + 120;
++
+         is_synctasked = dict_get_str_boolean (ctx->dict,
+                                               "is_synctasked", _gf_false);
+         if (is_synctasked) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-mgmt.c b/xlators/mgmt/glusterd/src/glusterd-mgmt.c
+index 8bc1f1b..d7da3c1 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-mgmt.c
++++ b/xlators/mgmt/glusterd/src/glusterd-mgmt.c
+@@ -693,6 +693,7 @@ glusterd_mgmt_v3_initiate_lockdown (glusterd_op_t op, dict_t *dict,
+         uuid_t               peer_uuid  = {0};
+         xlator_t            *this       = NULL;
+         glusterd_conf_t     *conf       = NULL;
++        uint32_t             timeout    = 0;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -703,6 +704,15 @@ glusterd_mgmt_v3_initiate_lockdown (glusterd_op_t op, dict_t *dict,
+         GF_ASSERT (op_errstr);
+         GF_ASSERT (is_acquired);
+ 
++        /* Cli will add timeout key to dict if the default timeout is
++         * other than 2 minutes. Here we use this value to check whether
++         * mgmt_v3_lock_timeout should be set to default value or we
++         * need to change the value according to timeout value
++         * i.e, timeout + 120 seconds. */
++        ret = dict_get_uint32 (dict, "timeout", &timeout);
++        if (!ret)
++                conf->mgmt_v3_lock_timeout = timeout + 120;
++
+         /* Trying to acquire multiple mgmt_v3 locks on local node */
+         ret = glusterd_multiple_mgmt_v3_lock (dict, MY_UUID, op_errno);
+         if (ret) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 7107a46..7e959a0 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -4159,11 +4159,16 @@ glusterd_op_ac_lock (glusterd_op_sm_event_t *event, void *ctx)
+         glusterd_op_lock_ctx_t         *lock_ctx        = NULL;
+         xlator_t                       *this            = NULL;
+         uint32_t                        op_errno        = 0;
++        glusterd_conf_t                *conf            = NULL;
++        uint32_t                        timeout         = 0;
+ 
+         GF_ASSERT (event);
+         GF_ASSERT (ctx);
+ 
+         this = THIS;
++        GF_ASSERT (this);
++        conf = this->private;
++        GF_ASSERT (conf);
+ 
+         lock_ctx = (glusterd_op_lock_ctx_t *)ctx;
+ 
+@@ -4174,6 +4179,15 @@ glusterd_op_ac_lock (glusterd_op_sm_event_t *event, void *ctx)
+                 ret = glusterd_lock (lock_ctx->uuid);
+                 glusterd_op_lock_send_resp (lock_ctx->req, ret);
+         } else {
++                /* Cli will add timeout key to dict if the default timeout is
++                 * other than 2 minutes. Here we use this value to check whether
++                 * mgmt_v3_lock_timeout should be set to default value or we
++                 * need to change the value according to timeout value
++                 * i.e, timeout + 120 seconds. */
++                ret = dict_get_uint32 (lock_ctx->dict, "timeout", &timeout);
++                if (!ret)
++                        conf->mgmt_v3_lock_timeout = timeout + 120;
++
+                 ret = dict_get_str (lock_ctx->dict, "volname", &volname);
+                 if (ret)
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-syncop.c b/xlators/mgmt/glusterd/src/glusterd-syncop.c
+index 066c7f9..5aaa7f8 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-syncop.c
++++ b/xlators/mgmt/glusterd/src/glusterd-syncop.c
+@@ -1818,6 +1818,7 @@ gd_sync_task_begin (dict_t *op_ctx, rpcsvc_request_t * req)
+         glusterd_op_info_t          txn_opinfo       = {{0},};
+         uint32_t                    op_errno         = 0;
+         gf_boolean_t                cluster_lock     = _gf_false;
++        uint32_t                    timeout          = 0;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -1879,6 +1880,14 @@ gd_sync_task_begin (dict_t *op_ctx, rpcsvc_request_t * req)
+                         goto out;
+                 }
+         } else {
++                /* Cli will add timeout key to dict if the default timeout is
++                 * other than 2 minutes. Here we use this value to check whether
++                 * mgmt_v3_lock_timeout should be set to default value or we
++                 * need to change the value according to timeout value
++                 * i.e, timeout + 120 seconds. */
++                ret = dict_get_uint32 (op_ctx, "timeout", &timeout);
++                if (!ret)
++                        conf->mgmt_v3_lock_timeout = timeout + 120;
+ 
+                 ret = dict_get_str (op_ctx, "globalname", &global);
+                 if (!ret) {
+-- 
+1.8.3.1
+

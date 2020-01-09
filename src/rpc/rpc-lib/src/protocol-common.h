@@ -60,8 +60,13 @@ enum gf_fop_procnum {
 	GFS3_OP_DISCARD,
         GFS3_OP_ZEROFILL,
         GFS3_OP_IPC,
+        GFS3_OP_SEEK,
+        GFS3_OP_COMPOUND,
+        GFS3_OP_LEASE,
+        GFS3_OP_GETACTIVELK,
+        GFS3_OP_SETACTIVELK,
         GFS3_OP_MAXVALUE,
-} ;
+};
 
 enum gf_handshake_procnum {
         GF_HNDSK_NULL,
@@ -79,6 +84,11 @@ enum gf_pmap_procnum {
         GF_PMAP_NULL = 0,
         GF_PMAP_PORTBYBRICK,
         GF_PMAP_BRICKBYPORT,
+        /*
+         * SIGNUP is not used, and shouldn't be used.  It was kept here only
+         * to avoid changing the numbers for things that come after it in this
+         * list.
+         */
         GF_PMAP_SIGNUP,
         GF_PMAP_SIGNIN,
         GF_PMAP_SIGNOUT,
@@ -94,10 +104,10 @@ enum gf_aggregator_procnum {
 
 enum gf_pmap_port_type {
         GF_PMAP_PORT_FREE = 0,
-        GF_PMAP_PORT_FOREIGN,
+        GF_PMAP_PORT_FOREIGN,     /* it actually means, not sure who is using it, but it is in-use */
         GF_PMAP_PORT_LEASED,
-        GF_PMAP_PORT_NONE,
-        GF_PMAP_PORT_BRICKSERVER,
+        GF_PMAP_PORT_ANY,
+        GF_PMAP_PORT_BRICKSERVER, /* port used by brick process */
 };
 typedef enum gf_pmap_port_type gf_pmap_port_type_t;
 
@@ -124,6 +134,7 @@ enum gf_deprobe_resp {
         GF_DEPROBE_FRIEND_DOWN,
         GF_DEPROBE_QUORUM_NOT_MET,
         GF_DEPROBE_FRIEND_DETACHING,
+        GF_DEPROBE_SNAP_BRICK_EXIST,
 };
 
 enum gf_cbk_procnum {
@@ -133,6 +144,10 @@ enum gf_cbk_procnum {
         GF_CBK_EVENT_NOTIFY,
         GF_CBK_GET_SNAPS,
         GF_CBK_CACHE_INVALIDATION,
+        GF_CBK_CHILD_UP,
+        GF_CBK_CHILD_DOWN,
+        GF_CBK_RECALL_LEASE,
+        GF_CBK_STATEDUMP,
         GF_CBK_MAXVALUE,
 };
 
@@ -182,8 +197,11 @@ enum gluster_cli_procnum {
         GLUSTER_CLI_GANESHA,
         GLUSTER_CLI_BITROT,
         GLUSTER_CLI_ATTACH_TIER,
-        GLUSTER_CLI_DETACH_TIER,
         GLUSTER_CLI_TIER,
+        GLUSTER_CLI_GET_STATE,
+        GLUSTER_CLI_RESET_BRICK,
+        GLUSTER_CLI_REMOVE_TIER_BRICK,
+        GLUSTER_CLI_ADD_TIER_BRICK,
         GLUSTER_CLI_MAXVALUE,
 };
 
@@ -218,6 +236,7 @@ enum glusterd_brick_procnum {
         GLUSTERD_VOLUME_BARRIER_OP,
         GLUSTERD_BRICK_BARRIER,
         GLUSTERD_NODE_BITROT,
+        GLUSTERD_BRICK_ATTACH,
         GLUSTERD_BRICK_MAXVALUE,
 };
 
@@ -243,6 +262,9 @@ typedef enum {
         GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK,
         GF_SHD_OP_HEAL_ENABLE,
         GF_SHD_OP_HEAL_DISABLE,
+        GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME,
+        GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE,
+        GF_SHD_OP_GRANULAR_ENTRY_HEAL_DISABLE,
 } gf_xl_afr_op_t ;
 
 struct gf_gsync_detailed_status_ {

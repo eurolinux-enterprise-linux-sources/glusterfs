@@ -1,0 +1,44 @@
+From fbc5dae0c743d97d3f753f1c6a9635db6feba137 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 27 Nov 2017 09:50:32 +0530
+Subject: [PATCH 236/236] cluster-syncop: Address comments in
+ 3ad68df725ac32f83b5ea7c0976e2327e7037c8c
+
+Upstream-patch: https://review.gluster.org/18857
+BUG: 1562744
+Change-Id: I325f718c6c440076c9d9dcd5ad1a0c6bde5393b1
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134279
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Ashish Pandey <aspandey@redhat.com>
+---
+ libglusterfs/src/cluster-syncop.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/libglusterfs/src/cluster-syncop.c b/libglusterfs/src/cluster-syncop.c
+index 75ba640..50542eb 100644
+--- a/libglusterfs/src/cluster-syncop.c
++++ b/libglusterfs/src/cluster-syncop.c
+@@ -1220,6 +1220,10 @@ cluster_tiebreaker_inodelk (xlator_t **subvols, unsigned char *on,
+                         num_success++;
+                         continue;
+                 }
++
++                /* TODO: If earlier subvols fail with an error other
++                 * than EAGAIN, we could still have 2 clients competing
++                 * for the lock*/
+                 if (replies[i].op_ret == -1 && replies[i].op_errno == EAGAIN) {
+                         cluster_fop_success_fill (replies, numsubvols,
+                                                   locked_on);
+@@ -1231,8 +1235,6 @@ cluster_tiebreaker_inodelk (xlator_t **subvols, unsigned char *on,
+                                 FOP_SEQ (subvols, on, numsubvols, replies,
+                                          locked_on, frame, inodelk, dom, &loc,
+                                          F_SETLKW, &flock, NULL);
+-                        } else {
+-                                memset (locked_on, 0, numsubvols);
+                         }
+                         break;
+                 }
+-- 
+1.8.3.1
+

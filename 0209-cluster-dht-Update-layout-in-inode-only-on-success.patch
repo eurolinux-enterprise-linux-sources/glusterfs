@@ -1,0 +1,97 @@
+From b3c216d77ae7a054d4f5f28a93239afe00771cd8 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Thu, 29 Mar 2018 18:23:13 +0530
+Subject: [PATCH 209/212] cluster/dht: Update layout in inode only on success
+
+With lookup-optimize enabled, gf_defrag_settle_hash in rebalance
+sometimes flips the on-disk layout on volume root post the
+migration of all files in the directory.
+
+This is sometimes seen when attempting to fix the layout of a
+directory multiple times before calling gf_defrag_settle_hash.
+dht_fix_layout_of_directory generates a new layout in memory but
+updates it in the inode ctx before it is set on disk. The layout
+may be different the second time around due to
+dht_selfheal_layout_maximize_overlap. If the layout is then not
+written to the disk, the inode now contains the wrong layout.
+gf_defrag_settle_hash does not check the correctness of the layout
+in the inode before updating the commit-hash and writing it to the
+disk thus changing the layout of the directory.
+
+upstream master:https://review.gluster.org/#/c/19797/
+
+> Change-Id: Ie1407d92982518f2a0c40ec70ad370b34a87b4d4
+> updates: bz#1557435
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I4222b7c985226ca175e0581c103bad62084339a2
+BUG: 1557365
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134451
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c   | 25 ++++++++++++++++++++++++-
+ xlators/cluster/dht/src/dht-selfheal.c |  3 ---
+ 2 files changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index f1e6a92..6319a87 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -3545,6 +3545,28 @@ dht_common_setxattr_cbk (call_frame_t *frame, void *cookie,
+ 
+ 
+ 
++static int
++dht_fix_layout_setxattr_cbk (call_frame_t *frame, void *cookie,
++                             xlator_t *this, int32_t op_ret, int32_t op_errno,
++                             dict_t *xdata)
++{
++        dht_local_t   *local   = NULL;
++        dht_layout_t  *layout  = NULL;
++
++        if (op_ret == 0) {
++
++                /* update the layout in the inode ctx */
++                local = frame->local;
++                layout = local->selfheal.layout;
++
++                dht_layout_set (this, local->loc.inode, layout);
++        }
++
++         DHT_STACK_UNWIND (setxattr, frame, op_ret, op_errno, xdata);
++         return 0;
++}
++
++
+ int
+ dht_err_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+              int op_ret, int op_errno, dict_t *xdata)
+@@ -5531,7 +5553,8 @@ dht_setxattr (call_frame_t *frame, xlator_t *this,
+                         DHT_MSG_FIX_LAYOUT_INFO,
+                         "fixing the layout of %s", loc->path);
+ 
+-                ret = dht_fix_directory_layout (frame, dht_common_setxattr_cbk,
++                ret = dht_fix_directory_layout (frame,
++                                                dht_fix_layout_setxattr_cbk,
+                                                 layout);
+                 if (ret) {
+                         op_errno = ENOTCONN;
+diff --git a/xlators/cluster/dht/src/dht-selfheal.c b/xlators/cluster/dht/src/dht-selfheal.c
+index 328251d..1707e08 100644
+--- a/xlators/cluster/dht/src/dht-selfheal.c
++++ b/xlators/cluster/dht/src/dht-selfheal.c
+@@ -2112,9 +2112,6 @@ dht_fix_layout_of_directory (call_frame_t *frame, loc_t *loc,
+         }
+ done:
+         if (new_layout) {
+-                /* Now that the new layout has all the proper layout, change the
+-                   inode context */
+-                dht_layout_set (this, loc->inode, new_layout);
+ 
+                 /* Make sure the extra 'ref' for existing layout is removed */
+                 dht_layout_unref (this, local->layout);
+-- 
+1.8.3.1
+

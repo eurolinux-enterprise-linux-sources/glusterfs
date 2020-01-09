@@ -53,7 +53,7 @@ changelog_dispatch_vec (call_frame_t *frame, xlator_t *this,
 
          /**
           * Event dispatch RPC header contains a sequence number for each
-          * dispatch. This allows the reciever to order the request before
+          * dispatch. This allows the receiver to order the request before
           * processing.
           */
          req.seq     = vec->seq;
@@ -74,7 +74,6 @@ changelog_dispatch_vec (call_frame_t *frame, xlator_t *this,
          int                idx      = 0;
          int                count    = 0;
          int                ret      = 0;
-         unsigned long      range    = 0;
          unsigned long      sequence = 0;
          rbuf_iovec_t      *rvec     = NULL;
          struct ev_rpc     *erpc     = NULL;
@@ -83,7 +82,7 @@ changelog_dispatch_vec (call_frame_t *frame, xlator_t *this,
          /* dispatch NR_IOVEC IO vectors at a time. */
 
          erpc = data;
-         RLIST_GET_SEQ (erpc->rlist, sequence, range);
+         sequence = erpc->rlist->seq[0];
 
          rlist_iter_init (&riter, erpc->rlist);
 
@@ -157,6 +156,13 @@ changelog_rpc_notify (struct rpc_clnt *rpc,
                 break;
         case RPC_CLNT_DISCONNECT:
                 rpc_clnt_disable (crpc->rpc);
+
+                /* rpc_clnt_disable doesn't unref the rpc. It just marks
+                 * the rpc as disabled and cancels reconnection timer.
+                 * Hence unref the rpc object to free it.
+                 */
+                rpc_clnt_unref (crpc->rpc);
+
                 selection = &priv->ev_selection;
 
                 LOCK (&crpc->lock);
@@ -170,6 +176,10 @@ changelog_rpc_notify (struct rpc_clnt *rpc,
                 break;
         case RPC_CLNT_MSG:
         case RPC_CLNT_DESTROY:
+                /* Free up mydata */
+                changelog_rpc_clnt_unref (crpc);
+                break;
+        case RPC_CLNT_PING:
                 break;
         }
 
@@ -199,8 +209,10 @@ changelog_ev_connector (void *data)
                                                            crpc->sock,
                                                            changelog_rpc_notify);
                         if (!crpc->rpc) {
-                                gf_log (this->name, GF_LOG_ERROR, "failed to "
-                                        "connect back.. <%s>", crpc->sock);
+                                gf_msg (this->name, GF_LOG_ERROR, 0,
+                                        CHANGELOG_MSG_RPC_CONNECT_ERROR,
+                                        "failed to connect back.. <%s>",
+                                        crpc->sock);
                                 crpc->cleanup (crpc);
                                 goto mutex_unlock;
                         }
@@ -221,7 +233,6 @@ changelog_ev_connector (void *data)
 void
 changelog_ev_cleanup_connections (xlator_t *this, changelog_clnt_t *c_clnt)
 {
-        int ret = 0;
         changelog_rpc_clnt_t *crpc = NULL;
 
         /* cleanup active connections */
@@ -251,7 +262,9 @@ get_client (changelog_clnt_t *c_clnt, struct list_head **next)
                 if (*next == &c_clnt->active)
                         goto unblock;
                 crpc = list_entry (*next, changelog_rpc_clnt_t, list);
+                /* ref rpc as DISCONNECT might unref the rpc asynchronously */
                 changelog_rpc_clnt_ref (crpc);
+                rpc_clnt_ref (crpc->rpc);
                 *next = (*next)->next;
         }
  unblock:
@@ -265,6 +278,7 @@ put_client (changelog_clnt_t *c_clnt, changelog_rpc_clnt_t *crpc)
 {
         LOCK (&c_clnt->active_lock);
         {
+                rpc_clnt_unref (crpc->rpc);
                 changelog_rpc_clnt_unref (crpc);
         }
         UNLOCK (&c_clnt->active_lock);
@@ -273,11 +287,9 @@ put_client (changelog_clnt_t *c_clnt, changelog_rpc_clnt_t *crpc)
 void
 _dispatcher (rbuf_list_t *rlist, void *arg)
 {
-        int                   ret    = 0;
         xlator_t             *this   = NULL;
         changelog_clnt_t     *c_clnt = NULL;
         changelog_rpc_clnt_t *crpc   = NULL;
-        changelog_rpc_clnt_t *tmp    = NULL;
         struct ev_rpc         erpc   = {0,};
         struct list_head     *next   = NULL;
 
@@ -292,9 +304,9 @@ _dispatcher (rbuf_list_t *rlist, void *arg)
                 if (!crpc)
                         break;
                 erpc.rpc = crpc->rpc;
-                ret = changelog_invoke_rpc (this, crpc->rpc,
-                                            &changelog_ev_program,
-                                            CHANGELOG_REV_PROC_EVENT, &erpc);
+                (void) changelog_invoke_rpc (this, crpc->rpc,
+                                             &changelog_ev_program,
+                                             CHANGELOG_REV_PROC_EVENT, &erpc);
                 put_client (c_clnt, crpc);
         }
 }
@@ -330,6 +342,7 @@ changelog_ev_dispatch (void *data)
 
         while (1) {
                 /* TODO: change this to be pthread cond based.. later */
+
                 tv.tv_sec = 1;
                 tv.tv_usec = 0;
                 select (0, NULL, NULL, NULL, &tv);
@@ -338,7 +351,8 @@ changelog_ev_dispatch (void *data)
                                        &opaque, sequencer, c_clnt);
                 if (ret != RBUF_CONSUMABLE) {
                         if (ret != RBUF_EMPTY)
-                                gf_log (this->name, GF_LOG_WARNING,
+                                gf_msg (this->name, GF_LOG_WARNING, 0,
+                                        CHANGELOG_MSG_BUFFER_STARVATION_ERROR,
                                         "Failed to get buffer for RPC dispatch "
                                         "[rbuf retval: %d]", ret);
                         continue;
@@ -347,8 +361,10 @@ changelog_ev_dispatch (void *data)
                 ret = rbuf_wait_for_completion (c_clnt->rbuf,
                                                 opaque, _dispatcher, c_clnt);
                 if (ret)
-                        gf_log (this->name, GF_LOG_WARNING,
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                CHANGELOG_MSG_PUT_BUFFER_FAILED,
                                 "failed to put buffer after consumption");
+
         }
 
         return NULL;

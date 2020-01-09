@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #ifdef HAVE_BACKTRACE
 #include <execinfo.h>
 #else
@@ -35,9 +30,14 @@
 #include <signal.h>
 #include <assert.h>
 #include <libgen.h> /* for dirname() */
+#include <grp.h>
 
 #if defined(GF_BSD_HOST_OS) || defined(GF_DARWIN_HOST_OS)
 #include <sys/sysctl.h>
+#endif
+#include <libgen.h>
+#ifndef GF_LINUX_HOST_OS
+#include <sys/resource.h>
 #endif
 
 #include "compat-errno.h"
@@ -49,20 +49,30 @@
 #include "globals.h"
 #include "lkowner.h"
 #include "syscall.h"
+#include "cli1-xdr.h"
+#include "xxhash.h"
 #include <ifaddrs.h>
 #include "libglusterfs-messages.h"
+#include "protocol-common.h"
 
 #ifndef AI_ADDRCONFIG
 #define AI_ADDRCONFIG 0
 #endif /* AI_ADDRCONFIG */
 
+char *vol_type_str[] = {"Distribute",
+                        "Stripe",
+                        "Replicate",
+                        "Striped-Replicate",
+                        "Disperse",
+                        "Tier",
+                        "Distributed-Stripe",
+                        "Distributed-Replicate",
+                        "Distributed-Striped-Replicate",
+                        "Distributed-Disperse",
+                       };
+
 typedef int32_t (*rw_op_t)(int32_t fd, char *buf, int32_t size);
 typedef int32_t (*rwv_op_t)(int32_t fd, const struct iovec *buf, int32_t size);
-
-struct dnscache6 {
-        struct addrinfo *first;
-        struct addrinfo *next;
-};
 
 void
 md5_wrapper(const unsigned char *data, size_t len, char *md5)
@@ -73,6 +83,23 @@ md5_wrapper(const unsigned char *data, size_t len, char *md5)
         MD5(data, len, scratch);
         for (; i < MD5_DIGEST_LENGTH; i++)
                 snprintf(md5 + i * 2, lim-i*2, "%02x", scratch[i]);
+}
+
+void
+gf_xxh64_wrapper(const unsigned char *data, size_t len, unsigned long long seed,
+                 char *xxh64)
+{
+        unsigned short         i      = 0;
+        unsigned short         lim    = GF_XXH64_DIGEST_LENGTH*2+1;
+        GF_XXH64_hash_t        hash   = 0;
+        GF_XXH64_canonical_t   c_hash = {{0,},};
+        const uint8_t         *p      = (const uint8_t *) &c_hash;
+
+        hash = GF_XXH64(data, len, seed);
+        GF_XXH64_canonicalFromHash(&c_hash, hash);
+
+        for (i = 0; i < GF_XXH64_DIGEST_LENGTH; i++)
+                snprintf(xxh64 + i * 2, lim-i*2, "%02x", p[i]);
 }
 
 /* works similar to mkdir(1) -p.
@@ -94,7 +121,7 @@ mkdir_p (char *path, mode_t mode, gf_boolean_t allow_symlinks)
                         continue;
 
                 dir[i] = '\0';
-                ret = mkdir (dir, mode);
+                ret = sys_mkdir (dir, mode);
                 if (ret && errno != EEXIST) {
                         gf_msg ("", GF_LOG_ERROR, errno, LG_MSG_DIR_OP_FAILED,
                                 "Failed due to reason");
@@ -102,7 +129,7 @@ mkdir_p (char *path, mode_t mode, gf_boolean_t allow_symlinks)
                 }
 
                 if (ret && errno == EEXIST && !allow_symlinks) {
-                        ret = lstat (dir, &stbuf);
+                        ret = sys_lstat (dir, &stbuf);
                         if (ret)
                                 goto out;
 
@@ -118,7 +145,7 @@ mkdir_p (char *path, mode_t mode, gf_boolean_t allow_symlinks)
 
         } while (path[i++] != '\0');
 
-        ret = stat (dir, &stbuf);
+        ret = sys_stat (dir, &stbuf);
         if (ret || !S_ISDIR (stbuf.st_mode)) {
                 if (ret == 0)
                         errno = 0;
@@ -190,32 +217,22 @@ gf_rev_dns_lookup (const char *ip)
 {
         char               *fqdn = NULL;
         int                ret  = 0;
-        struct sockaddr_in sa   = {0};
-        char               host_addr[256] = {0, };
 
         GF_VALIDATE_OR_GOTO ("resolver", ip, out);
 
-        sa.sin_family = AF_INET;
-        inet_pton (AF_INET, ip, &sa.sin_addr);
-        ret = getnameinfo ((struct sockaddr *)&sa, sizeof (sa), host_addr,
-                          sizeof (host_addr), NULL, 0, 0);
-
+        /* Get the FQDN */
+        ret =  gf_get_hostname_from_ip ((char *)ip, &fqdn);
         if (ret != 0) {
                 gf_msg ("resolver", GF_LOG_INFO, errno,
                         LG_MSG_RESOLVE_HOSTNAME_FAILED, "could not resolve "
                         "hostname for %s", ip);
-                goto out;
         }
-
-        /* Get the FQDN */
-        fqdn = gf_strdup (host_addr);
-
 out:
        return fqdn;
 }
 
 /**
- * gf_resolve_parent_path -- Given a path, returns an allocated string
+ * gf_resolve_path_parent -- Given a path, returns an allocated string
  *                           containing the parent's path.
  * @path: Path to parse
  * @return: The parent path if found, NULL otherwise
@@ -292,9 +309,6 @@ gf_resolve_ip6 (const char *hostname,
                 memset(&hints, 0, sizeof(hints));
                 hints.ai_family   = family;
                 hints.ai_socktype = SOCK_STREAM;
-#ifndef __NetBSD__
-                hints.ai_flags    = AI_ADDRCONFIG;
-#endif
 
                 ret = gf_asprintf (&port_str, "%d", port);
                 if (-1 == ret) {
@@ -364,6 +378,135 @@ err:
         return -1;
 }
 
+/**
+ * gf_dnscache_init -- Initializes a dnscache struct and sets the ttl
+ *                     to the specified value in the parameter.
+ *
+ * @ttl: the TTL in seconds
+ * @return: SUCCESS: Pointer to an allocated dnscache struct
+ *          FAILURE: NULL
+ */
+struct dnscache *
+gf_dnscache_init (time_t ttl)
+{
+        struct dnscache *cache = GF_MALLOC (sizeof (*cache),
+                                            gf_common_mt_dnscache);
+        cache->cache_dict = NULL;
+        cache->ttl = ttl;
+        return cache;
+}
+
+/**
+ * gf_dnscache_entry_init -- Initialize a dnscache entry
+ *
+ * @return: SUCCESS: Pointer to an allocated dnscache entry struct
+ *          FAILURE: NULL
+ */
+struct dnscache_entry *
+gf_dnscache_entry_init ()
+{
+        struct dnscache_entry *entry = GF_CALLOC (1, sizeof (*entry),
+                                                 gf_common_mt_dnscache_entry);
+        return entry;
+}
+
+/**
+ * gf_dnscache_entry_deinit -- Free memory used by a dnscache entry
+ *
+ * @entry: Pointer to deallocate
+ */
+void
+gf_dnscache_entry_deinit (struct dnscache_entry *entry)
+{
+        GF_FREE (entry->ip);
+        GF_FREE (entry->fqdn);
+        GF_FREE (entry);
+}
+
+/**
+ * gf_rev_dns_lookup -- Perform a reverse DNS lookup on the IP address.
+ *
+ * @ip: The IP address to perform a reverse lookup on
+ *
+ * @return: success: Allocated string containing the hostname
+ *          failure: NULL
+ */
+char *
+gf_rev_dns_lookup_cached (const char *ip, struct dnscache *dnscache)
+{
+        char               *fqdn = NULL;
+        int                ret  = 0;
+        dict_t             *cache = NULL;
+        data_t             *entrydata = NULL;
+        struct dnscache_entry *dnsentry = NULL;
+        gf_boolean_t        from_cache = _gf_false;
+
+        if (!dnscache)
+                goto out;
+
+        if (!dnscache->cache_dict) {
+                dnscache->cache_dict = dict_new ();
+                if (!dnscache->cache_dict) {
+                        goto out;
+                }
+        }
+        cache = dnscache->cache_dict;
+
+        /* Quick cache lookup to see if we already hold it */
+        entrydata = dict_get (cache, (char *)ip);
+        if (entrydata) {
+                dnsentry = (struct dnscache_entry *)entrydata->data;
+                /* First check the TTL & timestamp */
+                if (time (NULL) - dnsentry->timestamp > dnscache->ttl) {
+                        gf_dnscache_entry_deinit (dnsentry);
+                        entrydata->data = NULL; /* Mark this as 'null' so
+                                                 * dict_del () doesn't try free
+                                                 * this after we've already
+                                                 * freed it.
+                                                 */
+
+                        dict_del (cache, (char *)ip); /* Remove this entry */
+                } else {
+                        /* Cache entry is valid, get the FQDN and return */
+                        fqdn = dnsentry->fqdn;
+                        from_cache = _gf_true; /* Mark this as from cache */
+                        goto out;
+                }
+        }
+
+        /* Get the FQDN */
+        ret =  gf_get_hostname_from_ip ((char *)ip, &fqdn);
+        if (ret != 0)
+                goto out;
+
+        if (!fqdn) {
+                gf_log_callingfn ("resolver", GF_LOG_CRITICAL,
+                                  "Allocation failed for the host address");
+                goto out;
+        }
+
+        from_cache = _gf_false;
+out:
+        /* Insert into the cache */
+        if (fqdn && !from_cache) {
+                struct dnscache_entry *entry = gf_dnscache_entry_init ();
+
+                if (!entry) {
+                        goto out;
+                }
+                entry->fqdn = fqdn;
+                entry->ip = gf_strdup (ip);
+                if (!ip) {
+                        gf_dnscache_entry_deinit (entry);
+                        goto out;
+                }
+                entry->timestamp = time (NULL);
+
+                entrydata = bin_to_data (entry, sizeof (*entry));
+                dict_set (cache, (char *)ip, entrydata);
+        }
+        return fqdn;
+}
 
 struct xldump {
 	int lineno;
@@ -550,9 +693,14 @@ gf_dump_config_flags ()
 /* Define to the full name and version of this package. */
 #ifdef PACKAGE_STRING
         {
-                char msg[128];
-                sprintf (msg, "package-string: %s", PACKAGE_STRING);
-                gf_msg_plain_nomem (GF_LOG_ALERT, msg);
+                char *msg = NULL;
+                int   ret = -1;
+
+                ret = gf_asprintf (&msg, "package-string: %s", PACKAGE_STRING);
+                if (ret >= 0) {
+                        gf_msg_plain_nomem (GF_LOG_ALERT, msg);
+                        GF_FREE (msg);
+                }
         }
 #endif
 
@@ -1246,7 +1394,7 @@ gf_string2int64 (const char *str, int64_t *n)
         if (rv != 0)
                 return rv;
 
-        if ((l >= INT64_MIN) && (l <= INT64_MAX)) {
+        if (l <= INT64_MAX) {
                 *n = (int64_t) l;
                 return 0;
         }
@@ -1456,11 +1604,12 @@ err:
 }
 
 int
-gf_string2bytesize_range (const char *str, uint64_t *n, uint64_t max)
+gf_string2bytesize_range (const char *str, uint64_t *n, uint64_t umax)
 {
         double        value      = 0.0;
-        uint64_t      int_value  = 0;
+        int64_t       int_value  = 0;
         uint64_t      unit       = 0;
+        int64_t       max        = 0;
         char         *tail       = NULL;
         int           old_errno  = 0;
         const char   *s          = NULL;
@@ -1472,6 +1621,8 @@ gf_string2bytesize_range (const char *str, uint64_t *n, uint64_t max)
                 errno = EINVAL;
                 return -1;
         }
+
+        max = umax & 0x7fffffffffffffffLL;
 
         for (s = str; *s != '\0'; s++) {
                 if (isspace (*s))
@@ -1773,16 +1924,16 @@ get_checksum_for_file (int fd, uint32_t *checksum)
         char buf[GF_CHECKSUM_BUF_SIZE] = {0,};
 
         /* goto first place */
-        lseek (fd, 0L, SEEK_SET);
+        sys_lseek (fd, 0L, SEEK_SET);
         do {
-                ret = read (fd, &buf, GF_CHECKSUM_BUF_SIZE);
+                ret = sys_read (fd, &buf, GF_CHECKSUM_BUF_SIZE);
                 if (ret > 0)
                         compute_checksum (buf, GF_CHECKSUM_BUF_SIZE,
                                           checksum);
         } while (ret > 0);
 
         /* set it back */
-        lseek (fd, 0L, SEEK_SET);
+        sys_lseek (fd, 0L, SEEK_SET);
 
         return ret;
 }
@@ -1809,7 +1960,7 @@ get_checksum_for_path (char *path, uint32_t *checksum)
 
 out:
         if (fd != -1)
-                close (fd);
+                sys_close (fd);
 
         return ret;
 }
@@ -1832,7 +1983,7 @@ get_file_mtime (const char *path, time_t *stamp)
         GF_VALIDATE_OR_GOTO (THIS->name, path, out);
         GF_VALIDATE_OR_GOTO (THIS->name, stamp, out);
 
-        ret = stat (path, &f_stat);
+        ret = sys_stat (path, &f_stat);
         if (ret < 0) {
                 gf_msg (THIS->name, GF_LOG_ERROR, errno,
                         LG_MSG_FILE_STAT_FAILED, "failed to stat %s",
@@ -1989,7 +2140,7 @@ get_nth_word (const char *str, int n)
         if (!end)
                 goto out;
 
-        word_len = abs (end - start);
+        word_len = labs (end - start);
 
         word = GF_CALLOC (1, word_len + 1, gf_common_mt_strdup);
         if (!word)
@@ -1999,6 +2150,145 @@ get_nth_word (const char *str, int n)
         *(word + word_len) = '\0';
  out:
         return word;
+}
+
+/**
+ * token_iter_init -- initialize tokenization
+ *
+ * @str: string to be tokenized
+ * @sep: token separator character
+ * @tit: pointer to iteration state
+ *
+ * @return: token string
+ *
+ * The returned token string and tit are
+ * not to be used directly, but through
+ * next_token().
+ */
+char *
+token_iter_init (char *str, char sep, token_iter_t *tit)
+{
+        tit->end = str + strlen (str);
+        tit->sep = sep;
+
+        return str;
+}
+
+/**
+ * next_token -- fetch next token in tokenization
+ * inited by token_iter_init().
+ *
+ * @tokenp: pointer to token
+ * @tit:    pointer to iteration state
+ *
+ * @return: true if iteration ends, else false
+ *
+ * The token pointed by @tokenp can be used
+ * after a call to next_token(). When next_token()
+ * returns true the iteration is to be stopped
+ * and the string with which the tokenization
+ * was inited (see token_iter_init() is restored,
+ * apart from dropped tokens (see drop_token()).
+ */
+gf_boolean_t
+next_token (char **tokenp, token_iter_t *tit)
+{
+        char        *cursor  = NULL;
+        gf_boolean_t is_last = _gf_false;
+
+        for (cursor = *tokenp; *cursor; cursor++);
+        if (cursor < tit->end) {
+                /*
+                 * We detect that in between current token and end a zero
+                 * marker has already been inserted. This means that the
+                 * token has already been returned. We restore the
+                 * separator and move ahead.
+                 */
+                *cursor = tit->sep;
+                *tokenp = cursor + 1;
+        }
+
+        for (cursor = *tokenp; *cursor && *cursor != tit->sep; cursor++);
+        /* If the cursor ended up on a zero byte, then it's the last token. */
+        is_last = !*cursor;
+        /* Zero-terminate the token. */
+        *cursor = 0;
+
+        return is_last;
+}
+
+/*
+ * drop_token -- drop a token during iterated calls of next_token().
+ *
+ * Sample program that uses these functions to tokenize
+ * a comma-separated first argument while dropping the
+ * rest of the arguments if they occur as token:
+ *
+ * #include <stdio.h>
+ * #include <stdlib.h>
+ * #include <string.h>
+ * #include "common-utils.h"
+ *
+ * int
+ * main (int argc, char **argv)
+ * {
+ *         char *buf;
+ *         char *token;
+ *         token_iter_t tit;
+ *         int i;
+ *         gf_boolean_t iter_end;
+ *
+ *         if (argc <= 1)
+ *                 abort();
+ *
+ *         buf = strdup (argv[1]);
+ *         if (!buf)
+ *                 abort();
+ *
+ *         for (token = token_iter_init (buf, ',', &tit) ;;) {
+ *                 iter_end = next_token (&token, &tit);
+ *                 printf("found token: '%s'\n", token);
+ *                 for (i = 2; i < argc; i++) {
+ *                         if (strcmp (argv[i], token) == 0) {
+ *                                 printf ("%s\n", "dropping token!");
+ *                                 drop_token (token, &tit);
+ *                                 break;
+ *                          }
+ *                 }
+ *                 if (iter_end)
+ *                         break;
+ *         }
+ *
+ *         printf ("finally: '%s'\n", buf);
+ *
+ *         return 0;
+ * }
+ */
+void
+drop_token (char *token, token_iter_t *tit)
+{
+        char *cursor = NULL;
+
+        for (cursor = token; *cursor; cursor++);
+        if (cursor < tit->end) {
+                /*
+                 * We detect a zero inserted by next_token().
+                 * Step the cursor and copy what comes after
+                 * to token.
+                 */
+                for (cursor++; cursor < tit->end; *token++ = *cursor++);
+        }
+
+        /*
+         * Zero out the remainder of the buffer.
+         * It would be enough to insert just a single zero,
+         * but we continue 'till the end to have cleaner
+         * memory content.
+         */
+        for (cursor = token; cursor < tit->end; *cursor++ = 0);
+
+        /* Adjust the end to point to the new terminating zero. */
+        tit->end = token;
 }
 
 /* Syntax formed according to RFC 1912 (RFC 1123 & 952 are more restrictive)  *
@@ -2192,6 +2482,14 @@ valid_ipv6_address (char *address, int length, gf_boolean_t wildcard_acc)
         int is_compressed = 0;
 
         tmp = gf_strdup (address);
+
+        /* Check for '%' for link local addresses */
+        endptr = strchr(tmp, '%');
+        if (endptr) {
+                *endptr = '\0';
+                length = strlen(tmp);
+                endptr = NULL;
+        }
 
         /* Check for compressed form */
         if (length <= 0 || tmp[length - 1] == ':') {
@@ -2419,6 +2717,61 @@ lkowner_utoa_r (gf_lkowner_t *lkowner, char *dst, int len)
         return dst;
 }
 
+gf_boolean_t
+is_valid_lease_id (const char *lease_id)
+{
+        int i = 0;
+        gf_boolean_t valid = _gf_false;
+
+        for (i = 0; i < LEASE_ID_SIZE; i++) {
+                if (lease_id[i] != 0) {
+                        valid = _gf_true;
+                        goto out;
+                }
+        }
+out:
+        return valid;
+}
+
+/* Lease_id can be a either in printable or non printable binary
+ * format. This function can be used to print any lease_id.
+ *
+ * This function returns a pointer to a buf, containing the ascii
+ * representation of the value in lease_id, in the following format:
+ * 4hexnum-4hexnum-4hexnum-4hexnum-4hexnum-4hexnum-4hexnum-4hexnum
+ *
+ * Eg: If lease_id = "lid1-clnt1" the printable string would be:
+ * 6c69-6431-2d63-6c6e-7431-0000-0000-0000
+ *
+ * Note: The pointer returned should not be stored for further use, as any
+ * subsequent call to this function will override the same buffer.
+ */
+char *
+leaseid_utoa (const char *lease_id)
+{
+        char *buf = NULL;
+        int   i   = 0;
+        int   j   = 0;
+
+        buf = glusterfs_leaseid_buf_get ();
+        if (!buf)
+                goto out;
+
+        for (i = 0; i < LEASE_ID_SIZE; i++) {
+                if (i && !(i % 2)) {
+                        buf[j] = '-';
+                        j++;
+                }
+                sprintf (&buf[j], "%02hhx", lease_id[i]);
+                j += 2;
+                if (j == GF_LEASE_ID_BUF_SIZE)
+                        break;
+        }
+        buf[GF_LEASE_ID_BUF_SIZE - 1] = '\0';
+out:
+        return buf;
+}
+
 void* gf_array_elem (void *a, int index, size_t elem_size)
 {
         uint8_t* ptr = a;
@@ -2531,6 +2884,16 @@ gf_roundup_next_power_of_two (int32_t nr)
 
 out:
         return result;
+}
+
+int
+get_vol_type (int type, int dist_count, int brick_count)
+{
+        if ((type != GF_CLUSTER_TYPE_TIER) && (type > 0) &&
+             (dist_count < brick_count))
+              type = type + GF_CLUSTER_TYPE_MAX - 1;
+
+        return type;
 }
 
 int
@@ -2777,7 +3140,7 @@ gf_get_reserved_ports ()
                 goto out;
         }
 
-        ret = read (proc_fd, buffer, sizeof (buffer));
+        ret = sys_read (proc_fd, buffer, sizeof (buffer)-1);
         if (ret < 0) {
                 gf_msg ("glusterfs", GF_LOG_WARNING, errno,
                         LG_MSG_FILE_OP_FAILED, "could not read the file %s for"
@@ -2788,15 +3151,18 @@ gf_get_reserved_ports ()
 
 out:
         if (proc_fd != -1)
-                close (proc_fd);
+                sys_close (proc_fd);
 #endif /* GF_LINUX_HOST_OS */
         return ports_info;
 }
 
 int
-gf_process_reserved_ports (gf_boolean_t *ports, uint32_t ceiling)
+gf_process_reserved_ports (unsigned char *ports, uint32_t ceiling)
 {
         int      ret         = -1;
+
+        memset (ports, 0, GF_PORT_ARRAY_SIZE);
+
 #if defined GF_LINUX_HOST_OS
         char    *ports_info  = NULL;
         char    *tmp         = NULL;
@@ -2822,22 +3188,27 @@ gf_process_reserved_ports (gf_boolean_t *ports, uint32_t ceiling)
 
 out:
         GF_FREE (ports_info);
+
+#else  /* FIXME: Non Linux Host */
+        ret = 0;
 #endif /* GF_LINUX_HOST_OS */
+
         return ret;
 }
 
 gf_boolean_t
-gf_ports_reserved (char *blocked_port, gf_boolean_t *ports, uint32_t ceiling)
+gf_ports_reserved (char *blocked_port, unsigned char *ports, uint32_t ceiling)
 {
-        gf_boolean_t    result   = _gf_false;
+        gf_boolean_t    result      = _gf_false;
         char            *range_port = NULL;
-        int16_t         tmp_port1, tmp_port2 = -1;
+        int32_t         tmp_port1   = -1;
+        int32_t         tmp_port2   = -1;
 
         if (strstr (blocked_port, "-") == NULL) {
                 /* get rid of the new line character*/
                 if (blocked_port[strlen(blocked_port) -1] == '\n')
                         blocked_port[strlen(blocked_port) -1] = '\0';
-                if (gf_string2int16 (blocked_port, &tmp_port1) == 0) {
+                if (gf_string2int32 (blocked_port, &tmp_port1) == 0) {
                         if (tmp_port1 > ceiling
                             || tmp_port1 < 0) {
                                 gf_msg ("glusterfs-socket", GF_LOG_WARNING, 0,
@@ -2848,7 +3219,7 @@ gf_ports_reserved (char *blocked_port, gf_boolean_t *ports, uint32_t ceiling)
                         } else {
                                 gf_msg_debug ("glusterfs", 0, "blocking port "
                                               "%d", tmp_port1);
-                                ports[tmp_port1] = _gf_true;
+                                BIT_SET (ports, tmp_port1);
                         }
                 } else {
                         gf_msg ("glusterfs-socket", GF_LOG_WARNING, 0,
@@ -2863,7 +3234,7 @@ gf_ports_reserved (char *blocked_port, gf_boolean_t *ports, uint32_t ceiling)
                         result = _gf_true;
                         goto out;
                 }
-                if (gf_string2int16 (range_port, &tmp_port1) == 0) {
+                if (gf_string2int32 (range_port, &tmp_port1) == 0) {
                         if (tmp_port1 > ceiling)
                                 tmp_port1 = ceiling;
                         if (tmp_port1 < 0)
@@ -2877,7 +3248,7 @@ gf_ports_reserved (char *blocked_port, gf_boolean_t *ports, uint32_t ceiling)
                 /* get rid of the new line character*/
                 if (range_port[strlen(range_port) -1] == '\n')
                         range_port[strlen(range_port) - 1] = '\0';
-                if (gf_string2int16 (range_port, &tmp_port2) == 0) {
+                if (gf_string2int32 (range_port, &tmp_port2) == 0) {
                         if (tmp_port2 > ceiling)
                                 tmp_port2 = ceiling;
                         if (tmp_port2 < 0)
@@ -2886,7 +3257,7 @@ gf_ports_reserved (char *blocked_port, gf_boolean_t *ports, uint32_t ceiling)
                 gf_msg_debug ("glusterfs", 0, "lower: %d, higher: %d",
                               tmp_port1, tmp_port2);
                 for (; tmp_port1 <= tmp_port2; tmp_port1++)
-                        ports[tmp_port1] = _gf_true;
+                        BIT_SET (ports, tmp_port1);
         }
 
 out:
@@ -2908,11 +3279,13 @@ gf_get_hostname_from_ip (char *client_ip, char **hostname)
         char                    *client_ip_copy               = NULL;
         char                    *tmp                          = NULL;
         char                    *ip                           = NULL;
+        size_t                   addr_sz                      = 0;
 
         /* if ipv4, reverse lookup the hostname to
          * allow FQDN based rpc authentication
          */
-        if (valid_ipv4_address (client_ip, strlen (client_ip), 0) == _gf_false) {
+        if (!valid_ipv6_address (client_ip, strlen (client_ip), 0) &&
+            !valid_ipv4_address (client_ip, strlen (client_ip), 0)) {
                 /* most times, we get a.b.c.d:port form, so check that */
                 client_ip_copy = gf_strdup (client_ip);
                 if (!client_ip_copy)
@@ -2925,12 +3298,14 @@ gf_get_hostname_from_ip (char *client_ip, char **hostname)
 
         if (valid_ipv4_address (ip, strlen (ip), 0) == _gf_true) {
                 client_sockaddr = (struct sockaddr *)&client_sock_in;
+                addr_sz = sizeof (client_sock_in);
                 client_sock_in.sin_family = AF_INET;
                 ret = inet_pton (AF_INET, ip,
                                  (void *)&client_sock_in.sin_addr.s_addr);
 
         } else if (valid_ipv6_address (ip, strlen (ip), 0) == _gf_true) {
                 client_sockaddr = (struct sockaddr *) &client_sock_in6;
+                addr_sz = sizeof (client_sock_in6);
 
                 client_sock_in6.sin6_family = AF_INET6;
                 ret = inet_pton (AF_INET6, ip,
@@ -2944,8 +3319,14 @@ gf_get_hostname_from_ip (char *client_ip, char **hostname)
                 goto out;
         }
 
+        /* You cannot just use sizeof (*client_sockaddr), as per the man page
+         * the (getnameinfo) size must be the size of the underlying sockaddr
+         * struct e.g. sockaddr_in6 or sockaddr_in.  Failure to do so will
+         * break IPv6 hostname resolution (IPv4 will work only because
+         * the sockaddr_in struct happens to be of the correct size).
+         */
         ret = getnameinfo (client_sockaddr,
-                           sizeof (*client_sockaddr),
+                           addr_sz,
                            client_hostname, sizeof (client_hostname),
                            NULL, 0, 0);
         if (ret) {
@@ -3118,9 +3499,18 @@ gf_is_local_addr (char *hostname)
         gf_boolean_t    found = _gf_false;
         char            *ip = NULL;
         xlator_t        *this = NULL;
+        struct          addrinfo hints;
 
         this = THIS;
-        ret = getaddrinfo (hostname, NULL, NULL, &result);
+
+        memset (&hints, 0, sizeof (hints));
+        /*
+         * Removing AI_ADDRCONFIG from default_hints
+         * for being able to use link local ipv6 addresses
+         */
+        hints.ai_family = AF_UNSPEC;
+
+        ret = getaddrinfo (hostname, NULL, &hints, &result);
 
         if (ret != 0) {
                 gf_msg (this->name, GF_LOG_ERROR, 0, LG_MSG_GETADDRINFO_FAILED,
@@ -3160,15 +3550,19 @@ gf_is_same_address (char *name1, char *name2)
         struct addrinfo         *q = NULL;
         gf_boolean_t            ret = _gf_false;
         int                     gai_err = 0;
+        struct                  addrinfo hints;
 
-        gai_err = getaddrinfo(name1,NULL,NULL,&addr1);
+        memset (&hints, 0, sizeof (hints));
+        hints.ai_family = AF_UNSPEC;
+
+        gai_err = getaddrinfo(name1, NULL, &hints, &addr1);
         if (gai_err != 0) {
                 gf_msg (name1, GF_LOG_WARNING, 0, LG_MSG_GETADDRINFO_FAILED,
                         "error in getaddrinfo: %s\n", gai_strerror(gai_err));
                 goto out;
         }
 
-        gai_err = getaddrinfo(name2,NULL,NULL,&addr2);
+        gai_err = getaddrinfo(name2, NULL, &hints, &addr2);
         if (gai_err != 0) {
                 gf_msg (name2, GF_LOG_WARNING, 0, LG_MSG_GETADDRINFO_FAILED,
                         "error in getaddrinfo: %s\n", gai_strerror(gai_err));
@@ -3201,7 +3595,7 @@ out:
 
 /* Sets log file path from user provided arguments */
 int
-gf_set_log_file_path (cmd_args_t *cmd_args)
+gf_set_log_file_path (cmd_args_t *cmd_args, glusterfs_ctx_t *ctx)
 {
         int   i = 0;
         int   j = 0;
@@ -3227,6 +3621,16 @@ gf_set_log_file_path (cmd_args_t *cmd_args)
                                    tmp_str);
                 if (ret > 0)
                         ret = 0;
+                goto done;
+        }
+
+        if (ctx && GF_GLUSTERD_PROCESS == ctx->process_mode) {
+                ret = gf_asprintf (&cmd_args->log_file,
+                                   DEFAULT_LOG_FILE_DIRECTORY "/%s.log",
+                                   GLUSTERD_NAME);
+                if (ret > 0)
+                        ret = 0;
+
                 goto done;
         }
 
@@ -3322,13 +3726,17 @@ gf_thread_cleanup_xint (pthread_t thread)
 
 int
 gf_thread_create (pthread_t *thread, const pthread_attr_t *attr,
-                  void *(*start_routine)(void *), void *arg)
+                  void *(*start_routine)(void *), void *arg, const char *name)
 {
         sigset_t set, old;
         int ret;
+        char thread_name[GF_THREAD_NAMEMAX+GF_THREAD_NAME_PREFIX_LEN] = {0,};
+        /* Max name on Linux is 16 and on NetBSD is 32
+         * All Gluster threads have a set prefix of gluster and hence the limit
+         * of 9 on GF_THREAD_NAMEMAX including the null character.
+         */
 
-        sigemptyset (&set);
-
+        sigemptyset (&old);
         sigfillset (&set);
         sigdelset (&set, SIGSEGV);
         sigdelset (&set, SIGBUS);
@@ -3340,8 +3748,54 @@ gf_thread_create (pthread_t *thread, const pthread_attr_t *attr,
         pthread_sigmask (SIG_BLOCK, &set, &old);
 
         ret = pthread_create (thread, attr, start_routine, arg);
+        snprintf (thread_name, sizeof(thread_name), "%s%s",
+                  GF_THREAD_NAME_PREFIX, name);
+
+        if (0 == ret && name) {
+                #ifdef GF_LINUX_HOST_OS
+                        pthread_setname_np(*thread, thread_name);
+                #elif defined(__NetBSD__)
+                        pthread_setname_np(*thread, thread_name, NULL);
+                #else
+                        gf_msg (THIS->name, GF_LOG_WARNING, 0,
+                                LG_MSG_PTHREAD_NAMING_FAILED,
+                                "Thread names not implemented on this ",
+                                "platform");
+                #endif
+        }
 
         pthread_sigmask (SIG_SETMASK, &old, NULL);
+
+        return ret;
+}
+
+int
+gf_thread_create_detached (pthread_t *thread,
+                         void *(*start_routine)(void *), void *arg,
+                         const char *name)
+{
+        pthread_attr_t attr;
+        int ret = -1;
+
+        ret = pthread_attr_init (&attr);
+        if (ret) {
+                gf_msg (THIS->name, GF_LOG_ERROR, ret,
+                        LG_MSG_PTHREAD_ATTR_INIT_FAILED,
+                        "Thread attribute initialization failed");
+                return -1;
+        }
+
+        pthread_attr_setdetachstate (&attr, PTHREAD_CREATE_DETACHED);
+
+        ret = gf_thread_create (thread, &attr, start_routine, arg, name);
+        if (ret) {
+                gf_msg (THIS->name, GF_LOG_ERROR, ret,
+                        LG_MSG_PTHREAD_FAILED,
+                        "Thread creation failed");
+                ret = -1;
+        }
+
+        pthread_attr_destroy (&attr);
 
         return ret;
 }
@@ -3351,7 +3805,7 @@ gf_skip_header_section (int fd, int header_len)
 {
         int  ret           = -1;
 
-        ret = lseek (fd, header_len, SEEK_SET);
+        ret = sys_lseek (fd, header_len, SEEK_SET);
         if (ret == (off_t) -1) {
                 gf_msg ("", GF_LOG_ERROR, 0, LG_MSG_SKIP_HEADER_FAILED,
                         "Failed to skip header section");
@@ -3362,6 +3816,24 @@ gf_skip_header_section (int fd, int header_len)
         return ret;
 }
 
+/* Below function is use to check at runtime if pid is running */
+
+gf_boolean_t
+gf_is_pid_running (int pid)
+{
+        char fname[32] = {0,};
+
+        snprintf(fname, sizeof(fname), "/proc/%d/cmdline", pid);
+
+        if (sys_access (fname , R_OK) != 0) {
+                return _gf_false;
+        }
+
+        return _gf_true;
+
+}
+
+
 gf_boolean_t
 gf_is_service_running (char *pidfile, int *pid)
 {
@@ -3371,15 +3843,17 @@ gf_is_service_running (char *pidfile, int *pid)
         int             fno = 0;
 
         file = fopen (pidfile, "r+");
-        if (!file)
+        if (!file) {
                 goto out;
+        }
 
         fno = fileno (file);
         ret = lockf (fno, F_TEST, 0);
         if (ret == -1)
                 running = _gf_true;
-        if (!pid)
+        if (!pid) {
                 goto out;
+        }
 
         ret = fscanf (file, "%d", pid);
         if (ret <= 0) {
@@ -3388,10 +3862,32 @@ gf_is_service_running (char *pidfile, int *pid)
                 *pid = -1;
         }
 
+        running = gf_is_pid_running (*pid);
 out:
         if (file)
                 fclose (file);
         return running;
+}
+
+/* Check if the pid is > 0 */
+gf_boolean_t
+gf_valid_pid (const char *pid, int length)
+{
+        gf_boolean_t    ret = _gf_true;
+        pid_t           value = 0;
+        char           *end_ptr = NULL;
+
+        if (length <= 0) {
+                ret = _gf_false;
+                goto out;
+        }
+
+        value = strtol (pid, &end_ptr, 10);
+        if (value <= 0) {
+                ret = _gf_false;
+        }
+out:
+        return ret;
 }
 
 static int
@@ -3502,7 +3998,11 @@ int
 gf_set_timestamp  (const char *src, const char* dest)
 {
         struct stat    sb             = {0, };
-        struct timeval new_time[2]    = {{0, },{0,}};
+#if defined(HAVE_UTIMENSAT)
+        struct timespec new_time[2]   = { {0, }, {0, } };
+#else
+        struct timeval new_time[2]    = { {0, }, {0, } };
+#endif
         int            ret            = 0;
         xlator_t       *this          = NULL;
 
@@ -3511,27 +4011,41 @@ gf_set_timestamp  (const char *src, const char* dest)
         GF_ASSERT (src);
         GF_ASSERT (dest);
 
-        ret = stat (src, &sb);
+        ret = sys_stat (src, &sb);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, errno,
                         LG_MSG_FILE_STAT_FAILED, "stat on %s", src);
                 goto out;
         }
+        /* The granularity is nano seconds if `utimensat()` is available,
+         * and micro seconds otherwise.
+         */
+#if defined(HAVE_UTIMENSAT)
+        new_time[0].tv_sec = sb.st_atime;
+        new_time[0].tv_nsec = ST_ATIM_NSEC (&sb);
+
+        new_time[1].tv_sec = sb.st_mtime;
+        new_time[1].tv_nsec = ST_MTIM_NSEC (&sb);
+
+        /* dirfd = 0 is ignored because `dest` is an absolute path. */
+        ret = sys_utimensat (AT_FDCWD, dest, new_time, AT_SYMLINK_NOFOLLOW);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        LG_MSG_UTIMENSAT_FAILED, "utimensat on %s", dest);
+        }
+#else
         new_time[0].tv_sec = sb.st_atime;
         new_time[0].tv_usec = ST_ATIM_NSEC (&sb)/1000;
 
         new_time[1].tv_sec = sb.st_mtime;
         new_time[1].tv_usec = ST_MTIM_NSEC (&sb)/1000;
 
-        /* The granularity is micro seconds as per the current
-         * requiremnt. Hence using 'utimes'. This can be updated
-         * to 'utimensat' if we need timestamp in nanoseconds.
-         */
-        ret = utimes (dest, new_time);
+        ret = sys_utimes (dest, new_time);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, errno, LG_MSG_UTIMES_FAILED,
                         "utimes on %s", dest);
         }
+#endif
 out:
         return ret;
 }
@@ -3593,7 +4107,7 @@ gf_backtrace_fillframes (char *buf)
 
         fp = fdopen (fd, "r");
         if (!fp) {
-                close (fd);
+                sys_close (fd);
                 ret = -1;
                 goto out;
         }
@@ -3618,7 +4132,7 @@ out:
         if (fp)
                 fclose (fp);
 
-        unlink (tmpl);
+        sys_unlink (tmpl);
 
         return (idx > 0)? 0: -1;
 
@@ -3836,13 +4350,14 @@ recursive_rmdir (const char *delete_path)
         struct stat     st              = {0,};
         DIR            *dir             = NULL;
         struct dirent  *entry           = NULL;
+        struct dirent   scratch[2]      = {{0,},};
         xlator_t       *this            = NULL;
 
         this = THIS;
         GF_ASSERT (this);
         GF_VALIDATE_OR_GOTO (this->name, delete_path, out);
 
-        dir = opendir (delete_path);
+        dir = sys_opendir (delete_path);
         if (!dir) {
                 gf_msg_debug (this->name, 0, "Failed to open directory %s. "
                               "Reason : %s", delete_path, strerror (errno));
@@ -3850,10 +4365,10 @@ recursive_rmdir (const char *delete_path)
                 goto out;
         }
 
-        GF_FOR_EACH_ENTRY_IN_DIR (entry, dir);
+        GF_FOR_EACH_ENTRY_IN_DIR (entry, dir, scratch);
         while (entry) {
                 snprintf (path, PATH_MAX, "%s/%s", delete_path, entry->d_name);
-                ret = lstat (path, &st);
+                ret = sys_lstat (path, &st);
                 if (ret == -1) {
                         gf_msg_debug (this->name, 0, "Failed to stat entry %s :"
                                       " %s", path, strerror (errno));
@@ -3863,7 +4378,7 @@ recursive_rmdir (const char *delete_path)
                 if (S_ISDIR (st.st_mode))
                         ret = recursive_rmdir (path);
                 else
-                        ret = unlink (path);
+                        ret = sys_unlink (path);
 
                 if (ret) {
                         gf_msg_debug (this->name, 0, " Failed to remove %s. "
@@ -3873,16 +4388,16 @@ recursive_rmdir (const char *delete_path)
                 gf_msg_debug (this->name, 0, "%s %s", ret ?
                               "Failed to remove" : "Removed", entry->d_name);
 
-                GF_FOR_EACH_ENTRY_IN_DIR (entry, dir);
+                GF_FOR_EACH_ENTRY_IN_DIR (entry, dir, scratch);
         }
 
-        ret = closedir (dir);
+        ret = sys_closedir (dir);
         if (ret) {
                 gf_msg_debug (this->name, 0, "Failed to close dir %s. Reason :"
                               " %s", delete_path, strerror (errno));
         }
 
-        ret = rmdir (delete_path);
+        ret = sys_rmdir (delete_path);
         if (ret) {
                 gf_msg_debug (this->name, 0, "Failed to rmdir: %s,err: %s",
                               delete_path, strerror (errno));
@@ -3968,7 +4483,7 @@ gf_nread (int fd, void *buf, size_t count)
         ssize_t  read_bytes    = 0;
 
         for (read_bytes = 0; read_bytes < count; read_bytes += ret) {
-                ret = read (fd, buf + read_bytes, count - read_bytes);
+                ret = sys_read (fd, buf + read_bytes, count - read_bytes);
                 if (ret == 0) {
                         break;
                 } else if (ret < 0) {
@@ -3991,7 +4506,7 @@ gf_nwrite (int fd, const void *buf, size_t count)
         ssize_t  written    = 0;
 
         for (written = 0; written != count; written += ret) {
-                ret = write (fd, buf + written, count - written);
+                ret = sys_write (fd, buf + written, count - written);
                 if (ret < 0) {
                         if (errno == EINTR)
                                 ret = 0;
@@ -4006,6 +4521,25 @@ out:
 }
 
 void
+gf_free_mig_locks (lock_migration_info_t *locks)
+{
+        lock_migration_info_t    *current       = NULL;
+        lock_migration_info_t    *temp          = NULL;
+
+        if (!locks)
+                return;
+
+        if (list_empty (&locks->list))
+                return;
+
+        list_for_each_entry_safe (current, temp, &locks->list, list) {
+                list_del_init (&current->list);
+                GF_FREE (current->client_uid);
+                GF_FREE (current);
+        }
+}
+
+void
 _mask_cancellation (void)
 {
         (void) pthread_setcancelstate (PTHREAD_CANCEL_DISABLE, NULL);
@@ -4016,3 +4550,419 @@ _unmask_cancellation (void)
 {
         (void) pthread_setcancelstate (PTHREAD_CANCEL_ENABLE, NULL);
 }
+
+/* This is a wrapper function to add a pointer to a list,
+ * which doesn't contain list member
+ */
+struct list_node*
+_list_node_add (void *ptr, struct list_head *list,
+               int (*compare)(struct list_head *, struct list_head *))
+{
+        struct list_node  *node = NULL;
+
+        if (ptr == NULL || list == NULL)
+                goto out;
+
+        node = GF_CALLOC (1, sizeof (struct list_node), gf_common_list_node);
+
+        if (node == NULL)
+                goto out;
+
+        node->ptr = ptr;
+        if (compare)
+                list_add_order (&node->list, list, compare);
+        else
+                list_add_tail (&node->list, list);
+out:
+        return node;
+}
+
+struct list_node*
+list_node_add (void *ptr, struct list_head *list)
+{
+        return _list_node_add (ptr, list, NULL);
+}
+
+struct list_node*
+list_node_add_order (void *ptr, struct list_head *list,
+                     int (*compare)(struct list_head *, struct list_head *))
+{
+        return _list_node_add (ptr, list, compare);
+}
+
+void
+list_node_del (struct list_node *node)
+{
+        if (node == NULL)
+                return;
+
+        list_del_init (&node->list);
+        GF_FREE (node);
+}
+
+const char *
+fop_enum_to_pri_string (glusterfs_fop_t fop)
+{
+        switch (fop) {
+        case GF_FOP_OPEN:
+        case GF_FOP_STAT:
+        case GF_FOP_FSTAT:
+        case GF_FOP_LOOKUP:
+        case GF_FOP_ACCESS:
+        case GF_FOP_READLINK:
+        case GF_FOP_OPENDIR:
+        case GF_FOP_STATFS:
+        case GF_FOP_READDIR:
+        case GF_FOP_READDIRP:
+        case GF_FOP_GETACTIVELK:
+        case GF_FOP_SETACTIVELK:
+                return "HIGH";
+
+        case GF_FOP_CREATE:
+        case GF_FOP_FLUSH:
+        case GF_FOP_LK:
+        case GF_FOP_INODELK:
+        case GF_FOP_FINODELK:
+        case GF_FOP_ENTRYLK:
+        case GF_FOP_FENTRYLK:
+        case GF_FOP_UNLINK:
+        case GF_FOP_SETATTR:
+        case GF_FOP_FSETATTR:
+        case GF_FOP_MKNOD:
+        case GF_FOP_MKDIR:
+        case GF_FOP_RMDIR:
+        case GF_FOP_SYMLINK:
+        case GF_FOP_RENAME:
+        case GF_FOP_LINK:
+        case GF_FOP_SETXATTR:
+        case GF_FOP_GETXATTR:
+        case GF_FOP_FGETXATTR:
+        case GF_FOP_FSETXATTR:
+        case GF_FOP_REMOVEXATTR:
+        case GF_FOP_FREMOVEXATTR:
+        case GF_FOP_IPC:
+        case GF_FOP_LEASE:
+                return "NORMAL";
+
+        case GF_FOP_READ:
+        case GF_FOP_WRITE:
+        case GF_FOP_FSYNC:
+        case GF_FOP_TRUNCATE:
+        case GF_FOP_FTRUNCATE:
+        case GF_FOP_FSYNCDIR:
+        case GF_FOP_XATTROP:
+        case GF_FOP_FXATTROP:
+        case GF_FOP_RCHECKSUM:
+        case GF_FOP_ZEROFILL:
+        case GF_FOP_FALLOCATE:
+        case GF_FOP_SEEK:
+                return "LOW";
+
+        case GF_FOP_NULL:
+        case GF_FOP_FORGET:
+        case GF_FOP_RELEASE:
+        case GF_FOP_RELEASEDIR:
+        case GF_FOP_GETSPEC:
+        case GF_FOP_MAXVALUE:
+        case GF_FOP_DISCARD:
+                return "LEAST";
+        default:
+                return "UNKNOWN";
+        }
+}
+
+const char *
+gf_inode_type_to_str (ia_type_t type)
+{
+        static const char *const str_ia_type[] = {
+                "UNKNOWN",
+                "REGULAR FILE",
+                "DIRECTORY",
+                "LINK",
+                "BLOCK DEVICE",
+                "CHARACTER DEVICE",
+                "PIPE",
+                "SOCKET"};
+        return str_ia_type[type];
+}
+
+gf_boolean_t
+gf_is_zero_filled_stat (struct iatt *buf)
+{
+        if (!buf)
+                return 1;
+
+        /* Do not use st_dev because it is transformed to store the xlator id
+         * in place of the device number. Do not use st_ino because by this time
+         * we've already mapped the root ino to 1 so it is not guaranteed to be
+         * 0.
+         */
+        if ((buf->ia_nlink == 0) && (buf->ia_ctime == 0))
+                return 1;
+
+        return 0;
+}
+
+void
+gf_zero_fill_stat (struct iatt *buf)
+{
+        buf->ia_nlink = 0;
+        buf->ia_ctime = 0;
+}
+
+gf_boolean_t
+gf_is_valid_xattr_namespace (char *key)
+{
+        static char *xattr_namespaces[] = {"trusted.", "security.", "system.",
+                                           "user.", NULL };
+        int i = 0;
+
+        for (i = 0; xattr_namespaces[i]; i++) {
+                if (strncmp (key, xattr_namespaces[i],
+                             strlen (xattr_namespaces[i])) == 0)
+                        return _gf_true;
+        }
+
+        return _gf_false;
+}
+
+ino_t
+gfid_to_ino (uuid_t gfid)
+{
+        ino_t ino = 0;
+        int32_t i;
+
+        for (i = 8; i < 16; i++) {
+                ino <<= 8;
+                ino += (uint8_t)gfid[i];
+        }
+
+        return ino;
+}
+
+int
+gf_bits_count (uint64_t n)
+{
+        int val = 0;
+#if defined(__GNUC__) || defined(__clang__)
+        val = __builtin_popcountll (n);
+#else
+        n -= (n >> 1) & 0x5555555555555555ULL;
+        n = ((n >> 2) & 0x3333333333333333ULL) + (n & 0x3333333333333333ULL);
+        n = (n + (n >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+        n += n >> 8;
+        n += n >> 16;
+        n += n >> 32;
+        val = n & 0xFF;
+#endif
+        return val;
+}
+
+int
+gf_bits_index (uint64_t n)
+{
+#if defined(__GNUC__) || defined(__clang__)
+        return __builtin_ffsll (n) - 1;
+#else
+        return ffsll (n) - 1;
+#endif
+}
+
+const char*
+gf_fop_string (glusterfs_fop_t fop)
+{
+        if ((fop > GF_FOP_NULL) && (fop < GF_FOP_MAXVALUE))
+                return gf_fop_list[fop];
+        return "INVALID";
+}
+
+int
+gf_fop_int (char *fop)
+{
+        int i = 0;
+
+        for (i = GF_FOP_NULL + 1; i < GF_FOP_MAXVALUE; i++) {
+                if (strcasecmp (fop, gf_fop_list[i]) == 0)
+                        return i;
+        }
+        return -1;
+}
+
+int
+close_fds_except (int *fdv, size_t count)
+{
+        int          i            = 0;
+        size_t       j            = 0;
+        gf_boolean_t should_close = _gf_true;
+#ifdef GF_LINUX_HOST_OS
+        DIR           *d          = NULL;
+        struct dirent *de         = NULL;
+        struct dirent  scratch[2] = {{0,},};
+        char          *e          = NULL;
+
+        d = sys_opendir ("/proc/self/fd");
+        if (!d)
+                return -1;
+
+        for (;;) {
+                should_close = _gf_true;
+
+                errno = 0;
+                de = sys_readdir (d, scratch);
+                if (!de || errno != 0)
+                        break;
+                i = strtoul (de->d_name, &e, 10);
+                if (*e != '\0' || i == dirfd (d))
+                        continue;
+
+                for (j = 0; j < count; j++) {
+                        if (i == fdv[j]) {
+                                should_close = _gf_false;
+                                break;
+                        }
+               }
+               if (should_close)
+                        sys_close (i);
+        }
+        sys_closedir (d);
+#else /* !GF_LINUX_HOST_OS */
+        struct rlimit rl;
+        int ret = -1;
+
+        ret = getrlimit (RLIMIT_NOFILE, &rl);
+        if (ret)
+                return ret;
+
+        for (i = 0; i < rl.rlim_cur; i++) {
+                should_close = _gf_true;
+                for (j = 0; j < count; j++) {
+                        if (i == fdv[j]) {
+                                should_close = _gf_false;
+                                break;
+                        }
+                }
+                if (should_close)
+                        sys_close (i);
+        }
+#endif /* !GF_LINUX_HOST_OS */
+        return 0;
+}
+
+/**
+ * gf_getgrouplist - get list of groups to which a user belongs
+ *
+ * A convenience wrapper for getgrouplist(3).
+ *
+ * @param user - same as in getgrouplist(3)
+ * @param group - same as in getgrouplist(3)
+ * @param groups - pointer to a gid_t pointer
+ *
+ * gf_getgrouplist allocates a gid_t buffer which is big enough to
+ * hold the list of auxiliary group ids for user, up to the GF_MAX_AUX_GROUPS
+ * threshold. Upon succesfull invocation groups will be pointed to that buffer.
+ *
+ * @return success: the number of auxiliary group ids retrieved
+ *         failure: -1
+ */
+int
+gf_getgrouplist (const char *user, gid_t group, gid_t **groups)
+{
+        int ret     = -1;
+        int ngroups = SMALL_GROUP_COUNT;
+
+        *groups = GF_CALLOC (sizeof (gid_t), ngroups, gf_common_mt_groups_t);
+        if (!*groups)
+                return -1;
+
+        /*
+         * We are running getgrouplist() in a loop until we succeed (or hit
+         * certain exit conditions, see the comments below). This is because
+         * the indicated number of auxiliary groups that we obtain in case of
+         * the failure of the first invocation is not guaranteed to keep its
+         * validity upon the next invocation with a gid buffer of that size.
+         */
+        for (;;) {
+                int ngroups_old = ngroups;
+                ret = getgrouplist (user, group, *groups, &ngroups);
+                if (ret != -1)
+                        break;
+
+                if (ngroups >= GF_MAX_AUX_GROUPS) {
+                        /*
+                         * This should not happen as GF_MAX_AUX_GROUPS is set
+                         * to the max value of number of supported auxiliary
+                         * groups across all platforms supported by GlusterFS.
+                         * However, if it still happened some way, we wouldn't
+                         * care about the incompleteness of the result, we'd
+                         * just go on with what we got.
+                         */
+                        return GF_MAX_AUX_GROUPS;
+                } else if (ngroups <= ngroups_old) {
+                        /*
+                         * There is an edge case that getgrouplist() fails but
+                         * ngroups remains the same. This is actually not
+                         * specified in getgrouplist(3), but implementations
+                         * can do this upon internal failure[1]. To avoid
+                         * falling into an infinite loop when this happens, we
+                         * break the loop if the getgrouplist call failed
+                         * without an increase in the indicated group number.
+                         *
+                         * [1] https://sourceware.org/git/?p=glibc.git;a=blob;f=grp/initgroups.c;hb=refs/heads/release/2.25/master#l168
+                         */
+                        GF_FREE (*groups);
+                        return -1;
+                }
+
+                *groups = GF_REALLOC (*groups, ngroups * sizeof (gid_t));
+                if (!*groups)
+                        return -1;
+        }
+        return ret;
+}
+
+int
+glusterfs_compute_sha256 (const unsigned char *content, size_t size,
+                          char *sha256_hash) {
+        SHA256_CTX               sha256;
+
+        SHA256_Init (&sha256);
+        SHA256_Update (&sha256, (const unsigned char *) (content), size);
+        SHA256_Final ((unsigned char *) sha256_hash, &sha256);
+
+        return 0;
+}
+
+char*
+get_struct_variable (int mem_num, gf_gsync_status_t *sts_val)
+{
+        switch (mem_num) {
+        case 0:  return (sts_val->node);
+        case 1:  return (sts_val->master);
+        case 2:  return (sts_val->brick);
+        case 3:  return (sts_val->slave_user);
+        case 4:  return (sts_val->slave);
+        case 5:  return (sts_val->slave_node);
+        case 6:  return (sts_val->worker_status);
+        case 7:  return (sts_val->crawl_status);
+        case 8:  return (sts_val->last_synced);
+        case 9:  return (sts_val->entry);
+        case 10:  return (sts_val->data);
+        case 11:  return (sts_val->meta);
+        case 12: return (sts_val->failures);
+        case 13:  return (sts_val->checkpoint_time);
+        case 14:  return (sts_val->checkpoint_completed);
+        case 15:  return (sts_val->checkpoint_completion_time);
+        case 16: return (sts_val->brick_host_uuid);
+        case 17: return (sts_val->last_synced_utc);
+        case 18: return (sts_val->checkpoint_time_utc);
+        case 19: return (sts_val->checkpoint_completion_time_utc);
+        case 20: return (sts_val->slavekey);
+        case 21: return (sts_val->session_slave);
+        default:
+                 goto out;
+        }
+
+out:
+        return NULL;
+}
+

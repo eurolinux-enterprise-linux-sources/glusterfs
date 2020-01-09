@@ -11,11 +11,6 @@
 #ifndef _GLUSTERD_MESSAGES_H_
 #define _GLUSTERD_MESSAGES_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glfs-message-id.h"
 
 /*! \file glusterd-messages.h
@@ -33,7 +28,7 @@
  *       - Append to the list of messages defined, towards the end
  *       - Retain macro naming as glfs_msg_X (for redability across developers)
  * NOTE: Rules for message format modifications
- * 3) Check acorss the code if the message ID macro in question is reused
+ * 3) Check across the code if the message ID macro in question is reused
  *    anywhere. If reused then then the modifications should ensure correctness
  *    everywhere, or needs a new message ID as (1) above was not adhered to. If
  *    not used anywhere, proceed with the required modification.
@@ -46,7 +41,7 @@
 
 #define GLUSTERD_COMP_BASE      GLFS_MSGID_GLUSTERD
 
-#define GLFS_NUM_MESSAGES       568
+#define GLFS_NUM_MESSAGES       611
 
 #define GLFS_MSGID_END          (GLUSTERD_COMP_BASE + GLFS_NUM_MESSAGES + 1)
 /* Messaged with message IDs */
@@ -2315,6 +2310,14 @@
  * @recommendedaction
  *
  */
+#define GD_MSG_VOL_NOT_DISPERSE                  (GLUSTERD_COMP_BASE + 282)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
 #define GD_MSG_OLD_REMOVE_BRICK_EXISTS          (GLUSTERD_COMP_BASE + 283)
 
 /*!
@@ -2842,7 +2845,7 @@
  * @recommendedaction
  *
  */
-#define GD_MSG_NFS_VOL_FILE_GEN_FAIL             (GLUSTERD_COMP_BASE + 349)
+#define GD_MSG_GLUSTER_SERVICE_START_FAIL             (GLUSTERD_COMP_BASE + 349)
 
 /*!
  * @messageid
@@ -2970,7 +2973,7 @@
  * @recommendedaction
  *
  */
-#define GD_MSG_NFS_SERVER_STOP_FAIL                  (GLUSTERD_COMP_BASE + 365)
+#define GD_MSG_GLUSTER_SERVICES_STOP_FAIL            (GLUSTERD_COMP_BASE + 365)
 
 /*!
  * @messageid
@@ -4638,7 +4641,303 @@
  */
 #define GD_MSG_SNAP_RESUME_TIER_FAIL                (GLUSTERD_COMP_BASE + 573)
 
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_FILE_NOT_FOUND                       (GLUSTERD_COMP_BASE + 574)
+
+/*!
+ * @messageid 106575
+ * @diagnosis  Brick failed to start with given port, hence it gets a fresh port
+ *             on its own and try to restart the brick with a new port
+ * @recommendedaction  Ensure the new port is not blocked by firewall
+ */
+#define GD_MSG_RETRY_WITH_NEW_PORT                   (GLUSTERD_COMP_BASE + 575)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_REMOTE_VOL_UUID_FAIL                (GLUSTERD_COMP_BASE + 576)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_SLAVE_VOL_PARSE_FAIL               (GLUSTERD_COMP_BASE + 577)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_DICT_GET_SUCCESS                   (GLUSTERD_COMP_BASE + 578)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_PMAP_REGISTRY_REMOVE_FAIL          (GLUSTERD_COMP_BASE + 579)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_MNTBROKER_LABEL_NULL                (GLUSTERD_COMP_BASE + 580)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_MNTBROKER_LABEL_MISS                (GLUSTERD_COMP_BASE + 581)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_MNTBROKER_SPEC_MISMATCH            (GLUSTERD_COMP_BASE + 582)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_SYSCALL_FAIL                          (GLUSTERD_COMP_BASE + 583)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendation
+ *
+ */
+#define GD_MSG_DAEMON_STATE_REQ_RCVD              (GLUSTERD_COMP_BASE + 584)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendation
+ *
+ */
+#define GD_MSG_BRICK_CLEANUP_SUCCESS               (GLUSTERD_COMP_BASE + 585)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendation
+ *
+ */
+#define GD_MSG_STATE_STR_GET_FAILED               (GLUSTERD_COMP_BASE + 586)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_RESET_BRICK_COMMIT_FORCE_REQ_RCVD   (GLUSTERD_COMP_BASE + 587)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_RESET_BRICK_CMD_FAIL                (GLUSTERD_COMP_BASE + 588)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_TIERD_STOP_FAIL                      (GLUSTERD_COMP_BASE + 590)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_TIERD_CREATE_FAIL                    (GLUSTERD_COMP_BASE + 591)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_TIERD_START_FAIL                     (GLUSTERD_COMP_BASE + 592)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_TIERD_OBJ_GET_FAIL                   (GLUSTERD_COMP_BASE + 593)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_TIERD_NOT_RUNNING                     (GLUSTERD_COMP_BASE + 594)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_TIERD_INIT_FAIL                       (GLUSTERD_COMP_BASE + 595)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_BRICK_MX_SET_FAIL                   (GLUSTERD_COMP_BASE + 596)
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define GD_MSG_NO_SIG_TO_PID_ZERO                  (GLUSTERD_COMP_BASE + 597)
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define GD_MSG_TIER_WATERMARK_RESET_FAIL           (GLUSTERD_COMP_BASE + 598)
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define GD_MSG_CLIENTS_GET_STATE_FAILED            (GLUSTERD_COMP_BASE + 599)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_GNFS_XLATOR_NOT_INSTALLED           (GLUSTERD_COMP_BASE + 600)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_PIDFILE_UNLINKING                   (GLUSTERD_COMP_BASE + 601)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_VOL_SET_VALIDATION_INFO             (GLUSTERD_COMP_BASE + 602)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_NO_MUX_LIMIT                        (GLUSTERD_COMP_BASE + 603)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_BRICKPROC_REM_BRICK_FAILED          (GLUSTERD_COMP_BASE + 604)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_BRICKPROC_ADD_BRICK_FAILED          (GLUSTERD_COMP_BASE + 605)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_BRICKPROC_NEW_FAILED                (GLUSTERD_COMP_BASE + 606)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_STATVFS_FAILED  (GLUSTERD_COMP_BASE + 607)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_LOCALTIME_LOGGING_VOL_OPT_VALIDATE_FAIL (GLUSTERD_COMP_BASE + 608)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_LOCALTIME_LOGGING_ENABLE (GLUSTERD_COMP_BASE + 609)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_LOCALTIME_LOGGING_DISABLE (GLUSTERD_COMP_BASE + 610)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define GD_MSG_GARBAGE_ARGS                         (GLUSTERD_COMP_BASE + 611)
+
 /*------------*/
+
 #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
 #endif /* !_GLUSTERD_MESSAGES_H_ */
-

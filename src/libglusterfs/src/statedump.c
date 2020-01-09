@@ -15,6 +15,7 @@
 #include "statedump.h"
 #include "stack.h"
 #include "common-utils.h"
+#include "syscall.h"
 
 
 #ifdef HAVE_MALLOC_H
@@ -60,7 +61,9 @@ gf_proc_dump_open (char *tmpname)
 {
         int  dump_fd = -1;
 
+        mode_t mask = umask(S_IRWXG | S_IRWXO);
         dump_fd = mkstemp (tmpname);
+        umask(mask);
         if (dump_fd < 0)
                 return -1;
 
@@ -71,7 +74,7 @@ gf_proc_dump_open (char *tmpname)
 static void
 gf_proc_dump_close (void)
 {
-        close (gf_dump_fd);
+        sys_close (gf_dump_fd);
         gf_dump_fd = -1;
 }
 
@@ -129,7 +132,7 @@ gf_proc_dump_add_section_fd (char *key, va_list ap)
                    GF_DUMP_MAX_BUF_LEN - strlen (buf), key, ap);
         snprintf (buf + strlen(buf),
                   GF_DUMP_MAX_BUF_LEN - strlen (buf),  "]\n");
-        return write (gf_dump_fd, buf, strlen (buf));
+        return sys_write (gf_dump_fd, buf, strlen (buf));
 }
 
 
@@ -182,7 +185,7 @@ gf_proc_dump_write_fd (char *key, char *value, va_list ap)
 
         offset = strlen (buf);
         snprintf (buf + offset, GF_DUMP_MAX_BUF_LEN - offset, "\n");
-        return write (gf_dump_fd, buf, strlen (buf));
+        return sys_write (gf_dump_fd, buf, strlen (buf));
 }
 
 
@@ -220,7 +223,6 @@ static void
 gf_proc_dump_xlator_mem_info (xlator_t *xl)
 {
         int     i = 0;
-        struct mem_acct rec = {0,};
 
         if (!xl)
                 return;
@@ -232,8 +234,7 @@ gf_proc_dump_xlator_mem_info (xlator_t *xl)
         gf_proc_dump_write ("num_types", "%d", xl->mem_acct->num_types);
 
         for (i = 0; i < xl->mem_acct->num_types; i++) {
-                if (!(memcmp (&xl->mem_acct->rec[i], &rec,
-                              sizeof (struct mem_acct))))
+                if (xl->mem_acct->rec[i].num_allocs == 0)
                         continue;
 
                 gf_proc_dump_add_section ("%s.%s - usage-type %s memusage",
@@ -375,6 +376,7 @@ gf_proc_dump_mem_info_to_dict (dict_t *dict)
 void
 gf_proc_dump_mempool_info (glusterfs_ctx_t *ctx)
 {
+#if defined(OLD_MEM_POOLS)
         struct mem_pool *pool = NULL;
 
         gf_proc_dump_add_section ("mempool");
@@ -393,11 +395,13 @@ gf_proc_dump_mempool_info (glusterfs_ctx_t *ctx)
                 gf_proc_dump_write ("cur-stdalloc", "%d", pool->curr_stdalloc);
                 gf_proc_dump_write ("max-stdalloc", "%d", pool->max_stdalloc);
         }
+#endif
 }
 
 void
 gf_proc_dump_mempool_info_to_dict (glusterfs_ctx_t *ctx, dict_t *dict)
 {
+#if defined(OLD_MEM_POOLS)
         struct mem_pool *pool = NULL;
         char            key[GF_DUMP_MAX_BUF_LEN] = {0,};
         int             count = 0;
@@ -457,11 +461,27 @@ gf_proc_dump_mempool_info_to_dict (glusterfs_ctx_t *ctx, dict_t *dict)
                 count++;
         }
         ret = dict_set_int32 (dict, "mempool-count", count);
-
-        return;
+#endif
 }
 
 void gf_proc_dump_latency_info (xlator_t *xl);
+
+void
+gf_proc_dump_dict_info (glusterfs_ctx_t *ctx)
+{
+        uint64_t total_dicts = 0;
+        uint64_t total_pairs = 0;
+
+        total_dicts = GF_ATOMIC_GET (ctx->stats.total_dicts_used);
+        total_pairs = GF_ATOMIC_GET (ctx->stats.total_pairs_used);
+
+        gf_proc_dump_write ("max-pairs-per-dict", "%u",
+                            GF_ATOMIC_GET (ctx->stats.max_dict_pairs));
+        gf_proc_dump_write ("total-pairs-used", "%lu", total_pairs);
+        gf_proc_dump_write ("total-dicts-used", "%lu", total_dicts);
+        gf_proc_dump_write ("average-pairs-per-dict", "%lu",
+                            (total_pairs / total_dicts));
+}
 
 void
 gf_proc_dump_xlator_info (xlator_t *top)
@@ -666,7 +686,7 @@ gf_proc_dump_parse_set_option (char *key, char *value)
                 //None of dump options match the key, return back
                 snprintf (buf, sizeof (buf), "[Warning]:None of the options "
                           "matched key : %s\n", key);
-                ret = write (gf_dump_fd, buf, strlen (buf));
+                ret = sys_write (gf_dump_fd, buf, strlen (buf));
 
                 if (ret >= 0)
                         ret = -1;
@@ -808,7 +828,7 @@ gf_proc_dump_info (int signum, glusterfs_ctx_t *ctx)
                   timestr);
 
         //swallow the errors of write for start and end marker
-        ret = write (gf_dump_fd, sign_string, strlen (sign_string));
+        ret = sys_write (gf_dump_fd, sign_string, strlen (sign_string));
 
         memset (sign_string, 0, sizeof (sign_string));
         memset (timestr, 0, sizeof (timestr));
@@ -823,6 +843,10 @@ gf_proc_dump_info (int signum, glusterfs_ctx_t *ctx)
                 iobuf_stats_dump (ctx->iobuf_pool);
         if (GF_PROC_DUMP_IS_OPTION_ENABLED (callpool))
                 gf_proc_dump_pending_frames (ctx->pool);
+
+        /* dictionary stats */
+        gf_proc_dump_add_section ("dict");
+        gf_proc_dump_dict_info (ctx);
 
         if (ctx->master) {
                 gf_proc_dump_add_section ("fuse");
@@ -855,12 +879,12 @@ gf_proc_dump_info (int signum, glusterfs_ctx_t *ctx)
 
         snprintf (sign_string, sizeof (sign_string), "\nDUMP-END-TIME: %s",
                   timestr);
-        ret = write (gf_dump_fd, sign_string, strlen (sign_string));
+        ret = sys_write (gf_dump_fd, sign_string, strlen (sign_string));
 
 out:
         if (gf_dump_fd != -1)
                 gf_proc_dump_close ();
-        rename (tmp_dump_name, path);
+        sys_rename (tmp_dump_name, path);
         GF_FREE (dump_options.dump_path);
         dump_options.dump_path = NULL;
         gf_proc_dump_unlock ();

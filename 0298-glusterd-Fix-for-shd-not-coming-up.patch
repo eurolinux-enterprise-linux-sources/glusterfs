@@ -1,0 +1,69 @@
+From 747262000fd282ba66b7b1ffd7c51553d8f60de9 Mon Sep 17 00:00:00 2001
+From: Sanju Rakonde <srakonde@redhat.com>
+Date: Fri, 8 Jun 2018 19:39:58 +0530
+Subject: [PATCH 298/305] glusterd: Fix for shd not coming up
+
+Problem: After creating and starting n(n is large) distribute-replicated
+volumes using a script, if we create and start (n+1)th distribute-replicate
+volume manually self heal daemon is down.
+
+Solution: In glusterd_proc_stop after giving SIGTERM signal if the
+process is still running, we are giving a SIGKILL. As SIGKILL will
+not perform any cleanup process, we need to remove the pidfile.
+
+>Fixes: bz#1589253
+>Change-Id: I7c114334eec74c8d0f21b3e45cf7db6b8ef28af1
+>Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/20197/
+
+Change-Id: I7c114334eec74c8d0f21b3e45cf7db6b8ef28af1
+BUG: 1581184
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/141526
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ libglusterfs/src/common-utils.c                | 3 ---
+ xlators/mgmt/glusterd/src/glusterd-proc-mgmt.c | 4 ++++
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/libglusterfs/src/common-utils.c b/libglusterfs/src/common-utils.c
+index 378ed05..fd2f004 100644
+--- a/libglusterfs/src/common-utils.c
++++ b/libglusterfs/src/common-utils.c
+@@ -3854,9 +3854,6 @@ gf_is_service_running (char *pidfile, int *pid)
+         ret = lockf (fno, F_TEST, 0);
+         if (ret == -1)
+                 running = _gf_true;
+-        if (!pid) {
+-                goto out;
+-        }
+ 
+         ret = fscanf (file, "%d", pid);
+         if (ret <= 0) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-proc-mgmt.c b/xlators/mgmt/glusterd/src/glusterd-proc-mgmt.c
+index 8eeec40..ebf4174 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-proc-mgmt.c
++++ b/xlators/mgmt/glusterd/src/glusterd-proc-mgmt.c
+@@ -12,6 +12,7 @@
+ #include <limits.h>
+ #include <signal.h>
+ 
++#include "glusterd-utils.h"
+ #include "common-utils.h"
+ #include "xlator.h"
+ #include "logging.h"
+@@ -113,6 +114,9 @@ glusterd_proc_stop (glusterd_proc_t *proc, int sig, int flags)
+                                 "reason:%s", pid, strerror(errno));
+                         goto out;
+                 }
++                ret = glusterd_unlink_file (proc->pidfile);
++                if (ret)
++                        goto out;
+         }
+ 
+         ret = 0;
+-- 
+1.8.3.1
+

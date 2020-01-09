@@ -27,8 +27,10 @@ typedef enum {
 } index_state_t;
 
 typedef enum {
-        PENDING,
+        XATTROP_TYPE_UNSET = -1,
+        XATTROP,
         DIRTY,
+        ENTRY_CHANGES,
         XATTROP_TYPE_END
 } index_xattrop_type_t;
 
@@ -36,6 +38,8 @@ typedef struct index_inode_ctx {
         gf_boolean_t processing;
         struct list_head callstubs;
         int state[XATTROP_TYPE_END];
+        uuid_t virtual_pargfid; /* virtual gfid of dir under
+                                  .glusterfs/indices/entry-changes. */
 } index_inode_ctx_t;
 
 typedef struct index_fd_ctx {
@@ -48,8 +52,7 @@ typedef struct index_priv {
         char *dirty_basepath;
         uuid_t index;
         gf_lock_t lock;
-        uuid_t xattrop_vgfid;//virtual gfid of the xattrop index dir
-        uuid_t dirty_vgfid; // virtual gfid of the on-going/dirty index dir
+        uuid_t internal_vgfid[XATTROP_TYPE_END];
         struct list_head callstubs;
         pthread_mutex_t mutex;
         pthread_cond_t  cond;
@@ -57,16 +60,29 @@ typedef struct index_priv {
         dict_t  *pending_watchlist;
         dict_t  *complete_watchlist;
         int64_t  pending_count;
+        pthread_t thread;
+        gf_boolean_t down;
 } index_priv_t;
+
+typedef struct index_local {
+        inode_t *inode;
+        dict_t *xdata;
+} index_local_t;
 
 #define INDEX_STACK_UNWIND(fop, frame, params ...)      \
 do {                                                    \
+        index_local_t *__local = NULL;                  \
         if (frame) {                                    \
-                inode_t *_inode = frame->local;         \
+                __local = frame->local;                 \
                 frame->local = NULL;                    \
-                inode_unref (_inode);                   \
         }                                               \
         STACK_UNWIND_STRICT (fop, frame, params);       \
+        if (__local) {                                  \
+                inode_unref (__local->inode);           \
+                if (__local->xdata)                     \
+                        dict_unref (__local->xdata);    \
+                mem_put (__local);                      \
+        }                                               \
 } while (0)
 
 #endif

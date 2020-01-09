@@ -2,6 +2,7 @@
 
 . $(dirname $0)/../include.rc
 . $(dirname $0)/../volume.rc
+. $(dirname $0)/../dht.rc
 
 cleanup
 
@@ -90,11 +91,6 @@ wildcard_exists() {
 
 wildcard_not_exists() {
         test ! -e $1
-        if [ $? -eq 0 ]; then echo "Y"; else echo "N"; fi
-}
-
-heal_ready() {
-        $CLI volume heal $1 info | grep -q '^Brick'
         if [ $? -eq 0 ]; then echo "Y"; else echo "N"; fi
 }
 
@@ -188,13 +184,20 @@ TEST file_exists $V0 rebal1 rebal2
 TEST $CLI volume add-brick $V0 $H0:$B0/${V0}3
 TEST [ -d $B0/${V0}3 ]
 
+
 # perform rebalance [36]
 TEST $CLI volume rebalance $V0 start force
+EXPECT_WITHIN $REBALANCE_TIMEOUT "0" rebalance_completed
+
+#Find out which file was migrated to the new brick
+file_name=$(ls $B0/${V0}3/rebal*| xargs basename)
 
 # check whether rebalance was succesful [37-40]
-EXPECT_WITHIN $REBALANCE_TIMEOUT "Y" wildcard_exists $B0/${V0}3/rebal2
-EXPECT_WITHIN $REBALANCE_TIMEOUT "Y" wildcard_exists $B0/${V0}1/.trashcan/internal_op/rebal2*
+EXPECT "Y" wildcard_exists $B0/${V0}3/$file_name*
+EXPECT "Y" wildcard_exists $B0/${V0}1/.trashcan/internal_op/$file_name*
+
 EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+
 # force required in case rebalance is not over
 TEST $CLI volume stop $V0 force
 
@@ -227,26 +230,23 @@ EXPECT_WITHIN ${PROCESS_UP_TIMEOUT} "1" online_brick_count
 rm -f $M1/self
 EXPECT "Y" wildcard_exists $B0/${V1}2/.trashcan/self*
 
-# force start the volume and trigger the self-heal manually [55-59]
+# force start the volume and trigger the self-heal manually [55-57]
 TEST $CLI volume start $V1 force
 EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" online_brick_count
 EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" glustershd_up_status
-# volume heal one sometimes fail with "Launching heal operation to
-# perform index self heal on volume patchy1 has been unsuccessful"
-# Hence firt check heal is really functionnal.
-EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" heal_ready $V1
-TEST $CLI volume heal $V1
+# Since we created the file under root of the volume, it will be
+# healed automatically
 
-# check for the removed file in trashcan [60]
+# check for the removed file in trashcan [58]
 EXPECT_WITHIN $HEAL_TIMEOUT "Y" wildcard_exists $B0/${V1}1/.trashcan/internal_op/self*
 
-# check renaming of trash directory through cli [61-64]
+# check renaming of trash directory through cli [59-62]
 TEST $CLI volume set $V0 trash-dir abc
 TEST start_vol $V0 $M0 $M0/abc
 TEST [ -e $M0/abc -a ! -e $M0/.trashcan ]
-EXPECT "Y" wildcard_exists $B0/${V0}1/abc/internal_op/rebal2*
+EXPECT "Y" wildcard_exists $B0/${V0}1/abc/internal_op/rebal*
 
-# ensure that rename and delete operation on trash directory fails [65-67]
+# ensure that rename and delete operation on trash directory fails [63-65]
 rm -rf $M0/abc/internal_op
 TEST [ -e $M0/abc/internal_op ]
 rm -rf $M0/abc/

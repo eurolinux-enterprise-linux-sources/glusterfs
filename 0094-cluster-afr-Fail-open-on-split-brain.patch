@@ -1,0 +1,675 @@
+From 46a4c05ce998a72a006f79ddac4e1ad2384e66bb Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 4 Sep 2017 16:57:25 +0530
+Subject: [PATCH 094/128] cluster/afr: Fail open on split-brain
+
+Problem:
+Append on a file with split-brain succeeds. Open is intercepted by open-behind,
+when write comes on the file, open-behind does open+write. Open succeeds
+because afr doesn't fail it. Then write succeeds because write-behind
+intercepts it. Flush is also intercepted by write-behind, so the application
+never gets to know that the write failed.
+
+Fix:
+Fail open on split-brain, so that when open-behind does open+write open fails
+which leads to write failure. Application will know about this failure.
+
+ > Change-Id: I4bff1c747c97bb2925d6987f4ced5f1ce75dbc15
+ > BUG: 1294051
+ > Upstream-patch: https://review.gluster.org/13075
+ > Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+
+Change-Id: I4bff1c747c97bb2925d6987f4ced5f1ce75dbc15
+BUG: 1277924
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124882
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+---
+ tests/basic/afr/split-brain-open.t               | 38 ++++++++++
+ tests/bugs/nfs/bug-974972.t                      |  1 +
+ xlators/cluster/afr/src/afr-common.c             | 77 ++++++++++++++++++--
+ xlators/cluster/afr/src/afr-inode-write.c        |  2 +-
+ xlators/cluster/afr/src/afr-open.c               | 93 +++++++++++++++++-------
+ xlators/cluster/afr/src/afr-self-heal-common.c   | 11 ++-
+ xlators/cluster/afr/src/afr-self-heal-data.c     | 58 ++++++++++++++-
+ xlators/cluster/afr/src/afr-self-heal-metadata.c |  4 +-
+ xlators/cluster/afr/src/afr-self-heal-name.c     |  2 +-
+ xlators/cluster/afr/src/afr-self-heal.h          |  2 +-
+ xlators/cluster/afr/src/afr-self-heald.c         |  6 +-
+ xlators/cluster/afr/src/afr-transaction.c        | 43 +----------
+ xlators/cluster/afr/src/afr.h                    |  6 +-
+ 13 files changed, 248 insertions(+), 95 deletions(-)
+ create mode 100644 tests/basic/afr/split-brain-open.t
+
+diff --git a/tests/basic/afr/split-brain-open.t b/tests/basic/afr/split-brain-open.t
+new file mode 100644
+index 0000000..9b2f285
+--- /dev/null
++++ b/tests/basic/afr/split-brain-open.t
+@@ -0,0 +1,38 @@
++#!/bin/bash
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++cleanup;
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0,1}
++TEST $CLI volume start $V0
++
++#Disable self-heal-daemon
++TEST $CLI volume heal $V0 disable
++
++TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 --entry-timeout=0 $M0;
++
++TEST touch $M0/data-split-brain.txt
++
++#Create data split-brain
++TEST kill_brick $V0 $H0 $B0/${V0}0
++
++`echo "brick1_alive" > $M0/data-split-brain.txt`
++TEST [ $? == 0 ];
++
++TEST $CLI volume start $V0 force
++TEST kill_brick $V0 $H0 $B0/${V0}1
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" afr_child_up_status $V0 0
++
++`echo "brick0_alive" > $M0/data-split-brain.txt`
++TEST [ $? == 0 ];
++
++TEST $CLI volume start $V0 force
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" afr_child_up_status $V0 0
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" afr_child_up_status $V0 1
++
++echo "all-alive" >> $M0/data-split-brain.txt
++TEST [ $? != 0 ];
++
++cleanup;
+diff --git a/tests/bugs/nfs/bug-974972.t b/tests/bugs/nfs/bug-974972.t
+index d05e7df..7047825 100755
+--- a/tests/bugs/nfs/bug-974972.t
++++ b/tests/bugs/nfs/bug-974972.t
+@@ -11,6 +11,7 @@ TEST glusterd
+ TEST pidof glusterd
+ TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0,1}
+ TEST $CLI volume set $V0 self-heal-daemon off
++TEST $CLI volume set $V0 cluster.eager-lock off
+ TEST $CLI volume set $V0 nfs.disable false
+ TEST $CLI volume start $V0
+ EXPECT_WITHIN $NFS_EXPORT_TIMEOUT "1" is_nfs_export_available;
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index a8ba5a0..692f198 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -254,8 +254,9 @@ __afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+                         local->transaction.in_flight_sb = _gf_true;
+                         metadatamap |= (1 << index);
+                 }
+-                if (metadatamap_old != metadatamap)
++                if (metadatamap_old != metadatamap) {
+                         event = 0;
++                }
+                 break;
+ 
+         case AFR_DATA_TRANSACTION:
+@@ -283,19 +284,71 @@ __afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+         return ret;
+ }
+ 
+-int
+-afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local, inode_t *inode)
++gf_boolean_t
++afr_is_symmetric_error (call_frame_t *frame, xlator_t *this)
+ {
+-        int            ret  = -1;
++        afr_local_t *local = NULL;
+         afr_private_t *priv = NULL;
++        int op_errno = 0;
++        int i_errno = 0;
++        gf_boolean_t matching_errors = _gf_true;
++        int i = 0;
++
++        priv = this->private;
++        local = frame->local;
++
++        for (i = 0; i < priv->child_count; i++) {
++                if (!local->replies[i].valid)
++                        continue;
++                if (local->replies[i].op_ret != -1) {
++                        /* Operation succeeded on at least one subvol,
++                           so it is not a failed-everywhere situation.
++                        */
++                        matching_errors = _gf_false;
++                        break;
++                }
++                i_errno = local->replies[i].op_errno;
++
++                if (i_errno == ENOTCONN) {
++                        /* ENOTCONN is not a symmetric error. We do not
++                           know if the operation was performed on the
++                           backend or not.
++                        */
++                        matching_errors = _gf_false;
++                        break;
++                }
++
++                if (!op_errno) {
++                        op_errno = i_errno;
++                } else if (op_errno != i_errno) {
++                        /* Mismatching op_errno's */
++                        matching_errors = _gf_false;
++                        break;
++                }
++        }
++
++        return matching_errors;
++}
++
++int
++afr_set_in_flight_sb_status (xlator_t *this, call_frame_t *frame,
++                             inode_t *inode)
++{
++        int           ret    = -1;
++        afr_private_t *priv  = NULL;
++        afr_local_t   *local = NULL;
+ 
+         priv = this->private;
++        local = frame->local;
+ 
+         /* If this transaction saw no failures, then exit. */
+         if (AFR_COUNT (local->transaction.failed_subvols,
+                        priv->child_count) == 0)
+                 return 0;
+ 
++        if (afr_is_symmetric_error (frame, this))
++                return 0;
++
+         LOCK (&inode->lock);
+         {
+                 ret = __afr_set_in_flight_sb_status (this, local, inode);
+@@ -548,8 +601,9 @@ afr_inode_get_readable (call_frame_t *frame, inode_t *inode, xlator_t *this,
+                 }
+         } else {
+                 /* For files, abort in case of data/metadata split-brain. */
+-                if (!data_count || !metadata_count)
++                if (!data_count || !metadata_count) {
+                         return -EIO;
++                }
+         }
+ 
+         if (type == AFR_METADATA_TRANSACTION && readable)
+@@ -1958,6 +2012,11 @@ afr_local_cleanup (afr_local_t *local, xlator_t *this)
+                 GF_FREE (local->cont.opendir.checksum);
+         }
+ 
++        { /* open */
++                if (local->cont.open.fd)
++                        fd_unref (local->cont.open.fd);
++        }
++
+         { /* readdirp */
+                 if (local->cont.readdir.dict)
+                         dict_unref (local->cont.readdir.dict);
+@@ -2535,9 +2594,11 @@ afr_lookup_metadata_heal_check (call_frame_t *frame, xlator_t *this)
+         if (!afr_can_start_metadata_self_heal (frame, this))
+                 goto out;
+ 
+-        heal = afr_frame_create (this);
+-        if (!heal)
++        heal = afr_frame_create (this, &ret);
++        if (!heal) {
++                ret = -ret;
+                 goto out;
++        }
+ 
+         ret = synctask_new (this->ctx->env, afr_lookup_sh_metadata_wrap,
+                             afr_refresh_selfheal_done, heal, frame);
+@@ -2630,7 +2691,7 @@ afr_lookup_entry_heal (call_frame_t *frame, xlator_t *this)
+ 	}
+ 
+ 	if (need_heal) {
+-		heal = afr_frame_create (this);
++		heal = afr_frame_create (this, NULL);
+ 		if (!heal)
+                         goto metadata_heal;
+ 
+diff --git a/xlators/cluster/afr/src/afr-inode-write.c b/xlators/cluster/afr/src/afr-inode-write.c
+index 6651e92..97397f9 100644
+--- a/xlators/cluster/afr/src/afr-inode-write.c
++++ b/xlators/cluster/afr/src/afr-inode-write.c
+@@ -131,7 +131,7 @@ __afr_inode_write_finalize (call_frame_t *frame, xlator_t *this)
+ 		}
+ 	}
+ 
+-        afr_set_in_flight_sb_status (this, local, local->inode);
++        afr_set_in_flight_sb_status (this, frame, local->inode);
+ }
+ 
+ 
+diff --git a/xlators/cluster/afr/src/afr-open.c b/xlators/cluster/afr/src/afr-open.c
+index 7a62835..6c625cc 100644
+--- a/xlators/cluster/afr/src/afr-open.c
++++ b/xlators/cluster/afr/src/afr-open.c
+@@ -66,16 +66,15 @@ afr_open_ftruncate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         return 0;
+ }
+ 
+-
+ int
+ afr_open_cbk (call_frame_t *frame, void *cookie,
+               xlator_t *this, int32_t op_ret, int32_t op_errno,
+               fd_t *fd, dict_t *xdata)
+ {
+-        afr_local_t *  local       = NULL;
+-        int            call_count  = -1;
+-        int            child_index = (long) cookie;
+-	afr_fd_ctx_t  *fd_ctx = NULL;
++        afr_local_t   *local           = NULL;
++        int           call_count       = -1;
++        int           child_index      = (long) cookie;
++        afr_fd_ctx_t  *fd_ctx          = NULL;
+ 
+         local = frame->local;
+ 	fd_ctx = local->fd_ctx;
+@@ -103,24 +102,62 @@ afr_open_cbk (call_frame_t *frame, void *cookie,
+                                     fd, 0, NULL);
+                 } else {
+                         AFR_STACK_UNWIND (open, frame, local->op_ret,
+-                                          local->op_errno, local->fd,
+-					  local->xdata_rsp);
++                                          local->op_errno, local->cont.open.fd,
++                                          local->xdata_rsp);
+                 }
+         }
+ 
+         return 0;
+ }
+ 
++
++int
++afr_open_continue (call_frame_t *frame, xlator_t *this, int err)
++{
++        afr_local_t   *local     = NULL;
++        afr_private_t *priv      = NULL;
++        int           call_count = 0;
++        int           i          = 0;
++
++        local  = frame->local;
++        priv   = this->private;
++
++        if (err) {
++                AFR_STACK_UNWIND (open, frame, -1, -err, NULL, NULL);
++        } else {
++                local->call_count = AFR_COUNT (local->child_up,
++                                               priv->child_count);
++                call_count = local->call_count;
++
++                for (i = 0; i < priv->child_count; i++) {
++                        if (local->child_up[i]) {
++                                STACK_WIND_COOKIE (frame, afr_open_cbk,
++                                                   (void *)(long)i,
++                                                   priv->children[i],
++                                                  priv->children[i]->fops->open,
++                                                   &local->loc,
++                                            (local->cont.open.flags & ~O_TRUNC),
++                                                   local->cont.open.fd,
++                                                   local->xdata_req);
++                                if (!--call_count)
++                                        break;
++                        }
++                }
++        }
++        return 0;
++}
++
+ int
+ afr_open (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
+           fd_t *fd, dict_t *xdata)
+ {
+-        afr_private_t * priv       = NULL;
+-        afr_local_t *   local      = NULL;
+-        int             i          = 0;
+-        int32_t         call_count = 0;
+-        int32_t         op_errno   = 0;
+-	afr_fd_ctx_t   *fd_ctx = NULL;
++        afr_private_t *priv            = NULL;
++        afr_local_t   *local           = NULL;
++        int           spb_choice       = 0;
++        int           event_generation = 0;
++        int           ret              = 0;
++        int32_t       op_errno         = 0;
++        afr_fd_ctx_t  *fd_ctx          = NULL;
+ 
+         //We can't let truncation to happen outside transaction.
+ 
+@@ -140,23 +177,27 @@ afr_open (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
+         if (!afr_is_consistent_io_possible (local, priv, &op_errno))
+ 		goto out;
+ 
+-        local->fd = fd_ref (fd);
++        local->inode = inode_ref (loc->inode);
++        loc_copy (&local->loc, loc);
+ 	local->fd_ctx = fd_ctx;
+ 	fd_ctx->flags = flags;
+-
+-        call_count = local->call_count;
++        if (xdata)
++                local->xdata_req = dict_ref (xdata);
+ 
+         local->cont.open.flags = flags;
+-
+-        for (i = 0; i < priv->child_count; i++) {
+-                if (local->child_up[i]) {
+-                        STACK_WIND_COOKIE (frame, afr_open_cbk, (void *) (long) i,
+-                                           priv->children[i],
+-                                           priv->children[i]->fops->open,
+-                                           loc, (flags & ~O_TRUNC), fd, xdata);
+-                        if (!--call_count)
+-                                break;
+-                }
++        local->cont.open.fd = fd_ref (fd);
++
++        ret = afr_inode_get_readable (frame, local->inode, this,
++                                      NULL, &event_generation,
++                                      AFR_DATA_TRANSACTION);
++        if ((ret < 0) &&
++            (afr_inode_split_brain_choice_get (local->inode,
++                                             this, &spb_choice) == 0) &&
++            spb_choice < 0) {
++                afr_inode_refresh (frame, this, local->inode,
++                                   local->inode->gfid, afr_open_continue);
++        } else {
++                afr_open_continue (frame, this, 0);
+         }
+ 
+ 	return 0;
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index 20e81dd..26d3860 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -66,9 +66,9 @@ afr_lookup_and_heal_gfid (xlator_t *this, inode_t *parent, const char *name,
+                 goto out;
+         }
+ 
+-        frame = afr_frame_create (this);
++        frame = afr_frame_create (this, &ret);
+         if (!frame) {
+-                ret = -ENOMEM;
++                ret = -ret;
+                 goto out;
+         }
+ 
+@@ -2349,18 +2349,17 @@ afr_inode_find (xlator_t *this, uuid_t gfid)
+ 
+ 
+ call_frame_t *
+-afr_frame_create (xlator_t *this)
++afr_frame_create (xlator_t *this, int32_t *op_errno)
+ {
+ 	call_frame_t *frame    = NULL;
+ 	afr_local_t  *local    = NULL;
+-	int           op_errno = 0;
+ 	pid_t         pid      = GF_CLIENT_PID_SELF_HEALD;
+ 
+ 	frame = create_frame (this, this->ctx->pool);
+ 	if (!frame)
+ 		return NULL;
+ 
+-	local = AFR_FRAME_INIT (frame, op_errno);
++	local = AFR_FRAME_INIT (frame, (*op_errno));
+ 	if (!local) {
+ 		STACK_DESTROY (frame->root);
+ 		return NULL;
+@@ -2490,7 +2489,7 @@ afr_selfheal (xlator_t *this, uuid_t gfid)
+ 	call_frame_t *frame = NULL;
+         afr_local_t *local = NULL;
+ 
+-	frame = afr_frame_create (this);
++	frame = afr_frame_create (this, NULL);
+ 	if (!frame)
+ 		return ret;
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heal-data.c b/xlators/cluster/afr/src/afr-self-heal-data.c
+index 2c254e8..8cf43f2 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-data.c
++++ b/xlators/cluster/afr/src/afr-self-heal-data.c
+@@ -776,13 +776,37 @@ out:
+ 	return ret;
+ }
+ 
++int
++afr_selfheal_data_open_cbk (call_frame_t *frame, void *cookie,
++                            xlator_t *this, int32_t op_ret, int32_t op_errno,
++                            fd_t *fd, dict_t *xdata)
++{
++        afr_local_t *local = NULL;
++        int         i      = (long) cookie;
++
++        local = frame->local;
++
++        local->replies[i].valid = 1;
++        local->replies[i].op_ret = op_ret;
++        local->replies[i].op_errno = op_errno;
++
++        syncbarrier_wake (&local->barrier);
++
++        return 0;
++}
+ 
+ int
+ afr_selfheal_data_open (xlator_t *this, inode_t *inode, fd_t **fd)
+ {
+-	int         ret    = 0;
+-        fd_t       *fd_tmp = NULL;
+-	loc_t       loc    = {0,};
++        int           ret      = 0;
++        fd_t          *fd_tmp  = NULL;
++        loc_t         loc      = {0,};
++        call_frame_t  *frame   = NULL;
++        afr_local_t   *local   = NULL;
++        afr_private_t *priv    = NULL;
++        int           i        = 0;
++
++        priv = this->private;
+ 
+ 	fd_tmp = fd_create (inode, 0);
+ 	if (!fd_tmp)
+@@ -791,7 +815,31 @@ afr_selfheal_data_open (xlator_t *this, inode_t *inode, fd_t **fd)
+ 	loc.inode = inode_ref (inode);
+ 	gf_uuid_copy (loc.gfid, inode->gfid);
+ 
+-	ret = syncop_open (this, &loc, O_RDWR|O_LARGEFILE, fd_tmp, NULL, NULL);
++        frame = afr_frame_create (this, &ret);
++        if (!frame) {
++                ret = -ret;
++                fd_unref (fd_tmp);
++                goto out;
++        }
++        local = frame->local;
++
++        AFR_ONLIST (local->child_up, frame, afr_selfheal_data_open_cbk, open,
++                    &loc, O_RDWR|O_LARGEFILE, fd_tmp, NULL);
++
++        ret = -ENOTCONN;
++        for (i = 0; i < priv->child_count; i++) {
++                if (!local->replies[i].valid)
++                        continue;
++
++                if (local->replies[i].op_ret < 0) {
++                        ret = -local->replies[i].op_errno;
++                        continue;
++                }
++
++                ret = 0;
++                break;
++        }
++
+ 	if (ret < 0) {
+ 		fd_unref (fd_tmp);
+                 goto out;
+@@ -802,6 +850,8 @@ afr_selfheal_data_open (xlator_t *this, inode_t *inode, fd_t **fd)
+         *fd = fd_tmp;
+ out:
+         loc_wipe (&loc);
++        if (frame)
++                AFR_STACK_DESTROY (frame);
+ 	return ret;
+ }
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heal-metadata.c b/xlators/cluster/afr/src/afr-self-heal-metadata.c
+index f23cf8e..199f896 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-metadata.c
++++ b/xlators/cluster/afr/src/afr-self-heal-metadata.c
+@@ -486,9 +486,9 @@ afr_selfheal_metadata_by_stbuf (xlator_t *this, struct iatt *stbuf)
+                 goto out;
+         }
+ 
+-        frame = afr_frame_create (this);
++        frame = afr_frame_create (this, &ret);
+         if (!frame) {
+-                ret = -ENOMEM;
++                ret = -ret;
+                 goto out;
+         }
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heal-name.c b/xlators/cluster/afr/src/afr-self-heal-name.c
+index 352d151..556d14b 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-name.c
++++ b/xlators/cluster/afr/src/afr-self-heal-name.c
+@@ -670,7 +670,7 @@ afr_selfheal_name (xlator_t *this, uuid_t pargfid, const char *bname,
+ 	if (!parent)
+ 		goto out;
+ 
+-	frame = afr_frame_create (this);
++	frame = afr_frame_create (this, NULL);
+ 	if (!frame)
+ 		goto out;
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heal.h b/xlators/cluster/afr/src/afr-self-heal.h
+index a1da433..188a334 100644
+--- a/xlators/cluster/afr/src/afr-self-heal.h
++++ b/xlators/cluster/afr/src/afr-self-heal.h
+@@ -209,7 +209,7 @@ afr_selfheal_post_op (call_frame_t *frame, xlator_t *this, inode_t *inode,
+ 		      int subvol, dict_t *xattr, dict_t *xdata);
+ 
+ call_frame_t *
+-afr_frame_create (xlator_t *this);
++afr_frame_create (xlator_t *this, int32_t *op_errno);
+ 
+ inode_t *
+ afr_inode_find (xlator_t *this, uuid_t gfid);
+diff --git a/xlators/cluster/afr/src/afr-self-heald.c b/xlators/cluster/afr/src/afr-self-heald.c
+index 74c9bb6..19cde88 100644
+--- a/xlators/cluster/afr/src/afr-self-heald.c
++++ b/xlators/cluster/afr/src/afr-self-heald.c
+@@ -260,7 +260,7 @@ afr_shd_zero_xattrop (xlator_t *this, uuid_t gfid)
+         int raw[AFR_NUM_CHANGE_LOGS] = {0};
+ 
+         priv = this->private;
+-        frame = afr_frame_create (this);
++        frame = afr_frame_create (this, NULL);
+         if (!frame)
+                 goto out;
+         inode = afr_inode_find (this, gfid);
+@@ -457,9 +457,9 @@ afr_shd_index_sweep (struct subvol_healer *healer, char *vgfid)
+ 	priv = healer->this->private;
+ 	subvol = priv->children[healer->subvol];
+ 
+-        frame = afr_frame_create (healer->this);
++        frame = afr_frame_create (healer->this, &ret);
+         if (!frame) {
+-                ret = -ENOMEM;
++                ret = -ret;
+                 goto out;
+         }
+ 
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 91c4f78..a04636f 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -626,51 +626,10 @@ afr_txn_nothing_failed (call_frame_t *frame, xlator_t *this)
+         return _gf_true;
+ }
+ 
+-
+ void
+ afr_handle_symmetric_errors (call_frame_t *frame, xlator_t *this)
+ {
+-	afr_local_t *local = NULL;
+-	afr_private_t *priv = NULL;
+-	int op_errno = 0;
+-	int i_errno = 0;
+-	gf_boolean_t matching_errors = _gf_true;
+-	int i = 0;
+-
+-	priv = this->private;
+-	local = frame->local;
+-
+-	for (i = 0; i < priv->child_count; i++) {
+-		if (!local->replies[i].valid)
+-			continue;
+-		if (local->replies[i].op_ret != -1) {
+-			/* Operation succeeded on at least on subvol,
+-			   so it is not a failed-everywhere situation.
+-			*/
+-			matching_errors = _gf_false;
+-			break;
+-		}
+-		i_errno = local->replies[i].op_errno;
+-
+-		if (i_errno == ENOTCONN) {
+-			/* ENOTCONN is not a symmetric error. We do not
+-			   know if the operation was performed on the
+-			   backend or not.
+-			*/
+-			matching_errors = _gf_false;
+-			break;
+-		}
+-
+-		if (!op_errno) {
+-			op_errno = i_errno;
+-		} else if (op_errno != i_errno) {
+-			/* Mismatching op_errno's */
+-			matching_errors = _gf_false;
+-			break;
+-		}
+-	}
+-
+-	if (matching_errors)
++	if (afr_is_symmetric_error (frame, this))
+ 		__mark_all_success (frame, this);
+ }
+ 
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index 672d053..0a06eb6 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -519,6 +519,7 @@ typedef struct _afr_local {
+ 
+                 struct {
+                         int32_t flags;
++                        fd_t *fd;
+                 } open;
+ 
+                 struct {
+@@ -1214,7 +1215,7 @@ int
+ afr_get_msg_id (char *op_type);
+ 
+ int
+-afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
++afr_set_in_flight_sb_status (xlator_t *this, call_frame_t *frame,
+                              inode_t *inode);
+ 
+ int32_t
+@@ -1272,4 +1273,7 @@ afr_write_subvol_set (call_frame_t *frame, xlator_t *this);
+ 
+ int
+ afr_write_subvol_reset (call_frame_t *frame, xlator_t *this);
++
++gf_boolean_t
++afr_is_symmetric_error (call_frame_t *frame, xlator_t *this);
+ #endif /* __AFR_H__ */
+-- 
+1.8.3.1
+

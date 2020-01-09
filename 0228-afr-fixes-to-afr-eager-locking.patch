@@ -1,0 +1,79 @@
+From a7e4ed507c3332f896fb4822cfc3f98731c11785 Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Mon, 16 Apr 2018 15:38:34 +0530
+Subject: [PATCH 228/236] afr: fixes to afr-eager locking
+
+Upstream patch: https://review.gluster.org/#/c/19879/
+
+1. If pre-op fails on all bricks,set lock->release to true in
+afr_handle_lock_acquire_failure so that the GF_ASSERT in afr_unlock() does not
+crash.
+
+2. Added a missing 'return' after handling pre-op failure in
+afr_transaction_perform_fop(), fixing a use-after-free issue.
+
+Change-Id: If0627a9124cb5d6405037cab3f17f8325eed2d83
+BUG: 1554291
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136228
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ tests/bugs/replicate/bug-1561129-enospc.t | 24 ++++++++++++++++++++++++
+ xlators/cluster/afr/src/afr-transaction.c |  2 ++
+ 2 files changed, 26 insertions(+)
+ create mode 100644 tests/bugs/replicate/bug-1561129-enospc.t
+
+diff --git a/tests/bugs/replicate/bug-1561129-enospc.t b/tests/bugs/replicate/bug-1561129-enospc.t
+new file mode 100644
+index 0000000..1b402fc
+--- /dev/null
++++ b/tests/bugs/replicate/bug-1561129-enospc.t
+@@ -0,0 +1,24 @@
++#!/bin/bash
++#Tests that sequential write workload doesn't lead to FSYNCs
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup;
++
++TEST truncate -s 128M $B0/xfs_image
++TEST mkfs.xfs -f $B0/xfs_image
++TEST mkdir $B0/bricks
++TEST mount -t xfs -o loop $B0/xfs_image $B0/bricks
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 replica 3 $H0:$B0/bricks/brick{0,1,3}
++TEST $CLI volume start $V0
++TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0;
++
++# Write 50MB of data, which will try to consume 50x3=150MB on $B0/bricks.
++# Before that, we hit ENOSPC in pre-op cbk, which should not crash the mount.
++TEST ! dd if=/dev/zero of=$M0/a bs=1M count=50
++TEST stat $M0/a
++cleanup;
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 88dc821..0506a78 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -285,6 +285,7 @@ afr_handle_lock_acquire_failure (afr_local_t *local, gf_boolean_t locked)
+         INIT_LIST_HEAD (&shared);
+         LOCK (&local->inode->lock);
+         {
++                lock->release = _gf_true;
+                 list_splice_init (&lock->waiting, &shared);
+         }
+         UNLOCK (&local->inode->lock);
+@@ -510,6 +511,7 @@ afr_transaction_perform_fop (call_frame_t *frame, xlator_t *this)
+                                    priv->child_count);
+         if (failure_count == priv->child_count) {
+                 afr_handle_lock_acquire_failure (local, _gf_true);
++                return 0;
+         } else {
+                 lock = &local->inode_ctx->lock[local->transaction.type];
+                 LOCK (&local->inode->lock);
+-- 
+1.8.3.1
+

@@ -59,7 +59,6 @@ int32_t
 glusterd_peerinfo_cleanup (glusterd_peerinfo_t *peerinfo)
 {
         GF_ASSERT (peerinfo);
-        glusterd_peerctx_t      *peerctx = NULL;
         gf_boolean_t            quorum_action = _gf_false;
         glusterd_conf_t         *priv = THIS->private;
 
@@ -391,6 +390,35 @@ gd_peer_uuid_str (glusterd_peerinfo_t *peerinfo)
                 uuid_utoa_r (peerinfo->uuid, peerinfo->uuid_str);
 
         return peerinfo->uuid_str;
+}
+
+gf_boolean_t
+glusterd_are_all_peers_up ()
+{
+        glusterd_peerinfo_t *peerinfo = NULL;
+        xlator_t            *this = NULL;
+        glusterd_conf_t     *conf = NULL;
+        gf_boolean_t         peers_up = _gf_false;
+
+        this = THIS;
+        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+
+        conf = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, conf, out);
+
+        rcu_read_lock ();
+        cds_list_for_each_entry_rcu (peerinfo, &conf->peers, uuid_list) {
+                if (!peerinfo->connected) {
+                        rcu_read_unlock ();
+                        goto out;
+                }
+        }
+        rcu_read_unlock ();
+
+        peers_up = _gf_true;
+
+out:
+        return peers_up;
 }
 
 gf_boolean_t
@@ -1004,4 +1032,26 @@ glusterd_peerinfo_find_by_generation (uint32_t generation) {
                         "Friend with generation: %"PRIu32", not found",
                         generation);
         return found;
+}
+
+int
+glusterd_get_peers_count () {
+        int                  count = 0;
+        xlator_t            *this  = NULL;
+        glusterd_conf_t     *conf  = NULL;
+        glusterd_peerinfo_t *peer  = NULL;
+
+        this = THIS;
+        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+
+        conf = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, conf, out);
+
+        rcu_read_lock ();
+        cds_list_for_each_entry_rcu (peer, &conf->peers, uuid_list)
+                count++;
+        rcu_read_unlock ();
+
+out:
+        return count;
 }

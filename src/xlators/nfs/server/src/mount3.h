@@ -11,11 +11,6 @@
 #ifndef _MOUNT3_H_
 #define _MOUNT3_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpcsvc.h"
 #include "dict.h"
 #include "xlator.h"
@@ -154,7 +149,7 @@ struct mount3_state {
         dict_t                  *mountdict;
 
         /* Used to protect the mountlist & the mount dict */
-        pthread_spinlock_t       mountlock;
+        gf_lock_t               mountlock;
 
         /* Used to insert additional authentication parameters */
         struct mnt3_auth_params      *auth_params;
@@ -182,5 +177,12 @@ struct mount3_resolve_state {
 };
 
 typedef struct mount3_resolve_state mnt3_resolve_t;
+
+int
+mnt3_parse_dir_exports (rpcsvc_request_t *req, struct mount3_state *ms,
+                        char *subdir, gf_boolean_t send_reply);
+
+char*
+mnt3_get_volume_subdir (char *path, char **volname);
 
 #endif

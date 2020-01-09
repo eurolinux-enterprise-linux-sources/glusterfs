@@ -1,0 +1,157 @@
+From 0f2adea7ae377ea2efbab388f3af7e2a048f5f68 Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Wed, 17 Jan 2018 17:30:06 +0530
+Subject: [PATCH 190/201] cluster/afr: Adding option to take full file lock
+
+Problem:
+In replica 3 volumes there is a possibilities of ending up in split
+brain scenario, when multiple clients writing data on the same file
+at non overlapping regions in parallel.
+
+Scenario:
+- Initially all the copies are good and all the clients gets the value
+  of data readables as all good.
+- Client C0 performs write W1 which fails on brick B0 and succeeds on
+  other two bricks.
+- C1 performs write W2 which fails on B1 and succeeds on other two bricks.
+- C2 performs write W3 which fails on B2 and succeeds on other two bricks.
+- All the 3 writes above happen in parallel and fall on different ranges
+  so afr takes granular locks and all the writes are performed in parallel.
+  Since each client had data-readables as good, it does not see
+  file going into split-brain in the in_flight_split_brain check, hence
+  performs the post-op marking the pending xattrs. Now all the bricks
+  are being blamed by each other, ending up in split-brain.
+
+Fix:
+Have an option to take either full lock or range lock on files while
+doing data transactions, to prevent the possibility of ending up in
+split brains. With this change, by default the files will take full
+lock while doing IO. If you want to make use of the old range lock
+change the value of "cluster.full-lock" to "no".
+
+Upstream patch: https://review.gluster.org/#/c/19218/
+
+> Change-Id: I7893fa33005328ed63daa2f7c35eeed7c5218962
+> BUG: 1535438
+> Signed-off-by: karthik-us <ksubrahm@redhat.com>
+
+Change-Id: I4d8b1c90bfff8f597cf7f7e49a71f5f6eb19f986
+BUG: 1552414
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131966
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ libglusterfs/src/globals.h                      | 4 +++-
+ xlators/cluster/afr/src/afr-transaction.c       | 2 +-
+ xlators/cluster/afr/src/afr.c                   | 8 ++++++++
+ xlators/cluster/afr/src/afr.h                   | 5 +++--
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c | 7 +++++++
+ 5 files changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index 6bbe3e6..8fd3318 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -43,7 +43,7 @@
+  */
+ #define GD_OP_VERSION_MIN  1 /* MIN is the fresh start op-version, mostly
+                                 should not change */
+-#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_13_1 /* MAX VERSION is the maximum
++#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_13_2 /* MAX VERSION is the maximum
+                                                   count in VME table, should
+                                                   keep changing with
+                                                   introduction of newer
+@@ -107,6 +107,8 @@
+ 
+ #define GD_OP_VERSION_3_13_1   31301 /* Op-version for GlusterFS 3.13.1 */
+ 
++#define GD_OP_VERSION_3_13_2   31302 /* Op-version for GlusterFS 3.13.2 */
++
+ #include "xlator.h"
+ 
+ /* THIS */
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 97f9dd4..1c80c6b 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -1991,7 +1991,7 @@ afr_set_transaction_flock (xlator_t *this, afr_local_t *local)
+         inodelk = afr_get_inodelk (int_lock, int_lock->domain);
+         priv = this->private;
+ 
+-        if (priv->arbiter_count &&
++        if ((priv->arbiter_count || priv->full_lock) &&
+             local->transaction.type == AFR_DATA_TRANSACTION) {
+                 /*Lock entire file to avoid network split brains.*/
+                 inodelk->flock.l_len   = 0;
+diff --git a/xlators/cluster/afr/src/afr.c b/xlators/cluster/afr/src/afr.c
+index d3aee77..9493fbb 100644
+--- a/xlators/cluster/afr/src/afr.c
++++ b/xlators/cluster/afr/src/afr.c
+@@ -244,6 +244,7 @@ reconfigure (xlator_t *this, dict_t *options)
+                           out);
+         GF_OPTION_RECONF ("locking-scheme", priv->locking_scheme, options, str,
+                           out);
++        GF_OPTION_RECONF ("full-lock", priv->full_lock, options, bool, out);
+         GF_OPTION_RECONF ("use-compound-fops", priv->use_compound_fops,
+                           options, bool,
+                           out);
+@@ -534,6 +535,7 @@ init (xlator_t *this)
+ 
+         GF_OPTION_INIT ("pre-op-compat", priv->pre_op_compat, bool, out);
+         GF_OPTION_INIT ("locking-scheme", priv->locking_scheme, str, out);
++        GF_OPTION_INIT ("full-lock", priv->full_lock, bool, out);
+         GF_OPTION_INIT ("use-compound-fops", priv->use_compound_fops,
+                         bool, out);
+         GF_OPTION_INIT ("granular-entry-heal", priv->esh_granular, bool, out);
+@@ -1084,6 +1086,12 @@ struct volume_options options[] = {
+                          "stop being compatible with afr-v1, which helps afr "
+                          "be more granular while self-healing",
+         },
++        { .key = {"full-lock"},
++          .type = GF_OPTION_TYPE_BOOL,
++          .default_value = "yes",
++          .description = "If this option is disabled, then the IOs will take "
++                         "range locks same as versions till 3.13.1."
++        },
+         { .key = {"granular-entry-heal"},
+           .type = GF_OPTION_TYPE_BOOL,
+           .default_value = "no",
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index c822221..b6f5388 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -178,9 +178,10 @@ typedef struct _afr_private {
+ 	void                   *pump_private;
+ 	gf_boolean_t           use_afr_in_pump;
+ 	char                   *locking_scheme;
+-        gf_boolean_t            esh_granular;
++        gf_boolean_t           full_lock;
++        gf_boolean_t           esh_granular;
+         gf_boolean_t           consistent_io;
+-        gf_boolean_t            use_compound_fops;
++        gf_boolean_t           use_compound_fops;
+ } afr_private_t;
+ 
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index b603c7f..8d3407d 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -1507,6 +1507,13 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+ 
++        { .key        = "cluster.full-lock",
++          .voltype    = "cluster/replicate",
++          .type       = NO_DOC,
++          .op_version = GD_OP_VERSION_3_13_2,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
++
+         /* stripe xlator options */
+         { .key         = "cluster.stripe-block-size",
+           .voltype     = "cluster/stripe",
+-- 
+1.8.3.1
+

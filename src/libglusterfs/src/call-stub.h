@@ -11,22 +11,21 @@
 #ifndef _CALL_STUB_H_
 #define _CALL_STUB_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include "defaults.h"
+#include "default-args.h"
 #include "stack.h"
 #include "list.h"
 
-typedef struct {
+typedef struct _call_stub {
 	struct list_head list;
 	char wind;
 	call_frame_t *frame;
 	glusterfs_fop_t fop;
         struct mem_pool *stub_mem_pool; /* pointer to stub mempool in ctx_t */
+        uint32_t jnl_meta_len;
+        uint32_t jnl_data_len;
+        void (*serialize) (struct _call_stub *, char *, char *);
 
 	union {
 		fop_lookup_t lookup;
@@ -74,7 +73,11 @@ typedef struct {
 		fop_discard_t discard;
                 fop_zerofill_t zerofill;
                 fop_ipc_t ipc;
-	} fn;
+                fop_seek_t seek;
+                fop_lease_t lease;
+                fop_getactivelk_t getactivelk;
+	        fop_setactivelk_t setactivelk;
+        } fn;
 
 	union {
 		fop_lookup_cbk_t lookup;
@@ -122,38 +125,13 @@ typedef struct {
 		fop_discard_cbk_t discard;
                 fop_zerofill_cbk_t zerofill;
                 fop_ipc_cbk_t ipc;
+                fop_seek_cbk_t seek;
+                fop_lease_cbk_t lease;
+                fop_getactivelk_cbk_t getactivelk;
+                fop_setactivelk_cbk_t setactivelk;
 	} fn_cbk;
 
-	struct {
-		loc_t loc; // @old in rename(), link()
-		loc_t loc2; // @new in rename(), link()
-		fd_t *fd;
-		off_t offset;
-		int mask;
-		size_t size;
-		mode_t mode;
-		dev_t rdev;
-		mode_t umask;
-		int xflag;
-		int flags;
-		const char *linkname;
-		struct iovec *vector;
-		int count;
-		struct iobref *iobref;
-		int datasync;
-		dict_t *xattr;
-		const char *name;
-		int cmd;
-		struct gf_flock lock;
-		const char *volume;
-		entrylk_cmd entrylkcmd;
-		entrylk_type entrylktype;
-		gf_xattrop_flags_t optype;
-		int valid;
-		struct iatt stat;
-		dict_t *xdata;
-	} args;
-
+        default_args_t args;
         default_args_cbk_t args_cbk;
 } call_stub_t;
 
@@ -748,8 +726,52 @@ call_stub_t *
 fop_ipc_cbk_stub (call_frame_t *frame, fop_ipc_cbk_t fn,
                   int32_t op_ret, int32_t op_errno, dict_t *xdata);
 
+call_stub_t *
+fop_seek_stub (call_frame_t *frame, fop_seek_t fn, fd_t *fd, off_t offset,
+               gf_seek_what_t what, dict_t *xdata);
+
+call_stub_t *
+fop_seek_cbk_stub (call_frame_t *frame, fop_seek_cbk_t fn,
+                  int32_t op_ret, int32_t op_errno, off_t offset,
+                  dict_t *xdata);
+
+call_stub_t *
+fop_lease_stub (call_frame_t *frame, fop_lease_t fn, loc_t *loc,
+                struct gf_lease *lease, dict_t *xdata);
+
+call_stub_t *
+fop_lease_cbk_stub (call_frame_t *frame, fop_lease_cbk_t fn,
+                    int32_t op_ret, int32_t op_errno,
+                    struct gf_lease *lease, dict_t *xdata);
+
+call_stub_t *
+fop_getactivelk_stub (call_frame_t *frame, fop_getactivelk_t fn,
+                       loc_t *loc, dict_t *xdata);
+
+call_stub_t *
+fop_getactivelk_cbk_stub (call_frame_t *frame, fop_getactivelk_cbk_t fn,
+                          int32_t op_ret, int32_t op_errno,
+                          lock_migration_info_t *lmi, dict_t *xdata);
+
+call_stub_t *
+fop_setactivelk_stub (call_frame_t *frame, fop_setactivelk_t fn,
+                        loc_t *loc, lock_migration_info_t *locklist,
+                        dict_t *xdata);
+
+call_stub_t *
+fop_setactivelk_cbk_stub (call_frame_t *frame, fop_setactivelk_cbk_t fn,
+                           int32_t op_ret, int32_t op_errno, dict_t *xdata);
 
 void call_resume (call_stub_t *stub);
+void call_resume_keep_stub (call_stub_t *stub);
 void call_stub_destroy (call_stub_t *stub);
 void call_unwind_error (call_stub_t *stub, int op_ret, int op_errno);
+void call_unwind_error_keep_stub (call_stub_t *stub, int op_ret, int op_errno);
+
+/*
+ * Sometimes we might want to call just this, perhaps repeatedly, without
+ * having (or being able) to destroy and recreate it.
+ */
+void call_resume_wind (call_stub_t *stub);
+
 #endif

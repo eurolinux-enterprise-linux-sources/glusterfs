@@ -16,11 +16,6 @@
 #include <stdlib.h>
 #include <signal.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "afr.h"
 #include "dict.h"
@@ -88,37 +83,51 @@ __afr_dir_write_finalize (call_frame_t *frame, xlator_t *this)
 	int parent_read_subvol = -1;
 	int parent2_read_subvol = -1;
 	int i = 0;
+        afr_read_subvol_args_t args = {0,};
 
 	local = frame->local;
 	priv = this->private;
 
+	for (i = 0; i < priv->child_count; i++) {
+	        if (!local->replies[i].valid)
+	                continue;
+	        if (local->replies[i].op_ret == -1)
+	                continue;
+                gf_uuid_copy (args.gfid, local->replies[i].poststat.ia_gfid);
+                args.ia_type = local->replies[i].poststat.ia_type;
+                break;
+        }
+
 	if (local->inode) {
-		afr_replies_interpret (frame, this, local->inode);
+		afr_replies_interpret (frame, this, local->inode, NULL);
 		inode_read_subvol = afr_data_subvol_get (local->inode, this,
-							 NULL, NULL, NULL);
+                                                       NULL, NULL, NULL, &args);
 	}
+
 	if (local->parent)
 		parent_read_subvol = afr_data_subvol_get (local->parent, this,
-							  NULL, NULL, NULL);
+                                             NULL, local->readable, NULL, NULL);
+
 	if (local->parent2)
 		parent2_read_subvol = afr_data_subvol_get (local->parent2, this,
-							   NULL, NULL, NULL);
+                                            NULL, local->readable2, NULL, NULL);
 
 	local->op_ret = -1;
 	local->op_errno = afr_final_errno (local, priv);
+        afr_pick_error_xdata (local, priv, local->parent, local->readable,
+                              local->parent2, local->readable2);
 
 	for (i = 0; i < priv->child_count; i++) {
 		if (!local->replies[i].valid)
 			continue;
 		if (local->replies[i].op_ret < 0) {
 			if (local->inode)
-				afr_inode_read_subvol_reset (local->inode,
-							     this);
+				afr_inode_event_gen_reset (local->inode, this);
 			if (local->parent)
-				afr_inode_read_subvol_reset (local->parent,
+				afr_inode_event_gen_reset (local->parent,
 							     this);
 			if (local->parent2)
-				afr_inode_read_subvol_reset (local->parent2,
+				afr_inode_event_gen_reset (local->parent2,
 							     this);
 			continue;
 		}
@@ -137,6 +146,11 @@ __afr_dir_write_finalize (call_frame_t *frame, xlator_t *this)
 				local->replies[i].preparent2;
 			local->cont.dir_fop.postnewparent =
 				local->replies[i].postparent2;
+                        if (local->xdata_rsp) {
+                                dict_unref (local->xdata_rsp);
+                                local->xdata_rsp = NULL;
+                        }
+
 			if (local->replies[i].xdata)
 				local->xdata_rsp =
 					dict_ref (local->replies[i].xdata);
@@ -169,7 +183,6 @@ __afr_dir_write_finalize (call_frame_t *frame, xlator_t *this)
 		}
 	}
 
-        afr_txn_arbitrate_fop_cbk (frame, this);
 }
 
 
@@ -189,6 +202,9 @@ __afr_dir_write_fill (call_frame_t *frame, xlator_t *this, int child_index,
 	local->replies[child_index].valid = 1;
 	local->replies[child_index].op_ret = op_ret;
 	local->replies[child_index].op_errno = op_errno;
+        if (xdata)
+                local->replies[child_index].xdata = dict_ref (xdata);
+
 
 	if (op_ret >= 0) {
 		if (poststat)
@@ -201,9 +217,6 @@ __afr_dir_write_fill (call_frame_t *frame, xlator_t *this, int child_index,
 			local->replies[child_index].preparent2 = *preparent2;
 		if (postparent2)
 			local->replies[child_index].postparent2 = *postparent2;
-		if (xdata)
-			local->replies[child_index].xdata = dict_ref (xdata);
-
 		if (fd_ctx)
 			fd_ctx->opened_on[child_index] = AFR_FD_OPENED;
 	} else {
@@ -227,7 +240,9 @@ __afr_dir_write_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         afr_local_t *local = NULL;
         int child_index = (long) cookie;
         int call_count = -1;
+        afr_private_t *priv = NULL;
 
+        priv  = this->private;
         local = frame->local;
 
 	LOCK (&frame->lock);
@@ -242,8 +257,13 @@ __afr_dir_write_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (call_count == 0) {
 		__afr_dir_write_finalize (frame, this);
 
-		if (afr_txn_nothing_failed (frame, this))
-			local->transaction.unwind (frame, this);
+		if (afr_txn_nothing_failed (frame, this)) {
+                        /*if it did pre-op, it will do post-op changing ctime*/
+                        if (priv->consistent_metadata &&
+                            afr_needs_changelog_update (local))
+                                afr_zero_fill_stat (local);
+                        local->transaction.unwind (frame, this);
+                }
 
 		afr_mark_entry_pending_changelog (frame, this);
 
@@ -358,7 +378,8 @@ afr_mark_entry_pending_changelog (call_frame_t *frame, xlator_t *this)
         if (local->op_ret < 0)
 		return;
 
-	if (local->op != GF_FOP_CREATE && local->op != GF_FOP_MKNOD)
+	if (local->op != GF_FOP_CREATE && local->op != GF_FOP_MKNOD &&
+            local->op != GF_FOP_MKDIR)
 		return;
 
 	pre_op_count = AFR_COUNT (local->transaction.pre_op, priv->child_count);
@@ -725,13 +746,19 @@ afr_mkdir (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
         local->cont.mkdir.mode  = mode;
         local->umask = umask;
 
-        if (xdata)
-                local->xdata_req = dict_copy_with_ref (xdata, NULL);
-	else
-		local->xdata_req = dict_new ();
+        if (!xdata || !dict_get (xdata, "gfid-req")) {
+                op_errno = EPERM;
+                gf_msg_callingfn (this->name, GF_LOG_WARNING, op_errno,
+                                  AFR_MSG_GFID_NULL, "mkdir: %s is received "
+                                  "without gfid-req %p", loc->path, xdata);
+	        goto out;
+        }
 
-	if (!local->xdata_req)
-		goto out;
+        local->xdata_req = dict_copy_with_ref (xdata, NULL);
+        if (!local->xdata_req) {
+                op_errno = ENOMEM;
+                goto out;
+        }
 
         local->op = GF_FOP_MKDIR;
         local->transaction.wind   = afr_mkdir_wind;

@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <openssl/md5.h>
 #include <inttypes.h>
 
@@ -57,11 +52,7 @@ fop_lookup_stub (call_frame_t *frame, fop_lookup_t fn, loc_t *loc,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.lookup = fn;
-
-        loc_copy (&stub->args.loc, loc);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
-
+        args_lookup_store (&stub->args, loc, xdata);
 out:
         return stub;
 }
@@ -101,9 +92,7 @@ fop_stat_stub (call_frame_t *frame, fop_stat_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.stat = fn;
-        loc_copy (&stub->args.loc, loc);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_stat_store (&stub->args, loc, xdata);
 out:
         return stub;
 }
@@ -141,11 +130,7 @@ fop_fstat_stub (call_frame_t *frame, fop_fstat_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fstat = fn;
-
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fstat_store (&stub->args, fd, xdata);
 out:
         return stub;
 }
@@ -184,10 +169,7 @@ fop_truncate_stub (call_frame_t *frame, fop_truncate_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.truncate = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.offset = off;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_truncate_store (&stub->args, loc, off, xdata);
 out:
         return stub;
 }
@@ -225,12 +207,8 @@ fop_ftruncate_stub (call_frame_t *frame, fop_ftruncate_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.ftruncate = fn;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
+        args_ftruncate_store (&stub->args, fd, off, xdata);
 
-        stub->args.offset = off;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
 out:
         return stub;
 }
@@ -270,10 +248,7 @@ fop_access_stub (call_frame_t *frame, fop_access_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.access = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.mask = mask;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_access_store (&stub->args, loc, mask, xdata);
 out:
         return stub;
 }
@@ -310,10 +285,7 @@ fop_readlink_stub (call_frame_t *frame, fop_readlink_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.readlink = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.size = size;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_readlink_store (&stub->args, loc, size, xdata);
 out:
         return stub;
 }
@@ -352,12 +324,7 @@ fop_mknod_stub (call_frame_t *frame, fop_mknod_t fn, loc_t *loc, mode_t mode,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.mknod = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.mode = mode;
-        stub->args.rdev = rdev;
-        stub->args.umask = umask;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_mknod_store (&stub->args, loc, mode, rdev, umask, xdata);
 out:
         return stub;
 }
@@ -397,12 +364,7 @@ fop_mkdir_stub (call_frame_t *frame, fop_mkdir_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.mkdir = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.mode  = mode;
-        stub->args.umask = umask;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_mkdir_store (&stub->args, loc, mode, umask, xdata);
 out:
         return stub;
 }
@@ -442,10 +404,8 @@ fop_unlink_stub (call_frame_t *frame, fop_unlink_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.unlink = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.xflag = xflag;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_unlink_store (&stub->args, loc, xflag, xdata);
+
 out:
         return stub;
 }
@@ -486,10 +446,8 @@ fop_rmdir_stub (call_frame_t *frame, fop_rmdir_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.rmdir = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.flags = flags;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_rmdir_store (&stub->args, loc, flags, xdata);
+
 out:
         return stub;
 }
@@ -530,11 +488,7 @@ fop_symlink_stub (call_frame_t *frame, fop_symlink_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.symlink = fn;
-        stub->args.linkname = gf_strdup (linkname);
-        stub->args.umask = umask;
-        loc_copy (&stub->args.loc, loc);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_symlink_store (&stub->args, linkname, loc, umask, xdata);
 out:
         return stub;
 }
@@ -576,10 +530,7 @@ fop_rename_stub (call_frame_t *frame, fop_rename_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.rename = fn;
-        loc_copy (&stub->args.loc, oldloc);
-        loc_copy (&stub->args.loc2, newloc);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_rename_store (&stub->args, oldloc, newloc, xdata);
 out:
         return stub;
 }
@@ -622,11 +573,7 @@ fop_link_stub (call_frame_t *frame, fop_link_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.link = fn;
-        loc_copy (&stub->args.loc, oldloc);
-        loc_copy (&stub->args.loc2, newloc);
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_link_store (&stub->args, oldloc, newloc, xdata);
 out:
         return stub;
 }
@@ -668,14 +615,8 @@ fop_create_stub (call_frame_t *frame, fop_create_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.create = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.flags = flags;
-        stub->args.mode = mode;
-        stub->args.umask = umask;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_create_store (&stub->args, loc, flags, mode,
+                           umask, fd, xdata);
 out:
         return stub;
 }
@@ -716,12 +657,7 @@ fop_open_stub (call_frame_t *frame, fop_open_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.open = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.flags = flags;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_open_store (&stub->args, loc, flags, fd, xdata);
 out:
         return stub;
 }
@@ -759,14 +695,7 @@ fop_readv_stub (call_frame_t *frame, fop_readv_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.readv = fn;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        stub->args.size  = size;
-        stub->args.offset  = off;
-        stub->args.flags = flags;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_readv_store (&stub->args, fd, size, off, flags, xdata);
 out:
         return stub;
 }
@@ -807,15 +736,8 @@ fop_writev_stub (call_frame_t *frame, fop_writev_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.writev = fn;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        stub->args.vector = iov_dup (vector, count);
-        stub->args.count  = count;
-        stub->args.offset = off;
-        stub->args.flags  = flags;
-        stub->args.iobref = iobref_ref (iobref);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_writev_store (&stub->args, fd, vector, count, off, flags,
+                           iobref, xdata);
 out:
         return stub;
 }
@@ -853,10 +775,7 @@ fop_flush_stub (call_frame_t *frame, fop_flush_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.flush = fn;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_flush_store (&stub->args, fd, xdata);
 out:
         return stub;
 }
@@ -892,11 +811,7 @@ fop_fsync_stub (call_frame_t *frame, fop_fsync_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fsync = fn;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        stub->args.datasync = datasync;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fsync_store (&stub->args, fd, datasync, xdata);
 out:
         return stub;
 }
@@ -935,11 +850,7 @@ fop_opendir_stub (call_frame_t *frame, fop_opendir_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.opendir = fn;
-        loc_copy (&stub->args.loc, loc);
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_opendir_store (&stub->args, loc, fd, xdata);
 out:
         return stub;
 }
@@ -976,11 +887,7 @@ fop_fsyncdir_stub (call_frame_t *frame, fop_fsyncdir_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fsyncdir = fn;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        stub->args.datasync = datasync;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fsyncdir_store (&stub->args, fd, datasync, xdata);
 out:
         return stub;
 }
@@ -1017,9 +924,7 @@ fop_statfs_stub (call_frame_t *frame, fop_statfs_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.statfs = fn;
-        loc_copy (&stub->args.loc, loc);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_statfs_store (&stub->args, loc, xdata);
 out:
         return stub;
 }
@@ -1058,13 +963,7 @@ fop_setxattr_stub (call_frame_t *frame, fop_setxattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.setxattr = fn;
-        loc_copy (&stub->args.loc, loc);
-        /* TODO */
-        if (dict)
-                stub->args.xattr = dict_ref (dict);
-        stub->args.flags = flags;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_setxattr_store (&stub->args, loc, dict, flags, xdata);
 out:
         return stub;
 }
@@ -1103,12 +1002,7 @@ fop_getxattr_stub (call_frame_t *frame, fop_getxattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.getxattr = fn;
-        loc_copy (&stub->args.loc, loc);
-
-        if (name)
-                stub->args.name = gf_strdup (name);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_getxattr_store (&stub->args, loc, name, xdata);
 out:
         return stub;
 }
@@ -1147,13 +1041,7 @@ fop_fsetxattr_stub (call_frame_t *frame, fop_fsetxattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fsetxattr = fn;
-        stub->args.fd = fd_ref (fd);
-
-        if (dict)
-                stub->args.xattr = dict_ref (dict);
-        stub->args.flags = flags;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fsetxattr_store (&stub->args, fd, dict, flags, xdata);
 out:
         return stub;
 }
@@ -1190,12 +1078,7 @@ fop_fgetxattr_stub (call_frame_t *frame, fop_fgetxattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fgetxattr = fn;
-        stub->args.fd = fd_ref (fd);
-
-        if (name)
-                stub->args.name = gf_strdup (name);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fgetxattr_store (&stub->args, fd, name, xdata);
 out:
         return stub;
 }
@@ -1235,10 +1118,7 @@ fop_removexattr_stub (call_frame_t *frame, fop_removexattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.removexattr = fn;
-        loc_copy (&stub->args.loc, loc);
-        stub->args.name = gf_strdup (name);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_removexattr_store (&stub->args, loc, name, xdata);
 out:
         return stub;
 }
@@ -1276,10 +1156,7 @@ fop_fremovexattr_stub (call_frame_t *frame, fop_fremovexattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fremovexattr = fn;
-        stub->args.fd = fd_ref (fd);
-        stub->args.name = gf_strdup (name);
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fremovexattr_store (&stub->args, fd, name, xdata);
 out:
         return stub;
 }
@@ -1317,12 +1194,7 @@ fop_lk_stub (call_frame_t *frame, fop_lk_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.lk = fn;
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        stub->args.cmd = cmd;
-        stub->args.lock = *lock;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_lk_store (&stub->args, fd, cmd, lock, xdata);
 out:
         return stub;
 }
@@ -1361,15 +1233,8 @@ fop_inodelk_stub (call_frame_t *frame, fop_inodelk_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.inodelk = fn;
-
-        if (volume)
-                stub->args.volume = gf_strdup (volume);
-
-        loc_copy (&stub->args.loc, loc);
-        stub->args.cmd  = cmd;
-        stub->args.lock = *lock;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_inodelk_store (&stub->args, volume, loc, cmd,
+                            lock, xdata);
 out:
         return stub;
 }
@@ -1407,18 +1272,9 @@ fop_finodelk_stub (call_frame_t *frame, fop_finodelk_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.finodelk = fn;
+        args_finodelk_store (&stub->args, volume, fd, cmd,
+                             lock, xdata);
 
-        if (fd)
-                stub->args.fd   = fd_ref (fd);
-
-        if (volume)
-                stub->args.volume = gf_strdup (volume);
-
-        stub->args.cmd  = cmd;
-        stub->args.lock = *lock;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
 out:
         return stub;
 }
@@ -1455,20 +1311,8 @@ fop_entrylk_stub (call_frame_t *frame, fop_entrylk_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.entrylk = fn;
+        args_entrylk_store (&stub->args, volume, loc, name, cmd, type, xdata);
 
-        if (volume)
-                stub->args.volume = gf_strdup (volume);
-
-        loc_copy (&stub->args.loc, loc);
-
-        stub->args.entrylkcmd = cmd;
-        stub->args.entrylktype = type;
-
-        if (name)
-                stub->args.name = gf_strdup (name);
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
 out:
         return stub;
 }
@@ -1505,19 +1349,7 @@ fop_fentrylk_stub (call_frame_t *frame, fop_fentrylk_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fentrylk = fn;
-
-        if (volume)
-                stub->args.volume = gf_strdup (volume);
-
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-        stub->args.entrylkcmd = cmd;
-        stub->args.entrylktype = type;
-        if (name)
-                stub->args.name = gf_strdup (name);
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fentrylk_store (&stub->args, volume, fd, name, cmd, type, xdata);
 out:
         return stub;
 }
@@ -1592,12 +1424,7 @@ fop_readdir_stub (call_frame_t *frame, fop_readdir_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.readdir = fn;
-        stub->args.fd = fd_ref (fd);
-        stub->args.size = size;
-        stub->args.offset = off;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_readdir_store (&stub->args, fd, size, off, xdata);
 out:
         return stub;
 }
@@ -1613,11 +1440,7 @@ fop_readdirp_stub (call_frame_t *frame, fop_readdirp_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.readdirp = fn;
-        stub->args.fd = fd_ref (fd);
-        stub->args.size = size;
-        stub->args.offset = off;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_readdirp_store (&stub->args, fd, size, off, xdata);
 out:
         return stub;
 }
@@ -1636,11 +1459,7 @@ fop_rchecksum_stub (call_frame_t *frame, fop_rchecksum_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.rchecksum = fn;
-        stub->args.fd = fd_ref (fd);
-        stub->args.offset = offset;
-        stub->args.size    = len;
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_rchecksum_store (&stub->args, fd, offset, len, xdata);
 out:
         return stub;
 }
@@ -1719,14 +1538,7 @@ fop_xattrop_stub (call_frame_t *frame, fop_xattrop_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.xattrop = fn;
-
-        loc_copy (&stub->args.loc, loc);
-
-        stub->args.optype = optype;
-        stub->args.xattr = dict_ref (xattr);
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_xattrop_store (&stub->args, loc, optype, xattr, xdata);
 out:
         return stub;
 }
@@ -1746,14 +1558,7 @@ fop_fxattrop_stub (call_frame_t *frame, fop_fxattrop_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fxattrop = fn;
-
-        stub->args.fd = fd_ref (fd);
-
-        stub->args.optype = optype;
-        stub->args.xattr = dict_ref (xattr);
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fxattrop_store (&stub->args, fd, optype, xattr, xdata);
 out:
         return stub;
 }
@@ -1815,16 +1620,7 @@ fop_setattr_stub (call_frame_t *frame, fop_setattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.setattr = fn;
-
-        loc_copy (&stub->args.loc, loc);
-
-        if (stbuf)
-                stub->args.stat = *stbuf;
-
-        stub->args.valid = valid;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_setattr_store (&stub->args, loc, stbuf, valid, xdata);
 out:
         return stub;
 }
@@ -1844,17 +1640,7 @@ fop_fsetattr_stub (call_frame_t *frame, fop_fsetattr_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fsetattr = fn;
-
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-
-        if (stbuf)
-                stub->args.stat = *stbuf;
-
-        stub->args.valid = valid;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fsetattr_store (&stub->args, fd, stbuf, valid, xdata);
 out:
         return stub;
 }
@@ -1893,16 +1679,7 @@ fop_fallocate_stub(call_frame_t *frame, fop_fallocate_t fn, fd_t *fd,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.fallocate = fn;
-
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-
-	stub->args.flags = mode;
-	stub->args.offset = offset;
-	stub->args.size = len;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_fallocate_store (&stub->args, fd, mode, offset, len, xdata);
 out:
         return stub;
 
@@ -1942,15 +1719,7 @@ fop_discard_stub(call_frame_t *frame, fop_discard_t fn, fd_t *fd,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.discard = fn;
-
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-
-	stub->args.offset = offset;
-	stub->args.size = len;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_discard_store (&stub->args, fd, offset, len, xdata);
 out:
         return stub;
 
@@ -1990,15 +1759,7 @@ fop_zerofill_stub(call_frame_t *frame, fop_zerofill_t fn, fd_t *fd,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.zerofill = fn;
-
-        if (fd)
-                stub->args.fd = fd_ref (fd);
-
-        stub->args.offset = offset;
-        stub->args.size = len;
-
-        if (xdata)
-                stub->args.xdata = dict_ref (xdata);
+        args_zerofill_store (&stub->args, fd, offset, len, xdata);
 out:
         return stub;
 
@@ -2036,8 +1797,125 @@ fop_ipc_stub (call_frame_t *frame, fop_ipc_t fn,
         GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
 
         stub->fn.ipc = fn;
+        args_ipc_store (&stub->args, op, xdata);
+out:
+        return stub;
 
-        stub->args.cmd = op;
+}
+
+call_stub_t *
+fop_lease_cbk_stub (call_frame_t *frame, fop_lease_cbk_t fn,
+                    int32_t op_ret, int32_t op_errno,
+                    struct gf_lease *lease, dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+
+        stub = stub_new (frame, 0, GF_FOP_LEASE);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn_cbk.lease = fn;
+        args_lease_cbk_store (&stub->args_cbk, op_ret, op_errno, lease, xdata);
+out:
+        return stub;
+}
+
+call_stub_t *
+fop_lease_stub (call_frame_t *frame, fop_lease_t fn,
+                loc_t *loc, struct gf_lease *lease, dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+        GF_VALIDATE_OR_GOTO ("call-stub", fn, out);
+        GF_VALIDATE_OR_GOTO ("call-stub", lease, out);
+
+        stub = stub_new (frame, 1, GF_FOP_LEASE);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn.lease = fn;
+        args_lease_store (&stub->args, loc, lease, xdata);
+out:
+        return stub;
+
+}
+
+call_stub_t *
+fop_seek_cbk_stub (call_frame_t *frame, fop_seek_cbk_t fn,
+                   int32_t op_ret, int32_t op_errno, off_t offset,
+                   dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+
+        stub = stub_new (frame, 0, GF_FOP_SEEK);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn_cbk.seek = fn;
+
+        args_seek_cbk_store (&stub->args_cbk, op_ret, op_errno, offset, xdata);
+out:
+        return stub;
+}
+
+
+call_stub_t *
+fop_seek_stub (call_frame_t *frame, fop_seek_t fn, fd_t *fd,
+               off_t offset, gf_seek_what_t what, dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+        GF_VALIDATE_OR_GOTO ("call-stub", fn, out);
+
+        stub = stub_new (frame, 1, GF_FOP_SEEK);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn.seek = fn;
+        args_seek_store (&stub->args, fd, offset, what, xdata);
+out:
+        return stub;
+
+}
+
+call_stub_t *
+fop_getactivelk_cbk_stub (call_frame_t *frame, fop_getactivelk_cbk_t fn,
+                          int32_t op_ret, int32_t op_errno,
+                          lock_migration_info_t *lmi, dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+
+        stub = stub_new (frame, 0, GF_FOP_GETACTIVELK);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn_cbk.getactivelk = fn;
+
+        args_getactivelk_cbk_store (&stub->args_cbk, op_ret, op_errno, lmi,
+                                    xdata);
+out:
+        return stub;
+}
+
+
+call_stub_t *
+fop_getactivelk_stub (call_frame_t *frame, fop_getactivelk_t fn, loc_t *loc,
+                      dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+        GF_VALIDATE_OR_GOTO ("call-stub", fn, out);
+
+        stub = stub_new (frame, 1, GF_FOP_GETACTIVELK);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn.getactivelk = fn;
+
+        loc_copy (&stub->args.loc, loc);
 
         if (xdata)
                 stub->args.xdata = dict_ref (xdata);
@@ -2046,6 +1924,49 @@ out:
 
 }
 
+call_stub_t *
+fop_setactivelk_cbk_stub (call_frame_t *frame, fop_setactivelk_cbk_t fn,
+                           int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+
+        stub = stub_new (frame, 0, GF_FOP_SETACTIVELK);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn_cbk.setactivelk = fn;
+        stub->args_cbk.op_ret = op_ret;
+        stub->args_cbk.op_errno = op_errno;
+
+        if (xdata)
+                stub->args.xdata = dict_ref (xdata);
+
+out:
+        return stub;
+}
+
+call_stub_t *
+fop_setactivelk_stub (call_frame_t *frame, fop_setactivelk_t fn,
+                        loc_t *loc, lock_migration_info_t *locklist,
+                        dict_t *xdata)
+{
+        call_stub_t *stub = NULL;
+
+        GF_VALIDATE_OR_GOTO ("call-stub", frame, out);
+        GF_VALIDATE_OR_GOTO ("call-stub", fn, out);
+
+        stub = stub_new (frame, 1, GF_FOP_SETACTIVELK);
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        stub->fn.setactivelk = fn;
+
+        args_setactivelk_store (&stub->args, loc, locklist, xdata);
+
+out:
+        return stub;
+
+}
 
 void
 call_resume_wind (call_stub_t *stub)
@@ -2283,6 +2204,27 @@ call_resume_wind (call_stub_t *stub)
                 stub->fn.ipc (stub->frame, stub->frame->this,
                               stub->args.cmd, stub->args.xdata);
                 break;
+        case GF_FOP_SEEK:
+                stub->fn.seek (stub->frame, stub->frame->this,
+                               stub->args.fd, stub->args.offset,
+                               stub->args.what, stub->args.xdata);
+                break;
+        case GF_FOP_LEASE:
+                stub->fn.lease (stub->frame, stub->frame->this,
+                                &stub->args.loc, &stub->args.lease,
+                                stub->args.xdata);
+                break;
+
+        case GF_FOP_GETACTIVELK:
+                stub->fn.getactivelk (stub->frame, stub->frame->this,
+                                       &stub->args.loc, stub->args.xdata);
+                break;
+
+        case GF_FOP_SETACTIVELK:
+                stub->fn.setactivelk (stub->frame, stub->frame->this,
+                                        &stub->args.loc, &stub->args.locklist,
+                                        stub->args.xdata);
+                break;
 
         default:
                 gf_msg_callingfn ("call-stub", GF_LOG_ERROR, EINVAL,
@@ -2493,6 +2435,23 @@ call_resume_unwind (call_stub_t *stub)
         case GF_FOP_IPC:
                 STUB_UNWIND (stub, ipc, stub->args_cbk.xdata);
                 break;
+        case GF_FOP_SEEK:
+                STUB_UNWIND (stub, seek, stub->args_cbk.offset,
+                             stub->args_cbk.xdata);
+                break;
+        case GF_FOP_LEASE:
+                STUB_UNWIND (stub, lease, &stub->args_cbk.lease,
+                             stub->args_cbk.xdata);
+                break;
+
+        case GF_FOP_GETACTIVELK:
+                STUB_UNWIND (stub, getactivelk, &stub->args_cbk.locklist,
+                             stub->args_cbk.xdata);
+                break;
+
+        case GF_FOP_SETACTIVELK:
+                STUB_UNWIND (stub, setactivelk, stub->args_cbk.xdata);
+                break;
 
         default:
                 gf_msg_callingfn ("call-stub", GF_LOG_ERROR, EINVAL,
@@ -2508,31 +2467,8 @@ out:
 static void
 call_stub_wipe_args (call_stub_t *stub)
 {
-	loc_wipe (&stub->args.loc);
-
-	loc_wipe (&stub->args.loc2);
-
-	if (stub->args.fd)
-		fd_unref (stub->args.fd);
-
-	GF_FREE ((char *)stub->args.linkname);
-
-	GF_FREE (stub->args.vector);
-
-	if (stub->args.iobref)
-		iobref_unref (stub->args.iobref);
-
-	if (stub->args.xattr)
-		dict_unref (stub->args.xattr);
-
-	GF_FREE ((char *)stub->args.name);
-
-	GF_FREE ((char *)stub->args.volume);
-
-	if (stub->args.xdata)
-		dict_unref (stub->args.xdata);
+        args_wipe (&stub->args);
 }
-
 
 static void
 call_stub_wipe_args_cbk (call_stub_t *stub)
@@ -2605,4 +2541,51 @@ call_unwind_error (call_stub_t *stub, int op_ret, int op_errno)
 
         return;
 
+}
+
+
+void
+call_unwind_error_keep_stub (call_stub_t *stub, int op_ret, int op_errno)
+{
+        xlator_t *old_THIS = NULL;
+
+        list_del_init (&stub->list);
+
+        old_THIS = THIS;
+        THIS = stub->frame->this;
+        {
+                stub->args_cbk.op_ret = op_ret;
+                stub->args_cbk.op_errno = op_errno;
+                call_resume_unwind (stub);
+        }
+
+        THIS = old_THIS;
+
+        return;
+
+}
+
+void
+call_resume_keep_stub (call_stub_t *stub)
+{
+        xlator_t *old_THIS = NULL;
+
+        errno = EINVAL;
+        GF_VALIDATE_OR_GOTO ("call-stub", stub, out);
+
+        list_del_init (&stub->list);
+
+        old_THIS = THIS;
+        THIS = stub->frame->this;
+        {
+                if (stub->wind)
+                        call_resume_wind (stub);
+                else
+                        call_resume_unwind (stub);
+        }
+
+        THIS = old_THIS;
+
+out:
+        return;
 }

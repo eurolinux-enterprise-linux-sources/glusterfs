@@ -1,0 +1,50 @@
+From 8279b8c5f23cddd1b7db59c56ed2d8896ac49aa7 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 4 Jul 2017 17:10:27 +0530
+Subject: [PATCH 30/74] build: make gf_attach available in glusterfs-server
+
+Problem:
+gf_attach was erroneously packaged in glusterfs-fuse
+
+Solution:
+move gf_attach listing to server package
+add gf_attach to the exclude listing for client builds
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I0de45700badcbab65febf2385f1ac074c44cfa7c
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/111001
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ glusterfs.spec.in | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 4596e3f..600fa6e 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1135,6 +1135,7 @@ exit 0
+ %exclude %{_sbindir}/gcron.py
+ %exclude %{_sbindir}/glfsheal
+ %exclude %{_sbindir}/glusterd
++%exclude %{_sbindir}/gf_attach
+ %exclude %{_sbindir}/snap_scheduler.py
+ %exclude %{_datadir}/glusterfs/scripts/stop-all-gluster-processes.sh
+ %if ( 0%{?_with_systemd:1} )
+@@ -2198,6 +2199,12 @@ end
+ * Thu Jul 13 2017 Kaleb S. KEITHLEY <kkeithle@redhat.com>
+ - various directories not owned by any package
+ 
++* Tue Jul 04 2017 Milind Changire <mchangir@redhat.com>
++- moved %{_sbindir}/gf_attach from glusterfs-fuse to glusterfs-server
++
++* Fri Jun 23 2017 Kaleb S. KEITHLEY <kkeithle@redhat.com>
++- DOWNSTREAM ONLY remove Requires: selinux-policy for puddle generation
++
+ * Wed Jun 21 2017 Jiffin Tony Thottan <jthottan@redhat.com>
+ - Exclude glusterfssharedstorage.service and mount-shared-storage.sh from client builds
+ 
+-- 
+1.8.3.1
+

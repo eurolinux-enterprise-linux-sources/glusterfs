@@ -23,8 +23,9 @@ import logging
 import tempfile
 import threading
 import subprocess
-from errno import EEXIST, ENOENT, ENODATA, ENOTDIR, ELOOP
-from errno import EISDIR, ENOTEMPTY, ESTALE, EINVAL
+import errno
+from errno import EEXIST, ENOENT, ENODATA, ENOTDIR, ELOOP, EACCES
+from errno import EISDIR, ENOTEMPTY, ESTALE, EINVAL, EBUSY, EPERM
 from select import error as SelectError
 import shutil
 
@@ -35,16 +36,21 @@ from master import gmaster_builder
 import syncdutils
 from syncdutils import GsyncdError, select, privileged, boolify, funcode
 from syncdutils import umask, entry2pb, gauxpfx, errno_wrap, lstat
-from syncdutils import NoPurgeTimeAvailable, PartialHistoryAvailable
-from syncdutils import ChangelogException
+from syncdutils import NoStimeAvailable, PartialHistoryAvailable
+from syncdutils import ChangelogException, ChangelogHistoryNotAvailable
+from syncdutils import get_changelog_log_level, get_rsync_version
 from syncdutils import CHANGELOG_AGENT_CLIENT_VERSION
+from syncdutils import GX_GFID_CANONICAL_LEN
 from gsyncdstatus import GeorepStatus
-
+from syncdutils import get_master_and_slave_data_from_args
+from syncdutils import mntpt_list, lf
+from syncdutils import Xattr, matching_disk_gfid, get_gfid_from_mnt
 
 UrlRX = re.compile('\A(\w+)://([^ *?[]*)\Z')
 HostRX = re.compile('[a-zA-Z\d](?:[a-zA-Z\d.-]*[a-zA-Z\d])?', re.I)
 UserRX = re.compile("[\w!\#$%&'*+-\/=?^_`{|}~]+")
 
+ENOTSUP = getattr(errno, 'ENOTSUP', 'EOPNOTSUPP')
 
 def sup(x, *a, **kw):
     """a rubyesque "super" for python ;)
@@ -108,33 +114,6 @@ def parse_url(ustr):
     return getattr(this, sch.upper())(path)
 
 
-class _MetaXattr(object):
-
-    """singleton class, a lazy wrapper around the
-    libcxattr module
-
-    libcxattr (a heavy import due to ctypes) is
-    loaded only when when the single
-    instance is tried to be used.
-
-    This reduces runtime for those invocations
-    which do not need filesystem manipulation
-    (eg. for config, url parsing)
-    """
-
-    def __getattr__(self, meth):
-        from libcxattr import Xattr as LXattr
-        xmeth = [m for m in dir(LXattr) if m[0] != '_']
-        if not meth in xmeth:
-            return
-        for m in xmeth:
-            setattr(self, m, getattr(LXattr, m))
-        return getattr(self, meth)
-
-
-Xattr = _MetaXattr()
-
-
 class Popen(subprocess.Popen):
 
     """customized subclass of subprocess.Popen with a ring
@@ -169,7 +148,13 @@ class Popen(subprocess.Popen):
                         except ValueError:  # file is already closed
                             time.sleep(0.5)
                             continue
-                        l = os.read(fd, 1024)
+
+                        try:
+                            l = os.read(fd, 1024)
+                        except OSError:
+                            time.sleep(0.5)
+                            continue
+
                         if not l:
                             continue
                         tots = len(l)
@@ -204,6 +189,7 @@ class Popen(subprocess.Popen):
             kw['close_fds'] = True
         self.lock = threading.Lock()
         self.on_death_row = False
+        self.elines = []
         try:
             sup(self, args, *a, **kw)
         except:
@@ -219,11 +205,9 @@ class Popen(subprocess.Popen):
 
     def errlog(self):
         """make a log about child's failure event"""
-        filling = ""
-        if self.elines:
-            filling = ", saying:"
-        logging.error("""command "%s" returned with %s%s""" %
-                      (" ".join(self.args), repr(self.returncode), filling))
+        logging.error(lf("command returned error",
+                         cmd=" ".join(self.args),
+                         error=self.returncode))
         lp = ''
 
         def logerr(l):
@@ -287,7 +271,6 @@ class Server(object):
     NTV_FMTSTR = "!" + "B" * 19 + "II"
     FRGN_XTRA_FMT = "I"
     FRGN_FMTSTR = NTV_FMTSTR + FRGN_XTRA_FMT
-    GX_GFID_CANONICAL_LEN = 37  # canonical gfid len + '\0'
 
     # for backend gfid fetch, do not use GX_NSPACE_PFX
     GFID_XATTR = 'trusted.gfid'
@@ -297,15 +280,15 @@ class Server(object):
 
     @classmethod
     def _fmt_mknod(cls, l):
-        return "!II%dsI%dsIII" % (cls.GX_GFID_CANONICAL_LEN, l + 1)
+        return "!II%dsI%dsIII" % (GX_GFID_CANONICAL_LEN, l + 1)
 
     @classmethod
     def _fmt_mkdir(cls, l):
-        return "!II%dsI%dsII" % (cls.GX_GFID_CANONICAL_LEN, l + 1)
+        return "!II%dsI%dsII" % (GX_GFID_CANONICAL_LEN, l + 1)
 
     @classmethod
     def _fmt_symlink(cls, l1, l2):
-        return "!II%dsI%ds%ds" % (cls.GX_GFID_CANONICAL_LEN, l1 + 1, l2 + 1)
+        return "!II%dsI%ds%ds" % (GX_GFID_CANONICAL_LEN, l1 + 1, l2 + 1)
 
     def _pathguard(f):
         """decorator method that checks
@@ -365,23 +348,14 @@ class Server(object):
     @classmethod
     @_pathguard
     def gfid(cls, path):
-        try:
-            buf = Xattr.lgetxattr(path, cls.GFID_XATTR, 16)
+        buf = errno_wrap(Xattr.lgetxattr, [path, cls.GFID_XATTR, 16],
+                         [ENOENT], [ESTALE, ENODATA])
+        if buf == ENOENT:
+            return buf
+        else:
             m = re.match('(.{8})(.{4})(.{4})(.{4})(.{12})', "".join(
                 ['%02x' % x for x in struct.unpack(cls.GFID_FMTSTR, buf)]))
             return '-'.join(m.groups())
-        except (IOError, OSError):
-            ex = sys.exc_info()[1]
-            if ex.errno == ENOENT:
-                return ex.errno
-            else:
-                raise
-
-    @classmethod
-    def gfid_mnt(cls, gfidpath):
-        return errno_wrap(Xattr.lgetxattr,
-                          [gfidpath, 'glusterfs.gfid.string',
-                           cls.GX_GFID_CANONICAL_LEN], [ENOENT], [ESTALE])
 
     @classmethod
     @_pathguard
@@ -522,6 +496,29 @@ class Server(object):
                 raise
 
     @classmethod
+    @_pathguard
+    def entry_stime(cls, path, uuid):
+        """
+        entry_stime xattr to reduce the number of retry of Entry changes when
+        Geo-rep worker crashes and restarts. entry_stime is updated after
+        processing every changelog file. On failure and restart, worker only
+        have to reprocess the last changelog for Entry ops.
+        Xattr Key: <PFX>.<MASTERVOL_UUID>.<SLAVEVOL_UUID>.entry_stime
+        """
+        try:
+            val = Xattr.lgetxattr(path,
+                                  '.'.join([cls.GX_NSPACE, uuid,
+                                            'entry_stime']),
+                                  8)
+            return struct.unpack('!II', val)
+        except OSError:
+            ex = sys.exc_info()[1]
+            if ex.errno in (ENOENT, ENODATA, ENOTDIR):
+                return ex.errno
+            else:
+                raise
+
+    @classmethod
     def node_uuid(cls, path='.'):
         try:
             uuid_l = Xattr.lgetxattr_buf(
@@ -534,17 +531,34 @@ class Server(object):
     @_pathguard
     def set_stime(cls, path, uuid, mark):
         """set @mark as stime for @uuid on @path"""
-        Xattr.lsetxattr(
-            path, '.'.join([cls.GX_NSPACE, uuid, 'stime']),
-            struct.pack('!II', *mark))
+        errno_wrap(Xattr.lsetxattr,
+                   [path,
+                    '.'.join([cls.GX_NSPACE, uuid, 'stime']),
+                    struct.pack('!II', *mark)],
+                   [ENOENT],
+                   [ESTALE, EINVAL])
+
+    @classmethod
+    @_pathguard
+    def set_entry_stime(cls, path, uuid, mark):
+        """set @mark as stime for @uuid on @path"""
+        errno_wrap(Xattr.lsetxattr,
+                   [path,
+                    '.'.join([cls.GX_NSPACE, uuid, 'entry_stime']),
+                    struct.pack('!II', *mark)],
+                   [ENOENT],
+                   [ESTALE, EINVAL])
 
     @classmethod
     @_pathguard
     def set_xtime(cls, path, uuid, mark):
         """set @mark as xtime for @uuid on @path"""
-        Xattr.lsetxattr(
-            path, '.'.join([cls.GX_NSPACE, uuid, 'xtime']),
-            struct.pack('!II', *mark))
+        errno_wrap(Xattr.lsetxattr,
+                   [path,
+                    '.'.join([cls.GX_NSPACE, uuid, 'xtime']),
+                    struct.pack('!II', *mark)],
+                   [ENOENT],
+                   [ESTALE, EINVAL])
 
     @classmethod
     @_pathguard
@@ -595,48 +609,59 @@ class Server(object):
                                st['uid'], st['gid'],
                                gf, st['mode'], bn, lnk)
 
-        def entry_purge(entry, gfid):
+        def entry_purge(op, entry, gfid, e):
             # This is an extremely racy code and needs to be fixed ASAP.
             # The GFID check here is to be sure that the pargfid/bname
             # to be purged is the GFID gotten from the changelog.
             # (a stat(changelog_gfid) would also be valid here)
             # The race here is between the GFID check and the purge.
             if not matching_disk_gfid(gfid, entry):
+                collect_failure(e, EEXIST)
                 return
 
-            er = errno_wrap(os.unlink, [entry], [ENOENT, ESTALE, EISDIR])
-            if isinstance(er, int):
-                if er == EISDIR:
-                    er = errno_wrap(os.rmdir, [entry], [ENOENT, ESTALE,
-                                                        ENOTEMPTY])
-                    if er == ENOTEMPTY:
-                        return er
+            if op == 'UNLINK':
+                er = errno_wrap(os.unlink, [entry], [ENOENT, ESTALE], [EBUSY])
+                return er
 
-        def collect_failure(e, cmd_ret):
+            elif op == 'RMDIR':
+                er = errno_wrap(os.rmdir, [entry], [ENOENT, ESTALE,
+                                                    ENOTEMPTY], [EBUSY])
+                if er == ENOTEMPTY:
+                    return er
+
+        def collect_failure(e, cmd_ret, dst=False):
+            slv_entry_info = {}
+            slv_entry_info['gfid_mismatch'] = False
+            slv_entry_info['dst'] = dst
             # We do this for failing fops on Slave
             # Master should be logging this
             if cmd_ret is None:
-                return
+                return False
 
             if cmd_ret == EEXIST:
-                disk_gfid = cls.gfid_mnt(e['entry'])
-                if isinstance(disk_gfid, basestring):
-                    if e['gfid'] != disk_gfid:
-                        failures.append((e, cmd_ret, disk_gfid))
+                if dst:
+                    en = e['entry1']
+                else:
+                    en = e['entry']
+                disk_gfid = get_gfid_from_mnt(en)
+                if isinstance(disk_gfid, basestring) and e['gfid'] != disk_gfid:
+                    slv_entry_info['gfid_mismatch'] = True
+                    st = lstat(en)
+                    if not isinstance(st, int):
+                        if st and stat.S_ISDIR(st.st_mode):
+                            slv_entry_info['slave_isdir'] = True
+                        else:
+                            slv_entry_info['slave_isdir'] = False
+                    slv_entry_info['slave_gfid'] = disk_gfid
+                    failures.append((e, cmd_ret, slv_entry_info))
+                else:
+                    return False
             else:
-                failures.append((e, cmd_ret))
-
-        failures = []
-
-        def matching_disk_gfid(gfid, entry):
-            disk_gfid = cls.gfid_mnt(entry)
-            if isinstance(disk_gfid, int):
-                return False
-
-            if not gfid == disk_gfid:
-                return False
+                failures.append((e, cmd_ret, slv_entry_info))
 
             return True
+
+        failures = []
 
         def recursive_rmdir(gfid, entry, path):
             """disk_gfid check added for original path for which
@@ -651,7 +676,7 @@ class Server(object):
                 return
 
             names = []
-            names = errno_wrap(os.listdir, [path], [ENOENT], [ESTALE])
+            names = errno_wrap(os.listdir, [path], [ENOENT], [ESTALE, ENOTSUP])
             if isinstance(names, int):
                 return
 
@@ -660,7 +685,7 @@ class Server(object):
                 if not matching_disk_gfid(gfid, entry):
                     return
                 er = errno_wrap(os.remove, [fullname], [ENOENT, ESTALE,
-                                                        EISDIR])
+                                                        EISDIR], [EBUSY])
 
                 if er == EISDIR:
                     recursive_rmdir(gfid, entry, fullname)
@@ -668,20 +693,22 @@ class Server(object):
             if not matching_disk_gfid(gfid, entry):
                 return
 
-            errno_wrap(os.rmdir, [path], [ENOENT, ESTALE])
+            errno_wrap(os.rmdir, [path], [ENOENT, ESTALE], [EBUSY])
 
         def rename_with_disk_gfid_confirmation(gfid, entry, en):
             if not matching_disk_gfid(gfid, entry):
-                logging.error("RENAME ignored: "
-                              "source entry:%s(gfid:%s) does not match with "
-                              "on-disk gfid(%s), when attempting to rename "
-                              "to %s" %
-                              (entry, gfid, cls.gfid_mnt(entry), en))
+                logging.error(lf("RENAME ignored: source entry does not match "
+                                 "with on-disk gfid",
+                                 source=entry,
+                                 gfid=gfid,
+                                 disk_gfid=get_gfid_from_mnt(entry),
+                                 target=en))
+                collect_failure(e, EEXIST)
                 return
 
             cmd_ret = errno_wrap(os.rename,
                                  [entry, en],
-                                 [ENOENT, EEXIST], [ESTALE])
+                                 [ENOENT, EEXIST], [ESTALE, EBUSY])
             collect_failure(e, cmd_ret)
 
 
@@ -704,7 +731,7 @@ class Server(object):
             if op in ['RMDIR', 'UNLINK']:
                 # Try once, if rmdir failed with ENOTEMPTY
                 # then delete recursively.
-                er = entry_purge(entry, gfid)
+                er = entry_purge(op, entry, gfid, e)
                 if isinstance(er, int):
                     if er == ENOTEMPTY and op == 'RMDIR':
                         # Retry if ENOTEMPTY, ESTALE
@@ -716,12 +743,17 @@ class Server(object):
                             logging.debug("Removed %s => %s/%s recursively" %
                                           (gfid, pg, bname))
                         else:
-                            logging.warn("Recursive remove %s => %s/%s"
-                                         "failed: %s" % (gfid, pg, bname,
-                                                         os.strerror(er1)))
+                            logging.warn(lf("Recursive remove failed",
+                                            gfid=gfid,
+                                            pgfid=pg,
+                                            bname=bname,
+                                            error=os.strerror(er1)))
                     else:
-                        logging.warn("Failed to remove %s => %s/%s. %s" %
-                                     (gfid, pg, bname, os.strerror(er)))
+                        logging.warn(lf("Failed to remove",
+                                        gfid=gfid,
+                                        pgfid=pg,
+                                        bname=bname,
+                                        error=os.strerror(er)))
             elif op in ['CREATE', 'MKNOD']:
                 slink = os.path.join(pfx, gfid)
                 st = lstat(slink)
@@ -729,6 +761,14 @@ class Server(object):
                 if isinstance(st, int):
                     blob = entry_pack_reg(
                         gfid, bname, e['mode'], e['uid'], e['gid'])
+                # Self healed hardlinks are recorded as MKNOD.
+                # So if the gfid already exists, it should be
+                # processed as hard link not mknod.
+                elif op in ['MKNOD']:
+                    cmd_ret = errno_wrap(os.link,
+                                         [slink, entry],
+                                         [ENOENT, EEXIST], [ESTALE])
+                    collect_failure(e, cmd_ret)
             elif op == 'MKDIR':
                 slink = os.path.join(pfx, gfid)
                 st = lstat(slink)
@@ -741,14 +781,24 @@ class Server(object):
                 st = lstat(slink)
                 if isinstance(st, int):
                     (pg, bname) = entry2pb(entry)
-                    blob = entry_pack_reg_stat(gfid, bname, e['stat'])
+                    if stat.S_ISREG(e['stat']['mode']):
+                        blob = entry_pack_reg_stat(gfid, bname, e['stat'])
+                    elif stat.S_ISLNK(e['stat']['mode']):
+                        blob = entry_pack_symlink(gfid, bname, e['link'],
+                                                  e['stat'])
                 else:
                     cmd_ret = errno_wrap(os.link,
                                          [slink, entry],
                                          [ENOENT, EEXIST], [ESTALE])
                     collect_failure(e, cmd_ret)
             elif op == 'SYMLINK':
-                blob = entry_pack_symlink(gfid, bname, e['link'], e['stat'])
+                en = e['entry']
+                st = lstat(entry)
+                if isinstance(st, int):
+                    blob = entry_pack_symlink(gfid, bname, e['link'],
+                                              e['stat'])
+                elif not matching_disk_gfid(gfid, en):
+                    collect_failure(e, EEXIST)
             elif op == 'RENAME':
                 en = e['entry1']
                 st = lstat(entry)
@@ -756,9 +806,13 @@ class Server(object):
                     if e['stat'] and not stat.S_ISDIR(e['stat']['mode']):
                         if stat.S_ISLNK(e['stat']['mode']) and \
                            e['link'] is not None:
-                            (pg, bname) = entry2pb(en)
-                            blob = entry_pack_symlink(gfid, bname,
-                                                      e['link'], e['stat'])
+                            st1 = lstat(en)
+                            if isinstance(st1, int):
+                                (pg, bname) = entry2pb(en)
+                                blob = entry_pack_symlink(gfid, bname,
+                                                          e['link'], e['stat'])
+                            elif not matching_disk_gfid(gfid, en):
+                                collect_failure(e, EEXIST, True)
                         else:
                             (pg, bname) = entry2pb(en)
                             blob = entry_pack_reg_stat(gfid, bname, e['stat'])
@@ -769,15 +823,36 @@ class Server(object):
                     else:
                         if st.st_ino == st1.st_ino:
                             # we have a hard link, we can now unlink source
-                            os.unlink(entry)
+                            try:
+                                errno_wrap(os.unlink, [entry],
+                                           [ENOENT, ESTALE], [EBUSY])
+                            except OSError as e:
+                                if e.errno == EISDIR:
+                                    try:
+                                        errno_wrap(os.rmdir, [entry],
+                                                   [ENOENT, ESTALE], [EBUSY])
+                                    except OSError as e:
+                                        if e.errno == ENOTEMPTY:
+                                            logging.error(
+                                                lf("Unable to delete directory"
+                                                   ", Both Old and New"
+                                                   " directories exists",
+                                                   old=entry,
+                                                   new=en))
+                                        else:
+                                            raise
+                                else:
+                                    raise
+                        elif not matching_disk_gfid(gfid, en):
+                            collect_failure(e, EEXIST, True)
                         else:
                             rename_with_disk_gfid_confirmation(gfid, entry, en)
             if blob:
                 cmd_ret = errno_wrap(Xattr.lsetxattr,
                                      [pg, 'glusterfs.gfid.newfile', blob],
                                      [EEXIST, ENOENT],
-                                     [ESTALE, EINVAL])
-                collect_failure(e, cmd_ret)
+                                     [ESTALE, EINVAL, EBUSY])
+                failed = collect_failure(e, cmd_ret)
 
                 # If UID/GID is different than zero that means we are trying
                 # create Entry with different UID/GID. Create Entry with
@@ -786,7 +861,7 @@ class Server(object):
                     path = os.path.join(pfx, gfid)
                     cmd_ret = errno_wrap(os.chown, [path, uid, gid], [ENOENT],
                                          [ESTALE, EINVAL])
-                collect_failure(e, cmd_ret)
+                    collect_failure(e, cmd_ret)
 
         return failures
 
@@ -801,17 +876,43 @@ class Server(object):
             atime = e['stat']['atime']
             mtime = e['stat']['mtime']
             go = e['go']
-            cmd_ret = errno_wrap(os.chmod, [go, mode],
-                                 [ENOENT], [ESTALE, EINVAL])
-            # This is a fail fast mechanism
-            # We do this for failing fops on Slave
-            # Master should be logging this
+            # Linux doesn't support chmod on symlink itself.
+            # It is always applied to the target file. So
+            # changelog would record target file's gfid
+            # and we are good. But 'chown' is supported on
+            # symlink file. So changelog would record symlink
+            # gfid in such cases. Since we do 'chown' 'chmod'
+            # 'utime' for each gfid recorded for metadata, and
+            # we know from changelog the metadata is on symlink's
+            # gfid or target file's gfid, we should be doing
+            # 'lchown' 'lchmod' 'utime with no-deference' blindly.
+            # But since 'lchmod' and 'utime with no de-reference' is
+            # not supported in python3, we have to rely on 'chmod'
+            # and 'utime with de-reference'. But 'chmod'
+            # de-reference the symlink and gets ENOENT, EACCES,
+            # EPERM errors, hence ignoring those errors if it's on
+            # symlink file.
+
+            is_symlink = False
+            cmd_ret = errno_wrap(os.lchown, [go, uid, gid], [ENOENT],
+                                 [ESTALE, EINVAL])
             if isinstance(cmd_ret, int):
-                failures.append((e, cmd_ret))
                 continue
-            errno_wrap(os.chown, [go, uid, gid], [ENOENT], [ESTALE, EINVAL])
-            errno_wrap(os.utime, [go, (atime, mtime)],
-                       [ENOENT], [ESTALE, EINVAL])
+
+            cmd_ret = errno_wrap(os.chmod, [go, mode],
+                                 [ENOENT, EACCES, EPERM], [ESTALE, EINVAL])
+            if isinstance(cmd_ret, int):
+                is_symlink = os.path.islink(go)
+                if not is_symlink:
+                    failures.append((e, cmd_ret, "chmod"))
+
+            cmd_ret = errno_wrap(os.utime, [go, (atime, mtime)],
+                                 [ENOENT, EACCES, EPERM], [ESTALE, EINVAL])
+            if isinstance(cmd_ret, int):
+                if not is_symlink:
+                    is_symlink = os.path.islink(go)
+                if not is_symlink:
+                    failures.append((e, cmd_ret, "utime"))
         return failures
 
     @classmethod
@@ -906,8 +1007,8 @@ class SlaveLocal(object):
                 time.sleep(int(gconf.timeout))
                 if lp == self.server.last_keep_alive:
                     logging.info(
-                        "connection inactive for %d seconds, stopping" %
-                        int(gconf.timeout))
+                        lf("connection inactive, stopping",
+                           timeout=int(gconf.timeout)))
                     break
         else:
             select((), (), ())
@@ -929,8 +1030,16 @@ class SlaveRemote(object):
         so = getattr(gconf, 'session_owner', None)
         if so:
             extra_opts += ['--session-owner', so]
+        li = getattr(gconf, 'local_id', None)
+        if li:
+            extra_opts += ['--local-id', li]
+        ln = getattr(gconf, 'local_node', None)
+        if ln:
+            extra_opts += ['--local-node', ln]
         if boolify(gconf.use_rsync_xattrs):
             extra_opts.append('--use-rsync-xattrs')
+        if boolify(gconf.access_mount):
+            extra_opts.append('--access-mount')
         po = Popen(rargs + gconf.remote_gsyncd.split() + extra_opts +
                    ['-N', '--listen', '--timeout', str(gconf.timeout),
                     slave],
@@ -963,15 +1072,28 @@ class SlaveRemote(object):
         if not files:
             raise GsyncdError("no files to sync")
         logging.debug("files: " + ", ".join(files))
+
+        extra_rsync_flags = []
+        # Performance flag, --ignore-missing-args, if rsync version is
+        # greater than 3.1.0 then include this flag.
+        if boolify(gconf.rsync_opt_ignore_missing_args) and \
+           get_rsync_version(gconf.rsync_command) >= "3.1.0":
+            extra_rsync_flags = ["--ignore-missing-args"]
+
         argv = gconf.rsync_command.split() + \
             ['-aR0', '--inplace', '--files-from=-', '--super',
              '--stats', '--numeric-ids', '--no-implied-dirs'] + \
+            (boolify(gconf.rsync_opt_existing) and ['--existing'] or []) + \
             gconf.rsync_options.split() + \
             (boolify(gconf.sync_xattrs) and ['--xattrs'] or []) + \
             (boolify(gconf.sync_acls) and ['--acls'] or []) + \
+            extra_rsync_flags + \
             ['.'] + list(args)
 
-        if gconf.log_rsync_performance:
+        log_rsync_performance = boolify(gconf.configinterface.get_realtime(
+            "log_rsync_performance", default_value=False))
+
+        if log_rsync_performance:
             # use stdout=PIPE only when log_rsync_performance enabled
             # Else rsync will write to stdout and nobody is their
             # to consume. If PIPE is full rsync hangs.
@@ -988,9 +1110,11 @@ class SlaveRemote(object):
 
         if kw.get("log_err", False):
             for errline in stderr.strip().split("\n")[:-1]:
-                logging.error("SYNC Error(Rsync): %s" % errline)
+                logging.error(lf("SYNC Error",
+                                 sync_engine="Rsync",
+                                 error=errline))
 
-        if gconf.log_rsync_performance:
+        if log_rsync_performance:
             rsync_msg = []
             for line in stdout.split("\n"):
                 if line.startswith("Number of files:") or \
@@ -1003,7 +1127,8 @@ class SlaveRemote(object):
                    line.startswith("Total bytes received:") or \
                    line.startswith("sent "):
                     rsync_msg.append(line)
-            logging.info("rsync performance: %s" % ", ".join(rsync_msg))
+            logging.info(lf("rsync performance",
+                            data=", ".join(rsync_msg)))
 
         return po
 
@@ -1035,9 +1160,17 @@ class SlaveRemote(object):
         # waiting for transfer to complete
         _, stderr1 = p1.communicate()
 
+        # stdin and stdout of p0 is already closed, Reset to None and
+        # wait for child process to complete
+        p0.stdin = None
+        p0.stdout = None
+        p0.communicate()
+
         if log_err:
             for errline in stderr1.strip().split("\n")[:-1]:
-                logging.error("SYNC Error(Untar): %s" % errline)
+                logging.error(lf("SYNC Error",
+                                 sync_engine="Tarssh",
+                                 error=errline))
 
         return p1
 
@@ -1257,7 +1390,8 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
                 if rv:
                     rv = (os.WIFEXITED(rv) and os.WEXITSTATUS(rv) or 0) - \
                          (os.WIFSIGNALED(rv) and os.WTERMSIG(rv) or 0)
-                    logging.warn('stale mount possibly left behind on ' + d)
+                    logging.warn(lf('stale mount possibly left behind',
+                                    path=d))
                     raise GsyncdError("cleaning up temp mountpoint %s "
                                       "failed with status %d" %
                                       (d, rv))
@@ -1281,13 +1415,14 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
                         assert(mntdata[-1] == '\0')
                         mntpt = mntdata[:-1]
                         assert(mntpt)
-                        if mounted:
+                        if mounted and not boolify(gconf.access_mount):
                             po = self.umount_l(mntpt)
                             po.terminate_geterr(fail_on_err=False)
                             if po.returncode != 0:
                                 po.errlog()
                                 rv = po.returncode
-                        self.cleanup_mntpt(mntpt)
+                        if not boolify(gconf.access_mount):
+                            self.cleanup_mntpt(mntpt)
                 except:
                     logging.exception('mount cleanup failure:')
                     rv = 200
@@ -1307,13 +1442,14 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
 
         def make_mount_argv(self):
             self.mntpt = tempfile.mkdtemp(prefix='gsyncd-aux-mount-')
+            mntpt_list.append(self.mntpt)
             return [self.get_glusterprog()] + \
                 ['--' + p for p in self.params] + [self.mntpt]
 
         def cleanup_mntpt(self, mntpt=None):
             if not mntpt:
                 mntpt = self.mntpt
-            os.rmdir(mntpt)
+            errno_wrap(os.rmdir, [mntpt], [ENOENT, EBUSY])
 
     class MountbrokerMounter(Mounter):
 
@@ -1344,7 +1480,7 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
                 # if cli terminated with error due to being
                 # refused by glusterd, what it put
                 # out on stdout is a diagnostic message
-                logging.error('glusterd answered: %s' % self.mntpt)
+                logging.error(lf('glusterd answered', mnt=self.mntpt))
 
     def connect(self):
         """inhibit the resource beyond
@@ -1354,6 +1490,8 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
         with given backend
         """
 
+        logging.info("Mounting gluster volume locally...")
+        t0 = time.time()
         label = getattr(gconf, 'mountbroker', None)
         if not label and not privileged():
             label = syncdutils.getusername()
@@ -1364,6 +1502,8 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
             ['log-file=' + gconf.gluster_log_file, 'volfile-server=' +
              self.host, 'volfile-id=' + self.volume, 'client-pid=-1']
         mounter(params).inhibit(*[l for l in [label] if l])
+        logging.info(lf("Mounted gluster volume",
+                        duration="%.4f" % (time.time() - t0)))
 
     def connect_remote(self, *a, **kw):
         sup(self, *a, **kw)
@@ -1432,11 +1572,26 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
                                               uuid + '.' + gconf.slave_id)
                         ),
                         slave.server)
+                    slave.server.entry_stime = types.MethodType(
+                        lambda _self, path, uuid: (
+                            brickserver.entry_stime(
+                                path,
+                                uuid + '.' + gconf.slave_id)
+                        ),
+                        slave.server)
                     slave.server.set_stime = types.MethodType(
                         lambda _self, path, uuid, mark: (
                             brickserver.set_stime(path,
                                                   uuid + '.' + gconf.slave_id,
                                                   mark)
+                        ),
+                        slave.server)
+                    slave.server.set_entry_stime = types.MethodType(
+                        lambda _self, path, uuid, mark: (
+                            brickserver.set_entry_stime(
+                                path,
+                                uuid + '.' + gconf.slave_id,
+                                mark)
                         ),
                         slave.server)
                 (g1, g2, g3) = self.gmaster_instantiate_tuple(slave)
@@ -1456,7 +1611,12 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
             changelog_register_failed = False
             (inf, ouf, ra, wa) = gconf.rpc_fd.split(',')
             changelog_agent = RepceClient(int(inf), int(ouf))
-            status = GeorepStatus(gconf.state_file, gconf.local_path)
+            master_name, slave_data = get_master_and_slave_data_from_args(
+                sys.argv)
+            status = GeorepStatus(gconf.state_file, gconf.local_node,
+                                  gconf.local_path,
+                                  gconf.local_node_id,
+                                  master_name, slave_data)
             status.reset_on_worker_start()
             rv = changelog_agent.version()
             if int(rv) != CHANGELOG_AGENT_CLIENT_VERSION:
@@ -1477,18 +1637,20 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
                     changelog_agent.init()
                     changelog_agent.register(gconf.local_path,
                                              workdir, gconf.changelog_log_file,
-                                             g2.CHANGELOG_LOG_LEVEL,
+                                             get_changelog_log_level(
+                                                 gconf.changelog_log_level),
                                              g2.CHANGELOG_CONN_RETRIES)
 
                 register_time = int(time.time())
                 g2.register(register_time, changelog_agent, status)
                 g3.register(register_time, changelog_agent, status)
             except ChangelogException as e:
-                logging.error("Changelog register failed, %s" % e)
+                logging.error(lf("Changelog register failed", error=e))
                 sys.exit(1)
 
             g1.register(status=status)
-            logging.info("Register time: %s" % register_time)
+            logging.info(lf("Register time",
+                            time=register_time))
             # oneshot: Try to use changelog history api, if not
             # available switch to FS crawl
             # Note: if config.change_detector is xsync then
@@ -1496,20 +1658,25 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
             try:
                 g3.crawlwrap(oneshot=True)
             except PartialHistoryAvailable as e:
-                logging.info('Partial history available, using xsync crawl'
-                             ' after consuming history till %s' % str(e))
+                logging.info(lf('Partial history available, using xsync crawl'
+                                ' after consuming history',
+                                till=e))
                 g1.crawlwrap(oneshot=True, register_time=register_time)
-            except NoPurgeTimeAvailable:
+            except ChangelogHistoryNotAvailable:
+                logging.info('Changelog history not available, using xsync')
+                g1.crawlwrap(oneshot=True, register_time=register_time)
+            except NoStimeAvailable:
                 logging.info('No stime available, using xsync crawl')
                 g1.crawlwrap(oneshot=True, register_time=register_time)
             except ChangelogException as e:
-                logging.error("Changelog History Crawl failed, %s" % e)
+                logging.error(lf("Changelog History Crawl failed",
+                                 error=e))
                 sys.exit(1)
 
             try:
                 g2.crawlwrap()
             except ChangelogException as e:
-                logging.error("Changelog crawl failed, %s" % e)
+                logging.error(lf("Changelog crawl failed", error=e))
                 sys.exit(1)
         else:
             sup(self, *args)
@@ -1601,10 +1768,14 @@ class SSH(AbstractUrl, SlaveRemote):
                                  self.inner_rsc.url)
 
         deferred = go_daemon == 'postconn'
+        logging.info("Initializing SSH connection between master and slave...")
+        t0 = time.time()
         ret = sup(self, gconf.ssh_command.split() +
                   ["-p", str(gconf.ssh_port)] +
                   gconf.ssh_ctl_args + [self.remote_addr],
                   slave=self.inner_rsc.url, deferred=deferred)
+        logging.info(lf("SSH connection between master and slave established.",
+                        duration="%.4f" % (time.time() - t0)))
 
         if deferred:
             # send a message to peer so that we can wait for

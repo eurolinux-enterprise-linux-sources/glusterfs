@@ -9,11 +9,6 @@
 */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 /* TODO: add NS locking */
 #include "statedump.h"
 #include "dht-common.h"
@@ -153,13 +148,13 @@ dht_priv_dump (xlator_t *this)
         gf_proc_dump_write("search_unhashed", "%d", conf->search_unhashed);
         gf_proc_dump_write("gen", "%d", conf->gen);
         gf_proc_dump_write("min_free_disk", "%lf", conf->min_free_disk);
-	gf_proc_dump_write("min_free_inodes", "%lf", conf->min_free_inodes);
+        gf_proc_dump_write("min_free_inodes", "%lf", conf->min_free_inodes);
         gf_proc_dump_write("disk_unit", "%c", conf->disk_unit);
         gf_proc_dump_write("refresh_interval", "%d", conf->refresh_interval);
         gf_proc_dump_write("unhashed_sticky_bit", "%d", conf->unhashed_sticky_bit);
         gf_proc_dump_write("use-readdirp", "%d", conf->use_readdirp);
 
-        if (conf->du_stats) {
+        if (conf->du_stats && conf->subvolume_status) {
                 for (i = 0; i < conf->subvolume_cnt; i++) {
                         if (!conf->subvolume_status[i])
                                 continue;
@@ -240,11 +235,13 @@ dht_fini (xlator_t *this)
                         GF_FREE (conf->file_layouts);
                 }
 
-                dict_destroy(conf->leaf_to_subvol);
+                dict_unref(conf->leaf_to_subvol);
 
                 GF_FREE (conf->subvolumes);
 
                 GF_FREE (conf->subvolume_status);
+
+                synclock_destroy (&conf->link_lock);
 
                 if (conf->lock_pool)
                         mem_pool_destroy (conf->lock_pool);
@@ -341,9 +338,9 @@ out:
 }
 void
 dht_init_regex (xlator_t *this, dict_t *odict, char *name,
-                regex_t *re, gf_boolean_t *re_valid)
+                regex_t *re, gf_boolean_t *re_valid, dht_conf_t *conf)
 {
-        char    *temp_str;
+        char       *temp_str = NULL;
 
         if (dict_get_str (odict, name, &temp_str) != 0) {
                 if (strcmp(name,"rsync-hash-regex")) {
@@ -352,25 +349,29 @@ dht_init_regex (xlator_t *this, dict_t *odict, char *name,
                 temp_str = "^\\.(.+)\\.[^.]+$";
         }
 
-        if (*re_valid) {
-                regfree(re);
-                *re_valid = _gf_false;
-        }
+        LOCK (&conf->lock);
+        {
+                if (*re_valid) {
+                        regfree(re);
+                        *re_valid = _gf_false;
+                }
 
-        if (!strcmp(temp_str,"none")) {
-                return;
-        }
+                if (!strcmp(temp_str, "none")) {
+                        goto unlock;
+                }
 
-        if (regcomp(re,temp_str,REG_EXTENDED) == 0) {
-                gf_msg_debug (this->name, 0,
-                              "using regex %s = %s", name, temp_str);
-                *re_valid = _gf_true;
+                if (regcomp(re, temp_str, REG_EXTENDED) == 0) {
+                        gf_msg_debug (this->name, 0,
+                                      "using regex %s = %s", name, temp_str);
+                        *re_valid = _gf_true;
+                } else {
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                DHT_MSG_REGEX_INFO,
+                                "compiling regex %s failed", temp_str);
+                }
         }
-        else {
-                gf_msg (this->name, GF_LOG_WARNING, 0,
-                        DHT_MSG_REGEX_INFO,
-                        "compiling regex %s failed", temp_str);
-        }
+unlock:
+        UNLOCK (&conf->lock);
 }
 
 int
@@ -395,13 +396,60 @@ out:
 }
 
 int
+dht_configure_throttle (xlator_t *this, dht_conf_t *conf, char *temp_str)
+{
+        int     rebal_thread_count      = 0;
+        int     ret                     = 0;
+
+        pthread_mutex_lock (&conf->defrag->dfq_mutex);
+        {
+        if (!strcasecmp (temp_str, "lazy")) {
+                conf->defrag->recon_thread_count = 1;
+        } else if (!strcasecmp (temp_str, "normal")) {
+                conf->defrag->recon_thread_count = 2;
+        } else if (!strcasecmp (temp_str, "aggressive")) {
+                conf->defrag->recon_thread_count = MAX (MAX_REBAL_THREADS - 4, 4);
+        } else if ((gf_string2int (temp_str, &rebal_thread_count) == 0)) {
+                if ((rebal_thread_count > 0) && (rebal_thread_count <= MAX_REBAL_THREADS)) {
+                        gf_msg (this->name, GF_LOG_INFO, 0, 0,
+                                "rebal thread count configured to %d",
+                                rebal_thread_count);
+                                conf->defrag->recon_thread_count = rebal_thread_count;
+                } else {
+                        gf_msg(this->name, GF_LOG_ERROR, 0,
+                                DHT_MSG_INVALID_OPTION,
+                                "Invalid option: Reconfigure: "
+                                "rebal-throttle should be "
+                                "within range of 0 and maximum number of"
+                                " cores available");
+                                ret = -1;
+                                pthread_mutex_unlock (&conf->defrag->dfq_mutex);
+                                goto out;
+                }
+        } else {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_INVALID_OPTION,
+                        "Invalid option: Reconfigure: "
+                        "rebal-throttle should be {lazy|normal|aggressive}"
+                        " or a number up to the number of cores available,"
+                        " not (%s), defaulting to (%d)",
+                        temp_str, conf->dthrottle);
+                        ret = -1;
+        }
+        }
+        pthread_mutex_unlock (&conf->defrag->dfq_mutex);
+
+out:
+        return ret;
+}
+
+int
 dht_reconfigure (xlator_t *this, dict_t *options)
 {
         dht_conf_t      *conf = NULL;
         char            *temp_str = NULL;
         gf_boolean_t     search_unhashed;
         int              ret = -1;
-        int              throttle_count = 0;
 
         GF_VALIDATE_OR_GOTO ("dht", this, out);
         GF_VALIDATE_OR_GOTO ("dht", options, out);
@@ -438,14 +486,14 @@ dht_reconfigure (xlator_t *this, dict_t *options)
         GF_OPTION_RECONF ("lookup-optimize", conf->lookup_optimize, options,
                           bool, out);
 
-	GF_OPTION_RECONF ("min-free-disk", conf->min_free_disk, options,
+        GF_OPTION_RECONF ("min-free-disk", conf->min_free_disk, options,
                           percent_or_size, out);
         /* option can be any one of percent or bytes */
         conf->disk_unit = 0;
         if (conf->min_free_disk < 100.0)
                 conf->disk_unit = 'p';
 
-	GF_OPTION_RECONF ("min-free-inodes", conf->min_free_inodes, options,
+        GF_OPTION_RECONF ("min-free-inodes", conf->min_free_inodes, options,
                           percent, out);
 
         GF_OPTION_RECONF ("directory-layout-spread", conf->dir_spread_cnt,
@@ -457,16 +505,20 @@ dht_reconfigure (xlator_t *this, dict_t *options)
                           conf->randomize_by_gfid,
                           options, bool, out);
 
-        GF_OPTION_RECONF ("rebal-throttle", conf->dthrottle, options,
-                          str, out);
+        GF_OPTION_RECONF ("lock-migration", conf->lock_migration_enabled,
+                          options, bool, out);
 
         if (conf->defrag) {
-                GF_DECIDE_DEFRAG_THROTTLE_COUNT (throttle_count, conf);
-                gf_msg ("DHT", GF_LOG_INFO, 0,
-                        DHT_MSG_REBAL_THROTTLE_INFO,
-                        "conf->dthrottle: %s, "
-                        "conf->defrag->recon_thread_count: %d",
-                         conf->dthrottle, conf->defrag->recon_thread_count);
+                if (dict_get_str (options, "rebal-throttle", &temp_str) == 0) {
+                        ret = dht_configure_throttle (this, conf, temp_str);
+                        if (ret == -1)
+                                goto out;
+                }
+        }
+
+        if (conf->defrag) {
+                conf->defrag->lock_migration_enabled =
+                                        conf->lock_migration_enabled;
         }
 
         if (conf->defrag) {
@@ -485,9 +537,9 @@ dht_reconfigure (xlator_t *this, dict_t *options)
         }
 
         dht_init_regex (this, options, "rsync-hash-regex",
-                        &conf->rsync_regex, &conf->rsync_regex_valid);
+                        &conf->rsync_regex, &conf->rsync_regex_valid, conf);
         dht_init_regex (this, options, "extra-hash-regex",
-                        &conf->extra_regex, &conf->extra_regex_valid);
+                        &conf->extra_regex, &conf->extra_regex_valid, conf);
 
         GF_OPTION_RECONF ("weighted-rebalance", conf->do_weighting, options,
                           bool, out);
@@ -593,8 +645,6 @@ err:
         return ret;
 }
 
-
-
 int
 dht_init (xlator_t *this)
 {
@@ -605,7 +655,6 @@ dht_init (xlator_t *this)
         gf_defrag_info_t                *defrag         = NULL;
         int                              cmd            = 0;
         char                            *node_uuid      = NULL;
-        int                              throttle_count = 0;
         uint32_t                         commit_hash    = 0;
 
         GF_VALIDATE_OR_GOTO ("dht", this, err);
@@ -627,6 +676,11 @@ dht_init (xlator_t *this)
         if (!conf) {
                 goto err;
         }
+
+        LOCK_INIT (&conf->subvolume_lock);
+        LOCK_INIT (&conf->layout_lock);
+        LOCK_INIT (&conf->lock);
+        synclock_init (&conf->link_lock, SYNC_LOCK_DEFAULT);
 
         /* We get the commit-hash to set only for rebalance process */
         if (dict_get_uint32 (this->options,
@@ -651,6 +705,7 @@ dht_init (xlator_t *this)
                 defrag->is_exiting = 0;
 
                 conf->defrag = defrag;
+                defrag->this = this;
 
                 ret = dict_get_str (this->options, "node-uuid", &node_uuid);
                 if (ret) {
@@ -682,11 +737,13 @@ dht_init (xlator_t *this)
 
                 defrag->wakeup_crawler = 0;
 
-                synclock_init (&defrag->link_lock, SYNC_LOCK_DEFAULT);
                 pthread_mutex_init (&defrag->dfq_mutex, 0);
                 pthread_cond_init  (&defrag->parallel_migration_cond, 0);
                 pthread_cond_init  (&defrag->rebalance_crawler_alarm, 0);
                 pthread_cond_init  (&defrag->df_wakeup_thread, 0);
+
+                pthread_mutex_init (&defrag->fc_mutex, 0);
+                pthread_cond_init  (&defrag->fc_wakeup_cond, 0);
 
                 defrag->global_error = 0;
 
@@ -712,8 +769,8 @@ dht_init (xlator_t *this)
 
         GF_OPTION_INIT ("use-readdirp", conf->use_readdirp, bool, err);
 
-	GF_OPTION_INIT ("min-free-disk", conf->min_free_disk, percent_or_size,
-			err);
+        GF_OPTION_INIT ("min-free-disk", conf->min_free_disk, percent_or_size,
+                        err);
 
         GF_OPTION_INIT ("min-free-inodes", conf->min_free_inodes, percent,
                         err);
@@ -727,8 +784,14 @@ dht_init (xlator_t *this)
 
         GF_OPTION_INIT ("readdir-optimize", conf->readdir_optimize, bool, err);
 
+
+        GF_OPTION_INIT ("lock-migration", conf->lock_migration_enabled,
+                         bool, err);
+
         if (defrag) {
-                GF_OPTION_INIT ("rebalance-stats", defrag->stats, bool, err);
+              defrag->lock_migration_enabled = conf->lock_migration_enabled;
+
+              GF_OPTION_INIT ("rebalance-stats", defrag->stats, bool, err);
                 if (dict_get_str (this->options, "rebalance-filter", &temp_str)
                     == 0) {
                         if (gf_defrag_pattern_list_fill (this, defrag, temp_str)
@@ -771,17 +834,15 @@ dht_init (xlator_t *this)
         }
 
         dht_init_regex (this, this->options, "rsync-hash-regex",
-                        &conf->rsync_regex, &conf->rsync_regex_valid);
+                        &conf->rsync_regex, &conf->rsync_regex_valid, conf);
         dht_init_regex (this, this->options, "extra-hash-regex",
-                        &conf->extra_regex, &conf->extra_regex_valid);
+                        &conf->extra_regex, &conf->extra_regex_valid, conf);
 
         ret = dht_layouts_init (this, conf);
         if (ret == -1) {
                 goto err;
         }
 
-        LOCK_INIT (&conf->subvolume_lock);
-        LOCK_INIT (&conf->layout_lock);
 
         conf->gen = 1;
 
@@ -798,15 +859,12 @@ dht_init (xlator_t *this)
                         conf->randomize_by_gfid, bool, err);
 
         if (defrag) {
-                GF_OPTION_INIT ("rebal-throttle",
-                                 conf->dthrottle, str, err);
-
-                GF_DECIDE_DEFRAG_THROTTLE_COUNT(throttle_count, conf);
-
-                gf_msg_debug ("DHT", 0, "conf->dthrottle: %s, "
-                              "conf->defrag->recon_thread_count: %d",
-                              conf->dthrottle,
-                              conf->defrag->recon_thread_count);
+                GF_OPTION_INIT ("rebal-throttle", temp_str, str, err);
+                if (temp_str) {
+                        ret = dht_configure_throttle (this, conf, temp_str);
+                        if (ret == -1)
+                                goto err;
+                }
         }
 
         GF_OPTION_INIT ("xattr-name", conf->xattr_name, str, err);
@@ -896,7 +954,7 @@ struct volume_options options[] = {
           "process starts balancing out the cluster, and logs will appear "
           "in log files",
         },
-	{ .key  = {"min-free-inodes"},
+        { .key  = {"min-free-inodes"},
           .type = GF_OPTION_TYPE_PERCENT,
           .default_value = "5%",
           .description = "after system has only N% of inodes, warnings "
@@ -1033,13 +1091,35 @@ struct volume_options options[] = {
           .type = GF_OPTION_TYPE_STR,
           .default_value = "test",
         },
+        { .key         = {"tier-compact"},
+          .type = GF_OPTION_TYPE_BOOL,
+          .default_value = "off",
+        },
+        { .key         = {"tier-hot-compact-frequency"},
+          .type = GF_OPTION_TYPE_INT,
+          .default_value = "604800",
+          .description = "Frequency to compact DBs on hot tier in system"
+        },
+        { .key         = {"tier-cold-compact-frequency"},
+          .type = GF_OPTION_TYPE_INT,
+          .default_value = "604800",
+          .description = "Frequency to compact DBs on cold tier in system"
+        },
         { .key         = {"tier-max-mb"},
           .type = GF_OPTION_TYPE_INT,
           .default_value = "4000",
         },
+        { .key         = {"tier-max-promote-file-size"},
+          .type = GF_OPTION_TYPE_INT,
+          .default_value = "0",
+        },
         { .key         = {"tier-max-files"},
           .type = GF_OPTION_TYPE_INT,
           .default_value = "10000",
+        },
+        { .key         = {"tier-query-limit"},
+          .type = GF_OPTION_TYPE_INT,
+          .default_value = "100",
         },
         /* switch option */
         { .key  = {"pattern.switch.case"},
@@ -1065,6 +1145,13 @@ struct volume_options options[] = {
                          "migrated at a time. Lazy will allow only one file to "
                          "be migrated at a time and aggressive will allow "
                          "max of [($(processing units) - 4) / 2), 4]"
+        },
+
+        { .key =  {"lock-migration"},
+          .type = GF_OPTION_TYPE_BOOL,
+          .default_value = "off",
+          .description = " If enabled this feature will migrate the posix locks"
+                         " associated with a file during rebalance"
         },
 
         { .key  = {NULL} },

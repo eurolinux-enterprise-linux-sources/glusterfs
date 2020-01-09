@@ -13,6 +13,7 @@
 
 #include "list.h"
 #include "locking.h"
+#include "atomic.h"
 #include "logging.h"
 #include "mem-types.h"
 #include <stdlib.h>
@@ -48,14 +49,7 @@ struct mem_acct_rec {
 
 struct mem_acct {
         uint32_t            num_types;
-        /*
-         * The lock is only used on ancient platforms (e.g. RHEL5) to keep
-         * refcnt increment/decrement atomic.  We could even make its existence
-         * conditional on the right set of version/feature checks, but it's so
-         * lightweight that it's not worth the obfuscation.
-         */
-        gf_lock_t           lock;
-        unsigned int        refcnt;
+        gf_atomic_t         refcnt;
         struct mem_acct_rec rec[0];
 };
 
@@ -97,6 +91,8 @@ gf_asprintf (char **string_ptr, const char *format, ...);
 void
 __gf_free (void *ptr);
 
+int
+gf_get_mem_type (void *ptr);
 
 static inline
 void* __gf_default_malloc (size_t size)
@@ -207,23 +203,62 @@ out:
         return dup_mem;
 }
 
+typedef struct pooled_obj_hdr {
+        unsigned long                   magic;
+        struct pooled_obj_hdr           *next;
+        struct per_thread_pool_list     *pool_list;
+        unsigned int                    power_of_two;
+} pooled_obj_hdr_t;
+
+#define AVAILABLE_SIZE(p2)      ((1 << (p2)) - sizeof(pooled_obj_hdr_t))
+
+typedef struct per_thread_pool {
+        /* This never changes, so doesn't need a lock. */
+        struct mem_pool         *parent;
+        /* Everything else is protected by our own lock. */
+        pooled_obj_hdr_t        *hot_list;
+        pooled_obj_hdr_t        *cold_list;
+} per_thread_pool_t;
+
+typedef struct per_thread_pool_list {
+        /*
+         * These first two members are protected by the global pool lock.  When
+         * a thread first tries to use any pool, we create one of these.  We
+         * link it into the global list using thr_list so the pool-sweeper
+         * thread can find it, and use pthread_setspecific so this thread can
+         * find it.  When the per-thread destructor runs, we "poison" the pool
+         * list to prevent further allocations.  This also signals to the
+         * pool-sweeper thread that the list should be detached and freed after
+         * the next time it's swept.
+         */
+        struct list_head        thr_list;
+        unsigned int            poison;
+        /*
+         * There's really more than one pool, but the actual number is hidden
+         * in the implementation code so we just make it a single-element array
+         * here.
+         */
+        pthread_spinlock_t      lock;
+        per_thread_pool_t       pools[1];
+} per_thread_pool_list_t;
+
 struct mem_pool {
-        struct list_head  list;
-        int               hot_count;
-        int               cold_count;
-        gf_lock_t         lock;
-        unsigned long     padded_sizeof_type;
-        void             *pool;
-        void             *pool_end;
-        int               real_sizeof_type;
-        uint64_t          alloc_count;
-        uint64_t          pool_misses;
-        int               max_alloc;
-        int               curr_stdalloc;
-        int               max_stdalloc;
-        char             *name;
-        struct list_head  global_list;
+        unsigned int            power_of_two;
+        /*
+         * Updates to these are *not* protected by a global lock, so races
+         * could occur and the numbers might be slightly off.  Don't expect
+         * them to line up exactly.  It's the general trends that matter, and
+         * it's not worth the locked-bus-cycle overhead to make these precise.
+         */
+        gf_atomic_t             allocs_hot;
+        gf_atomic_t             allocs_cold;
+        gf_atomic_t             allocs_stdc;
+        gf_atomic_t             frees_to_list;
 };
+
+void mem_pools_init_early (void);  /* basic initialization of memory pools */
+void mem_pools_init_late (void);   /* start the pool_sweeper thread */
+void mem_pools_fini (void);        /* cleanup memory pools */
 
 struct mem_pool *
 mem_pool_new_fn (unsigned long sizeof_type, unsigned long count, char *name);

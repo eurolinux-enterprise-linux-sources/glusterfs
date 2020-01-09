@@ -1,0 +1,39 @@
+From 3933466e627e84621537eed382abe77b2db6105d Mon Sep 17 00:00:00 2001
+From: "Kaleb S. KEITHLEY" <kkeithle@redhat.com>
+Date: Wed, 7 Mar 2018 07:55:22 -0500
+Subject: [PATCH 180/180] packaging : adding missed part from 5eed664 while
+ backporting to downstream
+
+more accidental inverse logic during review of previous patch
+
+excluding /etc/ganesha/ganesha-ha.conf is spurious since it is
+not installed for client builds
+
+Label : DOWNSTREAM ONLY
+
+BUG: 1472445
+Change-Id: Idac2ca1eecdba5d3cba08ab2595a5c3f969c6ee3
+Signed-off-by: Kaleb S. KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/132059
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ glusterfs.spec.in | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index ee51ae8..4b5238a 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1093,7 +1093,6 @@ exit 0
+ %exclude %{_libexecdir}/ganesha/*
+ %exclude %{_prefix}/lib/ocf/resource.d/heartbeat/*
+ %exclude %{_sysconfdir}/ganesha/ganesha-ha.conf.sample
+-%exclude %{_sysconfdir}/ganesha/ganesha-ha.conf
+ 
+ # exclude incrementalapi
+ %exclude %{_libexecdir}/glusterfs/*
+-- 
+1.8.3.1
+

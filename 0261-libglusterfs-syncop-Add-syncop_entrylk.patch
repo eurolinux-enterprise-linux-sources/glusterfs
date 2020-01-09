@@ -1,0 +1,86 @@
+From 87fd48e99d6b3556aba0c4f1485b06334b8cc1cf Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Wed, 9 May 2018 14:57:35 +0530
+Subject: [PATCH 261/271] libglusterfs/syncop: Add syncop_entrylk
+
+>Change-Id: Idd86b9f0fa144c2316ab6276e2def28b696ae18a
+>BUG: 1543279
+>Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/19556/
+BUG: 1488120
+Change-Id: I02e546bcb012545dcdaa70ea26046db05b5032f4
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138169
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+---
+ libglusterfs/src/syncop.c | 37 +++++++++++++++++++++++++++++++++++++
+ libglusterfs/src/syncop.h |  5 +++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/libglusterfs/src/syncop.c b/libglusterfs/src/syncop.c
+index b36c88d..ac40a1d 100644
+--- a/libglusterfs/src/syncop.c
++++ b/libglusterfs/src/syncop.c
+@@ -3019,6 +3019,43 @@ syncop_inodelk (xlator_t *subvol, const char *volume, loc_t *loc, int32_t cmd,
+ }
+ 
+ int32_t
++syncop_entrylk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++		    int32_t op_ret, int32_t op_errno, dict_t *xdata)
++{
++        struct syncargs *args = NULL;
++
++        args = cookie;
++        args->op_ret = op_ret;
++        args->op_errno = op_errno;
++        if (xdata)
++                args->xdata = dict_ref (xdata);
++
++        __wake (args);
++        return 0;
++}
++
++int
++syncop_entrylk (xlator_t *subvol, const char *volume, loc_t *loc,
++                const char *basename, entrylk_cmd cmd, entrylk_type type,
++                dict_t *xdata_in, dict_t **xdata_out)
++{
++        struct syncargs args = {0, };
++
++        SYNCOP (subvol, (&args), syncop_entrylk_cbk, subvol->fops->entrylk,
++                volume, loc, basename, cmd, type, xdata_in);
++
++        if (xdata_out)
++                *xdata_out = args.xdata;
++        else if (args.xdata)
++                dict_unref (args.xdata);
++
++        if (args.op_ret < 0)
++                return -args.op_errno;
++
++        return args.op_ret;
++}
++
++int32_t
+ syncop_xattrop_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                     int32_t op_ret, int32_t op_errno, dict_t *dict,
+                     dict_t *xdata)
+diff --git a/libglusterfs/src/syncop.h b/libglusterfs/src/syncop.h
+index a9cdee1..5b5ad4e 100644
+--- a/libglusterfs/src/syncop.h
++++ b/libglusterfs/src/syncop.h
+@@ -562,4 +562,9 @@ syncop_setactivelk (xlator_t *subvol, loc_t *loc,
+                      lock_migration_info_t *locklist,  dict_t *xdata_in,
+                      dict_t **xdata_out);
+ 
++int
++syncop_entrylk (xlator_t *subvol, const char *volume, loc_t *loc,
++                const char *basename, entrylk_cmd cmd, entrylk_type type,
++                dict_t *xdata_in, dict_t **xdata_out);
++
+ #endif /* _SYNCOP_H */
+-- 
+1.8.3.1
+

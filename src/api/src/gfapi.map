@@ -39,7 +39,6 @@ GFAPI_3.4.0 {
 		glfs_preadv_async;
 		glfs_pwritev_async;
 		glfs_lseek;
-		glfs_truncate;
 		glfs_ftruncate;
 		glfs_ftruncate_async;
 		glfs_lstat;
@@ -98,6 +97,7 @@ GFAPI_3.4.2 {
 		glfs_setfsuid;
 		glfs_setfsgid;
 		glfs_setfsgroups;
+		glfs_h_lookupat;
 		glfs_h_creat;
 		glfs_h_mkdir;
 		glfs_h_mknod;
@@ -146,7 +146,6 @@ GFAPI_3.6.0 {
 
 GFAPI_3.7.0 {
 	global:
-		glfs_ipc;
 		glfs_h_poll_upcall;
 		glfs_h_acl_set;
 		glfs_h_acl_get;
@@ -167,3 +166,46 @@ GFAPI_3.7.4 {
 	global:
 		glfs_h_lookupat;
 } GFAPI_PRIVATE_3.7.0;
+
+GFAPI_3.7.15 {
+	global:
+		glfs_truncate;
+} GFAPI_3.7.4;
+
+GFAPI_3.7.16 {
+	global:
+		glfs_free;
+		glfs_upcall_get_fs;
+		glfs_upcall_get_reason;
+		glfs_upcall_get_event;
+		glfs_upcall_inode_get_object;
+		glfs_upcall_inode_get_flags;
+		glfs_upcall_inode_get_stat;
+		glfs_upcall_inode_get_expire;
+		glfs_upcall_inode_get_pobject;
+		glfs_upcall_inode_get_pstat;
+		glfs_upcall_inode_get_oldpobject;
+		glfs_upcall_inode_get_oldpstat;
+} GFAPI_3.7.15;
+
+GFAPI_3.7.17 {
+	global:
+		glfs_realpath;
+} GFAPI_3.7.16;
+
+GFAPI_3.10.0 {
+	global:
+		glfs_sysrq;
+} GFAPI_3.7.17;
+
+GFAPI_3.11.0 {
+		glfs_xreaddirplus_r;
+		glfs_xreaddirplus_r_get_stat;
+		glfs_xreaddirplus_r_get_object;
+                glfs_object_copy;
+} GFAPI_3.10.0;
+
+GFAPI_PRIVATE_3.12.0 {
+	global:
+		glfs_ipc;
+} GFAPI_3.11.0;

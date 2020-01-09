@@ -1,0 +1,46 @@
+From 0e9d29c1ae1ba6954299489012ba69466709af0f Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Thu, 3 May 2018 09:34:39 +0530
+Subject: [PATCH 249/260] cluster/dht: unwind if dht_selfheal_dir_mkdir returns
+ an error
+
+If dht_selfheal_dir_mkdir returns an error, cbk passed to
+dht_selfheal_directory is not invoked. So, Current codepath leaves an
+unwound frame resulting in a hung fop forever.
+
+> Change-Id: I422308b8a34a074301ca46b029ffe676f5e0f66c
+> fixes: bz#1574305
+> Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+
+upstream patch: https://review.gluster.org/19953/
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+
+Change-Id: I3ea6510d936eca6198147704d93580bd733eaeea
+BUG: 1561999
+Reviewed-on: https://code.engineering.redhat.com/gerrit/137725
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+---
+ xlators/cluster/dht/src/dht-selfheal.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/dht/src/dht-selfheal.c b/xlators/cluster/dht/src/dht-selfheal.c
+index 7b192d3..53c59a2 100644
+--- a/xlators/cluster/dht/src/dht-selfheal.c
++++ b/xlators/cluster/dht/src/dht-selfheal.c
+@@ -2336,7 +2336,11 @@ dht_selfheal_directory (call_frame_t *frame, dht_selfheal_dir_cbk_t dir_cbk,
+                 local->heal_layout = _gf_false;
+         }
+ 
+-        dht_selfheal_dir_mkdir (frame, loc, layout, 0);
++        ret = dht_selfheal_dir_mkdir (frame, loc, layout, 0);
++        if (ret < 0) {
++                ret = 0;
++                goto sorry_no_fix;
++        }
+ 
+         return 0;
+ 
+-- 
+1.8.3.1
+

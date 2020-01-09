@@ -1,0 +1,76 @@
+From 395a535ec778f34e0b17150a6a37ac25790f760d Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Wed, 22 Aug 2018 02:08:40 +0530
+Subject: [PATCH 357/359] snapshot : fix snapshot status failure due to symlink
+ problem
+
+Problems : 1. Snapshot status for individual snapshots were failing after OS
+              upgrade from RHEL6 to RHEL7.
+           2. Post upgrade snapshot creation of cloned volume was failing.
+
+Root Cause :  When OS upgrade is from RHEL6 to RHEL7 there is difference in
+              symlink (/var/run)  between these two versions.
+              Basically when (/var/run) is symlinked to /run, mount command
+              resolves path and mounts it. But at the same time call to
+              those functions fails who depends on absolute path.
+              (like strcmp in glusterd_get_mnt_entry_info)
+
+Solution : Resolve the input path to absolute path before calling these
+           functions.
+
+Test : Tested on same setup where issue was reported. After this
+       patch snapshot issues are completely resolved.
+
+Upstream Patch : https://review.gluster.org/#/c/glusterfs/+/20885/
+Change-Id: I5ba57998cea614c6072709f52f42a57562018844
+BUG: 1619538
+
+>fixes: bz#1619843
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Change-Id: I6bc045f0baa6c858da43d6c8324ae690d76dc842
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147812
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 1752425..136a032 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -7030,6 +7030,7 @@ glusterd_get_mnt_entry_info (char *mnt_pt, char *buff, int buflen,
+ {
+         struct mntent  *entry   = NULL;
+         FILE           *mtab    = NULL;
++        char abspath[PATH_MAX] = "";
+ 
+         GF_ASSERT (mnt_pt);
+         GF_ASSERT (buff);
+@@ -7039,13 +7040,20 @@ glusterd_get_mnt_entry_info (char *mnt_pt, char *buff, int buflen,
+         if (!mtab)
+                 goto out;
+ 
++        if (!realpath (mnt_pt, abspath)) {
++                gf_msg (THIS->name, GF_LOG_ERROR, 0,
++                        GD_MSG_MNTENTRY_GET_FAIL,
++                        "realpath () failed for path %s", mnt_pt);
++                goto out;
++        }
++
+         entry = getmntent_r (mtab, entry_ptr, buff, buflen);
+ 
+         while (1) {
+                 if (!entry)
+                         goto out;
+ 
+-                if (!strcmp (entry->mnt_dir, mnt_pt) &&
++                if (!strcmp (entry->mnt_dir, abspath) &&
+                     strcmp (entry->mnt_type, "rootfs"))
+                         break;
+                 entry = getmntent_r (mtab, entry_ptr, buff, buflen);
+-- 
+1.8.3.1
+

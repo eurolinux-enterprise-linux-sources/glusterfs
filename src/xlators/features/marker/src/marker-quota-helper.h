@@ -11,11 +11,6 @@
 #ifndef _MARKER_QUOTA_HELPER_H
 #define _MARKER_QUOTA_HELPER_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "marker.h"
 
 #define QUOTA_FREE_CONTRIBUTION_NODE(ctx, _contribution)             \
@@ -70,9 +65,6 @@ mq_local_ref (quota_local_t *);
 
 int32_t
 mq_local_unref (xlator_t *, quota_local_t *);
-
-void
-mq_contri_fini (void *data);
 
 inode_contribution_t*
 mq_contri_init (inode_t *inode);

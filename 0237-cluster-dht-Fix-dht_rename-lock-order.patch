@@ -1,0 +1,117 @@
+From 67c89f4fc9a80c9ed4a7d78df57c1ca76f4adc3d Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Tue, 17 Apr 2018 15:37:05 +0530
+Subject: [PATCH 237/260] cluster/dht: Fix dht_rename lock order
+
+Fixed dht_order_rename_lock to use the same inodelk ordering
+as that of the dht selfheal locks (dictionary order of
+lock subvolumes).
+
+upstream: https://review.gluster.org/#/c/19886/
+
+> Change-Id: Ia3f8353b33ea2fd3bc1ba7e8e777dda6c1d33e0d
+> fixes: bz#1568348
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I09022705f5b77af0f50a2bab4579d4d3cb902155
+BUG: 1565119
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136451
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rename.c | 65 ++++++++++++++++++++++++++----------
+ 1 file changed, 47 insertions(+), 18 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rename.c b/xlators/cluster/dht/src/dht-rename.c
+index 3068499..ca6b5f4 100644
+--- a/xlators/cluster/dht/src/dht-rename.c
++++ b/xlators/cluster/dht/src/dht-rename.c
+@@ -490,37 +490,66 @@ err:
+         return 0;
+ }
+ 
++
++/*
++ * If the hashed subvolumes of both source and dst are the different,
++ * lock in dictionary order of hashed subvol->name. This is important
++ * in case the parent directory is the same for both src and dst to
++ * prevent inodelk deadlocks when racing with a fix-layout op on the parent.
++ *
++ * If the hashed subvols are the same, use the gfid/name to determine
++ * the order of taking locks to prevent entrylk deadlocks when the parent
++ * dirs are the same.
++ *
++ */
+ static void
+ dht_order_rename_lock (call_frame_t *frame, loc_t **loc, xlator_t **subvol)
+ {
+-        dht_local_t        *local                       = NULL;
+-        char                src[GF_UUID_BNAME_BUF_SIZE] = {0};
+-        char                dst[GF_UUID_BNAME_BUF_SIZE] = {0};
++        int ret                 = 0;
++        dht_local_t   *local    = NULL;
++        char           src[GF_UUID_BNAME_BUF_SIZE] = {0};
++        char           dst[GF_UUID_BNAME_BUF_SIZE] = {0};
++
+ 
+         local = frame->local;
+ 
+-        if (local->loc.pargfid)
+-                uuid_utoa_r (local->loc.pargfid, src);
+-        else if (local->loc.parent)
+-                uuid_utoa_r (local->loc.parent->gfid, src);
++        if (local->src_hashed->name == local->dst_hashed->name) {
++                ret = 0;
++        } else {
++                ret = strcmp (local->src_hashed->name, local->dst_hashed->name);
++        }
+ 
+-        strcat (src, local->loc.name);
++        if (ret == 0) {
+ 
+-        if (local->loc2.pargfid)
+-                uuid_utoa_r (local->loc2.pargfid, dst);
+-        else if (local->loc2.parent)
+-                uuid_utoa_r (local->loc2.parent->gfid, dst);
++                /* hashed subvols are the same for src and dst */
++                /* Entrylks need to be ordered*/
++                if (local->loc.pargfid)
++                        uuid_utoa_r (local->loc.pargfid, src);
++                else if (local->loc.parent)
++                        uuid_utoa_r (local->loc.parent->gfid, src);
+ 
+-        strcat (dst, local->loc2.name);
++                strcat (src, local->loc.name);
+ 
+-        if (strcmp(src, dst) > 0) {
+-                local->current = &local->lock[1];
+-                *loc = &local->loc2;
+-                *subvol = local->dst_hashed;
+-        } else {
++                if (local->loc2.pargfid)
++                        uuid_utoa_r (local->loc2.pargfid, dst);
++                else if (local->loc2.parent)
++                        uuid_utoa_r (local->loc2.parent->gfid, dst);
++
++                strcat (dst, local->loc2.name);
++                ret = strcmp (src, dst);
++        }
++
++        if (ret <= 0) {
++                /*inodelk in dictionary order of hashed subvol names*/
++                /*entrylk in dictionary order of gfid/basename */
+                 local->current = &local->lock[0];
+                 *loc = &local->loc;
+                 *subvol = local->src_hashed;
++
++        } else {
++                local->current = &local->lock[1];
++                *loc = &local->loc2;
++                *subvol = local->dst_hashed;
+         }
+ 
+         return;
+-- 
+1.8.3.1
+

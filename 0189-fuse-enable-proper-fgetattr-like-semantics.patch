@@ -1,0 +1,73 @@
+From 2be2ed1e0da026c4ae932daa263c1215d23342a9 Mon Sep 17 00:00:00 2001
+From: Csaba Henk <csaba@redhat.com>
+Date: Mon, 5 Mar 2018 13:02:09 +0100
+Subject: [PATCH 189/201] fuse: enable proper "fgetattr"-like semantics
+
+GETATTR FUSE message can carry a file handle
+reference in which case it serves as a hint
+for the FUSE server that the stat data is
+preferably acquired in context of the given
+filehandle (which we call '"fgetattr"-like
+semantics').
+
+So far FUSE ignored the GETTATTR provided
+filehandle and grabbed a file handle
+heuristically. This caused confusion in the
+caching layers, which has been tracked down
+as one of the reasons of referred BUG.
+
+As of the BUG, this is just a partial fix.
+
+> BUG: 1512691
+> Change-Id: I67eebbf5407ca725ed111fbda4181ead10d03f6d
+> Reviewed-on: https://review.gluster.org/19673
+> Signed-off-by: Csaba Henk <csaba@redhat.com>
+
+BUG: 1518710
+Change-Id: I67eebbf5407ca725ed111fbda4181ead10d03f6d
+Signed-off-by: Csaba Henk <csaba@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/133419
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mount/fuse/src/fuse-bridge.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 03d26eb..3e31eca 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -905,7 +905,10 @@ fuse_getattr_resume (fuse_state_t *state)
+         }
+ 
+         if (!IA_ISDIR (state->loc.inode->ia_type)) {
+-                state->fd = fd_lookup (state->loc.inode, 0);
++                if (state->fd == NULL)
++                        state->fd = fd_lookup (state->loc.inode, state->finh->pid);
++                if (state->fd == NULL)
++                        state->fd = fd_lookup (state->loc.inode, 0);
+         }
+ 
+         if (!state->fd) {
+@@ -931,9 +934,18 @@ fuse_getattr_resume (fuse_state_t *state)
+ static void
+ fuse_getattr (xlator_t *this, fuse_in_header_t *finh, void *msg)
+ {
++#if FUSE_KERNEL_MINOR_VERSION >= 9
++        struct fuse_getattr_in *fgi  = msg;
++        fuse_private_t         *priv = NULL;
++#endif
+         fuse_state_t *state;
+ 
+         GET_STATE (this, finh, state);
++#if FUSE_KERNEL_MINOR_VERSION >= 9
++        priv = this->private;
++        if (priv->proto_minor >= 9 && fgi->getattr_flags & FUSE_GETATTR_FH)
++                state->fd = fd_ref ((fd_t *)fgi->fh);
++#endif
+ 
+         fuse_resolve_inode_init (state, &state->resolve, state->finh->nodeid);
+ 
+-- 
+1.8.3.1
+

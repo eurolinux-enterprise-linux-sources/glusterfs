@@ -11,10 +11,12 @@
 #include "compat-uuid.h"
 #include "globals.h"
 #include "glusterfs.h"
+#include "syscall.h"
 
 #include "gf-changelog-helpers.h"
 #include "gf-changelog-journal.h"
 #include "changelog-mem-types.h"
+#include "changelog-lib-messages.h"
 
 int
 gf_changelog_done (char *file)
@@ -49,13 +51,14 @@ gf_changelog_done (char *file)
 
         (void) snprintf (to_path, PATH_MAX, "%s%s",
                          jnl->jnl_processed_dir, basename (buffer));
-        gf_log (this->name, GF_LOG_DEBUG,
-                "moving %s to processed directory", file);
-        ret = rename (buffer, to_path);
+        gf_msg_debug (this->name, 0,
+                      "moving %s to processed directory", file);
+        ret = sys_rename (buffer, to_path);
         if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "cannot move %s to %s (reason: %s)",
-                        file, to_path, strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_RENAME_FAILED,
+                        "cannot move %s to %s",
+                        file, to_path);
                 goto out;
         }
 
@@ -149,16 +152,14 @@ out:
 ssize_t
 gf_changelog_scan ()
 {
-        int             ret        = 0;
-        int             tracker_fd = 0;
-        size_t          len        = 0;
-        size_t          off        = 0;
-        xlator_t       *this       = NULL;
-        size_t          nr_entries = 0;
+        int             tracker_fd  = 0;
+        size_t          off         = 0;
+        xlator_t       *this        = NULL;
+        size_t          nr_entries  = 0;
         gf_changelog_journal_t *jnl = NULL;
-        struct dirent  *entryp     = NULL;
-        struct dirent  *result     = NULL;
-        char buffer[PATH_MAX]      = {0,};
+        struct dirent  *entry       = NULL;
+        struct dirent   scratch[2]  = {{0,},};
+        char            buffer[PATH_MAX] = {0,};
 
         this = THIS;
         if (!this)
@@ -178,21 +179,16 @@ gf_changelog_scan ()
         if (gf_ftruncate (tracker_fd, 0))
                 goto out;
 
-        len = offsetof(struct dirent, d_name)
-                + pathconf(jnl->jnl_processing_dir, _PC_NAME_MAX) + 1;
-        entryp = GF_CALLOC (1, len,
-                            gf_changelog_mt_libgfchangelog_dirent_t);
-        if (!entryp)
-                goto out;
-
         rewinddir (jnl->jnl_dir);
-        while (1) {
-                ret = readdir_r (jnl->jnl_dir, entryp, &result);
-                if (ret || !result)
+
+        for (;;) {
+                errno = 0;
+                entry = sys_readdir (jnl->jnl_dir, scratch);
+                if (!entry || errno != 0)
                         break;
 
-                if (!strcmp (basename (entryp->d_name), ".")
-                     || !strcmp (basename (entryp->d_name), ".."))
+                if (!strcmp (basename (entry->d_name), ".")
+                     || !strcmp (basename (entry->d_name), ".."))
                         continue;
 
                 nr_entries++;
@@ -200,12 +196,13 @@ gf_changelog_scan ()
                 GF_CHANGELOG_FILL_BUFFER (jnl->jnl_processing_dir,
                                           buffer, off,
                                           strlen (jnl->jnl_processing_dir));
-                GF_CHANGELOG_FILL_BUFFER (entryp->d_name, buffer,
-                                          off, strlen (entryp->d_name));
+                GF_CHANGELOG_FILL_BUFFER (entry->d_name, buffer,
+                                          off, strlen (entry->d_name));
                 GF_CHANGELOG_FILL_BUFFER ("\n", buffer, off, 1);
 
                 if (gf_changelog_write (tracker_fd, buffer, off) != off) {
-                        gf_log (this->name, GF_LOG_ERROR,
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                CHANGELOG_LIB_MSG_WRITE_FAILED,
                                 "error writing changelog filename"
                                 " to tracker file");
                         break;
@@ -213,9 +210,7 @@ gf_changelog_scan ()
                 off = 0;
         }
 
-        GF_FREE (entryp);
-
-        if (!result) {
+        if (!entry) {
                 if (gf_lseek (tracker_fd, 0, SEEK_SET) != -1)
                         return nr_entries;
         }

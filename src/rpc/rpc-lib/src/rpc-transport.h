@@ -11,11 +11,6 @@
 #ifndef __RPC_TRANSPORT_H__
 #define __RPC_TRANSPORT_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 
 #include <inttypes.h>
 #ifdef GF_SOLARIS_HOST_OS
@@ -75,7 +70,7 @@ struct peer_info {
         uint32_t max_op_version;
         uint32_t min_op_version;
         //Volume mounted by client
-        char volname[1024];
+        char volname[NAME_MAX];
 };
 typedef struct peer_info peer_info_t;
 
@@ -168,7 +163,6 @@ struct rpc_transport_pollin {
         char vectored;
         void *private;
         struct iobref *iobref;
-        struct iobuf  *hdr_iobuf;
         char is_reply;
 };
 typedef struct rpc_transport_pollin rpc_transport_pollin_t;
@@ -186,7 +180,7 @@ struct rpc_transport {
                                               */
 
         void                      *private;
-        struct _client_t          *xl_private;
+        struct _client            *xl_private;
         void                      *xl;       /* Used for THIS */
         void                      *mydata;
         pthread_mutex_t            lock;
@@ -210,6 +204,7 @@ struct rpc_transport {
 
         uint64_t                   total_bytes_read;
         uint64_t                   total_bytes_write;
+        uint32_t                   xid; /* RPC/XID used for callbacks */
 
         struct list_head           list;
         int                        bind_insecure;
@@ -217,6 +212,11 @@ struct rpc_transport {
         char                      *ssl_name;
         dict_t                    *clnt_options; /* store options received from
                                                   * client */
+        /* connect_failed: saves the connect() syscall status as socket_t
+         * member holding connect() status can't be accessed by higher gfapi
+         * layer or in client management notification handler functions
+         */
+        gf_boolean_t               connect_failed;
 };
 
 struct rpc_transport_ops {
@@ -229,7 +229,7 @@ struct rpc_transport_ops {
                                    rpc_transport_reply_t *reply);
         int32_t (*connect)        (rpc_transport_t *this, int port);
         int32_t (*listen)         (rpc_transport_t *this);
-        int32_t (*disconnect)     (rpc_transport_t *this);
+        int32_t (*disconnect)     (rpc_transport_t *this, gf_boolean_t wait);
         int32_t (*get_peername)   (rpc_transport_t *this, char *hostname,
                                    int hostlen);
         int32_t (*get_peeraddr)   (rpc_transport_t *this, char *peeraddr,
@@ -253,7 +253,7 @@ int32_t
 rpc_transport_connect (rpc_transport_t *this, int port);
 
 int32_t
-rpc_transport_disconnect (rpc_transport_t *this);
+rpc_transport_disconnect (rpc_transport_t *this, gf_boolean_t wait);
 
 int32_t
 rpc_transport_destroy (rpc_transport_t *this);

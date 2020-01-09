@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <fnmatch.h>
 
 #include "xlator.h"
@@ -157,22 +152,13 @@ xlator_option_validate_sizet (xlator_t *xl, const char *key, const char *value,
         }
 
         if ((size < opt->min) || (size > opt->max)) {
-                if ((strncmp (key, "cache-size", 10) == 0) &&
-                    (size > opt->max)) {
-                       snprintf (errstr, 256, "Cache size %" GF_PRI_SIZET " is out of "
-                                 "range [%.0f - %.0f]",
-                                 size, opt->min, opt->max);
-                       gf_msg (xl->name, GF_LOG_WARNING, 0,
-                               LG_MSG_OUT_OF_RANGE, "%s", errstr);
-                } else {
-                        snprintf (errstr, 256,
-                                  "'%" GF_PRI_SIZET "' in 'option %s %s' "
-                                  "is out of range [%.0f - %.0f]",
-                                  size, key, value, opt->min, opt->max);
-                        gf_msg (xl->name, GF_LOG_ERROR, 0,
-                                LG_MSG_OUT_OF_RANGE, "%s", errstr);
-                        ret = -1;
-                }
+                snprintf (errstr, 256,
+                          "'%" GF_PRI_SIZET "' in 'option %s %s' "
+                          "is out of range [%.0f - %.0f]",
+                          size, key, value, opt->min, opt->max);
+                gf_msg (xl->name, GF_LOG_ERROR, 0,
+                        LG_MSG_OUT_OF_RANGE, "%s", errstr);
+                ret = -1;
         }
 
 out:
@@ -188,13 +174,13 @@ xlator_option_validate_bool (xlator_t *xl, const char *key, const char *value,
 {
         int          ret = -1;
         char         errstr[256];
-        gf_boolean_t bool;
+        gf_boolean_t is_valid;
 
 
         /* Check if the value is one of
            '0|1|on|off|no|yes|true|false|enable|disable' */
 
-        if (gf_string2boolean (value, &bool) != 0) {
+        if (gf_string2boolean (value, &is_valid) != 0) {
                 snprintf (errstr, 256,
                           "option %s %s: '%s' is not a valid boolean value",
                           key, value, value);
@@ -253,19 +239,20 @@ void
 set_error_str (char *errstr, size_t len, volume_option_t *opt, const char *key,
                const char *value)
 {
-        int i = 0;
-        char given_array[4096] = {0,};
+        int i   = 0;
+        int ret = 0;
+
+        ret = snprintf (errstr, len, "option %s %s: '%s' is not valid "
+                        "(possible options are ", key, value, value);
 
         for (i = 0; (i < ZR_OPTION_MAX_ARRAY_SIZE) && opt->value[i];) {
-                strcat (given_array, opt->value[i]);
+                ret += snprintf (errstr + ret, len - ret, "%s", opt->value[i]);
                 if (((++i) < ZR_OPTION_MAX_ARRAY_SIZE) &&
                     (opt->value[i]))
-                        strcat (given_array, ", ");
+                        ret += snprintf (errstr + ret, len - ret, ", ");
                 else
-                        strcat (given_array, ".");
+                        ret += snprintf (errstr + ret, len - ret, ".)");
         }
-        snprintf (errstr, len, "option %s %s: '%s' is not valid "
-                  "(possible options are %s)", key, value, value, given_array);
         return;
 }
 
@@ -337,6 +324,7 @@ xlator_option_validate_str (xlator_t *xl, const char *key, const char *value,
 out:
         if (ret) {
                 set_error_str (errstr, sizeof (errstr), opt, key, value);
+
                 gf_msg (xl->name, GF_LOG_ERROR, 0, LG_MSG_INVALID_ENTRY, "%s",
                         errstr);
                 if (op_errstr)
@@ -611,21 +599,70 @@ xlator_option_validate_addr_list (xlator_t *xl, const char *key,
         char         *dup_val = NULL;
         char         *addr_tok = NULL;
         char         *save_ptr = NULL;
+        char         *entry = NULL;
+        char         *entry_ptr = NULL;
+        char         *dir_and_addr = NULL;
+        char         *addr_ptr = NULL;
+        char         *addr_list = NULL;
+        char         *addr = NULL;
+        char         *dir = NULL;
         char         errstr[4096] = {0,};
 
         dup_val = gf_strdup (value);
         if (!dup_val)
                 goto out;
 
-        addr_tok = strtok_r (dup_val, ",", &save_ptr);
-        if (addr_tok == NULL)
+        if (dup_val[0] != '/' && !strchr (dup_val, '(')) {
+                /* Possible old format, handle it for back-ward compatibility */
+                addr_tok = strtok_r (dup_val, ",", &save_ptr);
+                while (addr_tok) {
+                        if (!valid_internet_address (addr_tok, _gf_true))
+                                goto out;
+
+                        addr_tok = strtok_r (NULL, ",", &save_ptr);
+                }
+                ret = 0;
                 goto out;
-        while (addr_tok) {
-                if (!valid_internet_address (addr_tok, _gf_true))
+        }
+
+        /* Lets handle the value with new format */
+        entry = strtok_r (dup_val, ",", &entry_ptr);
+        while (entry) {
+                dir_and_addr = gf_strdup (entry);
+                if (!dir_and_addr)
                         goto out;
 
-                addr_tok = strtok_r (NULL, ",", &save_ptr);
+                dir = strtok_r (dir_and_addr, "(", &addr_ptr);
+                if (dir[0] != '/') {
+                        /* Valid format should be starting from '/' */
+                        goto out;
+                }
+                /* dir = strtok_r (NULL, " =", &addr_tmp); */
+                addr = strtok_r (NULL, ")", &addr_ptr);
+                if (!addr)
+                        goto out;
+
+                addr_list = gf_strdup (addr);
+                if (!addr_list)
+                        goto out;
+
+                /* This format be separated by '|' */
+                addr_tok = strtok_r (addr_list, "|", &save_ptr);
+                if (addr_tok == NULL)
+                        goto out;
+                while (addr_tok) {
+                        if (!valid_internet_address (addr_tok, _gf_true))
+                                goto out;
+
+                        addr_tok = strtok_r (NULL, "|", &save_ptr);
+                }
+                entry = strtok_r (NULL, ",", &entry_ptr);
+                GF_FREE (dir_and_addr);
+                GF_FREE (addr_list);
+                addr_list = NULL;
+                dir_and_addr = NULL;
         }
+
         ret = 0;
 
 out:
@@ -638,7 +675,8 @@ out:
                         *op_errstr = gf_strdup (errstr);
         }
         GF_FREE (dup_val);
-
+        GF_FREE (dir_and_addr);
+        GF_FREE (addr_list);
         return ret;
 }
 
@@ -1110,7 +1148,9 @@ xlator_reconfigure_rec (xlator_t *old_xl, xlator_t *new_xl)
                 old_THIS = THIS;
                 THIS = old_xl;
 
+                xlator_init_lock ();
                 ret = old_xl->reconfigure (old_xl, new_xl->options);
+                xlator_init_unlock ();
 
                 THIS = old_THIS;
 

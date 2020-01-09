@@ -1,0 +1,117 @@
+From 8863bc3638ca8b3a2c6105d35f5a9113b5796dd5 Mon Sep 17 00:00:00 2001
+From: Susant Palai <spalai@redhat.com>
+Date: Mon, 21 May 2018 11:51:47 +0530
+Subject: [PATCH 296/305] cluster/dht: Increase failure count for lookup
+ failure in remove-brick op
+
+An entry from readdirp might get renamed just before migration leading to
+lookup failures. For such lookup failure, remove-brick process does not
+see any increment in failure count. Though there is a warning message
+after remove-brick commit for the user to check in the decommissioned brick
+for any files those are not migrated, it's better to increase the failure count
+so that user can check in the decommissioned bricks for files before commit.
+
+Note: This can result in false negative cases for rm -rf interaction with
+remove-brick op, where remove-brick shows non-zero failed count, but the
+entry was actually deleted by user.
+
+upstream patch: https://review.gluster.org/#/c/20044/
+> Fixes :bz#1580269
+> Change-Id: Icd1047ab9edc1d5bfc231a1f417a7801c424917c
+> fixes: bz#1580269
+> Signed-off-by: Susant Palai <spalai@redhat.com>
+
+Change-Id: Icd1047ab9edc1d5bfc231a1f417a7801c424917c
+BUG: 1577051
+(cherry-picked from upstream: https://review.gluster.org/#/c/20044/)
+Signed-off-by: Susant Palai <spalai@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139989
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c | 34 ++++++++++++++++++++++++++++++---
+ 1 file changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index f03931f..b9078e0 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -2713,6 +2713,19 @@ gf_defrag_migrate_single_file (void *opaque)
+                         DHT_MSG_MIGRATE_FILE_FAILED,
+                         "Migrate file failed: %s lookup failed",
+                         entry_loc.path);
++
++                /* Increase failure count only for remove-brick op, so that
++                 * user is warned to check the removed-brick for any files left
++                 * unmigrated
++                 */
++                if (conf->decommission_subvols_cnt) {
++                        LOCK (&defrag->lock);
++                        {
++                                defrag->total_failures += 1;
++                        }
++                        UNLOCK (&defrag->lock);
++                }
++
+                 ret = 0;
+                 goto out;
+         }
+@@ -3722,8 +3735,11 @@ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+                                 DHT_MSG_DIR_LOOKUP_FAILED,
+                                 "Dir:%s renamed or removed. Skipping",
+                                 loc->path);
+-                                ret = 0;
+-                                goto out;
++                        if (conf->decommission_subvols_cnt) {
++                                defrag->total_failures++;
++                        }
++                        ret = 0;
++                        goto out;
+                 } else {
+                         gf_msg (this->name, GF_LOG_ERROR, -ret,
+                                 DHT_MSG_DIR_LOOKUP_FAILED,
+@@ -3744,6 +3760,9 @@ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+         ret = syncop_opendir (this, loc, fd, NULL, NULL);
+         if (ret) {
+                 if (-ret == ENOENT || -ret == ESTALE) {
++                        if (conf->decommission_subvols_cnt) {
++                                defrag->total_failures++;
++                        }
+                         ret = 0;
+                         goto out;
+                 }
+@@ -3763,6 +3782,9 @@ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+         {
+                 if (ret < 0) {
+                         if (-ret == ENOENT || -ret == ESTALE) {
++                                if (conf->decommission_subvols_cnt) {
++                                        defrag->total_failures++;
++                                }
+                                 ret = 0;
+                                 goto out;
+                         }
+@@ -3868,7 +3890,10 @@ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+                                                 DHT_MSG_DIR_LOOKUP_FAILED,
+                                                 "Dir:%s renamed or removed. "
+                                                 "Skipping", loc->path);
+-                                                ret = 0;
++                                        ret = 0;
++                                        if (conf->decommission_subvols_cnt) {
++                                                defrag->total_failures++;
++                                        }
+                                         continue;
+                                 } else {
+                                         gf_msg (this->name, GF_LOG_ERROR, -ret,
+@@ -3931,6 +3956,9 @@ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+                                 "Setxattr failed. Dir %s "
+                                 "renamed or removed",
+                                 loc->path);
++                        if (conf->decommission_subvols_cnt) {
++                                defrag->total_failures++;
++                        }
+                         ret = 0;
+                 } else {
+                         gf_msg (this->name, GF_LOG_ERROR, -ret,
+-- 
+1.8.3.1
+

@@ -1,0 +1,66 @@
+From ef08094304905a40339fba306e64508082432ab3 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Thu, 25 Jan 2018 10:03:09 +0530
+Subject: [PATCH 141/148] rpc: Showing some unusual timer error logs during
+ brick stop
+
+Solution: Update msg condition in gf_timer_call_after function
+          to avoid the message
+
+> BUG: 1538427
+> Change-Id: I849e8e052a8259cf977fd5e7ff3aeba52f9b5f27
+> Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+> (Upstream patch link https://review.gluster.org/#/c/19320/)
+> (cherry picked from commit c142d26e44436d805e476f2d13ac8726052a59c4)
+
+BUG: 1467536
+Change-Id: I849e8e052a8259cf977fd5e7ff3aeba52f9b5f27
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129722
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ libglusterfs/src/timer.c | 18 +++---------------
+ 1 file changed, 3 insertions(+), 15 deletions(-)
+
+diff --git a/libglusterfs/src/timer.c b/libglusterfs/src/timer.c
+index 3d69a9f..34dfd35 100644
+--- a/libglusterfs/src/timer.c
++++ b/libglusterfs/src/timer.c
+@@ -30,10 +30,11 @@ gf_timer_call_after (glusterfs_ctx_t *ctx,
+         gf_timer_t *trav = NULL;
+         uint64_t at = 0;
+ 
+-        if (ctx == NULL)
++        if ((ctx == NULL) || (ctx->cleanup_started))
+         {
+                 gf_msg_callingfn ("timer", GF_LOG_ERROR, EINVAL,
+-                                  LG_MSG_INVALID_ARG, "invalid argument");
++                                  LG_MSG_INVALID_ARG, "Either ctx is NULL or"
++                                  " ctx cleanup started");
+                 return NULL;
+         }
+ 
+@@ -186,19 +187,6 @@ gf_timer_registry_init (glusterfs_ctx_t *ctx)
+ {
+         gf_timer_registry_t *reg = NULL;
+ 
+-        if (ctx == NULL) {
+-                gf_msg_callingfn ("timer", GF_LOG_ERROR, EINVAL,
+-                                  LG_MSG_INVALID_ARG, "invalid argument");
+-                return NULL;
+-        }
+-
+-        if (ctx->cleanup_started) {
+-                gf_msg_callingfn ("timer", GF_LOG_INFO, 0,
+-                                  LG_MSG_CTX_CLEANUP_STARTED,
+-                                  "ctx cleanup started");
+-                return NULL;
+-        }
+-
+         LOCK (&ctx->lock);
+         {
+                 reg = ctx->timer;
+-- 
+1.8.3.1
+

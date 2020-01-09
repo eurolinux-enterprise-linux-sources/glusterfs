@@ -40,7 +40,7 @@
 #define RVEC_LOW_WATERMARK_COUNT  1
 #define RVEC_HIGH_WATERMARK_COUNT (1 << 4)
 
-static
+static inline
 rbuf_list_t *rbuf_current_buffer (rbuf_t *rbuf)
 {
         return rbuf->current;

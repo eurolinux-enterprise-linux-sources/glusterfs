@@ -15,9 +15,10 @@ noinst_HEADERS = cli.h cli-mem-types.h cli-cmd.h cli-quotad-client.h
 AM_CPPFLAGS = $(GF_CPPFLAGS) \
 	-I$(top_srcdir)/libglusterfs/src -I$(top_srcdir)/rpc/rpc-lib/src\
 	-I$(top_srcdir)/rpc/xdr/src\
+	-I$(top_builddir)/rpc/xdr/src\
 	-DDATADIR=\"$(localstatedir)\" \
 	-DCONFDIR=\"$(sysconfdir)/glusterfs\" \
-	-DGSYNCD_PREFIX=\"$(libexecdir)/glusterfs\"\
+	-DGSYNCD_PREFIX=\"$(GLUSTERFS_LIBEXECDIR)\"\
 	-DSYNCDAEMON_COMPILE=$(SYNCDAEMON_COMPILE) -DSBIN_DIR=\"$(sbindir)\"\
 	$(XML_CPPFLAGS)
 
@@ -29,4 +30,4 @@ $(top_builddir)/libglusterfs/src/libglusterfs.la:
 	$(MAKE) -C $(top_builddir)/libglusterfs/src/ all
 
 install-data-hook:
-	$(MKDIR_P) $(DESTDIR)$(localstatedir)/run/gluster
+	$(mkdir_p) $(DESTDIR)$(localstatedir)/run/gluster

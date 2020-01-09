@@ -1,0 +1,99 @@
+From 88ed6bd3e752a028b5372aa948a191fa49377459 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Fri, 10 Nov 2017 19:17:27 +0530
+Subject: [PATCH 35/74] glusterd: regenerate volfiles on op-version bump up
+
+Please note that LOC of downstream patch differs because of a
+downstream only fix https://code.engineering.redhat.com/gerrit/94006
+
+Label: DOWNSTREAM ONLY
+
+>Reviewed-on: https://review.gluster.org/16455
+>NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+>Smoke: Gluster Build System <jenkins@build.gluster.org>
+>CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+>Reviewed-by: Prashanth Pai <ppai@redhat.com>
+>Reviewed-by: Kaushal M <kaushal@redhat.com>
+
+Change-Id: I2fe7a3ebea19492d52253ad5a1fdd67ac95c71c8
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/96368
+Reviewed-by: Samikshan Bairagya <sbairagy@redhat.com>
+Reviewed-by: Prashanth Pai <ppai@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c | 38 ++++++++++--------------------
+ 1 file changed, 13 insertions(+), 25 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 4fc719a..96e0860 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -2612,7 +2612,8 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                               NULL);
+                                 if (ret)
+                                         goto out;
+-                                ret = glusterd_update_volumes_dict (volinfo);
++                                ret = glusterd_update_volumes_dict
++                                                (volinfo, &start_nfs_svc);
+                                 if (ret)
+                                         goto out;
+                                 if (!volinfo->is_snap_volume) {
+@@ -2622,14 +2623,6 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                         if (ret)
+                                                 goto out;
+                                 }
+-
+-                                if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+-                                        svc = &(volinfo->tierd.svc);
+-                                        ret = svc->reconfigure (volinfo);
+-                                        if (ret)
+-                                                goto out;
+-                                }
+-
+                                 ret = glusterd_create_volfiles_and_notify_services (volinfo);
+                                 if (ret) {
+                                         gf_msg (this->name, GF_LOG_ERROR, 0,
+@@ -2651,6 +2644,17 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                         }
+                                 }
+                         }
++                        if (start_nfs_svc) {
++                                ret = conf->nfs_svc.manager (&(conf->nfs_svc),
++                                                             NULL,
++                                                             PROC_START_NO_WAIT);
++                                if (ret) {
++                                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                                GD_MSG_SVC_START_FAIL,
++                                                 "unable to start nfs service");
++                                        goto out;
++                                }
++                        }
+                         ret = glusterd_store_global_info (this);
+                         if (ret) {
+                                 gf_msg (this->name, GF_LOG_ERROR, 0,
+@@ -2658,22 +2662,6 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                         "Failed to store op-version.");
+                         }
+                 }
+-                cds_list_for_each_entry (volinfo, &conf->volumes, vol_list) {
+-                        ret = glusterd_update_volumes_dict (volinfo,
+-                                                            &start_nfs_svc);
+-                        if (ret)
+-                                goto out;
+-                }
+-                if (start_nfs_svc) {
+-                        ret = conf->nfs_svc.manager (&(conf->nfs_svc), NULL,
+-                                                     PROC_START_NO_WAIT);
+-                        if (ret) {
+-                                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                        GD_MSG_SVC_START_FAIL,
+-                                         "unable to start nfs service");
+-                                goto out;
+-                        }
+-                }
+                 /* No need to save cluster.op-version in conf->opts
+                  */
+                 goto out;
+-- 
+1.8.3.1
+

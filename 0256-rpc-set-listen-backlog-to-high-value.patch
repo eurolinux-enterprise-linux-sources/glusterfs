@@ -1,0 +1,57 @@
+From 4448795af501355f3893aed05551ee62551e8438 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Fri, 13 Apr 2018 14:51:32 +0530
+Subject: [PATCH 256/260] rpc: set listen-backlog to high value
+
+Problem:
+On node reboot, when glusterd starts volumes rapidly, there's a flood of
+connections from the bricks to glusterd and from the self-heal daemons
+to the bricks. This causes SYN Flooding and dropped connections when the
+listen-backlog is not enough to hold the pending connections to
+compensate for the rate at which connections are accepted by the RPC
+layer.
+
+Solution:
+Increase the listen-backlog value to 1024. This is a partial solution.
+Part of the solution is to rearm the listener socket early for quicker
+accept() of connections.
+See commit 6964640a977cb10c0c95a94e03c229918fa6eca8 (change 19833)
+
+mainline:
+> Reviewed-on: https://review.gluster.org/19836
+> Change-Id: I56781149919dd6e18cc43884234c6f60f2c93f88
+> fixes: bz#1564600
+> Signed-off-by: Milind Changire <mchangir@redhat.com>
+
+Change-Id: I1d7ac940eb5410cdbf7508a24bfdfc052b35170b
+BUG: 1563804
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/135557
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ rpc/rpc-transport/socket/src/socket.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/rpc/rpc-transport/socket/src/socket.c b/rpc/rpc-transport/socket/src/socket.c
+index 157b5b7..a6be911 100644
+--- a/rpc/rpc-transport/socket/src/socket.c
++++ b/rpc/rpc-transport/socket/src/socket.c
+@@ -4613,6 +4613,13 @@ struct volume_options options[] = {
+           .min   = GF_MIN_SOCKET_WINDOW_SIZE,
+           .max   = GF_MAX_SOCKET_WINDOW_SIZE
+         },
++        { .key   = {"transport.listen-backlog"},
++          .type  = GF_OPTION_TYPE_SIZET,
++          .description = "This option uses the value of backlog argument that "
++                         "defines the maximum length to which the queue of "
++                         "pending connections for socket fd may grow.",
++          .default_value = "1024",
++        },
+         { .key   = {"transport.tcp-user-timeout"},
+           .type  = GF_OPTION_TYPE_INT,
+           .default_value = "0"
+-- 
+1.8.3.1
+

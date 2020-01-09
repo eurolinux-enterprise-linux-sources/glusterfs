@@ -12,11 +12,6 @@
 #ifndef _GF_DIRENT_H
 #define _GF_DIRENT_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "iatt.h"
 #include "inode.h"
 
@@ -32,20 +27,20 @@ uint64_t
 gf_dirent_orig_offset (xlator_t *this, uint64_t offset);
 
 
-struct _dir_entry_t {
-        struct _dir_entry_t *next;
+struct _dir_entry {
+        struct _dir_entry   *next;
 	char                *name;
 	char                *link;
 	struct iatt          buf;
 };
 
 
-struct _gf_dirent_t {
+struct _gf_dirent {
 	union {
 		struct list_head             list;
 		struct {
-			struct _gf_dirent_t *next;
-			struct _gf_dirent_t *prev;
+			struct _gf_dirent   *next;
+			struct _gf_dirent   *prev;
 		};
 	};
 	uint64_t                             d_ino;
@@ -66,6 +61,9 @@ void gf_dirent_entry_free (gf_dirent_t *entry);
 void gf_dirent_free (gf_dirent_t *entries);
 int gf_link_inodes_from_dirent (xlator_t *this, inode_t *parent,
                                 gf_dirent_t *entries);
+int
+gf_fill_iatt_for_dirent (gf_dirent_t *entry, inode_t *parent,
+                         xlator_t *subvol);
 
 void
 gf_link_inode_from_dirent (xlator_t *this, inode_t *parent, gf_dirent_t *entry);

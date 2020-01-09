@@ -1,0 +1,110 @@
+From 737d077a44899f6222822408c400fcd91939ca5b Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Thu, 12 Jul 2018 04:31:01 -0400
+Subject: [PATCH 321/325] geo-rep: Fix symlink rename syncing issue
+
+Problem:
+   Geo-rep sometimes fails to sync the rename of symlink
+if the I/O is as follows
+
+  1. touch file1
+  2. ln -s "./file1" sym_400
+  3. mv sym_400 renamed_sym_400
+  4. mkdir sym_400
+
+ The file 'renamed_sym_400' failed to sync to slave
+
+Cause:
+  Assume there are three distribute subvolume (brick1, brick2, brick3).
+  The changelogs are recorded as follows for above I/O pattern.
+  Note that the MKDIR is recorded on all bricks.
+
+  1. brick1:
+     -------
+
+     CREATE file1
+     SYMLINK sym_400
+     RENAME sym_400 renamed_sym_400
+     MKDIR sym_400
+
+  2. brick2:
+     -------
+
+     MKDIR sym_400
+
+  3. brick3:
+     -------
+
+     MKDIR sym_400
+
+  The operations on 'brick1' should be processed sequentially. But
+  since MKDIR is recorded on all the bricks, The brick 'brick2/brick3'
+  processed MKDIR first before 'brick1' causing out of order syncing
+  and created directory sym_400 first.
+
+  Now 'brick1' processed it's changelog.
+
+     CREATE file1 -> succeeds
+     SYMLINK sym_400 -> No longer present in master. Ignored
+     RENAME sym_400 renamed_sym_400
+            While processing RENAME, if source('sym_400') doesn't
+            present, destination('renamed_sym_400') is created. But
+            geo-rep stats the name 'sym_400' to confirm source file's
+            presence. In this race, since source name 'sym_400' is
+            present as directory, it doesn't create destination.
+            Hence RENAME is ignored.
+
+Fix:
+  The fix is not rely only on stat of source name during RENAME.
+  It should stat the name and if the name is present, gfid should
+  be same. Only then it can conclude the presence of source.
+
+>upstream patch : https://review.gluster.org/#/c/20496/
+
+Backport of:
+ > BUG: 1600405
+ > Change-Id: I9fbec4f13ca6a182798a7f81b356fe2003aff969
+ > Signed-off-by: Kotresh HR <khiremat@redhat.com>
+
+BUG: 1601314
+Change-Id: I9fbec4f13ca6a182798a7f81b356fe2003aff969
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144104
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ geo-replication/syncdaemon/resource.py | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/resource.py b/geo-replication/syncdaemon/resource.py
+index 00e62b7..0d5462a 100644
+--- a/geo-replication/syncdaemon/resource.py
++++ b/geo-replication/syncdaemon/resource.py
+@@ -674,8 +674,14 @@ class Server(object):
+                     collect_failure(e, EEXIST)
+             elif op == 'RENAME':
+                 en = e['entry1']
+-                st = lstat(entry)
+-                if isinstance(st, int):
++                # The matching disk gfid check validates two things
++                #  1. Validates name is present, return false otherwise
++                #  2. Validates gfid is same, returns false otherwise
++                # So both validations are necessary to decide src doesn't
++                # exist. We can't rely on only gfid stat as hardlink could
++                # be present and we can't rely only on name as name could
++                # exist with differnt gfid.
++                if not matching_disk_gfid(gfid, entry):
+                     if e['stat'] and not stat.S_ISDIR(e['stat']['mode']):
+                         if stat.S_ISLNK(e['stat']['mode']) and \
+                            e['link'] is not None:
+@@ -699,6 +705,7 @@ class Server(object):
+                                                     [ENOENT, EEXIST], [ESTALE])
+                                 collect_failure(e, cmd_ret)
+                 else:
++                    st = lstat(entry)
+                     st1 = lstat(en)
+                     if isinstance(st1, int):
+                         rename_with_disk_gfid_confirmation(gfid, entry, en)
+-- 
+1.8.3.1
+

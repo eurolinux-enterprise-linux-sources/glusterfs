@@ -31,8 +31,11 @@ TEST glusterd
 TEST pidof glusterd
 TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{1,2,3,4}
 TEST $CLI volume set $V0 cluster.self-heal-daemon off
+TEST $CLI volume set $V0 cluster.data-self-heal off
+TEST $CLI volume set $V0 cluster.metadata-self-heal off
+TEST $CLI volume set $V0 cluster.entry-self-heal off
 TEST $CLI volume start $V0
-TEST glusterfs --volfile-id=/$V0 --volfile-server=$H0 $M0 --attribute-timeout=0 --entry-timeout=0
+TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0
 
 cd $M0
 for i in {1..10}
@@ -124,7 +127,7 @@ subvolume=$(get_replicate_subvol_number file3)
 if [ $subvolume == 0 ]
 then
         $CLI volume heal $V0 split-brain source-brick $H0:$B0/${V0}2 /file3
-elif [ $subvolume == 1]
+elif [ $subvolume == 1 ]
 then
         $CLI volume heal $V0 split-brain source-brick $H0:$B0/${V0}4 /file3
 fi
@@ -139,7 +142,7 @@ then
         GFID=$(gf_get_gfid_xattr $B0/${V0}1/file4)
         GFIDSTR="gfid:$(gf_gfid_xattr_to_str $GFID)"
         $CLI volume heal $V0 split-brain source-brick $H0:$B0/${V0}2 $GFIDSTR
-elif [ $subvolume == 1]
+elif [ $subvolume == 1 ]
 then
         GFID=$(gf_get_gfid_xattr $B0/${V0}3/file4)
         GFIDSTR="gfid:$(gf_gfid_xattr_to_str $GFID)"
@@ -147,6 +150,79 @@ then
 fi
 EXPECT "0" echo $?
 EXPECT $SMALLER_FILE_SIZE stat -c %s file4
+
+################ Heal file5 using the latest-mtime option  ##############
+subvolume=$(get_replicate_subvol_number file5)
+if [ $subvolume == 0 ]
+then
+        mtime1=$(stat -c %Y $B0/${V0}1/file5)
+        mtime2=$(stat -c %Y $B0/${V0}2/file5)
+        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
+elif [ $subvolume == 1 ]
+then
+        mtime1=$(stat -c %Y $B0/${V0}3/file5)
+        mtime2=$(stat -c %Y $B0/${V0}4/file5)
+        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
+fi
+$CLI volume heal $V0 split-brain latest-mtime /file5
+EXPECT "0" echo $?
+
+if [ $subvolume == 0 ]
+then
+        mtime1_after_heal=$(stat -c %Y $B0/${V0}1/file5)
+        mtime2_after_heal=$(stat -c %Y $B0/${V0}2/file5)
+elif [ $subvolume == 1 ]
+then
+        mtime1_after_heal=$(stat -c %Y $B0/${V0}3/file5)
+        mtime2_after_heal=$(stat -c %Y $B0/${V0}4/file5)
+fi
+
+#TODO: To below comparisons on full sub-second resolution
+
+TEST [ $LATEST_MTIME -eq $mtime1_after_heal ]
+TEST [ $LATEST_MTIME -eq $mtime2_after_heal ]
+
+mtime_mount_after_heal=$(stat -c %Y file5)
+
+TEST [ $LATEST_MTIME -eq $mtime_mount_after_heal ]
+
+################ Heal file6 using the latest-mtime option and its gfid  ##############
+subvolume=$(get_replicate_subvol_number file6)
+if [ $subvolume == 0 ]
+then
+        GFID=$(gf_get_gfid_xattr $B0/${V0}1/file6)
+        mtime1=$(stat -c %Y $B0/${V0}1/file6)
+        mtime2=$(stat -c %Y $B0/${V0}2/file6)
+        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
+elif [ $subvolume == 1 ]
+then
+        GFID=$(gf_get_gfid_xattr $B0/${V0}3/file6)
+        mtime1=$(stat -c %Y $B0/${V0}3/file6)
+        mtime2=$(stat -c %Y $B0/${V0}4/file6)
+        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
+fi
+GFIDSTR="gfid:$(gf_gfid_xattr_to_str $GFID)"
+$CLI volume heal $V0 split-brain latest-mtime $GFIDSTR
+EXPECT "0" echo $?
+
+if [ $subvolume == 0 ]
+then
+        mtime1_after_heal=$(stat -c %Y $B0/${V0}1/file6)
+        mtime2_after_heal=$(stat -c %Y $B0/${V0}2/file6)
+elif [ $subvolume == 1 ]
+then
+        mtime1_after_heal=$(stat -c %Y $B0/${V0}3/file6)
+        mtime2_after_heal=$(stat -c %Y $B0/${V0}4/file6)
+fi
+
+#TODO: To below comparisons on full sub-second resolution
+
+TEST [ $LATEST_MTIME -eq $mtime1_after_heal ]
+TEST [ $LATEST_MTIME -eq $mtime2_after_heal ]
+
+mtime_mount_after_heal=$(stat -c %Y file6)
+
+TEST [ $LATEST_MTIME -eq $mtime_mount_after_heal ]
 
 ################ Heal remaining SB'ed files of replica_0 using B1 as source ##############
 $CLI volume heal $V0 split-brain source-brick $H0:$B0/${V0}1

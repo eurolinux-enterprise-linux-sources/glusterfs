@@ -13,7 +13,7 @@
 
 #include "xlator.h"
 
-#include "ec-data.h"
+#include "ec-types.h"
 #include "ec-common.h"
 
 void ec_access(call_frame_t * frame, xlator_t * this, uintptr_t target,
@@ -63,15 +63,15 @@ void ec_fheal(call_frame_t * frame, xlator_t * this, uintptr_t target,
               int32_t minimum, fop_fheal_cbk_t func, void *data, fd_t * fd,
               int32_t partial, dict_t *xdata);
 
-void ec_inodelk(call_frame_t * frame, xlator_t * this, uintptr_t target,
-                int32_t minimum, fop_inodelk_cbk_t func, void *data,
-                const char * volume, loc_t * loc, int32_t cmd,
-                struct gf_flock * flock, dict_t * xdata);
-
-void ec_finodelk(call_frame_t * frame, xlator_t * this, uintptr_t target,
-                 int32_t minimum, fop_finodelk_cbk_t func, void *data,
-                 const char * volume, fd_t * fd, int32_t cmd,
+void ec_inodelk (call_frame_t *frame, xlator_t *this, gf_lkowner_t *owner,
+                 uintptr_t target, int32_t minimum, fop_inodelk_cbk_t func,
+                 void *data, const char *volume, loc_t *loc, int32_t cmd,
                  struct gf_flock * flock, dict_t * xdata);
+
+void ec_finodelk(call_frame_t *frame, xlator_t *this, gf_lkowner_t *owner,
+                 uintptr_t target, int32_t minimum, fop_finodelk_cbk_t func,
+                 void *data, const char *volume, fd_t *fd, int32_t cmd,
+                 struct gf_flock *flock, dict_t *xdata);
 
 void ec_link(call_frame_t * frame, xlator_t * this, uintptr_t target,
              int32_t minimum, fop_link_cbk_t func, void *data, loc_t * oldloc,
@@ -168,6 +168,10 @@ void ec_symlink(call_frame_t * frame, xlator_t * this, uintptr_t target,
                 const char * linkname, loc_t * loc, mode_t umask,
                 dict_t * xdata);
 
+void ec_fallocate(call_frame_t *frame, xlator_t *this, uintptr_t target,
+              int32_t minimum, fop_fallocate_cbk_t func, void *data, fd_t *fd,
+              int32_t mode, off_t offset, size_t len, dict_t *xdata);
+
 void ec_truncate(call_frame_t * frame, xlator_t * this, uintptr_t target,
                  int32_t minimum, fop_truncate_cbk_t func, void *data,
                  loc_t * loc, off_t offset, dict_t * xdata);
@@ -194,5 +198,13 @@ void ec_fxattrop(call_frame_t * frame, xlator_t * this, uintptr_t target,
                  int32_t minimum, fop_fxattrop_cbk_t func, void *data,
                  fd_t * fd, gf_xattrop_flags_t optype, dict_t * xattr,
                  dict_t * xdata);
+
+void ec_seek(call_frame_t *frame, xlator_t *this, uintptr_t target,
+             int32_t minimum, fop_seek_cbk_t func, void *data, fd_t *fd,
+             off_t offset, gf_seek_what_t what, dict_t *xdata);
+
+void ec_ipc(call_frame_t *frame, xlator_t *this, uintptr_t target,
+            int32_t minimum, fop_ipc_cbk_t func, void *data, int32_t op,
+            dict_t *xdata);
 
 #endif /* __EC_FOPS_H__ */

@@ -1,0 +1,235 @@
+From 355e366ff59dfc2ecd4fdf1e5653664b9ac0c45f Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Wed, 14 Mar 2018 09:37:52 +0530
+Subject: [PATCH 202/212] glusterd: TLS verification fails while using
+ intermediate CA
+
+Problem: TLS verification fails while using intermediate CA
+         if mgmt SSL is enabled.
+
+Solution: There are two main issue of TLS verification failing
+          1) not calling ssl_api to set cert_depth
+          2) The current code does not allow to set certificate depth
+             while MGMT SSL is enabled.
+          After apply this patch to set certificate depth user
+          need to set parameter option transport.socket.ssl-cert-depth <depth>
+          in /var/lib/glusterd/secure_acccess instead to set in
+          /etc/glusterfs/glusterd.vol. At the time of set secure_mgmt in ctx
+          we will check the value of cert-depth and save the value of cert-depth
+          in ctx.If user does not provide any value in cert-depth in that case
+          it will consider default value is 1
+
+> BUG: 1555154
+> Change-Id: I89e9a9e1026e37efb5c20f9ec62b1989ef644f35
+> Reviewed on https://review.gluster.org/#/c/19708/
+> (cherry pick from commit cf06dd544004701ef43fa81c5b7a95353d5c1d65)
+
+BUG: 1446046
+Change-Id: I94000bc8741ceb5659ec9f376eac447ae84792ad
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/133849
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ api/src/glfs-mgmt.c                          |  1 +
+ cli/src/cli.c                                |  1 +
+ glusterfsd/src/glusterfsd-mgmt.c             |  2 ++
+ glusterfsd/src/glusterfsd.c                  |  1 +
+ heal/src/glfs-heal.c                         |  1 +
+ libglusterfs/src/glusterfs.h                 |  6 ++++
+ libglusterfs/src/graph.c                     | 42 +++++++++++++++++++++++++++-
+ rpc/rpc-transport/socket/src/socket.c        | 12 +++++---
+ xlators/mgmt/glusterd/src/glusterd-handler.c |  3 ++
+ 9 files changed, 64 insertions(+), 5 deletions(-)
+
+diff --git a/api/src/glfs-mgmt.c b/api/src/glfs-mgmt.c
+index 32b9dbd..b70dc35 100644
+--- a/api/src/glfs-mgmt.c
++++ b/api/src/glfs-mgmt.c
+@@ -996,6 +996,7 @@ glfs_mgmt_init (struct glfs *fs)
+ 
+         if (sys_access (SECURE_ACCESS_FILE, F_OK) == 0) {
+                 ctx->secure_mgmt = 1;
++                ctx->ssl_cert_depth = glusterfs_read_secure_access_file ();
+         }
+ 
+ 	rpc = rpc_clnt_new (options, THIS, THIS->name, 8);
+diff --git a/cli/src/cli.c b/cli/src/cli.c
+index 52c1b67..b64d4ef 100644
+--- a/cli/src/cli.c
++++ b/cli/src/cli.c
+@@ -432,6 +432,7 @@ parse_cmdline (int argc, char *argv[], struct cli_state *state)
+         /* Do this first so that an option can override. */
+         if (sys_access (SECURE_ACCESS_FILE, F_OK) == 0) {
+                 state->ctx->secure_mgmt = 1;
++                state->ctx->ssl_cert_depth = glusterfs_read_secure_access_file ();
+         }
+ 
+         if (state->argc > GEO_REP_CMD_CONFIG_INDEX &&
+diff --git a/glusterfsd/src/glusterfsd-mgmt.c b/glusterfsd/src/glusterfsd-mgmt.c
+index 69d93f5..ef53d09 100644
+--- a/glusterfsd/src/glusterfsd-mgmt.c
++++ b/glusterfsd/src/glusterfsd-mgmt.c
+@@ -2467,6 +2467,8 @@ glusterfs_mgmt_init (glusterfs_ctx_t *ctx)
+                         goto out;
+ 
+                 }
++
++                ctx->ssl_cert_depth = glusterfs_read_secure_access_file ();
+         }
+ 
+         rpc = rpc_clnt_new (options, THIS, THIS->name, 8);
+diff --git a/glusterfsd/src/glusterfsd.c b/glusterfsd/src/glusterfsd.c
+index 38b863c..3ae89a6 100644
+--- a/glusterfsd/src/glusterfsd.c
++++ b/glusterfsd/src/glusterfsd.c
+@@ -1917,6 +1917,7 @@ parse_cmdline (int argc, char *argv[], glusterfs_ctx_t *ctx)
+         /* Do this before argp_parse so it can be overridden. */
+         if (sys_access (SECURE_ACCESS_FILE, F_OK) == 0) {
+                 cmd_args->secure_mgmt = 1;
++                ctx->ssl_cert_depth = glusterfs_read_secure_access_file ();
+         }
+ 
+         argp_parse (&argp, argc, argv, ARGP_IN_ORDER, NULL, cmd_args);
+diff --git a/heal/src/glfs-heal.c b/heal/src/glfs-heal.c
+index 532b6f9..153cd29 100644
+--- a/heal/src/glfs-heal.c
++++ b/heal/src/glfs-heal.c
+@@ -1617,6 +1617,7 @@ main (int argc, char **argv)
+ 
+         if (sys_access(SECURE_ACCESS_FILE, F_OK) == 0) {
+                 fs->ctx->secure_mgmt = 1;
++                fs->ctx->ssl_cert_depth = glusterfs_read_secure_access_file ();
+         }
+ 
+         ret = glfs_set_volfile_server (fs, "unix", DEFAULT_GLUSTERD_SOCKFILE, 0);
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index 5abfafa..5d5f5c8 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -536,6 +536,11 @@ struct _glusterfs_ctx {
+          */
+         int                secure_mgmt;
+ 
++        /* The option is use to set cert_depth while management connection
++           use SSL
++         */
++        int                ssl_cert_depth;
++
+         /*
+          * Should *our* server/inbound connections use SSL?  This is only true
+          * if we're glusterd and secure_mgmt is set, or if we're glusterfsd
+@@ -638,4 +643,5 @@ int glusterfs_graph_parent_up (glusterfs_graph_t *graph);
+ void
+ gf_free_mig_locks (lock_migration_info_t *locks);
+ 
++int glusterfs_read_secure_access_file (void);
+ #endif /* _GLUSTERFS_H */
+diff --git a/libglusterfs/src/graph.c b/libglusterfs/src/graph.c
+index 738cd96..cdd7123 100644
+--- a/libglusterfs/src/graph.c
++++ b/libglusterfs/src/graph.c
+@@ -16,7 +16,7 @@
+ #include "defaults.h"
+ #include <unistd.h>
+ #include "syscall.h"
+-
++#include <regex.h>
+ #include "libglusterfs-messages.h"
+ 
+ #if 0
+@@ -68,7 +68,47 @@ _gf_dump_details (int argc, char **argv)
+ }
+ #endif
+ 
++int
++glusterfs_read_secure_access_file (void)
++{
++        FILE *fp = NULL;
++        char  line[100] = {0,};
++        int   cert_depth = 1;   /* Default SSL CERT DEPTH */
++        regex_t regcmpl;
++        char *key = {"^option transport.socket.ssl-cert-depth"};
++        char  keyval[50] = {0,};
++        int start = 0, end = 0, copy_len = 0;
++        regmatch_t result[1] = {{0} };
++
++        fp = fopen (SECURE_ACCESS_FILE, "r");
++        if (!fp)
++                goto out;
+ 
++        /* Check if any line matches with key */
++        while (fgets(line, sizeof(line), fp) != NULL) {
++                if (regcomp (&regcmpl, key, REG_EXTENDED)) {
++                        goto out;
++                }
++                if (!regexec (&regcmpl, line, 1, result, 0)) {
++                        start = result[0].rm_so;
++                        end  = result[0].rm_eo;
++                        copy_len = end - start;
++                        strcpy (keyval, line+copy_len);
++                        if (keyval[0]) {
++                                cert_depth = atoi(keyval);
++                                if (cert_depth == 0)
++                                        cert_depth = 1; /* Default SSL CERT DEPTH */
++                                break;
++                        }
++                }
++                regfree(&regcmpl);
++        }
++
++out:
++        if (fp)
++                fclose (fp);
++        return cert_depth;
++}
+ 
+ int
+ glusterfs_xlator_link (xlator_t *pxl, xlator_t *cxl)
+diff --git a/rpc/rpc-transport/socket/src/socket.c b/rpc/rpc-transport/socket/src/socket.c
+index 590d465..157b5b7 100644
+--- a/rpc/rpc-transport/socket/src/socket.c
++++ b/rpc/rpc-transport/socket/src/socket.c
+@@ -4324,7 +4324,13 @@ socket_init (rpc_transport_t *this)
+                "using %s polling thread",
+ 	       priv->own_thread ? "private" : "system");
+ 
+-        if (!dict_get_int32 (this->options, SSL_CERT_DEPTH_OPT, &cert_depth)) {
++        if (!priv->mgmt_ssl) {
++                if (!dict_get_int32 (this->options, SSL_CERT_DEPTH_OPT, &cert_depth)) {
++                        gf_log (this->name, GF_LOG_INFO,
++                                "using certificate depth %d", cert_depth);
++                }
++        } else {
++                cert_depth = this->ctx->ssl_cert_depth;
+                 gf_log (this->name, GF_LOG_INFO,
+                         "using certificate depth %d", cert_depth);
+         }
+@@ -4463,9 +4469,7 @@ socket_init (rpc_transport_t *this)
+ 			goto err;
+ 		}
+ 
+-#if (OPENSSL_VERSION_NUMBER < 0x00905100L)
+-		SSL_CTX_set_verify_depth(ctx,cert_depth);
+-#endif
++                SSL_CTX_set_verify_depth(priv->ssl_ctx, cert_depth);
+ 
+ 		if (crl_path) {
+ #ifdef X509_V_FLAG_CRL_CHECK_ALL
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index 16a3773..ddab159 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -3544,6 +3544,9 @@ glusterd_friend_rpc_create (xlator_t *this, glusterd_peerinfo_t *peerinfo,
+                                 "failed to set ssl-enabled in dict");
+                         goto out;
+                 }
++
++                this->ctx->ssl_cert_depth = glusterfs_read_secure_access_file ();
++
+         }
+ 
+         ret = glusterd_rpc_create (&peerinfo->rpc, options,
+-- 
+1.8.3.1
+

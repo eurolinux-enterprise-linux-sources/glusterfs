@@ -23,7 +23,7 @@
 #include <assert.h>
 #include <signal.h>
 #include <sys/wait.h>
-#include <sys/resource.h>
+#include "syscall.h"
 
 #ifdef RUN_STANDALONE
 #define GF_CALLOC(n, s, t) calloc(n, s)
@@ -241,18 +241,18 @@ runner_start (runner_t *runner)
         switch (runner->chpid) {
         case -1:
                 errno_priv = errno;
-                close (xpi[0]);
-                close (xpi[1]);
+                sys_close (xpi[0]);
+                sys_close (xpi[1]);
                 for (i = 0; i < 3; i++) {
-                        close (pi[i][0]);
-                        close (pi[i][1]);
+                        sys_close (pi[i][0]);
+                        sys_close (pi[i][1]);
                 }
                 errno = errno_priv;
                 return -1;
         case 0:
                 for (i = 0; i < 3; i++)
-                        close (pi[i][i ? 0 : 1]);
-                close (xpi[0]);
+                        sys_close (pi[i][i ? 0 : 1]);
+                sys_close (xpi[0]);
                 ret = 0;
 
                 for (i = 0; i < 3; i++) {
@@ -273,32 +273,9 @@ runner_start (runner_t *runner)
                 }
 
                 if (ret != -1 ) {
-#ifdef GF_LINUX_HOST_OS
-                        DIR *d = NULL;
-                        struct dirent *de = NULL;
-                        char *e = NULL;
+                        int fdv[4] = {0, 1, 2, xpi[1]};
 
-                        d = opendir ("/proc/self/fd");
-                        if (d) {
-                                while ((de = readdir (d))) {
-                                        i = strtoul (de->d_name, &e, 10);
-                                        if (*e == '\0' && i > 2 &&
-                                            i != dirfd (d) && i != xpi[1])
-                                                close (i);
-                                }
-                                closedir (d);
-                        } else
-                                ret = -1;
-#else /* !GF_LINUX_HOST_OS */
-                        struct rlimit rl;
-                        ret = getrlimit (RLIMIT_NOFILE, &rl);
-                        GF_ASSERT (ret == 0);
-
-                        for (i = 3; i < rl.rlim_cur; i++) {
-                                if (i != xpi[1])
-                                        close (i);
-                        }
-#endif /* !GF_LINUX_HOST_OS */
+                        ret = close_fds_except(fdv, sizeof (fdv) / sizeof (*fdv));
                 }
 
                 if (ret != -1) {
@@ -308,14 +285,14 @@ runner_start (runner_t *runner)
 
                         execvp (runner->argv[0], runner->argv);
                 }
-                ret = write (xpi[1], &errno, sizeof (errno));
+                ret = sys_write (xpi[1], &errno, sizeof (errno));
                 _exit (1);
         }
 
         errno_priv = errno;
         for (i = 0; i < 3; i++)
-                close (pi[i][i ? 1 : 0]);
-        close (xpi[1]);
+                sys_close (pi[i][i ? 1 : 0]);
+        sys_close (xpi[1]);
         if (ret == -1) {
                 for (i = 0; i < 3; i++) {
                         if (runner->chio[i]) {
@@ -324,8 +301,8 @@ runner_start (runner_t *runner)
                         }
                 }
         } else {
-                ret = read (xpi[0], (char *)&errno_priv, sizeof (errno_priv));
-                close (xpi[0]);
+                ret = sys_read (xpi[0], (char *)&errno_priv, sizeof (errno_priv));
+                sys_close (xpi[0]);
                 if (ret <= 0)
                         return 0;
                 GF_ASSERT (ret == sizeof (errno_priv));
@@ -338,12 +315,17 @@ int
 runner_end_reuse (runner_t *runner)
 {
         int i = 0;
-        int ret = -1;
+        int ret = 1;
         int chstat = 0;
 
         if (runner->chpid > 0) {
-                if (waitpid (runner->chpid, &chstat, 0) == runner->chpid)
-                        ret = chstat;
+                if (waitpid (runner->chpid, &chstat, 0) == runner->chpid) {
+                        if (WIFEXITED(chstat)) {
+                                ret = WEXITSTATUS(chstat);
+                        } else {
+                                ret = chstat;
+                        }
+                }
         }
 
         for (i = 0; i < 3; i++) {
@@ -353,7 +335,7 @@ runner_end_reuse (runner_t *runner)
                 }
         }
 
-        return ret;
+        return -ret;
 }
 
 int
@@ -371,7 +353,7 @@ runner_end (runner_t *runner)
                 GF_FREE (runner->argv);
         }
         for (i = 0; i < 3; i++)
-                close (runner->chfd[i]);
+                sys_close (runner->chfd[i]);
 
         return ret;
 }
@@ -382,8 +364,12 @@ runner_run_generic (runner_t *runner, int (*rfin)(runner_t *runner))
         int ret = 0;
 
         ret = runner_start (runner);
+        if (ret)
+                goto out;
+        ret = rfin (runner);
 
-        return -(rfin (runner) || ret);
+out:
+        return ret;
 }
 
 int

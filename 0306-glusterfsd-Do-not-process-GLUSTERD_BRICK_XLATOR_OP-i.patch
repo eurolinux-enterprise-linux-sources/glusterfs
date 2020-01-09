@@ -1,0 +1,76 @@
+From 029fbbdaa7c4ddcc2479f507345a5c3ab1035313 Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Mon, 2 Jul 2018 16:05:39 +0530
+Subject: [PATCH 306/325] glusterfsd: Do not process GLUSTERD_BRICK_XLATOR_OP
+ if graph is not ready
+
+Patch in upstream master: https://review.gluster.org/#/c/20435/
+Patch in release-3.12: https://review.gluster.org/#/c/20436/
+
+Problem:
+If glustershd gets restarted by glusterd due to node reboot/volume start force/
+or any thing that changes shd graph (add/remove brick), and index heal
+is launched via CLI, there can be a chance that shd receives this IPC
+before the graph is fully active. Thus when it accesses
+glusterfsd_ctx->active, it crashes.
+
+Fix:
+Since glusterd does not really wait for the daemons it spawned to be
+fully initialized and can send the request as soon as rpc initialization has
+succeeded, we just handle it at shd. If glusterfs_graph_activate() is
+not yet done in shd but glusterd sends GD_OP_HEAL_VOLUME to shd,
+we fail the request.
+
+Change-Id: If6cc07bc5455c4ba03458a36c28b63664496b17d
+BUG: 1593865
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143097
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ glusterfsd/src/glusterfsd-messages.h | 4 +++-
+ glusterfsd/src/glusterfsd-mgmt.c     | 6 ++++++
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/glusterfsd/src/glusterfsd-messages.h b/glusterfsd/src/glusterfsd-messages.h
+index e9c28f7..e38a88b 100644
+--- a/glusterfsd/src/glusterfsd-messages.h
++++ b/glusterfsd/src/glusterfsd-messages.h
+@@ -36,7 +36,7 @@
+  */
+ 
+ #define GLFS_COMP_BASE          GLFS_MSGID_COMP_GLUSTERFSD
+-#define GLFS_NUM_MESSAGES       37
++#define GLFS_NUM_MESSAGES       38
+ #define GLFS_MSGID_END          (GLFS_COMP_BASE + GLFS_NUM_MESSAGES + 1)
+ /* Messaged with message IDs */
+ #define glfs_msg_start_x GLFS_COMP_BASE, "Invalid: Start of messages"
+@@ -109,6 +109,8 @@
+ #define glusterfsd_msg_36 (GLFS_COMP_BASE + 36), "problem in xlator " \
+                         " loading."
+ #define glusterfsd_msg_37 (GLFS_COMP_BASE + 37), "failed to get dict value"
++#define glusterfsd_msg_38 (GLFS_COMP_BASE + 38), "Not processing brick-op no."\
++                        " %d since volume graph is not yet active."
+ 
+ /*------------*/
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+diff --git a/glusterfsd/src/glusterfsd-mgmt.c b/glusterfsd/src/glusterfsd-mgmt.c
+index 665b62c..2167241 100644
+--- a/glusterfsd/src/glusterfsd-mgmt.c
++++ b/glusterfsd/src/glusterfsd-mgmt.c
+@@ -790,6 +790,12 @@ glusterfs_handle_translator_op (rpcsvc_request_t *req)
+ 
+         ctx = glusterfsd_ctx;
+         active = ctx->active;
++        if (!active) {
++                ret = -1;
++                gf_msg (this->name, GF_LOG_ERROR, EAGAIN, glusterfsd_msg_38,
++                        xlator_req.op);
++                goto out;
++        }
+         any = active->first;
+         input = dict_new ();
+         ret = dict_unserialize (xlator_req.input.input_val,
+-- 
+1.8.3.1
+

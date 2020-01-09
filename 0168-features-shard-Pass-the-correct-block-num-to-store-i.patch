@@ -1,0 +1,43 @@
+From 79eccaf175f9beb5b1bbda8a8e8cfa84829879ca Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Mon, 26 Feb 2018 15:22:58 +0530
+Subject: [PATCH 168/180] features/shard: Pass the correct block-num to store
+ in inode ctx
+
+> Upstream: https://review.gluster.org/19630
+> BUG: 1468483
+> Change-Id: Icf3a5d0598a081adb7d234a60bd15250a5ce1532
+
+Change-Id: I790fddb241765663361139673f8ecaf19a3ff7fb
+BUG: 1493085
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131734
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/features/shard/src/shard.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index 3b6b41b..20a0608 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -641,7 +641,6 @@ shard_common_resolve_shards (call_frame_t *frame, xlator_t *this,
+                         gf_msg_debug (this->name, 0, "Shard %d already "
+                                 "present. gfid=%s. Saving inode for future.",
+                                 shard_idx_iter, uuid_utoa(inode->gfid));
+-                        shard_idx_iter++;
+                         local->inode_list[i] = inode;
+                         /* Let the ref on the inodes that are already present
+                          * in inode table still be held so that they don't get
+@@ -655,6 +654,7 @@ shard_common_resolve_shards (call_frame_t *frame, xlator_t *this,
+                                                                 shard_idx_iter);
+                         }
+                         UNLOCK(&priv->lock);
++                        shard_idx_iter++;
+ 
+                          continue;
+                 } else {
+-- 
+1.8.3.1
+

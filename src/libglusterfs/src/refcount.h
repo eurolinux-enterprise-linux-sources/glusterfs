@@ -26,7 +26,7 @@
 
 typedef void (*gf_ref_release_t)(void *data);
 
-struct _gf_ref_t {
+struct _gf_ref {
 #ifdef REFCOUNT_NEEDS_LOCK
         gf_lock_t          lk;      /* lock for atomically adjust cnt */
 #endif
@@ -35,14 +35,14 @@ struct _gf_ref_t {
         gf_ref_release_t   release; /* cleanup when cnt == 0 */
         void              *data;    /* parameter passed to release() */
 };
-typedef struct _gf_ref_t gf_ref_t;
+typedef struct _gf_ref gf_ref_t;
 
 
 /* _gf_ref_get -- increase the refcount
  *
  * @return: greater then 0 when a reference was taken, 0 when not
  */
-unsigned int
+void *
 _gf_ref_get (gf_ref_t *ref);
 
 /* _gf_ref_put -- decrease the refcount
@@ -84,20 +84,20 @@ _gf_ref_init (gf_ref_t *ref, gf_ref_release_t release, void *data);
  *
  * Sets the refcount to 1.
  */
-#define GF_REF_INIT(p, d)   (_gf_ref_init (&p->_ref, d, p))
+#define GF_REF_INIT(p, d)   _gf_ref_init (&(p)->_ref, (gf_ref_release_t) d, p)
 
 /* GF_REF_GET -- increase the refcount of a GF_REF_DECL structure
  *
  * @return: greater then 0 when a reference was taken, 0 when not
  */
-#define GF_REF_GET(p)       (_gf_ref_get (&p->_ref))
+#define GF_REF_GET(p)       _gf_ref_get (&(p)->_ref)
 
 /* GF_REF_PUT -- decrease the refcount of a GF_REF_DECL structure
  *
  * @return: greater then 0 when there are still references, 0 when cleanup
  *          should be done, gf_ref_release_t is called on cleanup
  */
-#define GF_REF_PUT(p)       (_gf_ref_put (&p->_ref))
+#define GF_REF_PUT(p)       _gf_ref_put (&(p)->_ref)
 
 
 #endif /* _REFCOUNT_H */

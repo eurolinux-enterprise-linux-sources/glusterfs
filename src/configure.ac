@@ -1,4 +1,4 @@
-dnl  Copyright (c) 2006-2012 Red Hat, Inc. <http://www.redhat.com>
+dnl  Copyright (c) 2006-2016 Red Hat, Inc. <http://www.redhat.com>
 dnl  This file is part of GlusterFS.
 dnl
 dnl  This file is licensed to you under your choice of the GNU Lesser
@@ -33,7 +33,7 @@ if libtool --help 2>&1 | grep -q quiet; then
    AM_LIBTOOLFLAGS="--quiet";
 fi
 
-AC_CONFIG_HEADERS([config.h])
+AC_CONFIG_HEADERS([config.h site.h])
 
 AC_CONFIG_FILES([Makefile
                 libglusterfs/Makefile
@@ -41,8 +41,11 @@ AC_CONFIG_FILES([Makefile
                 libglusterfs/src/gfdb/Makefile
                 geo-replication/src/peer_gsec_create
                 geo-replication/src/peer_mountbroker
+                geo-replication/src/peer_mountbroker.py
+                geo-replication/src/peer_georep-sshkey.py
                 extras/peer_add_secret_pub
-                geo-replication/syncdaemon/configinterface.py
+                geo-replication/syncdaemon/conf.py
+                extras/snap_scheduler/conf.py
                 glusterfsd/Makefile
                 glusterfsd/src/Makefile
                 rpc/Makefile
@@ -55,6 +58,7 @@ AC_CONFIG_FILES([Makefile
                 rpc/rpc-transport/rdma/src/Makefile
                 rpc/xdr/Makefile
                 rpc/xdr/src/Makefile
+                rpc/xdr/gen/Makefile
                 xlators/Makefile
                 xlators/meta/Makefile
                 xlators/meta/src/Makefile
@@ -97,7 +101,13 @@ AC_CONFIG_FILES([Makefile
                 xlators/performance/open-behind/src/Makefile
                 xlators/performance/md-cache/Makefile
                 xlators/performance/md-cache/src/Makefile
+                xlators/performance/decompounder/Makefile
+                xlators/performance/decompounder/src/Makefile
+                xlators/performance/nl-cache/Makefile
+                xlators/performance/nl-cache/src/Makefile
                 xlators/debug/Makefile
+                xlators/debug/sink/Makefile
+                xlators/debug/sink/src/Makefile
                 xlators/debug/trace/Makefile
                 xlators/debug/trace/src/Makefile
                 xlators/debug/error-gen/Makefile
@@ -135,22 +145,18 @@ AC_CONFIG_FILES([Makefile
                 xlators/features/quota/src/Makefile
                 xlators/features/marker/Makefile
                 xlators/features/marker/src/Makefile
+                xlators/features/selinux/Makefile
+                xlators/features/selinux/src/Makefile
                 xlators/features/read-only/Makefile
                 xlators/features/read-only/src/Makefile
                 xlators/features/compress/Makefile
                 xlators/features/compress/src/Makefile
-                xlators/features/mac-compat/Makefile
-                xlators/features/mac-compat/src/Makefile
                 xlators/features/quiesce/Makefile
                 xlators/features/quiesce/src/Makefile
                 xlators/features/barrier/Makefile
                 xlators/features/barrier/src/Makefile
-                xlators/features/ganesha/Makefile
-                xlators/features/ganesha/src/Makefile
                 xlators/features/index/Makefile
                 xlators/features/index/src/Makefile
-                xlators/features/protect/Makefile
-                xlators/features/protect/src/Makefile
                 xlators/features/gfid-access/Makefile
                 xlators/features/gfid-access/src/Makefile
                 xlators/features/trash/Makefile
@@ -167,6 +173,8 @@ AC_CONFIG_FILES([Makefile
                 xlators/features/bit-rot/src/Makefile
                 xlators/features/bit-rot/src/stub/Makefile
                 xlators/features/bit-rot/src/bitd/Makefile
+                xlators/features/leases/Makefile
+                xlators/features/leases/src/Makefile
                 xlators/playground/Makefile
                 xlators/playground/template/Makefile
                 xlators/playground/template/src/Makefile
@@ -175,8 +183,6 @@ AC_CONFIG_FILES([Makefile
                 xlators/encryption/rot-13/src/Makefile
                 xlators/encryption/crypt/Makefile
                 xlators/encryption/crypt/src/Makefile
-                xlators/features/qemu-block/Makefile
-                xlators/features/qemu-block/src/Makefile
                 xlators/system/Makefile
                 xlators/system/posix-acl/Makefile
                 xlators/system/posix-acl/src/Makefile
@@ -191,18 +197,20 @@ AC_CONFIG_FILES([Makefile
                 doc/Makefile
                 extras/Makefile
                 extras/glusterd.vol
+                extras/cliutils/Makefile
                 extras/init.d/Makefile
                 extras/init.d/glusterd.plist
                 extras/init.d/glusterd-Debian
                 extras/init.d/glusterd-Redhat
                 extras/init.d/glusterd-FreeBSD
                 extras/init.d/glusterd-SuSE
-                extras/ganesha/Makefile
-                extras/ganesha/config/Makefile
-                extras/ganesha/scripts/Makefile
-                extras/ganesha/ocf/Makefile
+                extras/init.d/glustereventsd-Debian
+                extras/init.d/glustereventsd-Redhat
+                extras/init.d/glustereventsd-FreeBSD
                 extras/systemd/Makefile
                 extras/systemd/glusterd.service
+                extras/systemd/glustereventsd.service
+                extras/systemd/glusterfssharedstorage.service
                 extras/run-gluster.tmpfiles
                 extras/benchmarking/Makefile
                 extras/hook-scripts/Makefile
@@ -211,10 +219,15 @@ AC_CONFIG_FILES([Makefile
                 extras/ocf/volume
                 extras/LinuxRPM/Makefile
                 extras/geo-rep/Makefile
+                extras/geo-rep/schedule_georep.py
                 extras/firewalld/Makefile
                 extras/hook-scripts/add-brick/Makefile
                 extras/hook-scripts/add-brick/pre/Makefile
                 extras/hook-scripts/add-brick/post/Makefile
+                extras/hook-scripts/create/Makefile
+                extras/hook-scripts/create/post/Makefile
+                extras/hook-scripts/delete/Makefile
+                extras/hook-scripts/delete/pre/Makefile
                 extras/hook-scripts/start/Makefile
                 extras/hook-scripts/start/post/Makefile
                 extras/hook-scripts/set/Makefile
@@ -225,6 +238,10 @@ AC_CONFIG_FILES([Makefile
                 extras/hook-scripts/reset/post/Makefile
                 extras/hook-scripts/reset/pre/Makefile
                 extras/snap_scheduler/Makefile
+                events/Makefile
+                events/src/Makefile
+                events/src/eventsapiconf.py
+                events/tools/Makefile
                 contrib/fuse-util/Makefile
                 contrib/umountd/Makefile
                 contrib/uuid/uuid_types.h
@@ -245,7 +262,11 @@ AC_CONFIG_FILES([Makefile
 		tools/glusterfind/src/tool.conf
 	        tools/glusterfind/glusterfind
 	        tools/glusterfind/Makefile
-                tools/glusterfind/src/Makefile])
+                tools/glusterfind/src/Makefile
+                tools/setgfid2path/Makefile
+                tools/setgfid2path/src/Makefile
+                tests/basic/fuse/Makefile
+                tests/basic/gfapi/Makefile])
 
 AC_CANONICAL_HOST
 
@@ -266,10 +287,20 @@ AC_ARG_ENABLE([debug],
                              [Enable debug build options.]))
 if test "x$enable_debug" = "xyes"; then
         BUILD_DEBUG=yes
-        CFLAGS="${CFLAGS} -g -O0 -DDEBUG"
+        CFLAGS="${CFLAGS} -g -rdynamic -O0 -DDEBUG"
 else
         BUILD_DEBUG=no
-        CFLAGS="${CFLAGS} -g -O2"
+        CFLAGS="${CFLAGS} -g -rdynamic"
+fi
+
+AC_ARG_ENABLE([privport_tracking],
+              AC_HELP_STRING([--disable-privport_tracking],
+                             [Disable internal tracking of privileged ports.]))
+TRACK_PRIVPORTS="yes"
+if test x"$enable_privport_tracking" = x"no"; then
+        TRACK_PRIVPORTS="no"
+        AC_DEFINE(GF_DISABLE_PRIVPORT_TRACKING, 1,
+                  [Disable internal tracking of privileged ports.])
 fi
 
 case $host_os in
@@ -283,6 +314,15 @@ case $host_os in
     fi
     ;;
 esac
+
+# --enable-valgrind prevents calling dlclose(), this leaks memory
+AC_ARG_ENABLE([valgrind],
+              AC_HELP_STRING([--enable-valgrind],
+                             [Enable valgrind for resource leak debugging.]))
+if test "x$enable_valgrind" = "xyes"; then
+        AC_DEFINE(RUN_WITH_VALGRIND, 1, [define if all processes should run under valgrind])
+fi
+
 
 AC_ARG_WITH([previous-options],
         [AS_HELP_STRING([--with-previous-options],
@@ -311,10 +351,11 @@ AC_ARG_WITH(mountutildir,
 AC_SUBST(mountutildir)
 
 AC_ARG_WITH(systemddir,
-            [  --with-systemddir=DIR systemd service files in DIR @<:@/usr/lib/systemd/system@:>@],
+            [  --with-systemddir=DIR systemd service files in DIR @<:@PREFIX/lib/systemd/system@:>@],
             [systemddir=$withval],
-            [systemddir='/usr/lib/systemd/system'])
+            [systemddir='${prefix}/lib/systemd/system'])
 AC_SUBST(systemddir)
+AM_CONDITIONAL([USE_SYSTEMD], test [ -d '/usr/lib/systemd/system' ])
 
 AC_ARG_WITH(initdir,
             [  --with-initdir=DIR init.d scripts in DIR @<:@/etc/init.d@:>@],
@@ -398,17 +439,21 @@ AC_SUBST(MATH_LIB)
 
 dnl use libuuid.so or fall-back to contrib/uuid
 PKG_CHECK_MODULES([UUID], [uuid],
-        [HAVE_LIBUUID=yes
+        [have_uuid=yes
          AC_DEFINE(HAVE_LIBUUID, 1, [have libuuid.so])
          PKGCONFIG_UUID=uuid],
-        [HAVE_LIBUUID=no
+        [have_uuid=no
          UUID_CFLAGS='-I$(CONTRIBDIR)/uuid'])
-AM_CONDITIONAL([HAVE_LIBUUID], [test x$HAVE_LIBUUID = xyes])
+AM_CONDITIONAL([HAVE_LIBUUID], [test x$have_uuid = xyes])
 
 dnl older version of libuuid (from e2fsprogs) require including uuid/uuid.h
 saved_CFLAGS=${CFLAGS}
 CFLAGS="${CFLAGS} ${UUID_CFLAGS}"
-AC_CHECK_HEADER([uuid.h], [], [AC_CHECK_HEADER([uuid/uuid.h])])
+AC_CHECK_HEADER([uuid.h], [], [AC_CHECK_HEADER([uuid/uuid.h])],
+                [[#if HAVE_UUID_H
+                  #include <uuid.h>
+                  #endif
+                ]])
 CFLAGS=${saved_CFLAGS}
 if test "x$ac_cv_header_uuid_uuid_h" = "xyes"; then
     UUID_CFLAGS="${UUID_CFLAGS} -I$(pkg-config --variable=includedir uuid)/uuid"
@@ -421,8 +466,8 @@ AC_SUBST(PKGCONFIG_UUID)
 
 dnl NetBSD does not support POSIX ACLs :-(
 case $host_os in
-     *netbsd*)
-        AC_MSG_WARN([NetBSD does not support POSIX ACLs... disabling them])
+     *netbsd* | darwin*)
+        AC_MSG_WARN([platform does not support POSIX ACLs... disabling them])
         ACL_LIBS=''
         USE_POSIX_ACLS='0'
         BUILD_POSIX_ACLS='no'
@@ -461,6 +506,8 @@ AC_SUBST(ZLIB_LIBS)
 
 AC_CHECK_HEADERS([linux/falloc.h])
 
+AC_CHECK_HEADERS([linux/oom.h], AC_DEFINE(HAVE_LINUX_OOM_H, 1, [have linux/oom.h]))
+
 dnl Mac OS X does not have spinlocks
 AC_CHECK_FUNC([pthread_spin_init], [have_spinlock=yes])
 if test "x${have_spinlock}" = "xyes"; then
@@ -489,6 +536,51 @@ AC_CHECK_FUNC([umount2], [have_umount2=yes])
 if test "x${have_umount2}" = "xyes"; then
    AC_DEFINE(HAVE_UMOUNT2, 1, [define if found umount2])
 fi
+
+dnl Check Python Availability
+have_python=no
+AM_PATH_PYTHON(,, [:])
+if test "$PYTHON" != ":"; then
+   have_python=yes
+fi
+
+dnl Check if version matches that we require
+PYTHONDEV_CPPFLAGS=
+PYTHONDEV_LDFLAGS=
+BUILD_PYTHON_SITE_PACKAGES=
+BUILD_PYTHON_INC=
+BUILD_PYTHON_LIB=
+have_python2=no
+have_Python_h=no
+
+if echo $PYTHON_VERSION | grep -q ^2; then
+   have_python2=yes
+
+   dnl Use pkg-config to get runtime search patch missing from ${PYTHON}-config
+   dnl Just do "true" on failure so that configure does not bail out
+   PKG_CHECK_MODULES([PYTHON], "python-$PYTHON_VERSION",,true)
+
+   PYTHONDEV_CPPFLAGS="`${PYTHON}-config --cflags`"
+   dnl Edit out the flags that are not required or are conflicting
+   PYTHONDEV_CPPFLAGS=`echo ${PYTHONDEV_CPPFLAGS} | sed -e 's/-Wp,-D_FORTIFY_SOURCE=[[0-9]]//g'`
+
+   dnl Find python libs at user configured libdir and also "lib" under prefix
+   PYTHONDEV_LDFLAGS="${PYTHON_LIBS} -L`${PYTHON}-config --prefix`/lib -L`${PYTHON}-config --prefix`/$libdir `${PYTHON}-config --ldflags`"
+
+   BUILD_PYTHON_SITE_PACKAGES=${pythondir}
+   BUILD_PYTHON_INC=`$PYTHON -c "import sys; from distutils import sysconfig; sys.stdout.write(sysconfig.get_python_inc())" 2>/dev/null`
+   BUILD_PYTHON_LIB=python$PYTHON_VERSION
+
+   dnl Now check for python header using the include path obtained above
+   AC_CHECK_HEADERS([${BUILD_PYTHON_INC}/Python.h],[have_Python_h=yes],[])
+fi
+
+AC_SUBST(PYTHONDEV_CPPFLAGS)
+AC_SUBST(PYTHONDEV_LDFLAGS)
+AC_SUBST(BUILD_PYTHON_SITE_PACKAGES)
+AC_SUBST(BUILD_PYTHON_INC)
+AC_SUBST(BUILD_PYTHON_LIB)
+
 
 # FUSE section
 AC_ARG_ENABLE([fuse-client],
@@ -541,7 +633,12 @@ AM_CONDITIONAL([ENABLE_BD_XLATOR], [test x$BUILD_BD_XLATOR = xyes])
 dnl check for old openssl
 AC_CHECK_LIB([crypto], CRYPTO_THREADID_set_callback, [AC_DEFINE([HAVE_CRYPTO_THREADID], [1], [use new OpenSSL functions])])
 
-AC_CHECK_LIB([ssl], TLSv1_2_method, [AC_DEFINE([HAVE_TLSV1_2_METHOD], [1], [use new OpenSSL functions])])
+AC_CHECK_LIB([ssl], TLS_method, [HAVE_OPENSSL_1_1="yes"], [HAVE_OPENSSL_1_1="no"])
+if test "x$HAVE_OPENSSL_1_1" = "xyes"; then
+    AC_DEFINE([HAVE_TLS_METHOD], [1], [Using OpenSSL-1.1 TLS_method])
+else
+    AC_CHECK_LIB([ssl], TLSv1_2_method, [AC_DEFINE([HAVE_TLSV1_2_METHOD], [1], [Using OpenSSL-1.0 TLSv1_2_method])])
+fi
 
 # start encryption/crypt section
 
@@ -581,33 +678,6 @@ fi
 
 AC_SUBST(FUSERMOUNT_SUBDIR)
 #end FUSERMOUNT section
-
-# QEMU_BLOCK section
-
-AC_ARG_ENABLE([qemu-block],
-                AC_HELP_STRING([--enable-qemu-block],
-                        [Build QEMU Block formats translator]))
-
-if test "x$enable_qemu_block" != "xno"; then
-  PKG_CHECK_MODULES([GLIB], [glib-2.0],
-                    [HAVE_GLIB_2="yes"],
-                      [HAVE_GLIB_2="no"])
-fi
-
-if test "x$enable_qemu_block" = "xyes" -a "x$HAVE_GLIB_2" = "xno"; then
-   echo "QEMU Block formats translator requires libglib-2.0, but missing."
-   exit 1
-fi
-
-BUILD_QEMU_BLOCK=no
-if test "x${enable_qemu_block}" != "xno" -a "x${HAVE_GLIB_2}" = "xyes"; then
-  BUILD_QEMU_BLOCK=yes
-  AC_DEFINE(HAVE_QEMU_BLOCK, 1, [define if libglib-2.0 library found and QEMU
-                               Block translator enabled])
-fi
-
-
-# end QEMU_BLOCK section
 
 # EPOLL section
 AC_ARG_ENABLE([epoll],
@@ -720,6 +790,37 @@ fi
 AC_SUBST(GEOREP_EXTRAS_SUBDIR)
 AM_CONDITIONAL(USE_GEOREP, test "x$enable_georeplication" != "xno")
 
+# Events section
+AC_ARG_ENABLE([events],
+              AC_HELP_STRING([--disable-events],
+                             [Do not install Events components]))
+
+BUILD_EVENTS=no
+EVENTS_ENABLED=0
+EVENTS_SUBDIR=
+if test "x$enable_events" != "xno"; then
+  EVENTS_SUBDIR=events
+  EVENTS_ENABLED=1
+
+  BUILD_EVENTS="yes"
+
+  if test "x$have_python2" = "xno"; then
+     if test "x$enable_events" = "xyes"; then
+        AC_MSG_ERROR([python 2.x packages required. exiting..])
+     fi
+     AC_MSG_WARN([python 2.x not found, disabling events])
+     EVENTS_SUBDIR=
+     EVENTS_ENABLED=0
+     BUILD_EVENTS="no"
+  else
+    AC_DEFINE(USE_EVENTS, 1, [define if events enabled])
+  fi
+fi
+AC_SUBST(EVENTS_ENABLED)
+AC_SUBST(EVENTS_SUBDIR)
+AM_CONDITIONAL([BUILD_EVENTS], [test x$BUILD_EVENTS = xyes])
+# end Events section
+
 # CDC xlator - check if libz is present if so enable HAVE_LIB_Z
 BUILD_CDC=yes
 PKG_CHECK_MODULES([ZLIB], [zlib >= 1.2.0],,
@@ -744,7 +845,7 @@ AC_ARG_ENABLE([firewalld],
               [BUILD_FIREWALLD="${enableval}"], [BUILD_FIREWALLD="no"])
 
 if test "x${BUILD_FIREWALLD}" = "xyes"; then
-        if !(which firewalld 1>/dev/null 2>&1) ; then
+        if !(test -d /usr/lib/firewalld/services 1>/dev/null 2>&1) ; then
                 BUILD_FIREWALLD="no (firewalld not installed)"
         fi
 fi
@@ -758,50 +859,26 @@ AC_ARG_ENABLE([tiering],
                              [Disable data classification/tiering]),
               [BUILD_GFDB="${enableval}"], [BUILD_GFDB="yes"])
 
-if test "x${BUILD_GFDB}" = "xyes"; then
-  PKG_CHECK_MODULES([SQLITE], [sqlite3],
-                    AC_DEFINE(USE_GFDB, 1),
-                    AC_MSG_ERROR([pass --disable-tiering to build without sqlite]))
-else
-  AC_DEFINE(USE_GFDB, 0, [no sqlite, gfdb is disabled])
-fi
+case $host_os in
+  darwin*)
+    SQLITE_LIBS="-lsqlite3"
+    AC_CHECK_HEADERS([sqlite3.h], AC_DEFINE(USE_GFDB, 1))
+    ;;
+  *)
+    if test "x${BUILD_GFDB}" = "xyes"; then
+      PKG_CHECK_MODULES([SQLITE], [sqlite3],
+                        AC_DEFINE(USE_GFDB, 1),
+                        AC_MSG_ERROR([pass --disable-tiering to build without sqlite]))
+    else
+      AC_DEFINE(USE_GFDB, 0, [no sqlite, gfdb is disabled])
+    fi
+    ;;
+esac
 
 AC_SUBST(SQLITE_CFLAGS)
 AC_SUBST(SQLITE_LIBS)
 AM_CONDITIONAL(BUILD_GFDB, test "x${BUILD_GFDB}" = "xyes")
 AM_CONDITIONAL(USE_GFDB, test "x${BUILD_GFDB}" = "xyes")
-
-# check for systemtap/dtrace
-BUILD_SYSTEMTAP=no
-AC_MSG_CHECKING([whether to include systemtap tracing support])
-AC_ARG_ENABLE([systemtap],
-              [AS_HELP_STRING([--enable-systemtap],
-              [Enable inclusion of systemtap trace support])],
-              [ENABLE_SYSTEMTAP="${enableval}"], [ENABLE_SYSTEMTAP="def"])
-
-AM_CONDITIONAL([ENABLE_SYSTEMTAP], [test "x${ENABLE_SYSTEMTAP}" = "xyes"])
-AC_MSG_RESULT(${ENABLE_SYSTEMTAP})
-
-if test "x${ENABLE_SYSTEMTAP}" != "xno"; then
-    AC_CHECK_PROG(DTRACE, dtrace, "yes", "no")
-    AC_CHECK_HEADER([sys/sdt.h], [SDT_H_FOUND="yes"],
-                    [SDT_H_FOUND="no"])
-fi
-
-if test "x${ENABLE_SYSTEMTAP}" = "xyes"; then
-    if test "x${DTRACE}" = "xno"; then
-        AC_MSG_ERROR([dtrace not found])
-    elif test "$x{SDT_H_FOUND}" = "xno"; then
-        AC_MSG_ERROR([systemtap support needs sys/sdt.h header])
-    fi
-fi
-
-if test "x${DTRACE}" = "xyes" -a "x${SDT_H_FOUND}" = "xyes"; then
-    AC_MSG_CHECKING([x"${DTRACE}"xy"${SDT_H_FOUND}"y])
-    AC_DEFINE([HAVE_SYSTEMTAP], [1], [Define to 1 if using  probes.])
-    BUILD_SYSTEMTAP=yes
-fi
-# end of systemtap/dtrace
 
 # xml-output
 AC_ARG_ENABLE([xml-output],
@@ -829,6 +906,21 @@ else
     BUILD_XML_OUTPUT="no"
 fi
 # end of xml-output
+
+dnl SELinux feature enablement
+case $host_os in
+  linux*)
+    AC_ARG_ENABLE([selinux],
+                  AC_HELP_STRING([--disable-selinux],
+                                 [Disable SELinux features]),
+                  [USE_SELINUX="${enableval}"], [USE_SELINUX="yes"])
+    ;;
+  *)
+    USE_SELINUX=no
+    ;;
+esac
+AM_CONDITIONAL(USE_SELINUX, test "x${USE_SELINUX}" = "xyes")
+dnl end of SELinux feature enablement
 
 AC_CHECK_HEADERS([execinfo.h], [have_backtrace=yes])
 if test "x${have_backtrace}" = "xyes"; then
@@ -887,6 +979,20 @@ AC_SUBST(ARGP_STANDALONE_CPPFLAGS)
 AC_SUBST(ARGP_STANDALONE_LDADD)
 AC_SUBST(ARGP_STANDALONE_DIR)
 
+dnl Check for atomic operation support
+AC_CHECK_FUNC([__atomic_load], [have_atomic_builtins])
+if test "x${have_atomic_builtins}" = "xyes"; then
+   AC_DEFINE(HAVE_ATOMIC_BUILTINS, 1, [define if __atomic_*() builtins are available])
+fi
+AC_SUBST(HAVE_ATOMIC_BUILTINS)
+
+dnl __sync_*() will not be needed if __atomic_*() is available
+AC_CHECK_FUNC([__sync_fetch_and_add], [have_sync_builtins])
+if test "x${have_sync_builtind}" = "xyes"; then
+   AC_DEFINE(HAVE_SYNC_BUILTINS, 1, [define if __sync_*() builtins are available])
+fi
+AC_SUBST(HAVE_SYNC_BUILTINS)
+
 AC_CHECK_HEADER([malloc.h], AC_DEFINE(HAVE_MALLOC_H, 1, [have malloc.h]))
 
 AC_CHECK_FUNC([llistxattr], [have_llistxattr=yes])
@@ -908,6 +1014,21 @@ AC_CHECK_FUNC([posix_fallocate], [have_posix_fallocate=yes])
 if test "x${have_posix_fallocate}" = "xyes"; then
    AC_DEFINE(HAVE_POSIX_FALLOCATE, 1, [define if posix_fallocate exists])
 fi
+
+BUILD_NANOSECOND_TIMESTAMPS=no
+AC_CHECK_FUNC([utimensat], [have_utimensat=yes])
+if test "x${have_utimensat}" = "xyes"; then
+   BUILD_NANOSECOND_TIMESTAMPS=yes
+   AC_DEFINE(HAVE_UTIMENSAT, 1, [define if utimensat exists])
+fi
+
+OLD_CFLAGS=${CFLAGS}
+CFLAGS="-D_GNU_SOURCE"
+AC_CHECK_DECL([SEEK_HOLE], , , [#include <unistd.h>])
+if test "x${ac_cv_have_decl_SEEK_HOLE}" = "xyes"; then
+   AC_DEFINE(HAVE_SEEK_HOLE, 1, [define if SEEK_HOLE is available])
+fi
+CFLAGS=${OLD_CFLAGS}
 
 # Check the distribution where you are compiling glusterfs on
 
@@ -946,15 +1067,18 @@ fi
 
 dnl check for gcc -Werror=implicit-function-declaration
 saved_CFLAGS=$CFLAGS
+saved_GF_CFLAGS=$GF_CFLAGS
 CFLAGS="-Werror=implicit-function-declaration"
+GF_CFLAGS="-Werror=implicit-function-declaration"
 AC_MSG_CHECKING([whether $CC accepts -Werror=implicit-function-declaration])
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM()], [cc_werror_implicit=yes], [cc_werror_implicit=no])
 echo $cc_werror_implicit
 if test "x$cc_werror_implicit" = "xno"; then
     CFLAGS="$saved_CFLAGS"
+    GF_CFLAGS="$saved_GF_CFLAGS"
 else
     CFLAGS="$saved_CFLAGS $CFLAGS"
-    GF_CFLAGS="$GF_CFLAGS $CFLAGS"
+    GF_CFLAGS="$saved_GF_CFLAGS $GF_CFLAGS"
 fi
 
 dnl clang is mostly GCC-compatible, but its version is much lower,
@@ -994,18 +1118,22 @@ old_prefix=$prefix
 if test "x$prefix" = xNONE; then
 	prefix=$ac_default_prefix
 fi
-GLUSTERFS_LIBEXECDIR="$(eval echo $prefix)/libexec/glusterfs"
+old_exec_prefix=$exec_prefix
+if test "x$exec_prefix" = xNONE; then
+	exec_prefix="$(eval echo $prefix)"
+fi
+GLUSTERFS_LIBEXECDIR="$(eval echo $libexecdir)/glusterfs"
 GLUSTERFSD_MISCDIR="$(eval echo $prefix)/var/lib/misc/glusterfsd"
 prefix=$old_prefix
+exec_prefix=$old_exec_prefix
 
 ### Dirty hacky stuff to make LOCALSTATEDIR work
 if test "x$prefix" = xNONE; then
    test $localstatedir = '${prefix}/var' && localstatedir=$ac_default_prefix/var
    localstatedir=/var
-   LOCALSTATEDIR=$(eval echo ${localstatedir})
-else
-   LOCALSTATEDIR=$(eval echo ${localstatedir})
 fi
+localstatedir="$(eval echo ${localstatedir})"
+LOCALSTATEDIR=$localstatedir
 
 old_prefix=$prefix
 if test "x$prefix" = xNONE; then
@@ -1090,6 +1218,35 @@ case $host_os in
         ;;
 esac
 
+# Default value for sbindir
+prefix_temp=$prefix
+exec_prefix_temp=$exec_prefix
+
+test "${prefix}" = "NONE" && prefix="${ac_default_prefix}"
+test "${exec_prefix}" = "NONE" && exec_prefix='${prefix}'
+sbintemp="${sbindir}"
+eval sbintemp=\"${sbintemp}\"
+eval sbintemp=\"${sbintemp}\"
+SBIN_DIR=${sbintemp}
+
+sysconfdirtemp="${sysconfdir}"
+eval sysconfdirtemp=\"${sysconfdirtemp}\"
+SYSCONF_DIR=${sysconfdirtemp}
+
+# Eval two times to expand fully. First eval replaces $exec_prefix into $prefix
+# Second eval will expand $prefix
+build_python_site_packages_temp="${BUILD_PYTHON_SITE_PACKAGES}"
+eval build_python_site_packages_temp=\"${build_python_site_packages_temp}\"
+eval build_python_site_packages_temp=\"${build_python_site_packages_temp}\"
+BUILD_PYTHON_SITE_PACKAGES_EXPANDED=${build_python_site_packages_temp}
+
+prefix=$prefix_temp
+exec_prefix=$exec_prefix_temp
+
+AC_SUBST(SBIN_DIR)
+AC_SUBST(SYSCONF_DIR)
+AC_SUBST(BUILD_PYTHON_SITE_PACKAGES_EXPANDED)
+
 # lazy umount emulation
 UMOUNTD_SUBDIR=""
 if test "x${GF_HOST_OS}" != "xGF_LINUX_HOST_OS" ; then
@@ -1097,15 +1254,21 @@ if test "x${GF_HOST_OS}" != "xGF_LINUX_HOST_OS" ; then
 fi
 AC_SUBST(UMOUNTD_SUBDIR)
 
-# enable/disable QEMU
-AM_CONDITIONAL([ENABLE_QEMU_BLOCK], [test x$BUILD_QEMU_BLOCK = xyes])
-
 
 # enable debug section
 AC_ARG_ENABLE([debug],
               AC_HELP_STRING([--enable-debug],
                              [Enable debug build options.]))
 
+AC_ARG_ENABLE([mempool],
+              AC_HELP_STRING([--disable-mempool],
+                             [Disable the Gluster memory pooler.]))
+
+USE_MEMPOOL="yes"
+if test "x$enable_mempool" = "xno"; then
+        USE_MEMPOOL="no"
+        AC_DEFINE(GF_DISABLE_MEMPOOL, 1, [Disable the Gluster memory pooler.])
+fi
 
 # syslog section
 AC_ARG_ENABLE([syslog],
@@ -1144,99 +1307,67 @@ if test "x$LIBAIO" != "x"; then
    BUILD_LIBAIO=yes
 fi
 
-# glupy section
+dnl glupy section
 BUILD_GLUPY=no
-have_python2=no
-have_Python_h=no
 
-AM_PATH_PYTHON()
-if echo $PYTHON_VERSION | grep ^2; then
-  have_python2=yes
-fi
+AC_ARG_ENABLE([glupy], AS_HELP_STRING([--enable-glupy], [build glupy]))
+if test "x$enable_glupy" != "xno"; then enable_glupy=yes; fi
 
-# Save flags before testing python
-saved_CFLAGS=$CFLAGS
-saved_CPPFLAGS=$CPPFLAGS
-saved_LDFLAGS=$LDFLAGS
+if test "x$enable_glupy" = "xyes"; then
+    GLUPY_SUBDIR=glupy
+    GLUPY_SUBDIR_MAKEFILE=xlators/features/glupy/Makefile
+    GLUPY_SUBDIR_SRC_MAKEFILE=xlators/features/glupy/src/Makefile
 
-# Use pkg-config to get runtime search patch missing from ${PYTHON}-config
-# Just do "true" on failure so that configure does not bail out
-PKG_CHECK_MODULES([PYTHON], "python-$PYTHON_VERSION",,true)
-CFLAGS="`${PYTHON}-config --cflags`"
-CPPFLAGS=$CFLAGS
-LDFLAGS="${PYTHON_LIBS} -L`${PYTHON}-config --prefix`/lib -L`${PYTHON}-config --prefix`/$libdir `${PYTHON}-config --ldflags`"
-
-AC_CHECK_HEADERS([python$PYTHON_VERSION/Python.h],[have_Python_h=yes],[])
-AC_ARG_ENABLE([glupy],
-              AS_HELP_STRING([--enable-glupy],
-                             [build glupy]))
-case x$enable_glupy in
-   xyes)
-      if test "x$have_python2" = "xyes" -a "x$have_Python_h" = "xyes"; then
-        BUILD_GLUPY=yes
-        PYTHONDEV_CFLAGS="$CFLAGS"
-        PYTHONDEV_CPPFLAGS="$CPPFLAGS"
-        PYTHONDEV_LDFLAGS="$LDFLAGS"
-        AC_SUBST(PYTHONDEV_CFLAGS)
-        AC_SUBST(PYTHONDEV_CPPFLAGS)
-        AC_SUBST(PYTHONDEV_LDFLAGS)
-      else
-        AC_MSG_ERROR([glupy requires python-devel/python-dev package and python2.x])
-      fi
-      ;;
-   xno)
-      ;;
-   *)
-      if test "x$have_python2" = "xyes" -a "x$have_Python_h" = "xyes"; then
-        BUILD_GLUPY=yes
-        PYTHONDEV_CFLAGS="$CFLAGS"
-        PYTHONDEV_CPPFLAGS="$CPPFLAGS"
-        PYTHONDEV_LDFLAGS="$LDFLAGS"
-        AC_SUBST(PYTHONDEV_CFLAGS)
-        AC_SUBST(PYTHONDEV_CPPFLAGS)
-        AC_SUBST(PYTHONDEV_LDFLAGS)
-      else
+    if test "x$have_python2" = "xyes" -a "x$have_Python_h" = "xyes"; then
+        case $host_os in
+            darwin*)
+                BUILD_GLUPY=no
+                ;;
+            *)
+                BUILD_GLUPY=yes
+                ;;
+        esac
+    else
         AC_MSG_WARN([
         ---------------------------------------------------------------------------------
-         cannot build glupy. python 2.x and python-devel/python-dev package are required.
+        cannot build glupy. python 2.x and python-devel/python-dev package are required.
         ---------------------------------------------------------------------------------])
-      fi
-      ;;
-esac
-# Restore flags
-CFLAGS=$saved_CFLAGS
-CPPFLAGS=$saved_CPPFLAGS
-LDFLAGS=$saved_LDFLAGS
+    fi
 
-case $host_os in
-     darwin*)
-        BUILD_GLUPY=no
-        ;;
-esac
+    if test "x$BUILD_GLUPY" = "xyes"; then
 
-if test "x$BUILD_GLUPY" = "xyes"; then
-   BUILD_PYTHON_SITE_PACKAGES=`$PYTHON -c 'from distutils.sysconfig import get_python_lib; print(get_python_lib())'`
-   BUILD_PYTHON_INC=`$PYTHON -c "from distutils import sysconfig; print sysconfig.get_python_inc()"`
-   BUILD_PYTHON_LIB=python$PYTHON_VERSION
-   GLUPY_SUBDIR=glupy
-   GLUPY_SUBDIR_MAKEFILE=xlators/features/glupy/Makefile
-   GLUPY_SUBDIR_SRC_MAKEFILE=xlators/features/glupy/src/Makefile
-   echo "building glupy with -isystem $BUILD_PYTHON_INC -l $BUILD_PYTHON_LIB"
-   AC_SUBST(BUILD_PYTHON_SITE_PACKAGES)
-   AC_SUBST(BUILD_PYTHON_INC)
-   AC_SUBST(BUILD_PYTHON_LIB)
-   AC_SUBST(GLUPY_SUBDIR)
-   AC_SUBST(GLUPY_SUBDIR_MAKEFILE)
-   AC_SUBST(GLUPY_SUBDIR_SRC_MAKEFILE)
+        echo "building glupy with -isystem $BUILD_PYTHON_INC -l $BUILD_PYTHON_LIB"
+
+        AC_SUBST(GLUPY_SUBDIR)
+        AC_SUBST(GLUPY_SUBDIR_MAKEFILE)
+        AC_SUBST(GLUPY_SUBDIR_SRC_MAKEFILE)
+    fi
 fi
-# end glupy section
+dnl end glupy section
+
+dnl gnfs section
+BUILD_GNFS="no"
+AC_ARG_ENABLE([gnfs],
+              AC_HELP_STRING([--enable-gnfs],
+                             [Enable legacy gnfs server xlator.]))
+if test "x$enable_gnfs" = "xyes"; then
+    BUILD_GNFS="yes"
+fi
+AM_CONDITIONAL([BUILD_GNFS], [test x$BUILD_GNFS = xyes])
+dnl end gnfs section
 
 dnl Check for userspace-rcu
-PKG_CHECK_MODULES([URCU], [liburcu-bp])
+PKG_CHECK_MODULES([URCU], [liburcu-bp], [],
+  [AC_CHECK_HEADERS([urcu-bp.h],
+     [URCU_LIBS='-lurcu-bp'],
+     AC_MSG_ERROR([liburcu-bp not found]))])
 PKG_CHECK_MODULES([URCU_CDS], [liburcu-cds >= 0.8], [],
   [PKG_CHECK_MODULES([URCU_CDS], [liburcu-cds >= 0.7],
-    [AC_DEFINE(URCU_0_7, 1, [Define if liburcu 0.7 is found])],
-    [AC_MSG_ERROR([liburcu >= 0.7 required])])])
+    [AC_DEFINE(URCU_OLD, 1, [Define if liburcu 0.6 or 0.7 is found])],
+    [AC_CHECK_HEADERS([urcu/cds.h],
+      [AC_DEFINE(URCU_OLD, 1, [Define if liburcu 0.6 or 0.7 is found])
+       URCU_CDS_LIBS='-lurcu-cds'],
+      [AC_MSG_ERROR([liburcu-cds not found])])])])
 
 BUILD_UNITTEST="no"
 AC_ARG_ENABLE([cmocka],
@@ -1272,8 +1403,97 @@ AC_SUBST(UNITTEST_LDFLAGS)
 AC_SUBST(CFLAGS)
 # end enable debug section
 
+# EC dynamic code generation section
+
+EC_DYNAMIC_SUPPORT="none"
+EC_DYNAMIC_ARCH="none"
+
+AC_ARG_ENABLE([ec-dynamic],
+              AC_HELP_STRING([--disable-ec-dynamic],
+                             [Disable all dynamic code generation extensions for EC module]))
+
+AC_ARG_ENABLE([ec-dynamic-intel],
+              AC_HELP_STRING([--disable-ec-dynamic-intel],
+                             [Disable all INTEL dynamic code generation extensions for EC module]))
+
+AC_ARG_ENABLE([ec-dynamic-arm],
+              AC_HELP_STRING([--disable-ec-dynamic-arm],
+                             [Disable all ARM dynamic code generation extensions for EC module]))
+
+AC_ARG_ENABLE([ec-dynamic-x64],
+              AC_HELP_STRING([--disable-ec-dynamic-x64],
+                             [Disable dynamic INTEL x64 code generation for EC module]))
+
+AC_ARG_ENABLE([ec-dynamic-sse],
+              AC_HELP_STRING([--disable-ec-dynamic-sse],
+                             [Disable dynamic INTEL SSE code generation for EC module]))
+
+AC_ARG_ENABLE([ec-dynamic-avx],
+              AC_HELP_STRING([--disable-ec-dynamic-avx],
+                             [Disable dynamic INTEL AVX code generation for EC module]))
+
+AC_ARG_ENABLE([ec-dynamic-neon],
+              AC_HELP_STRING([--disable-ec-dynamic-neon],
+                             [Disable dynamic ARM NEON code generation for EC module]))
+
+if test "x$enable_ec_dynamic" != "xno"; then
+  case $host in
+    x86_64*)
+      if test "x$enable_ec_dynamic_intel" != "xno"; then
+        if test "x$enable_ec_dynamic_x64" != "xno"; then
+          EC_DYNAMIC_SUPPORT="$EC_DYNAMIC_SUPPORT x64"
+          AC_DEFINE(USE_EC_DYNAMIC_X64, 1, [Defined if using dynamic INTEL x64 code])
+        fi
+        if test "x$enable_ec_dynamic_sse" != "xno"; then
+          EC_DYNAMIC_SUPPORT="$EC_DYNAMIC_SUPPORT sse"
+          AC_DEFINE(USE_EC_DYNAMIC_SSE, 1, [Defined if using dynamic INTEL SSE code])
+        fi
+        if test "x$enable_ec_dynamic_avx" != "xno"; then
+          EC_DYNAMIC_SUPPORT="$EC_DYNAMIC_SUPPORT avx"
+          AC_DEFINE(USE_EC_DYNAMIC_AVX, 1, [Defined if using dynamic INTEL AVX code])
+        fi
+
+        if test "x$EC_DYNAMIC_SUPPORT" != "xnone"; then
+          EC_DYNAMIC_ARCH="intel"
+        fi
+      fi
+      ;;
+    arm*)
+      if test "x$enable_ec_dynamic_arm" != "xno"; then
+        if test "x$enable_ec_dynamic_neon" != "xno"; then
+          EC_DYNAMIC_SUPPORT="$EC_DYNAMIC_SUPPORT neon"
+          AC_DEFINE(USE_EC_DYNAMIC_NEON, 1, [Defined if using dynamic ARM NEON code])
+        fi
+
+        if test "x$EC_DYNAMIC_SUPPORT" != "xnone"; then
+          EC_DYNAMIC_ARCH="arm"
+        fi
+      fi
+      ;;
+  esac
+
+  EC_DYNAMIC_SUPPORT="${EC_DYNAMIC_SUPPORT#none }"
+fi
+
+AM_CONDITIONAL([ENABLE_EC_DYNAMIC_INTEL], [test "x$EC_DYNAMIC_ARCH" = "xintel"])
+AM_CONDITIONAL([ENABLE_EC_DYNAMIC_ARM], [test "x$EC_DYNAMIC_ARCH" = "xarm"])
+
+AM_CONDITIONAL([ENABLE_EC_DYNAMIC_X64], [test "x${EC_DYNAMIC_SUPPORT##*x64*}" = "x"])
+AM_CONDITIONAL([ENABLE_EC_DYNAMIC_SSE], [test "x${EC_DYNAMIC_SUPPORT##*sse*}" = "x"])
+AM_CONDITIONAL([ENABLE_EC_DYNAMIC_AVX], [test "x${EC_DYNAMIC_SUPPORT##*avx*}" = "x"])
+AM_CONDITIONAL([ENABLE_EC_DYNAMIC_NEON], [test "x${EC_DYNAMIC_SUPPORT##*neon*}" = "x"])
+
+AC_SUBST(USE_EC_DYNAMIC_X64)
+AC_SUBST(USE_EC_DYNAMIC_SSE)
+AC_SUBST(USE_EC_DYNAMIC_AVX)
+AC_SUBST(USE_EC_DYNAMIC_NEON)
+
+# end EC dynamic code generation section
+
 dnl libglusterfs.so uses math functions
 GF_LDADD="${GF_LDADD} ${MATH_LIB}"
+
+GF_XLATOR_DEFAULT_LDFLAGS='-avoid-version -export-symbols $(top_srcdir)/xlators/xlator.sym'
 
 AC_SUBST(GF_HOST_OS)
 AC_SUBST(GF_CFLAGS)
@@ -1285,12 +1505,13 @@ AC_SUBST(RLLIBS)
 AC_SUBST(LIBAIO)
 AC_SUBST(AM_MAKEFLAGS)
 AC_SUBST(AM_LIBTOOLFLAGS)
+AC_SUBST(GF_XLATOR_DEFAULT_LDFLAGS)
 
 CONTRIBDIR='$(top_srcdir)/contrib'
 AC_SUBST(CONTRIBDIR)
 
 GF_CPPDEFINES='-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -D$(GF_HOST_OS)'
-GF_CPPINCLUDES='-I$(top_srcdir)/libglusterfs/src'
+GF_CPPINCLUDES='-include $(top_builddir)/config.h -include $(top_builddir)/site.h -I$(top_srcdir)/libglusterfs/src -I$(top_builddir)/libglusterfs/src'
 GF_CPPFLAGS="$GF_CPPFLAGS $GF_CPPDEFINES $GF_CPPINCLUDES"
 AC_SUBST([GF_CPPFLAGS])
 
@@ -1354,15 +1575,20 @@ echo "readline             : $BUILD_READLINE"
 echo "georeplication       : $BUILD_SYNCDAEMON"
 echo "Linux-AIO            : $BUILD_LIBAIO"
 echo "Enable Debug         : $BUILD_DEBUG"
-## echo "systemtap            : $BUILD_SYSTEMTAP"
 echo "Block Device xlator  : $BUILD_BD_XLATOR"
 echo "glupy                : $BUILD_GLUPY"
 echo "Use syslog           : $USE_SYSLOG"
 echo "XML output           : $BUILD_XML_OUTPUT"
-echo "QEMU Block formats   : $BUILD_QEMU_BLOCK"
 echo "Encryption xlator    : $BUILD_CRYPT_XLATOR"
 echo "Unit Tests           : $BUILD_UNITTEST"
+echo "Track priv ports     : $TRACK_PRIVPORTS"
 echo "POSIX ACLs           : $BUILD_POSIX_ACLS"
 echo "Data Classification  : $BUILD_GFDB"
+echo "SELinux features     : $USE_SELINUX"
 echo "firewalld-config     : $BUILD_FIREWALLD"
+echo "Events               : $BUILD_EVENTS"
+echo "EC dynamic support   : $EC_DYNAMIC_SUPPORT"
+echo "Use memory pools     : $USE_MEMPOOL"
+echo "Nanosecond m/atimes  : $BUILD_NANOSECOND_TIMESTAMPS"
+echo "Legacy gNFS server   : $BUILD_GNFS"
 echo

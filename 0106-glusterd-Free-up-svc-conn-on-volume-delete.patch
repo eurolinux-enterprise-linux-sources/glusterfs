@@ -1,0 +1,42 @@
+From 86db0fb0570a0a0f2b55280c9d1be581f16ab312 Mon Sep 17 00:00:00 2001
+From: moagrawa <moagrawa@redhat.com>
+Date: Fri, 15 Dec 2017 17:21:59 +0530
+Subject: [PATCH 106/128] glusterd: Free up svc->conn on volume delete
+
+Daemons snapd/tierd is maintained on per volume basis and on a volume
+delete we should destroy the rpc connection established for the same.
+
+Change-Id: Id1440e39da07b990fdb9b207df18da04b1ca8014
+> BUG: 1522775
+> Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+> Reviewed on https://review.gluster.org/18957
+> (Cherry pick from commit 36ce4c614a3391043a3417aa061d0aa16e60b2d3)
+
+BUG: 1512470
+Signed-off-by: moagrawa <moagrawa@redhat.com>
+Change-Id: I21426893bc1c326bf51cb83a68b0ae3c31ea5b9a
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126230
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 1434d64..4b53898 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -1029,6 +1029,10 @@ glusterd_volinfo_delete (glusterd_volinfo_t *volinfo)
+         if (volinfo->rebal.dict)
+                 dict_unref (volinfo->rebal.dict);
+ 
++        /* Destroy the connection object for per volume svc daemons */
++        glusterd_conn_term (&volinfo->snapd.svc.conn);
++        glusterd_conn_term (&volinfo->tierd.svc.conn);
++
+         gf_store_handle_destroy (volinfo->quota_conf_shandle);
+         gf_store_handle_destroy (volinfo->shandle);
+         gf_store_handle_destroy (volinfo->node_state_shandle);
+-- 
+1.8.3.1
+

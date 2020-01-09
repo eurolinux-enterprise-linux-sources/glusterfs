@@ -1,5 +1,7 @@
 
-EXTRA_DIST = glusterd-Debian glusterd-FreeBSD glusterd-Redhat glusterd-SuSE glusterd.plist rhel5-load-fuse.modules
+EXTRA_DIST = glusterd-Debian glusterd-FreeBSD glusterd-Redhat glusterd-SuSE \
+	glusterd.plist rhel5-load-fuse.modules \
+	glustereventsd-FreeBSD glustereventsd-Redhat glustereventsd-Debian
 
 CLEANFILES =
 
@@ -9,14 +11,21 @@ LAUNCHD_DIR = @launchddir@
 
 $(GF_DISTRIBUTION):
 	@if [ ! -d $(SYSTEMD_DIR) ]; then \
-		$(MKDIR_P) $(DESTDIR)$(INIT_DIR); \
+		$(mkdir_p) $(DESTDIR)$(INIT_DIR); \
 		$(INSTALL_PROGRAM) glusterd-$(GF_DISTRIBUTION) $(DESTDIR)$(INIT_DIR)/glusterd; \
 	fi
+
+if BUILD_EVENTS
+	@if [ ! -d $(SYSTEMD_DIR) ]; then \
+		$(mkdir_p) $(DESTDIR)$(INIT_DIR); \
+		$(INSTALL_PROGRAM) glustereventsd-$(GF_DISTRIBUTION) $(DESTDIR)$(INIT_DIR)/glustereventsd; \
+	fi
+endif
 
 install-exec-local: $(GF_DISTRIBUTION)
 
 install-data-local:
 if GF_DARWIN_HOST_OS
-	$(MKDIR_P) $(DESTDIR)$(LAUNCHD_DIR)
+	$(mkdir_p) $(DESTDIR)$(LAUNCHD_DIR)
 	$(INSTALL_PROGRAM) glusterd.plist $(DESTDIR)$(LAUNCHD_DIR)/org.gluster.glusterd.plist
 endif

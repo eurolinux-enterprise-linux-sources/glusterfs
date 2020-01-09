@@ -1,0 +1,959 @@
+From c098fa2192eedbfaad7ac850d0fb152695a3becf Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Sun, 25 Jun 2017 16:34:01 +0530
+Subject: [PATCH 079/128] cluster/ec: Allow parallel writes in EC if possible
+
+Problem:
+Ec at the moment sends one modification fop after another, so if some of
+the disks become slow, for a while then the wait time for the writes that
+are waiting in the queue becomes really bad.
+
+Fix:
+Allow parallel writes when possible. For this we need to make 3 changes.
+1) Each fop now has range parameters they will be updating.
+2) Xattrop is changed to handle parallel xattrop requests where some
+   would be modifying just dirty xattr.
+3) Fops that refer to size now take locks and update the locks.
+
+upstream patch: https://review.gluster.org/#/c/17625/
+>Fixes #251
+>Change-Id: Ibc3c15372f91bbd6fb617f0d99399b3149fa64b2
+>Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+
+Note:
+There is a delta compared to upstream patch:
+
+For "disperse.parallel-writes" key we have reverted the flags
+to reflect old type. Added New OP_VERSION for 3.13.0 in globals.h.
+
+BUG: 1459101
+Change-Id: Ibc3c15372f91bbd6fb617f0d99399b3149fa64b2
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/123561
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Ashish Pandey <aspandey@redhat.com>
+---
+ libglusterfs/src/globals.h                      |   4 +-
+ xlators/cluster/ec/src/ec-common.c              | 191 ++++++++++++++++--------
+ xlators/cluster/ec/src/ec-common.h              |  10 +-
+ xlators/cluster/ec/src/ec-dir-read.c            |   6 +-
+ xlators/cluster/ec/src/ec-generic.c             |  12 +-
+ xlators/cluster/ec/src/ec-inode-read.c          |  22 ++-
+ xlators/cluster/ec/src/ec-inode-write.c         | 124 +++++++++------
+ xlators/cluster/ec/src/ec-types.h               |   8 +-
+ xlators/cluster/ec/src/ec.c                     |  51 ++++---
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |   6 +
+ 10 files changed, 291 insertions(+), 143 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index bd7cffe..c627cfe 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -43,7 +43,7 @@
+  */
+ #define GD_OP_VERSION_MIN  1 /* MIN is the fresh start op-version, mostly
+                                 should not change */
+-#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_12_2 /* MAX VERSION is the maximum
++#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_13_0 /* MAX VERSION is the maximum
+                                                   count in VME table, should
+                                                   keep changing with
+                                                   introduction of newer
+@@ -101,6 +101,8 @@
+ 
+ #define GD_OP_VERSION_3_12_2   31202 /* Op-version for GlusterFS 3.12.2 */
+ 
++#define GD_OP_VERSION_3_13_0   31300 /* Op-version for GlusterFS 3.13.0 */
++
+ #include "xlator.h"
+ 
+ /* THIS */
+diff --git a/xlators/cluster/ec/src/ec-common.c b/xlators/cluster/ec/src/ec-common.c
+index 6963907..f86ecf8 100644
+--- a/xlators/cluster/ec/src/ec-common.c
++++ b/xlators/cluster/ec/src/ec-common.c
+@@ -25,6 +25,40 @@
+                                    EC_FLAG_WAITING_DATA_DIRTY |\
+                                    EC_FLAG_WAITING_METADATA_DIRTY)
+ 
++off_t
++ec_range_end_get (off_t fl_start, size_t fl_size)
++{
++        off_t fl_end = 0;
++        switch (fl_size) {
++        case 0:
++                return fl_start;
++        case LLONG_MAX: /*Infinity*/
++                return LLONG_MAX;
++        default:
++                fl_end = fl_start + fl_size - 1;
++                if (fl_end < 0) /*over-flow*/
++                        return LLONG_MAX;
++                else
++                        return fl_end;
++        }
++}
++
++static gf_boolean_t
++ec_is_range_conflict (ec_lock_link_t *l1, ec_lock_link_t *l2)
++{
++        return ((l1->fl_end >= l2->fl_start) && (l2->fl_end >= l1->fl_start));
++}
++
++static gf_boolean_t
++ec_lock_conflict (ec_lock_link_t *l1, ec_lock_link_t *l2)
++{
++        if ((l1->fop->flags & EC_FLAG_LOCK_SHARED) &&
++            (l2->fop->flags & EC_FLAG_LOCK_SHARED))
++                return _gf_false;
++
++        return ec_is_range_conflict (l1, l2);
++}
++
+ uint32_t
+ ec_select_first_by_read_policy (ec_t *ec, ec_fop_data_t *fop)
+ {
+@@ -724,7 +758,7 @@ int32_t ec_lock_compare(ec_lock_t * lock1, ec_lock_t * lock2)
+ }
+ 
+ void ec_lock_insert(ec_fop_data_t *fop, ec_lock_t *lock, uint32_t flags,
+-                    loc_t *base)
++                    loc_t *base, off_t fl_start, size_t fl_size)
+ {
+     ec_lock_link_t *link;
+ 
+@@ -758,12 +792,15 @@ void ec_lock_insert(ec_fop_data_t *fop, ec_lock_t *lock, uint32_t flags,
+     link->update[EC_DATA_TXN] = (flags & EC_UPDATE_DATA) != 0;
+     link->update[EC_METADATA_TXN] = (flags & EC_UPDATE_META) != 0;
+     link->base = base;
++    link->fl_start = fl_start;
++    link->fl_end = ec_range_end_get (fl_start, fl_size);
+ 
+     lock->refs_pending++;
+ }
+ 
+ void ec_lock_prepare_inode_internal(ec_fop_data_t *fop, loc_t *loc,
+-                                    uint32_t flags, loc_t *base)
++                                    uint32_t flags, loc_t *base,
++                                    off_t fl_start, size_t fl_size)
+ {
+     ec_lock_t *lock = NULL;
+     ec_inode_t *ctx;
+@@ -824,16 +861,17 @@ void ec_lock_prepare_inode_internal(ec_fop_data_t *fop, loc_t *loc,
+     ctx->inode_lock = lock;
+ 
+ insert:
+-    ec_lock_insert(fop, lock, flags, base);
++    ec_lock_insert(fop, lock, flags, base, fl_start, fl_size);
+ update_query:
+     lock->query |= (flags & EC_QUERY_INFO) != 0;
+ unlock:
+     UNLOCK(&loc->inode->lock);
+ }
+ 
+-void ec_lock_prepare_inode(ec_fop_data_t *fop, loc_t *loc, uint32_t flags)
++void ec_lock_prepare_inode(ec_fop_data_t *fop, loc_t *loc, uint32_t flags,
++                           off_t fl_start, size_t fl_size)
+ {
+-    ec_lock_prepare_inode_internal(fop, loc, flags, NULL);
++    ec_lock_prepare_inode_internal(fop, loc, flags, NULL, fl_start, fl_size);
+ }
+ 
+ void ec_lock_prepare_parent_inode(ec_fop_data_t *fop, loc_t *loc, loc_t *base,
+@@ -859,12 +897,13 @@ void ec_lock_prepare_parent_inode(ec_fop_data_t *fop, loc_t *loc, loc_t *base,
+             base = NULL;
+     }
+ 
+-    ec_lock_prepare_inode_internal(fop, &tmp, flags, base);
++    ec_lock_prepare_inode_internal(fop, &tmp, flags, base, 0, LLONG_MAX);
+ 
+     loc_wipe(&tmp);
+ }
+ 
+-void ec_lock_prepare_fd(ec_fop_data_t *fop, fd_t *fd, uint32_t flags)
++void ec_lock_prepare_fd(ec_fop_data_t *fop, fd_t *fd, uint32_t flags,
++                        off_t fl_start, size_t fl_size)
+ {
+     loc_t loc;
+     int32_t err;
+@@ -880,7 +919,7 @@ void ec_lock_prepare_fd(ec_fop_data_t *fop, fd_t *fd, uint32_t flags)
+         return;
+     }
+ 
+-    ec_lock_prepare_inode_internal(fop, &loc, flags, NULL);
++    ec_lock_prepare_inode_internal(fop, &loc, flags, NULL, fl_start, fl_size);
+ 
+     loc_wipe(&loc);
+ }
+@@ -1314,17 +1353,16 @@ out:
+     }
+ }
+ 
+-gf_boolean_t ec_get_inode_size(ec_fop_data_t *fop, inode_t *inode,
+-                               uint64_t *size)
++gf_boolean_t
++__ec_get_inode_size(ec_fop_data_t *fop, inode_t *inode,
++                    uint64_t *size)
+ {
+     ec_inode_t *ctx;
+     gf_boolean_t found = _gf_false;
+ 
+-    LOCK(&inode->lock);
+-
+     ctx = __ec_inode_get(inode, fop->xl);
+     if (ctx == NULL) {
+-        goto unlock;
++        goto out;
+     }
+ 
+     if (ctx->have_size) {
+@@ -1332,23 +1370,35 @@ gf_boolean_t ec_get_inode_size(ec_fop_data_t *fop, inode_t *inode,
+         found = _gf_true;
+     }
+ 
+-unlock:
++out:
++    return found;
++}
++
++gf_boolean_t
++ec_get_inode_size(ec_fop_data_t *fop, inode_t *inode,
++                  uint64_t *size)
++{
++    gf_boolean_t found = _gf_false;
++
++    LOCK(&inode->lock);
++    {
++            found = __ec_get_inode_size (fop, inode, size);
++    }
+     UNLOCK(&inode->lock);
+ 
+     return found;
+ }
+ 
+-gf_boolean_t ec_set_inode_size(ec_fop_data_t *fop, inode_t *inode,
+-                               uint64_t size)
++gf_boolean_t
++__ec_set_inode_size(ec_fop_data_t *fop, inode_t *inode,
++                    uint64_t size)
+ {
+     ec_inode_t *ctx;
+     gf_boolean_t found = _gf_false;
+ 
+-    LOCK(&inode->lock);
+-
+     ctx = __ec_inode_get(inode, fop->xl);
+     if (ctx == NULL) {
+-        goto unlock;
++        goto out;
+     }
+ 
+     /* Normal fops always have ctx->have_size set. However self-heal calls this
+@@ -1363,8 +1413,21 @@ gf_boolean_t ec_set_inode_size(ec_fop_data_t *fop, inode_t *inode,
+ 
+     found = _gf_true;
+ 
+-unlock:
+-    UNLOCK(&inode->lock);
++out:
++    return found;
++}
++
++gf_boolean_t
++ec_set_inode_size(ec_fop_data_t *fop, inode_t *inode,
++                  uint64_t size)
++{
++    gf_boolean_t found = _gf_false;
++
++    LOCK (&inode->lock);
++    {
++            found = __ec_set_inode_size (fop, inode, size);
++    }
++    UNLOCK (&inode->lock);
+ 
+     return found;
+ }
+@@ -1471,34 +1534,47 @@ ec_lock_update_fd(ec_lock_t *lock, ec_fop_data_t *fop)
+     }
+ }
+ 
++static gf_boolean_t
++ec_link_has_lock_conflict (ec_lock_link_t *link, struct list_head *owners)
++{
++        ec_lock_link_t *owner_link = NULL;
++        ec_t           *ec = link->fop->xl->private;
++
++        if (!ec->parallel_writes)
++                return _gf_true;
++
++        list_for_each_entry (owner_link, owners, owner_list) {
++                if (ec_lock_conflict (owner_link, link))
++                        return _gf_true;
++        }
++        return _gf_false;
++}
++
+ static void
+ ec_lock_wake_shared(ec_lock_t *lock, struct list_head *list)
+ {
+     ec_fop_data_t *fop;
+     ec_lock_link_t *link;
+-    gf_boolean_t exclusive = _gf_false;
++    gf_boolean_t conflict = _gf_false;
+ 
+-    while (!exclusive && !list_empty(&lock->waiting)) {
++    while (!conflict && !list_empty(&lock->waiting)) {
+         link = list_entry(lock->waiting.next, ec_lock_link_t, wait_list);
+         fop = link->fop;
+ 
+         /* If lock is not acquired, at most one fop can be assigned as owner.
+          * The following fops will need to wait in the lock->waiting queue
+          * until the lock has been fully acquired. */
+-        exclusive = !lock->acquired;
++        conflict = !lock->acquired;
+ 
+         /* If the fop is not shareable, only this fop can be assigned as owner.
+          * Other fops will need to wait until this one finishes. */
+-        if ((fop->flags & EC_FLAG_LOCK_SHARED) == 0) {
+-            exclusive = _gf_true;
+-
+-            /* Avoid other requests to be assigned as owners. */
+-            lock->exclusive = 1;
++        if (ec_link_has_lock_conflict (link, &lock->owners)) {
++            conflict = _gf_true;
+         }
+ 
+         /* If only one fop is allowed, it can be assigned as the owner of the
+          * lock only if there weren't any other owner. */
+-        if (exclusive && !list_empty(&lock->owners)) {
++        if (conflict && !list_empty(&lock->owners)) {
+             break;
+         }
+ 
+@@ -1565,9 +1641,7 @@ void ec_lock_acquired(ec_lock_link_t *link)
+     lock->acquired = _gf_true;
+ 
+     ec_lock_update_fd(lock, fop);
+-    if ((fop->flags & EC_FLAG_LOCK_SHARED) != 0) {
+-        ec_lock_wake_shared(lock, &list);
+-    }
++    ec_lock_wake_shared(lock, &list);
+ 
+     UNLOCK(&lock->loc.inode->lock);
+ 
+@@ -1678,11 +1752,11 @@ ec_lock_assign_owner(ec_lock_link_t *link)
+         /* We are trying to acquire a lock that has an unlock timer active.
+          * This means that the lock must be idle, i.e. no fop can be in the
+          * owner, waiting or frozen lists. It also means that the lock cannot
+-         * have been marked as being released (this is done without timers)
+-         * and it must not be exclusive. There should only be one owner
+-         * reference, but it's possible that some fops are being prepared to
+-         * use this lock. */
+-        GF_ASSERT ((lock->exclusive == 0) && (lock->refs_owners == 1) &&
++         * have been marked as being released (this is done without timers).
++         * There should only be one owner reference, but it's possible that
++         * some fops are being prepared to use this lock.
++         */
++        GF_ASSERT ((lock->refs_owners == 1) &&
+                    list_empty(&lock->owners) && list_empty(&lock->waiting));
+ 
+         /* We take the timer_link before cancelling the timer, since a
+@@ -1730,13 +1804,15 @@ ec_lock_assign_owner(ec_lock_link_t *link)
+         lock->timer = NULL;
+     }
+ 
+-    lock->exclusive |= (fop->flags & EC_FLAG_LOCK_SHARED) == 0;
+-
+     if (!list_empty(&lock->owners)) {
+         /* There are other owners of this lock. We can only take ownership if
+-         * the lock is already acquired and can be shared. Otherwise we need
+-         * to wait. */
+-        if (!lock->acquired || (lock->exclusive != 0)) {
++         * the lock is already acquired and doesn't have conflict with existing
++         * owners, or waiters(to prevent starvation).
++         * Otherwise we need to wait.
++         */
++        if (!lock->acquired ||
++            ec_link_has_lock_conflict (link, &lock->owners) ||
++            ec_link_has_lock_conflict (link, &lock->waiting)) {
+             ec_trace("LOCK_QUEUE_WAIT", fop, "lock=%p", lock);
+ 
+             list_add_tail(&link->wait_list, &lock->waiting);
+@@ -1814,10 +1890,7 @@ ec_lock_next_owner(ec_lock_link_t *link, ec_cbk_data_t *cbk,
+     }
+     ec_lock_update_good(lock, fop);
+ 
+-    lock->exclusive -= (fop->flags & EC_FLAG_LOCK_SHARED) == 0;
+-    if (list_empty(&lock->owners)) {
+-        ec_lock_wake_shared(lock, &list);
+-    }
++    ec_lock_wake_shared(lock, &list);
+ 
+     UNLOCK(&lock->loc.inode->lock);
+ 
+@@ -1871,11 +1944,11 @@ ec_lock_unfreeze(ec_lock_link_t *link)
+     lock->acquired = _gf_false;
+ 
+     /* We are unfreezing a lock. This means that the lock has already been
+-     * released. In this state it shouldn't be exclusive nor have a pending
+-     * timer nor have any owner, and the waiting list should be empty. Only
+-     * the frozen list can contain some fop. */
+-    GF_ASSERT((lock->exclusive == 0) && (lock->timer == NULL) &&
+-              list_empty(&lock->waiting) && list_empty(&lock->owners));
++     * released. In this state it shouldn't have a pending timer nor have any
++     * owner, and the waiting list should be empty. Only the frozen list can
++     * contain some fop. */
++    GF_ASSERT((lock->timer == NULL) && list_empty(&lock->waiting) &&
++              list_empty(&lock->owners));
+ 
+     /* We move all frozen fops to the waiting list. */
+     list_splice_init(&lock->frozen, &lock->waiting);
+@@ -2008,7 +2081,7 @@ ec_update_size_version(ec_lock_link_t *link, uint64_t *version,
+     ec_fop_data_t *fop;
+     ec_lock_t *lock;
+     ec_inode_t *ctx;
+-    dict_t * dict;
++    dict_t *dict = NULL;
+     uintptr_t   update_on = 0;
+ 
+     int32_t err = -ENOMEM;
+@@ -2198,12 +2271,12 @@ ec_unlock_timer_del(ec_lock_link_t *link)
+                 ec_trace("UNLOCK_DELAYED", link->fop, "lock=%p", lock);
+ 
+                 /* The unlock timer has expired without anyone cancelling it.
+-                 * This means that it shouldn't have any owner, and the
+-                 * waiting and frozen lists should be empty. It shouldn't have
+-                 * been marked as release nor be exclusive either. It must have
+-                 * only one owner reference, but there can be fops being
+-                 * prepared though. */
+-                GF_ASSERT(!lock->release && (lock->exclusive == 0) &&
++                 * This means that it shouldn't have any owner, and the waiting
++                 * and frozen lists should be empty.  It must have only one
++                 * owner reference, but there can be fops being prepared
++                 * though.
++                 * */
++                GF_ASSERT(!lock->release &&
+                           (lock->refs_owners == 1) &&
+                           list_empty(&lock->owners) &&
+                           list_empty(&lock->waiting) &&
+diff --git a/xlators/cluster/ec/src/ec-common.h b/xlators/cluster/ec/src/ec-common.h
+index 8f5d20a..1a947cc 100644
+--- a/xlators/cluster/ec/src/ec-common.h
++++ b/xlators/cluster/ec/src/ec-common.h
+@@ -91,18 +91,24 @@ ec_fop_prepare_answer(ec_fop_data_t *fop, gf_boolean_t ro);
+ gf_boolean_t
+ ec_cbk_set_error(ec_cbk_data_t *cbk, int32_t error, gf_boolean_t ro);
+ 
+-void ec_lock_prepare_inode(ec_fop_data_t *fop, loc_t *loc, uint32_t flags);
++void ec_lock_prepare_inode(ec_fop_data_t *fop, loc_t *loc, uint32_t flags,
++                           off_t fl_start, size_t fl_size);
+ void ec_lock_prepare_parent_inode(ec_fop_data_t *fop, loc_t *loc, loc_t *base,
+                                   uint32_t flags);
+-void ec_lock_prepare_fd(ec_fop_data_t *fop, fd_t *fd, uint32_t flags);
++void ec_lock_prepare_fd(ec_fop_data_t *fop, fd_t *fd, uint32_t flags,
++                        off_t fl_start, size_t fl_size);
+ void ec_lock(ec_fop_data_t * fop);
+ void ec_lock_reuse(ec_fop_data_t *fop);
+ void ec_unlock(ec_fop_data_t * fop);
+ 
+ gf_boolean_t ec_get_inode_size(ec_fop_data_t *fop, inode_t *inode,
+                                uint64_t *size);
++gf_boolean_t __ec_get_inode_size(ec_fop_data_t *fop, inode_t *inode,
++                                 uint64_t *size);
+ gf_boolean_t ec_set_inode_size(ec_fop_data_t *fop, inode_t *inode,
+                                uint64_t size);
++gf_boolean_t __ec_set_inode_size(ec_fop_data_t *fop, inode_t *inode,
++                                 uint64_t size);
+ void ec_clear_inode_info(ec_fop_data_t *fop, inode_t *inode);
+ 
+ void ec_flush_size_version(ec_fop_data_t * fop);
+diff --git a/xlators/cluster/ec/src/ec-dir-read.c b/xlators/cluster/ec/src/ec-dir-read.c
+index 4fe82e3..48afe54 100644
+--- a/xlators/cluster/ec/src/ec-dir-read.c
++++ b/xlators/cluster/ec/src/ec-dir-read.c
+@@ -141,7 +141,8 @@ int32_t ec_manager_opendir(ec_fop_data_t * fop, int32_t state)
+             /* Fall through */
+ 
+         case EC_STATE_LOCK:
+-            ec_lock_prepare_inode(fop, &fop->loc[0], EC_QUERY_INFO);
++            ec_lock_prepare_inode(fop, &fop->loc[0], EC_QUERY_INFO, 0,
++                                  LLONG_MAX);
+             ec_lock(fop);
+ 
+             return EC_STATE_DISPATCH;
+@@ -432,7 +433,8 @@ int32_t ec_manager_readdir(ec_fop_data_t * fop, int32_t state)
+                 }
+                 fop->mask &= 1ULL << idx;
+             } else {
+-                    ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO);
++                    ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO, 0,
++                                       LLONG_MAX);
+                     ec_lock(fop);
+             }
+ 
+diff --git a/xlators/cluster/ec/src/ec-generic.c b/xlators/cluster/ec/src/ec-generic.c
+index ddb90ce..a5f986e 100644
+--- a/xlators/cluster/ec/src/ec-generic.c
++++ b/xlators/cluster/ec/src/ec-generic.c
+@@ -85,7 +85,7 @@ int32_t ec_manager_flush(ec_fop_data_t * fop, int32_t state)
+     {
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
+-            ec_lock_prepare_fd(fop, fop->fd, 0);
++            ec_lock_prepare_fd(fop, fop->fd, 0, 0, LLONG_MAX);
+             ec_lock(fop);
+ 
+             return EC_STATE_DISPATCH;
+@@ -300,7 +300,7 @@ int32_t ec_manager_fsync(ec_fop_data_t * fop, int32_t state)
+     {
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
+-            ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO);
++            ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO, 0, LLONG_MAX);
+             ec_lock(fop);
+ 
+             return EC_STATE_DISPATCH;
+@@ -501,7 +501,7 @@ int32_t ec_manager_fsyncdir(ec_fop_data_t * fop, int32_t state)
+     {
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
+-            ec_lock_prepare_fd(fop, fop->fd, 0);
++            ec_lock_prepare_fd(fop, fop->fd, 0, 0, LLONG_MAX);
+             ec_lock(fop);
+ 
+             return EC_STATE_DISPATCH;
+@@ -1220,9 +1220,11 @@ int32_t ec_manager_xattrop(ec_fop_data_t * fop, int32_t state)
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
+             if (fop->fd == NULL) {
+-                ec_lock_prepare_inode(fop, &fop->loc[0], EC_UPDATE_META);
++                ec_lock_prepare_inode(fop, &fop->loc[0], EC_UPDATE_META, 0,
++                                      LLONG_MAX);
+             } else {
+-                ec_lock_prepare_fd(fop, fop->fd, EC_UPDATE_META);
++                ec_lock_prepare_fd(fop, fop->fd, EC_UPDATE_META, 0,
++                                   LLONG_MAX);
+             }
+             ec_lock(fop);
+ 
+diff --git a/xlators/cluster/ec/src/ec-inode-read.c b/xlators/cluster/ec/src/ec-inode-read.c
+index 829f47f..33fd7f5 100644
+--- a/xlators/cluster/ec/src/ec-inode-read.c
++++ b/xlators/cluster/ec/src/ec-inode-read.c
+@@ -72,7 +72,8 @@ ec_manager_access(ec_fop_data_t *fop, int32_t state)
+         switch (state) {
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
+-            ec_lock_prepare_inode (fop, &fop->loc[0], EC_QUERY_INFO);
++            ec_lock_prepare_inode (fop, &fop->loc[0], EC_QUERY_INFO, 0,
++                                   LLONG_MAX);
+             ec_lock (fop);
+ 
+             return EC_STATE_DISPATCH;
+@@ -311,9 +312,11 @@ int32_t ec_manager_getxattr(ec_fop_data_t * fop, int32_t state)
+                 (strncmp(fop->str[0], GF_XATTR_CLRLK_CMD,
+                          strlen(GF_XATTR_CLRLK_CMD)) != 0)) {
+                 if (fop->fd == NULL) {
+-                    ec_lock_prepare_inode(fop, &fop->loc[0], EC_QUERY_INFO);
++                    ec_lock_prepare_inode(fop, &fop->loc[0], EC_QUERY_INFO,
++                                          0, LLONG_MAX);
+                 } else {
+-                    ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO);
++                    ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO, 0,
++                                       LLONG_MAX);
+                 }
+                 ec_lock(fop);
+             }
+@@ -1029,7 +1032,8 @@ int32_t ec_manager_readlink(ec_fop_data_t * fop, int32_t state)
+     {
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
+-            ec_lock_prepare_inode (fop, &fop->loc[0], EC_QUERY_INFO);
++            ec_lock_prepare_inode (fop, &fop->loc[0], EC_QUERY_INFO, 0,
++                                   LLONG_MAX);
+             ec_lock (fop);
+             return EC_STATE_DISPATCH;
+ 
+@@ -1364,7 +1368,8 @@ int32_t ec_manager_readv(ec_fop_data_t * fop, int32_t state)
+         /* Fall through */
+ 
+         case EC_STATE_LOCK:
+-            ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO);
++            ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO, fop->offset,
++                               fop->size);
+             ec_lock(fop);
+ 
+             return EC_STATE_DISPATCH;
+@@ -1568,7 +1573,7 @@ int32_t ec_manager_seek(ec_fop_data_t *fop, int32_t state)
+     /* Fall through */
+ 
+     case EC_STATE_LOCK:
+-        ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO);
++        ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO, fop->offset, LLONG_MAX);
+         ec_lock(fop);
+ 
+         return EC_STATE_DISPATCH;
+@@ -1788,9 +1793,10 @@ int32_t ec_manager_stat(ec_fop_data_t * fop, int32_t state)
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
+             if (fop->fd == NULL) {
+-                ec_lock_prepare_inode(fop, &fop->loc[0], EC_QUERY_INFO);
++                ec_lock_prepare_inode(fop, &fop->loc[0], EC_QUERY_INFO, 0,
++                                      LLONG_MAX);
+             } else {
+-                ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO);
++                ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO, 0, LLONG_MAX);
+             }
+             ec_lock(fop);
+ 
+diff --git a/xlators/cluster/ec/src/ec-inode-write.c b/xlators/cluster/ec/src/ec-inode-write.c
+index 3ed9b2a..e6a67cf 100644
+--- a/xlators/cluster/ec/src/ec-inode-write.c
++++ b/xlators/cluster/ec/src/ec-inode-write.c
+@@ -127,10 +127,12 @@ ec_manager_xattr (ec_fop_data_t *fop, int32_t state)
+         case EC_STATE_LOCK:
+                 if (fop->fd == NULL) {
+                         ec_lock_prepare_inode(fop, &fop->loc[0],
+-                                              EC_UPDATE_META | EC_QUERY_INFO);
++                                              EC_UPDATE_META | EC_QUERY_INFO,
++                                              0, LLONG_MAX);
+                 } else {
+                         ec_lock_prepare_fd(fop, fop->fd,
+-                                           EC_UPDATE_META | EC_QUERY_INFO);
++                                           EC_UPDATE_META | EC_QUERY_INFO,
++                                           0, LLONG_MAX);
+                 }
+                 ec_lock(fop);
+ 
+@@ -369,10 +371,11 @@ int32_t ec_manager_setattr(ec_fop_data_t * fop, int32_t state)
+         case EC_STATE_LOCK:
+             if (fop->fd == NULL) {
+                 ec_lock_prepare_inode(fop, &fop->loc[0],
+-                                      EC_UPDATE_META | EC_QUERY_INFO);
++                                      EC_UPDATE_META | EC_QUERY_INFO,
++                                      0, LLONG_MAX);
+             } else {
+-                ec_lock_prepare_fd(fop, fop->fd,
+-                                   EC_UPDATE_META | EC_QUERY_INFO);
++                ec_lock_prepare_fd(fop, fop->fd, EC_UPDATE_META | EC_QUERY_INFO,
++                                   0, LLONG_MAX);
+             }
+             ec_lock(fop);
+ 
+@@ -879,8 +882,8 @@ int32_t ec_manager_fallocate(ec_fop_data_t *fop, int32_t state)
+ 
+     case EC_STATE_LOCK:
+         ec_lock_prepare_fd(fop, fop->fd,
+-                           EC_UPDATE_DATA | EC_UPDATE_META |
+-                           EC_QUERY_INFO);
++                           EC_UPDATE_DATA | EC_UPDATE_META | EC_QUERY_INFO,
++                           fop->offset, fop->size);
+         ec_lock(fop);
+ 
+         return EC_STATE_DISPATCH;
+@@ -898,24 +901,28 @@ int32_t ec_manager_fallocate(ec_fop_data_t *fop, int32_t state)
+                             cbk->count);
+ 
+                 /* This shouldn't fail because we have the inode locked. */
+-                GF_ASSERT(ec_get_inode_size(fop, fop->locks[0].lock->loc.inode,
+-                                        &cbk->iatt[0].ia_size));
++                LOCK(&fop->locks[0].lock->loc.inode->lock);
++                {
++                        GF_ASSERT(__ec_get_inode_size(fop,
++                                                fop->locks[0].lock->loc.inode,
++                                                &cbk->iatt[0].ia_size));
+ 
+-                /*If mode has FALLOC_FL_KEEP_SIZE keep the size */
+-                if (fop->int32 & FALLOC_FL_KEEP_SIZE) {
+-                        cbk->iatt[1].ia_size = cbk->iatt[0].ia_size;
+-                } else if (fop->user_size > cbk->iatt[0].ia_size) {
+-                        cbk->iatt[1].ia_size = fop->user_size;
+-
+-                        /* This shouldn't fail because we have the inode
+-                         * locked. */
+-                        GF_ASSERT(ec_set_inode_size(fop,
+-                                  fop->locks[0].lock->loc.inode,
+-                                            cbk->iatt[1].ia_size));
+-                } else {
+-                        cbk->iatt[1].ia_size = cbk->iatt[0].ia_size;
++                        /*If mode has FALLOC_FL_KEEP_SIZE keep the size */
++                        if (fop->int32 & FALLOC_FL_KEEP_SIZE) {
++                                cbk->iatt[1].ia_size = cbk->iatt[0].ia_size;
++                        } else if (fop->user_size > cbk->iatt[0].ia_size) {
++                                cbk->iatt[1].ia_size = fop->user_size;
++
++                                /* This shouldn't fail because we have the inode
++                                 * locked. */
++                                GF_ASSERT(__ec_set_inode_size(fop,
++                                          fop->locks[0].lock->loc.inode,
++                                                    cbk->iatt[1].ia_size));
++                        } else {
++                                cbk->iatt[1].ia_size = cbk->iatt[0].ia_size;
++                        }
+                 }
+-
++                UNLOCK(&fop->locks[0].lock->loc.inode->lock);
+         }
+ 
+         return EC_STATE_REPORT;
+@@ -1155,11 +1162,11 @@ int32_t ec_manager_truncate(ec_fop_data_t * fop, int32_t state)
+             if (fop->id == GF_FOP_TRUNCATE) {
+                 ec_lock_prepare_inode(fop, &fop->loc[0],
+                                       EC_UPDATE_DATA | EC_UPDATE_META |
+-                                      EC_QUERY_INFO);
++                                      EC_QUERY_INFO, fop->offset, LLONG_MAX);
+             } else {
+                 ec_lock_prepare_fd(fop, fop->fd,
+                                    EC_UPDATE_DATA | EC_UPDATE_META |
+-                                   EC_QUERY_INFO);
++                                   EC_QUERY_INFO, fop->offset, LLONG_MAX);
+             }
+             ec_lock(fop);
+ 
+@@ -1179,6 +1186,9 @@ int32_t ec_manager_truncate(ec_fop_data_t * fop, int32_t state)
+                                 cbk->count);
+ 
+                 /* This shouldn't fail because we have the inode locked. */
++                /* Inode size doesn't need to be updated under locks, because
++                 * conflicting operations won't be in-flight
++                 */
+                 GF_ASSERT(ec_get_inode_size(fop, fop->locks[0].lock->loc.inode,
+                                             &cbk->iatt[0].ia_size));
+                 cbk->iatt[1].ia_size = fop->user_size;
+@@ -1582,6 +1592,9 @@ void ec_writev_start(ec_fop_data_t *fop)
+     ctx = ec_fd_get(fop->fd, fop->xl);
+     if (ctx != NULL) {
+         if ((ctx->flags & O_APPEND) != 0) {
++            /* Appending writes take full locks so size won't change because
++             * of any parallel operations
++             */
+             fop->offset = current;
+         }
+     }
+@@ -1601,6 +1614,10 @@ void ec_writev_start(ec_fop_data_t *fop)
+     }
+     tail = fop->size - fop->user_size - fop->head;
+     if ((tail > 0) && ((fop->head == 0) || (fop->size > ec->stripe_size))) {
++            /* Current locking scheme will make sure the 'current' below will
++             * never decrease while the fop is in progress, so the checks will
++             * work as expected
++             */
+         if (current > fop->offset + fop->head + fop->user_size) {
+             if (ec_make_internal_fop_xdata (&xdata)) {
+                     err = -ENOMEM;
+@@ -1678,14 +1695,32 @@ ec_writev_encode(ec_fop_data_t *fop)
+ int32_t ec_manager_writev(ec_fop_data_t *fop, int32_t state)
+ {
+     ec_cbk_data_t *cbk;
++    ec_fd_t *ctx = NULL;
++    ec_t    *ec = fop->xl->private;
++    off_t fl_start = 0;
++    size_t fl_size = LLONG_MAX;
+ 
+     switch (state)
+     {
+         case EC_STATE_INIT:
+         case EC_STATE_LOCK:
++                ctx = ec_fd_get(fop->fd, fop->xl);
++                if (ctx != NULL) {
++                    if ((ctx->flags & O_APPEND) == 0) {
++                            off_t user_size = 0;
++                            off_t head = 0;
++
++                            fl_start = fop->offset;
++                            user_size = iov_length(fop->vector, fop->int32);
++                            head = ec_adjust_offset_down(ec, &fl_start,
++                                                         _gf_true);
++                            fl_size = user_size + head;
++                            ec_adjust_size_up(ec, &fl_size, _gf_true);
++                    }
++                }
+             ec_lock_prepare_fd(fop, fop->fd,
+                                EC_UPDATE_DATA | EC_UPDATE_META |
+-                               EC_QUERY_INFO);
++                               EC_QUERY_INFO, fl_start, fl_size);
+             ec_lock(fop);
+ 
+             return EC_STATE_DISPATCH;
+@@ -1717,23 +1752,28 @@ int32_t ec_manager_writev(ec_fop_data_t *fop, int32_t state)
+                                 cbk->count);
+ 
+                 /* This shouldn't fail because we have the inode locked. */
+-                GF_ASSERT(ec_get_inode_size(fop, fop->fd->inode,
+-                                            &cbk->iatt[0].ia_size));
+-                cbk->iatt[1].ia_size = cbk->iatt[0].ia_size;
+-                size = fop->offset + fop->head + fop->user_size;
+-                if (size > cbk->iatt[0].ia_size) {
+-                    /* Only update inode size if this is a top level fop.
+-                     * Otherwise this is an internal write and the top
+-                     * level fop should take care of the real inode size.
+-                     */
+-                    if (fop->parent == NULL) {
+-                        /* This shouldn't fail because we have the inode
+-                         * locked. */
+-                        GF_ASSERT(ec_set_inode_size(fop, fop->fd->inode,
+-                                                    size));
+-                    }
+-                    cbk->iatt[1].ia_size = size;
++                LOCK(&fop->fd->inode->lock);
++                {
++                        GF_ASSERT(__ec_get_inode_size(fop, fop->fd->inode,
++                                                    &cbk->iatt[0].ia_size));
++                        cbk->iatt[1].ia_size = cbk->iatt[0].ia_size;
++                        size = fop->offset + fop->head + fop->user_size;
++                        if (size > cbk->iatt[0].ia_size) {
++                           /* Only update inode size if this is a top level fop.
++                            * Otherwise this is an internal write and the top
++                            * level fop should take care of the real inode size.
++                            */
++                            if (fop->parent == NULL) {
++                                /* This shouldn't fail because we have the inode
++                                 * locked. */
++                                GF_ASSERT(__ec_set_inode_size(fop,
++                                                        fop->fd->inode, size));
++                            }
++                            cbk->iatt[1].ia_size = size;
++                        }
+                 }
++                UNLOCK(&fop->fd->inode->lock);
++
+                 if (fop->error == 0) {
+                     cbk->op_ret *= ec->fragments;
+                     if (cbk->op_ret < fop->head) {
+diff --git a/xlators/cluster/ec/src/ec-types.h b/xlators/cluster/ec/src/ec-types.h
+index 5601f96..354b4ed 100644
+--- a/xlators/cluster/ec/src/ec-types.h
++++ b/xlators/cluster/ec/src/ec-types.h
+@@ -211,8 +211,8 @@ struct _ec_lock {
+     struct list_head   owners;
+ 
+     /* List of fops waiting to be an owner of the lock. Fops are added to this
+-     * list when the current owner has an incompatible access (shared vs
+-     * exclusive) or the lock is not acquired yet. */
++     * list when the current owner has an incompatible access (conflicting lock)
++     * or the lock is not acquired yet. */
+     struct list_head   waiting;
+ 
+     /* List of fops that will wait until the next unlock/lock cycle. This
+@@ -221,7 +221,6 @@ struct _ec_lock {
+      * after the lock is reacquired. */
+     struct list_head   frozen;
+ 
+-    int32_t            exclusive;
+     uintptr_t          mask;
+     uintptr_t          good_mask;
+     uintptr_t          healing;
+@@ -251,6 +250,8 @@ struct _ec_lock_link {
+     loc_t            *base;
+     uint64_t          size;
+     uint32_t          waiting_flags;
++    off_t             fl_start;
++    off_t             fl_end;
+ };
+ 
+ struct _ec_fop_data {
+@@ -564,6 +565,7 @@ struct _ec {
+     gf_boolean_t       shutdown;
+     gf_boolean_t       eager_lock;
+     gf_boolean_t       optimistic_changelog;
++    gf_boolean_t       parallel_writes;
+     uint32_t           background_heals;
+     uint32_t           heal_wait_qlen;
+     uint32_t           self_heal_window_size; /* max size of read/writes */
+diff --git a/xlators/cluster/ec/src/ec.c b/xlators/cluster/ec/src/ec.c
+index c32f4ef..856d60c 100644
+--- a/xlators/cluster/ec/src/ec.c
++++ b/xlators/cluster/ec/src/ec.c
+@@ -295,6 +295,8 @@ reconfigure (xlator_t *this, dict_t *options)
+ 
+         GF_OPTION_RECONF ("optimistic-change-log", ec->optimistic_changelog,
+                           options, bool, failed);
++        GF_OPTION_RECONF ("parallel-writes", ec->parallel_writes,
++                          options, bool, failed);
+         ret = 0;
+         if (ec_assign_read_policy (ec, read_policy)) {
+                 ret = -1;
+@@ -665,6 +667,7 @@ init (xlator_t *this)
+     GF_OPTION_INIT ("shd-max-threads", ec->shd.max_threads, uint32, failed);
+     GF_OPTION_INIT ("shd-wait-qlength", ec->shd.wait_qlength, uint32, failed);
+     GF_OPTION_INIT ("optimistic-change-log", ec->optimistic_changelog, bool, failed);
++    GF_OPTION_INIT ("parallel-writes", ec->parallel_writes, bool, failed);
+ 
+     this->itable = inode_table_new (EC_SHD_INODE_LRU_LIMIT, this);
+     if (!this->itable)
+@@ -1466,28 +1469,34 @@ struct volume_options options[] =
+                        "galois field computations."
+     },
+     { .key  = {"self-heal-window-size"},
+-        .type = GF_OPTION_TYPE_INT,
+-        .min  = 1,
+-        .max  = 1024,
+-        .default_value = "1",
+-        .description = "Maximum number blocks(128KB) per file for which "
+-                       "self-heal process would be applied simultaneously."
++      .type = GF_OPTION_TYPE_INT,
++      .min  = 1,
++      .max  = 1024,
++      .default_value = "1",
++      .description = "Maximum number blocks(128KB) per file for which "
++                     "self-heal process would be applied simultaneously."
+     },
+-    {   .key = {"optimistic-change-log"},
+-        .type = GF_OPTION_TYPE_BOOL,
+-        .default_value = "on",
+-        .description =  "Set/Unset dirty flag for every update fop at the start"
+-                        "of the fop. If OFF, this option impacts performance of"
+-                        "entry  operations or metadata operations as it will"
+-                        "set dirty flag at the start and unset it at the end of"
+-                        "ALL update fop. If ON and all the bricks are good,"
+-                        "dirty flag will be set at the start only for file fops"
+-                        "For metadata and entry fops dirty flag will not be set"
+-                        "at the start, if all the bricks are good. This does"
+-                        "not impact performance for metadata operations and"
+-                        "entry operation but has a very small window to miss"
+-                        "marking entry as dirty in case it is required to be"
+-                        "healed"
++    { .key = {"optimistic-change-log"},
++      .type = GF_OPTION_TYPE_BOOL,
++      .default_value = "on",
++      .description =  "Set/Unset dirty flag for every update fop at the start"
++                      "of the fop. If OFF, this option impacts performance of"
++                      "entry  operations or metadata operations as it will"
++                      "set dirty flag at the start and unset it at the end of"
++                      "ALL update fop. If ON and all the bricks are good,"
++                      "dirty flag will be set at the start only for file fops"
++                      "For metadata and entry fops dirty flag will not be set"
++                      "at the start, if all the bricks are good. This does"
++                      "not impact performance for metadata operations and"
++                      "entry operation but has a very small window to miss"
++                      "marking entry as dirty in case it is required to be"
++                      "healed"
++    },
++    { .key = {"parallel-writes"},
++      .type = GF_OPTION_TYPE_BOOL,
++      .default_value = "on",
++      .description = "This controls if writes can be wound in parallel as long"
++                     "as it doesn't modify same stripes"
+     },
+     { .key = {NULL} }
+ };
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 7fe76e5..b15a5af 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -3510,6 +3510,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version  = GD_OP_VERSION_3_12_0,
+           .validate_fn = validate_boolean
+         },
++        { .key        = "disperse.parallel-writes",
++          .voltype    = "cluster/disperse",
++          .type       = NO_DOC,
++          .op_version = GD_OP_VERSION_3_13_0,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
+         { .key         = NULL
+         }
+ };
+-- 
+1.8.3.1
+

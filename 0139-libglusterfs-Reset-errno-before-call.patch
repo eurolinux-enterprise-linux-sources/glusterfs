@@ -1,0 +1,37 @@
+From e7ae5922eb334a155d7aba72509d74247c526970 Mon Sep 17 00:00:00 2001
+From: Nigel Babu <nigelb@redhat.com>
+Date: Mon, 22 Jan 2018 08:36:36 +0530
+Subject: [PATCH 139/139] libglusterfs: Reset errno before call
+
+This was causing Gluster to return a failure when testing on Centos7.
+
+>upstream mainline patch : https://review.gluster.org/#/c/19262/
+
+BUG: 1539699
+Change-Id: Idb90baef05058123a7f69e94a51dd79abd371815
+Signed-off-by: Nigel Babu <nigelb@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129395
+Reviewed-by: Nigel Babu <nbabu@redhat.com>
+---
+ libglusterfs/src/common-utils.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/libglusterfs/src/common-utils.c b/libglusterfs/src/common-utils.c
+index 772f4e0..378ed05 100644
+--- a/libglusterfs/src/common-utils.c
++++ b/libglusterfs/src/common-utils.c
+@@ -2453,7 +2453,10 @@ valid_ipv4_subnetwork (const char *address)
+                                   "Invalid IPv4 subnetwork address");
+                 goto out;
+         }
+-
++        /*
++         * Reset errno before checking it
++         */
++        errno = 0;
+         prefixlen = strtol (slash + 1, &endptr, 10);
+         if ((errno != 0) || (*endptr != '\0') ||
+             (prefixlen < 0) || (prefixlen > IPv4_ADDR_SIZE)) {
+-- 
+1.8.3.1
+

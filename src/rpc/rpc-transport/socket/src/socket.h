@@ -18,13 +18,7 @@
 #include <openssl/dh.h>
 #endif
 #ifdef HAVE_OPENSSL_ECDH_H
-#include <openssl/objects.h>
 #include <openssl/ecdh.h>
-#endif
-
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
 #endif
 
 #include "event.h"
@@ -33,6 +27,7 @@
 #include "dict.h"
 #include "mem-pool.h"
 #include "globals.h"
+#include "refcount.h"
 
 #ifndef MAX_IOVEC
 #define MAX_IOVEC 16
@@ -54,6 +49,10 @@
 #define GF_MAX_SOCKET_WINDOW_SIZE       (1 * GF_UNIT_MB)
 #define GF_MIN_SOCKET_WINDOW_SIZE       (0)
 #define GF_USE_DEFAULT_KEEPALIVE        (-1)
+
+#define GF_KEEPALIVE_TIME               (20)
+#define GF_KEEPALIVE_INTERVAL           (2)
+#define GF_KEEPALIVE_COUNT              (9)
 
 typedef enum {
         SP_STATE_NADA = 0,
@@ -204,8 +203,12 @@ typedef enum {
 typedef struct {
         int32_t                sock;
         int32_t                idx;
+        int32_t                gen;
         /* -1 = not connected. 0 = in progress. 1 = connected */
         char                   connected;
+        /* 1 = connect failed for reasons other than EINPROGRESS/ENOENT
+        see socket_connect for details */
+        char                   connect_failed;
         char                   bio;
         char                   connect_finish_log;
         char                   submit_log;
@@ -218,12 +221,15 @@ typedef struct {
         };
         struct gf_sock_incoming incoming;
         pthread_mutex_t        lock;
+        pthread_mutex_t        cond_lock;
+        pthread_cond_t         cond;
         int                    windowsize;
         char                   lowlat;
         char                   nodelay;
         int                    keepalive;
         int                    keepaliveidle;
         int                    keepaliveintvl;
+        int                    keepalivecnt;
         int                    timeout;
         uint32_t               backlog;
         gf_boolean_t           read_fail_log;
@@ -242,10 +248,18 @@ typedef struct {
 	pthread_t              thread;
 	int                    pipe[2];
 	gf_boolean_t           own_thread;
+        gf_boolean_t           own_thread_done;
         ot_state_t             ot_state;
         uint32_t               ot_gen;
         gf_boolean_t           is_server;
         int                    log_ctr;
+        GF_REF_DECL;           /* refcount to keep track of socket_poller
+                                  threads */
+        struct {
+                pthread_mutex_t  lock;
+                pthread_cond_t   cond;
+                uint64_t         in_progress;
+        } notify;
 } socket_private_t;
 
 

@@ -1,0 +1,117 @@
+From a5584d85d5cd8d8c7252ef9e03207d64e87df83c Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Fri, 18 May 2018 20:03:32 +0530
+Subject: [PATCH 289/305] changelog: fix br-state-check.t failure for brick_mux
+
+Problem: Sometime br-state-check.t crash while runnning
+         for brick multiplex and command in test case is
+         taking 2 minutes for detach a brick
+
+Solution: Update code in changelog xlator specific to wait
+          on all connection before cleanup rpc threads and
+          cleanup rpc object only in non brick mux scenario
+
+> BUG: 1577672
+> Change-Id: I16e257c1e127744a815000b87bd8b7b8d9c51e1b
+> fixes: bz#1577672
+> (cherry picked from commit 4ae7f0714b809cfebb64f6e5b5a70664e17a7a56)
+> (Upstream review link https://review.gluster.org/#/c/20037/)
+
+BUG: 1581647
+Change-Id: I0b25e032d90a57cdd612a38b356248b4b47a7b60
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139977
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ rpc/rpc-lib/src/rpcsvc.c                           |  2 +-
+ .../features/changelog/src/changelog-rpc-common.c  |  7 ++++-
+ xlators/features/changelog/src/changelog-rpc.c     | 33 ++++++++++++++++++++++
+ 3 files changed, 40 insertions(+), 2 deletions(-)
+
+diff --git a/rpc/rpc-lib/src/rpcsvc.c b/rpc/rpc-lib/src/rpcsvc.c
+index 9938b8f..3acaa8b 100644
+--- a/rpc/rpc-lib/src/rpcsvc.c
++++ b/rpc/rpc-lib/src/rpcsvc.c
+@@ -1482,7 +1482,7 @@ rpcsvc_get_listener (rpcsvc_t *svc, uint16_t port, rpc_transport_t *trans)
+         pthread_mutex_lock (&svc->rpclock);
+         {
+                 list_for_each_entry (listener, &svc->listeners, list) {
+-                        if (trans != NULL) {
++                        if (listener && trans) {
+                                 if (listener->trans == trans) {
+                                         found = 1;
+                                         break;
+diff --git a/xlators/features/changelog/src/changelog-rpc-common.c b/xlators/features/changelog/src/changelog-rpc-common.c
+index 21bef76..9ba5444 100644
+--- a/xlators/features/changelog/src/changelog-rpc-common.c
++++ b/xlators/features/changelog/src/changelog-rpc-common.c
+@@ -280,7 +280,12 @@ changelog_rpc_server_destroy (xlator_t *this, rpcsvc_t *rpc, char *sockfile,
+                 rpc->rxpool = NULL;
+         }
+ 
+-        GF_FREE (rpc);
++        /* TODO Avoid freeing rpc object in case of brick multiplex
++           after freeing rpc object svc->rpclock corrupted and it takes
++           more time to detach a brick
++        */
++        if (!this->cleanup_starting)
++                GF_FREE (rpc);
+ }
+ 
+ rpcsvc_t *
+diff --git a/xlators/features/changelog/src/changelog-rpc.c b/xlators/features/changelog/src/changelog-rpc.c
+index ccb22b5..1443bd0 100644
+--- a/xlators/features/changelog/src/changelog-rpc.c
++++ b/xlators/features/changelog/src/changelog-rpc.c
+@@ -154,6 +154,9 @@ void
+ changelog_destroy_rpc_listner (xlator_t *this, changelog_priv_t *priv)
+ {
+         char sockfile[UNIX_PATH_MAX] = {0,};
++        changelog_clnt_t     *c_clnt  = &priv->connections;
++        changelog_rpc_clnt_t *crpc = NULL;
++        int                   nofconn = 0;
+ 
+         /* sockfile path could have been saved to avoid this */
+         CHANGELOG_MAKE_SOCKET_PATH (priv->changelog_brick,
+@@ -162,6 +165,36 @@ changelog_destroy_rpc_listner (xlator_t *this, changelog_priv_t *priv)
+                                       priv->rpc, sockfile,
+                                       changelog_rpcsvc_notify,
+                                       changelog_programs);
++
++        /* TODO Below approach is not perfect to wait for cleanup
++           all active connections without this code brick process
++           can be crash in case of brick multiplexing if any in-progress
++           request process on rpc by changelog xlator after
++           cleanup resources
++        */
++
++        if (c_clnt) {
++                do {
++                        nofconn = 0;
++                        LOCK (&c_clnt->active_lock);
++                                list_for_each_entry (crpc, &c_clnt->active, list) {
++                                          nofconn++;
++                                }
++                        UNLOCK (&c_clnt->active_lock);
++                        LOCK (&c_clnt->wait_lock);
++                                list_for_each_entry (crpc, &c_clnt->waitq, list) {
++                                          nofconn++;
++                                }
++                        UNLOCK (&c_clnt->wait_lock);
++                        pthread_mutex_lock (&c_clnt->pending_lock);
++                                list_for_each_entry (crpc, &c_clnt->pending, list) {
++                                          nofconn++;
++                                }
++                        pthread_mutex_unlock (&c_clnt->pending_lock);
++
++                } while (nofconn);  /* Wait for all connection cleanup */
++        }
++
+         (void) changelog_cleanup_rpc_threads (this, priv);
+ }
+ 
+-- 
+1.8.3.1
+

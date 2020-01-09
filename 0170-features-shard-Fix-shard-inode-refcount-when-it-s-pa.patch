@@ -1,0 +1,150 @@
+From c1e17987f2399999707f464b13fcbd316b17af59 Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Thu, 15 Feb 2018 16:12:12 +0530
+Subject: [PATCH 170/180] features/shard: Fix shard inode refcount when it's
+ part of priv->lru_list.
+
+For as long as a shard's inode is in priv->lru_list, it should have a non-zero
+ref-count. This patch achieves it by taking a ref on the inode when it
+is added to lru list. When it's time for the inode to be evicted
+from the lru list, a corresponding unref is done.
+
+> Upstream: https://review.gluster.org/19608
+> BUG: 1468483
+> Change-Id: I289ffb41e7be5df7489c989bc1bbf53377433c86
+
+Change-Id: Id540d44643b24a1be2198c48e35e478081368676
+BUG: 1493085
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131736
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/bugs/shard/shard-inode-refcount-test.t | 27 +++++++++++++++++++++++++++
+ tests/volume.rc                              | 18 ++++++++++++++++++
+ xlators/features/shard/src/shard.c           | 26 +++++++++++++++++---------
+ 3 files changed, 62 insertions(+), 9 deletions(-)
+ create mode 100644 tests/bugs/shard/shard-inode-refcount-test.t
+
+diff --git a/tests/bugs/shard/shard-inode-refcount-test.t b/tests/bugs/shard/shard-inode-refcount-test.t
+new file mode 100644
+index 0000000..6358097
+--- /dev/null
++++ b/tests/bugs/shard/shard-inode-refcount-test.t
+@@ -0,0 +1,27 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 $H0:$B0/${V0}0
++TEST $CLI volume set $V0 features.shard on
++TEST $CLI volume set $V0 features.shard-block-size 4MB
++TEST $CLI volume start $V0
++
++TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 $M0
++
++TEST dd if=/dev/zero of=$M0/one-plus-five-shards bs=1M count=23
++
++ACTIVE_INODES_BEFORE=$(get_mount_active_size_value $V0)
++TEST rm -f $M0/one-plus-five-shards
++EXPECT `expr $ACTIVE_INODES_BEFORE - 5` get_mount_active_size_value $V0
++
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
++TEST $CLI volume stop $V0
++TEST $CLI volume delete $V0
++
++cleanup
+diff --git a/tests/volume.rc b/tests/volume.rc
+index 1ca17ab..a15c8e5 100644
+--- a/tests/volume.rc
++++ b/tests/volume.rc
+@@ -808,3 +808,21 @@ function get_fd_count {
+         rm -f $statedump
+         echo $count
+ }
++
++function get_mount_active_size_value {
++        local vol=$1
++        local statedump=$(generate_mount_statedump $vol)
++        sleep 1
++        local val=$(grep "active_size" $statedump | cut -f2 -d'=' | tail -1)
++        rm -f $statedump
++        echo $val
++}
++
++function get_mount_lru_size_value {
++        local vol=$1
++        local statedump=$(generate_mount_statedump $vol)
++        sleep 1
++        local val=$(grep "lru_size" $statedump | cut -f2 -d'=' | tail -1)
++        rm -f $statedump
++        echo $val
++}
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index 7677a14..49cf04a 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -502,6 +502,10 @@ __shard_update_shards_inode_list (inode_t *linked_inode, xlator_t *this,
+                  * by empty list), and if there is still space in the priv list,
+                  * add this ctx to the tail of the list.
+                  */
++                        /* For as long as an inode is in lru list, we try to
++                         * keep it alive by holding a ref on it.
++                         */
++                        inode_ref (linked_inode);
+                         gf_uuid_copy (ctx->base_gfid, base_inode->gfid);
+                         ctx->block_num = block_num;
+                         list_add_tail (&ctx->ilist, &priv->ilist_head);
+@@ -527,8 +531,16 @@ __shard_update_shards_inode_list (inode_t *linked_inode, xlator_t *this,
+                         /* The following unref corresponds to the ref held by
+                          * inode_find() above.
+                          */
+-                        inode_forget (lru_inode, 0);
+                         inode_unref (lru_inode);
++                        /* The following unref corresponds to the ref held at
++                         * the time the shard was created or looked up
++                         */
++                        inode_unref (lru_inode);
++                        inode_forget (lru_inode, 0);
++                        /* For as long as an inode is in lru list, we try to
++                         * keep it alive by holding a ref on it.
++                         */
++                        inode_ref (linked_inode);
+                         gf_uuid_copy (ctx->base_gfid, base_inode->gfid);
+                         ctx->block_num = block_num;
+                         list_add_tail (&ctx->ilist, &priv->ilist_head);
+@@ -1658,11 +1670,6 @@ shard_link_block_inode (shard_local_t *local, int block_num, inode_t *inode,
+                                    buf);
+         inode_lookup (linked_inode);
+         list_index = block_num - local->first_block;
+-
+-        /* Defer unref'ing the inodes until write is complete. These inodes are
+-         * unref'd in the event of a failure or after successful fop completion
+-         * in shard_local_wipe().
+-         */
+         local->inode_list[list_index] = linked_inode;
+ 
+         LOCK(&priv->lock);
+@@ -2520,10 +2527,11 @@ shard_unlink_block_inode (shard_local_t *local, int shard_block_num)
+                 if (!list_empty (&ctx->ilist)) {
+                         list_del_init (&ctx->ilist);
+                         priv->inode_count--;
++                        GF_ASSERT (priv->inode_count >= 0);
++                        inode_unlink (inode, priv->dot_shard_inode, block_bname);
++                        inode_unref (inode);
++                        inode_forget (inode, 0);
+                 }
+-                GF_ASSERT (priv->inode_count >= 0);
+-                inode_unlink (inode, priv->dot_shard_inode, block_bname);
+-                inode_forget (inode, 0);
+         }
+         UNLOCK(&priv->lock);
+ 
+-- 
+1.8.3.1
+

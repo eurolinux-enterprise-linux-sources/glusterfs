@@ -10,11 +10,6 @@
 #ifndef __SNAP_VIEW_CLIENT_H__
 #define __SNAP_VIEW_CLIENT_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "logging.h"
 #include "dict.h"
@@ -28,11 +23,9 @@ struct __svc_local {
         fd_t     *fd;
         void *cookie;
         dict_t *xdata;
+        uint16_t revalidate;
 };
 typedef struct __svc_local svc_local_t;
-
-void
-svc_local_free (svc_local_t *local);
 
 #define SVC_STACK_UNWIND(fop, frame, params ...) do {           \
                 svc_local_t *__local = NULL;                    \
@@ -102,25 +95,8 @@ typedef enum {
         VIRTUAL_INODE
 } inode_type_t;
 
-void svc_local_free (svc_local_t *local);
-
-xlator_t *
-svc_get_subvolume (xlator_t *this, int inode_type);
-
 int
-__svc_inode_ctx_get (xlator_t *this, inode_t *inode, int *inode_type);
+gf_svc_special_dir_revalidate_lookup (call_frame_t *frame, xlator_t *this,
+                                      dict_t *xdata);
 
-int
-svc_inode_ctx_get (xlator_t *this, inode_t *inode, int *inode_type);
-
-int32_t
-svc_inode_ctx_set (xlator_t *this, inode_t *inode, int inode_type);
-
-void
-svc_local_free (svc_local_t *local);
-
-gf_boolean_t
-svc_readdir_on_special_dir (call_frame_t *frame, void *cookie, xlator_t *this,
-                            int32_t op_ret, int32_t op_errno,
-                            gf_dirent_t *entries, dict_t *xdata);
 #endif /* __SNAP_VIEW_CLIENT_H__ */

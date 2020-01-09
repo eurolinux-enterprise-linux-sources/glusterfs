@@ -1,0 +1,70 @@
+From 4742c4766af4b0def0e12a2b0544c30496dfb48e Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Thu, 19 Jul 2018 12:47:38 +0530
+Subject: [PATCH 330/333] posix: check before removing stale symlink
+
+Backport of https://review.gluster.org/#/c/20509/
+
+BZ 1564071 complains of directories with missing gfid symlinks and
+corresponding "Found stale gfid handle" messages in the logs. Hence
+add a check to see if the symlink points to an actual directory before
+removing it.
+
+Note: Removing stale symlinks was added via commit
+3e9a9c029fac359477fb26d9cc7803749ba038b2
+
+Change-Id: I5d91fab8e5f3a621a9ecad4a1f9c898a3c2d346a
+BUG: 1603103
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144867
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/storage/posix/src/posix.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index ddb875c..c3b7120 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -235,6 +235,7 @@ posix_lookup (call_frame_t *frame, xlator_t *this,
+         int32_t     nlink_samepgfid    = 0;
+         struct  posix_private *priv    = NULL;
+         posix_inode_ctx_t *ctx         = NULL;
++        int         ret                = 0;
+ 
+         VALIDATE_OR_GOTO (frame, out);
+         VALIDATE_OR_GOTO (this, out);
+@@ -284,20 +285,24 @@ posix_lookup (call_frame_t *frame, xlator_t *this,
+                                 "lstat on %s failed",
+                                 real_path ? real_path : "null");
+                 }
++                entry_ret = -1;
+                 if (loc_is_nameless(loc)) {
+                         if (!op_errno)
+                                 op_errno = ESTALE;
+                         loc_gfid (loc, gfid);
+                         MAKE_HANDLE_ABSPATH (gfid_path, this, gfid);
+-                        op_ret = sys_lstat(gfid_path, &statbuf);
+-                        if (op_ret == 0 && statbuf.st_nlink == 1) {
+-                                gf_msg (this->name, GF_LOG_WARNING, ESTALE,
++                        ret = sys_stat(gfid_path, &statbuf);
++                        if (ret == 0 && ((statbuf.st_mode & S_IFMT) == S_IFDIR))
++                                /*Don't unset if it was a symlink to a dir.*/
++                                goto parent;
++                        ret = sys_lstat(gfid_path, &statbuf);
++                        if (ret == 0 && statbuf.st_nlink == 1) {
++                                gf_msg (this->name, GF_LOG_WARNING, op_errno,
+                                         P_MSG_HANDLE_DELETE, "Found stale gfid "
+                                         "handle %s, removing it.", gfid_path);
+                                 posix_handle_unset (this, gfid, NULL);
+                         }
+                 }
+-                entry_ret = -1;
+                 goto parent;
+         }
+ 
+-- 
+1.8.3.1
+

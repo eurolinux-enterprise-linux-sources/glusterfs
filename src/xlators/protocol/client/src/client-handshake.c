@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "fd-lk.h"
 #include "client.h"
 #include "xlator.h"
@@ -91,6 +86,7 @@ out:
 
         /* Don't use 'GF_FREE', this is allocated by libc */
         free (rsp.spec);
+        free (rsp.xdata.xdata_val);
 
         return 0;
 }
@@ -134,13 +130,26 @@ client_notify_parents_child_up (xlator_t *this)
         clnt_conf_t *conf = NULL;
         int          ret  = 0;
 
+        GF_VALIDATE_OR_GOTO("client", this, out);
         conf = this->private;
-        ret = client_notify_dispatch (this, GF_EVENT_CHILD_UP, NULL);
-        if (ret)
-                gf_msg (this->name, GF_LOG_INFO, 0,
-                        PC_MSG_CHILD_UP_NOTIFY_FAILED, "notify of CHILD_UP "
-                        "failed");
+        GF_VALIDATE_OR_GOTO(this->name, conf, out);
 
+        if (conf->child_up) {
+                ret = client_notify_dispatch_uniq (this, GF_EVENT_CHILD_UP,
+                                                   NULL);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_INFO, 0,
+                                PC_MSG_CHILD_UP_NOTIFY_FAILED,
+                                "notify of CHILD_UP failed");
+                        goto out;
+                }
+        } else {
+                gf_msg (this->name, GF_LOG_INFO, 0, PC_MSG_CHILD_STATUS,
+                        "Defering sending CHILD_UP message as the client "
+                        "translators are not yet ready to serve.");
+        }
+
+out:
         return 0;
 }
 
@@ -324,16 +333,6 @@ out:
         return local;
 }
 
-void
-clnt_mark_fd_bad (clnt_conf_t *conf, clnt_fd_ctx_t *fdctx)
-{
-        pthread_mutex_lock (&conf->lock);
-        {
-                fdctx->remote_fd = -1;
-        }
-        pthread_mutex_unlock (&conf->lock);
-}
-
 int
 clnt_release_reopen_fd_cbk (struct rpc_req *req, struct iovec *iov,
                             int count, void *myframe)
@@ -350,7 +349,7 @@ clnt_release_reopen_fd_cbk (struct rpc_req *req, struct iovec *iov,
 
         clnt_fd_lk_reacquire_failed (this, fdctx, conf);
 
-        fdctx->reopen_done (fdctx, this);
+        fdctx->reopen_done (fdctx, fdctx->remote_fd, this);
 
         frame->local = NULL;
         STACK_DESTROY (frame->root);
@@ -380,11 +379,10 @@ clnt_release_reopen_fd (xlator_t *this, clnt_fd_ctx_t *fdctx)
                                         clnt_release_reopen_fd_cbk, NULL,
                                         NULL, 0, NULL, 0, NULL,
                                         (xdrproc_t)xdr_gfs3_releasedir_req);
-        return 0;
  out:
         if (ret) {
                 clnt_fd_lk_reacquire_failed (this, fdctx, conf);
-                fdctx->reopen_done (fdctx, this);
+                fdctx->reopen_done (fdctx, fdctx->remote_fd, this);
         }
         return 0;
 }
@@ -503,7 +501,7 @@ client_reacquire_lock_cbk (struct rpc_req *req, struct iovec *iov,
                 }
                 pthread_mutex_unlock (&conf->lock);
 
-                fdctx->reopen_done (fdctx, this);
+                fdctx->reopen_done (fdctx, fdctx->remote_fd, this);
         }
 
         ret = 0;
@@ -613,7 +611,7 @@ client_reacquire_lock (xlator_t *this, clnt_fd_ctx_t *fdctx)
         if (client_fd_lk_list_empty (fdctx->lk_ctx, _gf_false)) {
                 gf_msg_debug (this->name, 0,
                               "fd lock list is empty");
-                fdctx->reopen_done (fdctx, this);
+                fdctx->reopen_done (fdctx, fdctx->remote_fd, this);
         } else {
                 lk_ctx = fdctx->lk_ctx;
 
@@ -629,14 +627,14 @@ out:
 }
 
 void
-client_default_reopen_done (clnt_fd_ctx_t *fdctx, xlator_t *this)
+client_default_reopen_done (clnt_fd_ctx_t *fdctx, int64_t rfd, xlator_t *this)
 {
         gf_log_callingfn (this->name, GF_LOG_WARNING,
                           "This function should never be called");
 }
 
 void
-client_reopen_done (clnt_fd_ctx_t *fdctx, xlator_t *this)
+client_reopen_done (clnt_fd_ctx_t *fdctx, int64_t rfd, xlator_t *this)
 {
         clnt_conf_t  *conf    = NULL;
         gf_boolean_t destroy  = _gf_false;
@@ -645,21 +643,23 @@ client_reopen_done (clnt_fd_ctx_t *fdctx, xlator_t *this)
 
         pthread_mutex_lock (&conf->lock);
         {
+                fdctx->remote_fd = rfd;
                 fdctx->reopen_attempts = 0;
+                fdctx->reopen_done = client_default_reopen_done;
                 if (!fdctx->released)
                         list_add_tail (&fdctx->sfd_pos, &conf->saved_fds);
                 else
                         destroy = _gf_true;
-                fdctx->reopen_done = client_default_reopen_done;
         }
         pthread_mutex_unlock (&conf->lock);
 
         if (destroy)
                 client_fdctx_destroy (this, fdctx);
+
 }
 
 void
-client_child_up_reopen_done (clnt_fd_ctx_t *fdctx, xlator_t *this)
+client_child_up_reopen_done (clnt_fd_ctx_t *fdctx, int64_t rfd, xlator_t *this)
 {
         clnt_conf_t  *conf    = NULL;
         uint64_t     fd_count = 0;
@@ -672,7 +672,7 @@ client_child_up_reopen_done (clnt_fd_ctx_t *fdctx, xlator_t *this)
         }
         UNLOCK (&conf->rec_lock);
 
-        client_reopen_done (fdctx, this);
+        client_reopen_done (fdctx, rfd, this);
         if (fd_count == 0) {
                 gf_msg (this->name, GF_LOG_INFO, 0, PC_MSG_CHILD_UP_NOTIFY,
                         "last fd open'd/lock-self-heal'd - notifying CHILD-UP");
@@ -735,7 +735,6 @@ client3_3_reopen_cbk (struct rpc_req *req, struct iovec *iov, int count,
 
         pthread_mutex_lock (&conf->lock);
         {
-                fdctx->remote_fd = rsp.fd;
                 if (!fdctx->released) {
                         if (conf->lk_heal &&
                             !client_fd_lk_list_empty (fdctx->lk_ctx,
@@ -765,7 +764,7 @@ client3_3_reopen_cbk (struct rpc_req *req, struct iovec *iov, int count,
 
 out:
         if (!attempt_lock_recovery)
-                fdctx->reopen_done (fdctx, this);
+                fdctx->reopen_done (fdctx, (rsp.op_ret) ? -1 : rsp.fd, this);
 
         frame->local = NULL;
         STACK_DESTROY (frame->root);
@@ -782,14 +781,12 @@ client3_3_reopendir_cbk (struct rpc_req *req, struct iovec *iov, int count,
         int32_t        ret   = -1;
         gfs3_open_rsp  rsp   = {0,};
         clnt_local_t  *local = NULL;
-        clnt_conf_t   *conf  = NULL;
         clnt_fd_ctx_t *fdctx = NULL;
         call_frame_t  *frame = NULL;
 
         frame = myframe;
         local = frame->local;
         fdctx = local->fdctx;
-        conf  = frame->this->private;
 
 
         if (-1 == req->rpc_status) {
@@ -825,14 +822,8 @@ client3_3_reopendir_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        pthread_mutex_lock (&conf->lock);
-        {
-                fdctx->remote_fd = rsp.fd;
-        }
-        pthread_mutex_unlock (&conf->lock);
-
 out:
-        fdctx->reopen_done (fdctx, frame->this);
+        fdctx->reopen_done (fdctx, (rsp.op_ret) ? -1 : rsp.fd, frame->this);
 
         frame->local = NULL;
         STACK_DESTROY (frame->root);
@@ -893,7 +884,7 @@ out:
         if (local)
                 client_local_wipe (local);
 
-        fdctx->reopen_done (fdctx, this);
+        fdctx->reopen_done (fdctx, fdctx->remote_fd, this);
 
         return 0;
 
@@ -957,7 +948,7 @@ out:
         if (local)
                 client_local_wipe (local);
 
-        fdctx->reopen_done (fdctx, this);
+        fdctx->reopen_done (fdctx, fdctx->remote_fd, this);
 
         return 0;
 
@@ -1146,10 +1137,17 @@ client_setvolume_cbk (struct rpc_req *req, struct iovec *iov, int count, void *m
         if (op_ret < 0) {
                 gf_msg (this->name, GF_LOG_ERROR, op_errno,
                         PC_MSG_SETVOLUME_FAIL,
-                        "SETVOLUME on remote-host failed");
+                        "SETVOLUME on remote-host failed: %s", remote_error);
+
                 errno = op_errno;
                 if (remote_error &&
                     (strcmp ("Authentication failed", remote_error) == 0)) {
+                        auth_fail = _gf_true;
+                        op_ret = 0;
+                }
+                if ((op_errno == ENOENT) && this->ctx->cmd_args.subdir_mount) {
+                        /* A case of subdir not being present at the moment,
+                           ride on auth_fail framework to notify the error */
                         auth_fail = _gf_true;
                         op_ret = 0;
                 }
@@ -1171,6 +1169,18 @@ client_setvolume_cbk (struct rpc_req *req, struct iovec *iov, int count, void *m
                 gf_msg (this->name, GF_LOG_WARNING, 0, PC_MSG_DICT_GET_FAILED,
                         "failed to find key 'remote-subvolume' in the options");
                 goto out;
+        }
+
+        ret = dict_get_uint32 (reply, "child_up", &conf->child_up);
+        if (ret) {
+                /*
+                 * This would happen in cases where the server trying to     *
+                 * connect to this client is running an older version. Hence *
+                 * setting the child_up to _gf_true in this case.            *
+                 */
+                gf_msg (this->name, GF_LOG_WARNING, 0, PC_MSG_DICT_GET_FAILED,
+                        "failed to find key 'child_up' in the options");
+                conf->child_up = _gf_true;
         }
 
         ret = dict_get_uint32 (reply, "clnt-lk-version", &lk_ver);
@@ -1262,6 +1272,11 @@ out:
                                 PC_MSG_CHILD_CONNECTING_NOTIFY_FAILED,
                                 "notify of CHILD_CONNECTING failed");
                 conf->connecting= 1;
+                /*
+                 * The reconnection *won't* happen in the background (see
+                 * previous comment) unless we kill the current connection.
+                 */
+                rpc_transport_disconnect (conf->rpc->conn.trans, _gf_false);
                 ret = 0;
         }
 
@@ -1369,12 +1384,30 @@ client_setvolume (xlator_t *this, struct rpc_clnt *rpc)
                                 "'volfile-checksum'");
         }
 
+        if (this->ctx->cmd_args.subdir_mount) {
+                ret = dict_set_str (options, "subdir-mount",
+                                    this->ctx->cmd_args.subdir_mount);
+                if (ret) {
+                        gf_log (THIS->name, GF_LOG_ERROR,
+                                "Failed to set subdir_mount");
+                        /* It makes sense to fail, as per the CLI, we
+                           should be doing a subdir_mount */
+                        goto fail;
+                }
+        }
+
         ret = dict_set_int16 (options, "clnt-lk-version",
                               client_get_lk_ver (conf));
         if (ret < 0) {
                 gf_msg (this->name, GF_LOG_WARNING, 0, PC_MSG_DICT_SET_FAILED,
                         "failed to set clnt-lk-version(%"PRIu32") in handshake "
                         "msg", client_get_lk_ver (conf));
+        }
+
+        ret = dict_set_int32 (options, "opversion", GD_OP_VERSION_MAX);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, PC_MSG_DICT_SET_FAILED,
+                        "Failed to set client opversion in handshake message");
         }
 
         ret = dict_serialized_length (options);
@@ -1539,7 +1572,7 @@ client_query_portmap_cbk (struct rpc_req *req, struct iovec *iov, int count, voi
         rpc_clnt_reconfig (conf->rpc, &config);
 
         conf->skip_notify = 1;
-	conf->quick_reconnect = 1;
+        conf->quick_reconnect = 1;
 
 out:
         if (frame)
@@ -1548,7 +1581,7 @@ out:
         if (conf) {
                 /* Need this to connect the same transport on different port */
                 /* ie, glusterd to glusterfsd */
-                rpc_transport_disconnect (conf->rpc->conn.trans);
+                rpc_transport_disconnect (conf->rpc->conn.trans, _gf_false);
         }
 
         return ret;
@@ -1561,14 +1594,12 @@ client_query_portmap (xlator_t *this, struct rpc_clnt *rpc)
         int                      ret             = -1;
         pmap_port_by_brick_req   req             = {0,};
         call_frame_t            *fr              = NULL;
-        clnt_conf_t             *conf            = NULL;
         dict_t                  *options         = NULL;
         char                    *remote_subvol   = NULL;
         char                    *xprt            = NULL;
         char                     brick_name[PATH_MAX] = {0,};
 
         options = this->options;
-        conf    = this->private;
 
         ret = dict_get_str (options, "remote-subvolume", &remote_subvol);
         if (ret < 0) {
@@ -1669,7 +1700,7 @@ out:
         STACK_DESTROY (frame->root);
 
         if (ret != 0)
-                rpc_transport_disconnect (conf->rpc->conn.trans);
+                rpc_transport_disconnect (conf->rpc->conn.trans, _gf_false);
 
         return ret;
 }

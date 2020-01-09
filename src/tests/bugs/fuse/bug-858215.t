@@ -11,6 +11,7 @@ TEST pidof glusterd;
 TEST $CLI volume info;
 
 TEST $CLI volume create $V0 replica 2 stripe 2 $H0:$B0/${V0}{1,2,3,4,5,6,7,8};
+TEST $CLI volume set $V0 nfs.disable off
 
 function volinfo_field()
 {
@@ -31,7 +32,7 @@ TEST $CLI volume start $V0;
 EXPECT 'Started' volinfo_field $V0 'Status';
 
 ## Mount FUSE with caching disabled
-TEST glusterfs --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id $V0 $M0;
+TEST glusterfs --entry-timeout=0 --attribute-timeout=0 --event-history=on -s $H0 --volfile-id $V0 $M0;
 
 ## Test for checking whether the fops have been saved in the event-history
 TEST ! stat $M0/newfile;
@@ -39,8 +40,8 @@ TEST touch $M0/newfile;
 TEST stat $M0/newfile;
 TEST rm $M0/newfile;
 
-nfs_pid=$(cat $GLUSTERD_WORKDIR/nfs/run/nfs.pid);
-glustershd_pid=$(cat $GLUSTERD_WORKDIR/glustershd/run/glustershd.pid);
+nfs_pid=$(cat $GLUSTERD_PIDFILEDIR/nfs/nfs.pid);
+glustershd_pid=$(cat $GLUSTERD_PIDFILEDIR/glustershd/glustershd.pid);
 
 pids=$(pidof glusterfs);
 for i in $pids

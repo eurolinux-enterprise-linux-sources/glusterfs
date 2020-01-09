@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include "defaults.h"
 #include "libxlator.h"
@@ -22,6 +17,7 @@
 #include "marker-common.h"
 #include "byte-order.h"
 #include "syncop.h"
+#include "syscall.h"
 
 #include <fnmatch.h>
 
@@ -257,7 +253,7 @@ marker_error_handler (xlator_t *this, marker_local_t *local, int32_t op_errno)
                  "Indexing gone corrupt at %s (reason: %s)."
                  " Geo-replication slave content needs to be revalidated",
                  path, strerror (op_errno));
-        unlink (priv->timestamp_file);
+        sys_unlink (priv->timestamp_file);
 
         return 0;
 }
@@ -314,7 +310,7 @@ stat_stampfile (xlator_t *this, marker_conf_t *priv,
         GF_ASSERT (sizeof (priv->volume_uuid_bin) == 16);
         memcpy (vol_mark->uuid, priv->volume_uuid_bin, 16);
 
-        if (stat (priv->timestamp_file, &buf) != -1) {
+        if (sys_stat (priv->timestamp_file, &buf) != -1) {
                 vol_mark->retval = 0;
                 vol_mark->sec = htonl (buf.st_mtime);
                 vol_mark->usec = htonl (ST_MTIM_NSEC (&buf)/1000);
@@ -344,9 +340,11 @@ marker_getxattr_stampfile_cbk (call_frame_t *frame, xlator_t *this,
 
         ret = dict_set_bin (dict, (char *)name, vol_mark,
                             sizeof (struct volume_mark));
-        if (ret)
+        if (ret) {
+                GF_FREE (vol_mark);
                 gf_log (this->name, GF_LOG_WARNING, "failed to set key %s",
                         name);
+        }
 
         STACK_UNWIND_STRICT (getxattr, frame, 0, 0, dict, xdata);
 
@@ -424,10 +422,10 @@ marker_filter_gsyncd_xattrs (call_frame_t *frame,
 
         priv = this->private;
         GF_ASSERT (priv);
+        GF_ASSERT (frame);
 
-        if (frame->root->pid != GF_CLIENT_PID_GSYNCD &&
-            dict_get(xattrs, priv->marker_xattr)) {
-                dict_del (xattrs, priv->marker_xattr);
+        if (xattrs && frame->root->pid != GF_CLIENT_PID_GSYNCD) {
+                GF_REMOVE_INTERNAL_XATTR (GF_XATTR_XTIME_PATTERN, xattrs);
         }
         return;
 }
@@ -588,7 +586,7 @@ marker_specific_setxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 }
         }
 
-        ret = marker_trav_parent (local);
+        ret = (local) ? marker_trav_parent (local) : -1;
 
         if (ret == -1) {
                 gf_log (this->name, GF_LOG_DEBUG, "Error occurred "
@@ -717,6 +715,7 @@ marker_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         marker_conf_t      *priv    = NULL;
         marker_local_t     *local   = NULL;
+        quota_inode_ctx_t  *ctx     = NULL;
 
         if (op_ret == -1) {
                 gf_log (this->name, GF_LOG_TRACE, "error occurred "
@@ -726,6 +725,17 @@ marker_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = (marker_local_t *) frame->local;
 
         frame->local = NULL;
+        priv = this->private;
+
+        if (op_ret >= 0 && inode && (priv->feature_enabled & GF_QUOTA)) {
+                ctx = mq_inode_ctx_new (inode, this);
+                if (ctx == NULL) {
+                        gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                                "failed for %s", uuid_utoa (inode->gfid));
+                        op_ret = -1;
+                        op_errno = ENOMEM;
+                }
+        }
 
         STACK_UNWIND_STRICT (mkdir, frame, op_ret, op_errno, inode,
                              buf, preparent, postparent, xdata);
@@ -735,8 +745,6 @@ marker_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (gf_uuid_is_null (local->loc.gfid))
                 gf_uuid_copy (local->loc.gfid, buf->ia_gfid);
-
-        priv = this->private;
 
         if (priv->feature_enabled & GF_QUOTA)
                 mq_create_xattrs_txn (this, &local->loc, NULL);
@@ -792,6 +800,7 @@ marker_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         marker_local_t     *local   = NULL;
         marker_conf_t      *priv    = NULL;
+        quota_inode_ctx_t  *ctx     = NULL;
 
         if (op_ret == -1) {
                 gf_log (this->name, GF_LOG_TRACE, "error occurred "
@@ -801,6 +810,17 @@ marker_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = (marker_local_t *) frame->local;
 
         frame->local = NULL;
+        priv = this->private;
+
+        if (op_ret >= 0 && inode && (priv->feature_enabled & GF_QUOTA)) {
+                ctx = mq_inode_ctx_new (inode, this);
+                if (ctx == NULL) {
+                        gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                                "failed for %s", uuid_utoa (inode->gfid));
+                        op_ret = -1;
+                        op_errno = ENOMEM;
+                }
+        }
 
         STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode, buf,
                              preparent, postparent, xdata);
@@ -810,8 +830,6 @@ marker_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (gf_uuid_is_null (local->loc.gfid))
                 gf_uuid_copy (local->loc.gfid, buf->ia_gfid);
-
-        priv = this->private;
 
         if (priv->feature_enabled & GF_QUOTA)
                 mq_create_xattrs_txn (this, &local->loc, buf);
@@ -941,6 +959,7 @@ marker_rmdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         marker_conf_t      *priv    = NULL;
         marker_local_t     *local   = NULL;
+        call_stub_t        *stub    = NULL;
 
         if (op_ret == -1) {
                 gf_log (this->name, GF_LOG_TRACE, "error occurred "
@@ -950,21 +969,40 @@ marker_rmdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = (marker_local_t *) frame->local;
 
         frame->local = NULL;
-
-        STACK_UNWIND_STRICT (rmdir, frame, op_ret, op_errno, preparent,
-                             postparent, xdata);
+        priv = this->private;
 
         if (op_ret == -1 || local == NULL)
                 goto out;
 
-        priv = this->private;
-
-        if (priv->feature_enabled & GF_QUOTA)
-                mq_reduce_parent_size_txn (this, &local->loc, NULL, 1);
-
         if (priv->feature_enabled & GF_XTIME)
                 marker_xtime_update_marks (this, local);
+
+        if (priv->feature_enabled & GF_QUOTA) {
+                /* If a 'rm -rf' is performed by a client, rmdir can be faster
+                   than marker background mq_reduce_parent_size_txn.
+                   In this case, as part of rmdir parent child association
+                   will be removed in the server protocol.
+                   This can lead to mq_reduce_parent_size_txn failures.
+
+                   So perform mq_reduce_parent_size_txn in foreground
+                   and unwind to server once txn is complete
+                 */
+
+                stub = fop_rmdir_cbk_stub (frame, default_rmdir_cbk, op_ret,
+                                           op_errno, preparent, postparent,
+                                           xdata);
+                mq_reduce_parent_size_txn (this, &local->loc, NULL, 1, stub);
+
+                if (stub) {
+                        marker_local_unref (local);
+                        return 0;
+                }
+        }
+
 out:
+        STACK_UNWIND_STRICT (rmdir, frame, op_ret, op_errno, preparent,
+                             postparent, xdata);
+
         marker_local_unref (local);
 
         return 0;
@@ -1011,6 +1049,7 @@ marker_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         marker_local_t     *local   = NULL;
         uint32_t            nlink   = -1;
         GF_UNUSED int32_t   ret     = 0;
+        call_stub_t        *stub    = NULL;
 
         if (op_ret == -1) {
                 gf_log (this->name, GF_LOG_TRACE,
@@ -1020,34 +1059,54 @@ marker_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = (marker_local_t *) frame->local;
 
         frame->local = NULL;
-
-        STACK_UNWIND_STRICT (unlink, frame, op_ret, op_errno, preparent,
-                             postparent, xdata);
+        priv = this->private;
 
         if (op_ret == -1 || local == NULL)
                 goto out;
 
-        priv = this->private;
+        if (priv->feature_enabled & GF_XTIME)
+                marker_xtime_update_marks (this, local);
 
         if (priv->feature_enabled & GF_QUOTA) {
-                if (!local->skip_txn) {
-                        if (xdata) {
-                                ret = dict_get_uint32 (xdata,
-                                        GF_RESPONSE_LINK_COUNT_XDATA, &nlink);
-                                if (ret) {
-                                        gf_log (this->name, GF_LOG_TRACE,
-                                                "dict get failed %s ",
-                                                strerror (-ret));
-                                }
+                if (local->skip_txn)
+                        goto out;
+
+                if (xdata) {
+                        ret = dict_get_uint32 (xdata,
+                                GF_RESPONSE_LINK_COUNT_XDATA, &nlink);
+                        if (ret) {
+                                gf_log (this->name, GF_LOG_TRACE,
+                                        "dict get failed %s ",
+                                        strerror (-ret));
                         }
-                        mq_reduce_parent_size_txn (this, &local->loc, NULL,
-                                                   nlink);
+                }
+
+                /* If a 'rm -rf' is performed by a client, unlink can be faster
+                   than marker background mq_reduce_parent_size_txn.
+                   In this case, as part of unlink parent child association
+                   will be removed in the server protocol.
+                   This can lead to mq_reduce_parent_size_txn failures.
+
+                  So perform mq_reduce_parent_size_txn in foreground
+                  and unwind to server once txn is complete
+                */
+
+                stub = fop_unlink_cbk_stub (frame, default_unlink_cbk, op_ret,
+                                            op_errno, preparent, postparent,
+                                            xdata);
+                mq_reduce_parent_size_txn (this, &local->loc, NULL, nlink,
+                                           stub);
+
+                if (stub) {
+                        marker_local_unref (local);
+                        return 0;
                 }
         }
 
-        if (priv->feature_enabled & GF_XTIME)
-                marker_xtime_update_marks (this, local);
 out:
+        STACK_UNWIND_STRICT (unlink, frame, op_ret, op_errno, preparent,
+                             postparent, xdata);
+
         marker_local_unref (local);
 
         return 0;
@@ -1211,14 +1270,14 @@ marker_rename_done (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto err;
 
         mq_reduce_parent_size_txn (this, &oplocal->loc, &oplocal->contribution,
-                                   -1);
+                                   -1, NULL);
 
         if (local->loc.inode != NULL) {
                 /* If destination file exits before rename, it would have
                  * been unlinked while renaming a file
                  */
                 mq_reduce_parent_size_txn (this, &local->loc, NULL,
-                                           local->ia_nlink);
+                                           local->ia_nlink, NULL);
         }
 
         newloc.inode = inode_ref (oplocal->loc.inode);
@@ -1233,6 +1292,8 @@ marker_rename_done (call_frame_t *frame, void *cookie, xlator_t *this,
         loc_wipe (&newloc);
 
         if (priv->feature_enabled & GF_XTIME) {
+                if (!local->loc.inode)
+                        local->loc.inode = inode_ref (oplocal->loc.inode);
                 //update marks on oldpath
                 gf_uuid_copy (local->loc.gfid, oplocal->loc.inode->gfid);
                 marker_xtime_update_marks (this, oplocal);
@@ -1433,6 +1494,8 @@ marker_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
                 if (priv->feature_enabled & GF_XTIME) {
                         //update marks on oldpath
+                        if (!local->loc.inode)
+                                local->loc.inode = inode_ref (oplocal->loc.inode);
                         gf_uuid_copy (local->loc.gfid, oplocal->loc.inode->gfid);
                         marker_xtime_update_marks (this, oplocal);
                         marker_xtime_update_marks (this, local);
@@ -1894,6 +1957,7 @@ marker_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         marker_conf_t      *priv    = NULL;
         marker_local_t     *local   = NULL;
+        quota_inode_ctx_t  *ctx     = NULL;
 
         if (op_ret == -1) {
                 gf_log (this->name, GF_LOG_TRACE, "%s occurred while "
@@ -1903,6 +1967,17 @@ marker_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = (marker_local_t *) frame->local;
 
         frame->local = NULL;
+        priv = this->private;
+
+        if (op_ret >= 0 && inode && (priv->feature_enabled & GF_QUOTA)) {
+                ctx = mq_inode_ctx_new (inode, this);
+                if (ctx == NULL) {
+                        gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                                "failed for %s", uuid_utoa (inode->gfid));
+                        op_ret = -1;
+                        op_errno = ENOMEM;
+                }
+        }
 
         STACK_UNWIND_STRICT (symlink, frame, op_ret, op_errno, inode, buf,
                              preparent, postparent, xdata);
@@ -1912,8 +1987,6 @@ marker_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (gf_uuid_is_null (local->loc.gfid))
                 gf_uuid_copy (local->loc.gfid, buf->ia_gfid);
-
-        priv = this->private;
 
         if (priv->feature_enabled & GF_QUOTA) {
                 mq_create_xattrs_txn (this, &local->loc, buf);
@@ -1969,6 +2042,7 @@ marker_mknod_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         marker_local_t     *local   = NULL;
         marker_conf_t      *priv    = NULL;
+        quota_inode_ctx_t  *ctx     = NULL;
 
         if (op_ret == -1) {
                 gf_log (this->name, GF_LOG_TRACE, "%s occurred with "
@@ -1978,6 +2052,17 @@ marker_mknod_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = (marker_local_t *) frame->local;
 
         frame->local = NULL;
+        priv = this->private;
+
+        if (op_ret >= 0 && inode && (priv->feature_enabled & GF_QUOTA)) {
+                ctx = mq_inode_ctx_new (inode, this);
+                if (ctx == NULL) {
+                        gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                                "failed for %s", uuid_utoa (inode->gfid));
+                        op_ret = -1;
+                        op_errno = ENOMEM;
+                }
+        }
 
         STACK_UNWIND_STRICT (mknod, frame, op_ret, op_errno, inode,
                              buf, preparent, postparent, xdata);
@@ -1987,8 +2072,6 @@ marker_mknod_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (gf_uuid_is_null (local->loc.gfid))
                 gf_uuid_copy (local->loc.gfid, buf->ia_gfid);
-
-        priv = this->private;
 
         if ((priv->feature_enabled & GF_QUOTA) && (S_ISREG (local->mode))) {
                 mq_create_xattrs_txn (this, &local->loc, buf);
@@ -2282,7 +2365,7 @@ call_from_sp_client_to_reset_tmfile (call_frame_t *frame,
                         /* TODO check  whether the O_TRUNC would update the
                          * timestamps on a zero length file on all machies.
                          */
-                        close (fd);
+                        sys_close (fd);
                 }
 
                 if (fd != -1 || errno == ENOENT) {
@@ -2815,10 +2898,11 @@ marker_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                    int32_t op_ret, int32_t op_errno, inode_t *inode,
                    struct iatt *buf, dict_t *dict, struct iatt *postparent)
 {
-        marker_conf_t  *priv                       = NULL;
-        marker_local_t *local                      = NULL;
-        dict_t         *xattrs                     = NULL;
-        int32_t         ret                        = -1;
+        marker_conf_t      *priv                       = NULL;
+        marker_local_t     *local                      = NULL;
+        dict_t             *xattrs                     = NULL;
+        quota_inode_ctx_t  *ctx                        = NULL;
+        int32_t             ret                        = -1;
 
         priv = this->private;
         local = (marker_local_t *) frame->local;
@@ -2847,6 +2931,16 @@ marker_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 }
         } else if (dict) {
                 xattrs = dict_ref (dict);
+        }
+
+        if (op_ret >= 0 && inode && (priv->feature_enabled & GF_QUOTA)) {
+                ctx = mq_inode_ctx_new (inode, this);
+                if (ctx == NULL) {
+                        gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                                "failed for %s", uuid_utoa (inode->gfid));
+                        op_ret = -1;
+                        op_errno = ENOMEM;
+                }
         }
 
 unwind:
@@ -2933,38 +3027,17 @@ marker_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                            int op_ret, int op_errno, gf_dirent_t *entries,
                            dict_t *xdata)
 {
-        gf_dirent_t *entry = NULL;
-        loc_t        loc    = {0, };
-        inode_t     *parent = NULL;
-        int          ret    = -1;
+        gf_dirent_t        *entry  = NULL;
+        quota_inode_ctx_t  *ctx    = NULL;
+        int                 ret    = -1;
 
         if ((op_ret <= 0) || (entries == NULL)) {
                 goto out;
         }
 
         list_for_each_entry (entry, &entries->list, list) {
-                if (entry->inode == entry->inode->table->root) {
-                        inode_unref (parent);
-                        parent = NULL;
-                }
-
-                if (parent)
-                        _marker_inode_loc_fill (entry->inode, parent,
-                                                entry->d_name, &loc);
-                else
-                        ret = marker_inode_loc_fill (entry->inode, &loc);
-
-                if (ret) {
-                        gf_log (this->name, GF_LOG_WARNING, "Couldn't build "
-                                "loc for %s/%s",
-                                parent? uuid_utoa (parent->gfid): NULL,
-                                entry->d_name);
+                if (entry->inode == NULL)
                         continue;
-                }
-
-                inode_unref (parent);
-                parent = inode_ref (entry->inode);
-                loc_wipe (&loc);
 
                 ret = marker_key_set_ver (this, entry->dict);
                 if (ret < 0) {
@@ -2972,10 +3045,13 @@ marker_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         op_errno = ENOMEM;
                         break;
                 }
-        }
 
-        if (parent)
-                inode_unref (parent);
+                ctx = mq_inode_ctx_new (entry->inode, this);
+                if (ctx == NULL)
+                        gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                                "failed for %s",
+                                uuid_utoa (entry->inode->gfid));
+        }
 
 out:
         STACK_UNWIND_STRICT (readdirp, frame, op_ret, op_errno, entries, xdata);
@@ -2987,12 +3063,13 @@ marker_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                      int op_ret, int op_errno, gf_dirent_t *entries,
                      dict_t *xdata)
 {
-        gf_dirent_t    *entry = NULL;
-        marker_conf_t  *priv  = NULL;
-        marker_local_t *local = NULL;
-        loc_t           loc   = {0, };
-        int             ret   = -1;
-        char           *resolvedpath = NULL;
+        gf_dirent_t        *entry         = NULL;
+        marker_conf_t      *priv          = NULL;
+        marker_local_t     *local         = NULL;
+        loc_t               loc           = {0, };
+        int                 ret           = -1;
+        char               *resolvedpath  = NULL;
+        quota_inode_ctx_t  *ctx           = NULL;
 
         if (op_ret <= 0)
                 goto unwind;
@@ -3022,6 +3099,11 @@ marker_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
                 loc.path = resolvedpath;
                 resolvedpath = NULL;
+
+                ctx = mq_inode_ctx_new (loc.inode, this);
+                if (ctx == NULL)
+                        gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                                "failed for %s", uuid_utoa (loc.inode->gfid));
 
                 mq_xattr_state (this, &loc, entry->dict, entry->d_stat);
                 loc_wipe (&loc);

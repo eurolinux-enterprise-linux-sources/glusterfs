@@ -7,10 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 #include <inttypes.h>
 #include <fnmatch.h>
 #include <pwd.h>
@@ -21,6 +17,7 @@
 #include "dict.h"
 #include "list.h"
 #include "logging.h"
+#include "syscall.h"
 #include "defaults.h"
 #include "compat.h"
 #include "compat-errno.h"
@@ -450,7 +447,7 @@ _arg_parse_uid (char *val, void *data)
 }
 
 static int
-evaluate_mount_request (gf_mount_spec_t *mspec, dict_t *argdict)
+evaluate_mount_request (xlator_t *this, gf_mount_spec_t *mspec, dict_t *argdict)
 {
         struct gf_set_descriptor sd = {{0,},};
         int i                       = 0;
@@ -479,8 +476,14 @@ evaluate_mount_request (gf_mount_spec_t *mspec, dict_t *argdict)
                 if (mspec->patterns[i].negative)
                         match = !match;
 
-                if (!match)
+                if (!match) {
+                        gf_msg (this->name, GF_LOG_ERROR, EPERM,
+                                GD_MSG_MNTBROKER_SPEC_MISMATCH,
+                                "Mountbroker spec mismatch!!! SET: %d "
+                                "COMPONENT: %d. Review the mount args passed",
+                                 mspec->patterns[i].condition, i);
                         return -EPERM;
+                }
         }
 
         ret = seq_dict_foreach (argdict, _arg_parse_uid, &uid);
@@ -528,6 +531,8 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
         runner_t runner            = {0,};
         int ret                    = 0;
         xlator_t *this             = THIS;
+        mode_t orig_umask          = 0;
+        gf_boolean_t found_label   = _gf_false;
 
         priv = this->private;
         GF_ASSERT (priv);
@@ -538,12 +543,19 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
         if (dict_get_str (this->options, "mountbroker-root",
                           &mountbroker_root) != 0) {
                 *op_errno = ENOENT;
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        GD_MSG_DICT_GET_FAILED, "'option mountbroker-root' "
+                        "missing in glusterd vol file");
                 goto out;
         }
 
         GF_ASSERT (label);
         if (!*label) {
                 *op_errno = EINVAL;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_MNTBROKER_LABEL_NULL,
+                        "label is NULL (%s)",
+                        strerror (*op_errno));
                 goto out;
         }
 
@@ -552,11 +564,20 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
                                  speclist) {
                 if (strcmp (mspec->label, label) != 0)
                         continue;
-                uid = evaluate_mount_request (mspec, argdict);
+
+                found_label = _gf_true;
+                uid = evaluate_mount_request (this, mspec, argdict);
                 break;
         }
         if (uid < 0) {
                 *op_errno = -uid;
+                if (!found_label) {
+                        gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                                GD_MSG_MNTBROKER_LABEL_MISS,
+                                "Missing mspec: Check the corresponding option "
+                                "in glusterd vol file for mountbroker user: %s",
+                                 label);
+                }
                 goto out;
         }
 
@@ -564,11 +585,17 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
         seq_dict_foreach (argdict, _volname_get, &volname);
         if (!volname) {
                 *op_errno = EINVAL;
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        GD_MSG_DICT_GET_FAILED,
+                        "Dict get failed for the key 'volname'");
                 goto out;
         }
         if (glusterd_volinfo_find (volname, &vol) != 0 ||
             !glusterd_is_volume_started (vol)) {
                 *op_errno = ENOENT;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_MOUNT_REQ_FAIL,
+                        "Either volume is not started or volinfo not found");
                 goto out;
         }
 
@@ -591,29 +618,41 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
 
         sla = strrchr (mtptemp, '/');
         *sla = '\0';
-        ret = mkdir (mtptemp, 0700);
+        ret = sys_mkdir (mtptemp, 0700);
         if (ret == 0)
-                ret = chown (mtptemp, uid, 0);
+                ret = sys_chown (mtptemp, uid, 0);
         else if (errno == EEXIST)
                 ret = 0;
         if (ret == -1) {
                 *op_errno = errno;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_SYSCALL_FAIL,
+                        "Mountbroker User directory creation failed");
                 goto out;
         }
-        ret = lstat (mtptemp, &st);
+        ret = sys_lstat (mtptemp, &st);
         if (ret == -1) {
                 *op_errno = errno;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_SYSCALL_FAIL,
+                        "stat on mountbroker user directory failed");
                 goto out;
         }
         if (!(S_ISDIR (st.st_mode) && (st.st_mode & ~S_IFMT) == 0700 &&
               st.st_uid == uid && st.st_gid == 0)) {
                 *op_errno = EACCES;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_MOUNT_REQ_FAIL,
+                        "Incorrect mountbroker user directory attributes");
                 goto out;
         }
         *sla = '/';
 
         if (!mkdtemp (mtptemp)) {
                 *op_errno = errno;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_SYSCALL_FAIL,
+                        "Mountbroker mount directory creation failed");
                 goto out;
         }
 
@@ -627,12 +666,17 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
                 *op_errno = ENOMEM;
                 goto out;
         }
+        orig_umask = umask(S_IRWXG | S_IRWXO);
         ret = mkstemp (cookie);
+        umask(orig_umask);
         if (ret == -1) {
                 *op_errno = errno;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_SYSCALL_FAIL,
+                        "Mountbroker cookie file creation failed");
                 goto out;
         }
-        close (ret);
+        sys_close (ret);
 
         /*** assembly the path from cookie to mountpoint */
         sla = strchr (sla - 1, '/');
@@ -646,12 +690,15 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
         /*** create cookie link in (to-be) mountpoint,
              move it over to the final place */
         *cookieswitch = '/';
-        ret = symlink (mntlink, mtptemp);
+        ret = sys_symlink (mntlink, mtptemp);
         if (ret != -1)
-                ret = rename (mtptemp, cookie);
+                ret = sys_rename (mtptemp, cookie);
         *cookieswitch = '\0';
         if (ret == -1) {
                 *op_errno = errno;
+                gf_msg (this->name, GF_LOG_ERROR, *op_errno,
+                        GD_MSG_SYSCALL_FAIL,
+                        "symlink or rename failed");
                 goto out;
         }
 
@@ -674,16 +721,15 @@ glusterd_do_mount (char *label, dict_t *argdict, char **path, int *op_errno)
                 ret = -1;
                 gf_msg (this->name, GF_LOG_WARNING, *op_errno,
                         GD_MSG_MOUNT_REQ_FAIL,
-                        "unsuccessful mount request (%s)",
-                        strerror (*op_errno));
+                        "unsuccessful mount request");
                 if (mtptemp) {
                         *cookieswitch = '/';
-                        unlink (mtptemp);
+                        sys_unlink (mtptemp);
                         *cookieswitch = '\0';
-                        rmdir (mtptemp);
+                        sys_rmdir (mtptemp);
                 }
                 if (cookie) {
-                        unlink (cookie);
+                        sys_unlink (cookie);
                         GF_FREE (cookie);
                 }
 

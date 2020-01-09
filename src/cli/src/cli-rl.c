@@ -13,11 +13,6 @@
 #include <stdint.h>
 #include <pthread.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "cli.h"
 #include "cli-cmd.h"
 #include "cli-mem-types.h"
@@ -113,10 +108,16 @@ cli_rl_process_line (char *line)
 
 
 int
-cli_rl_stdin (int fd, int idx, void *data,
+cli_rl_stdin (int fd, int idx, int gen, void *data,
               int poll_out, int poll_in, int poll_err)
 {
+        struct cli_state *state = NULL;
+
+        state = data;
+
         rl_callback_read_char ();
+
+        event_handled (state->ctx->event_pool, fd, idx, gen);
 
         return 0;
 }

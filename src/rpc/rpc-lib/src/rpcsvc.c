@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpcsvc.h"
 #include "rpc-transport.h"
 #include "dict.h"
@@ -308,6 +303,7 @@ rpcsvc_program_actor (rpcsvc_request_t *req)
                 goto err;
         }
 
+        req->ownthread = program->ownthread;
         req->synctask = program->synctask;
 
         err = SUCCESS;
@@ -378,9 +374,6 @@ rpcsvc_request_destroy (rpcsvc_request_t *req)
                 iobref_unref (req->iobref);
         }
 
-        if (req->hdr_iobuf)
-                iobuf_unref (req->hdr_iobuf);
-
         /* This marks the "end" of an RPC request. Reply is
            completely written to the socket and is on the way
            to the client. It is time to decrement the
@@ -433,6 +426,7 @@ rpcsvc_request_init (rpcsvc_t *svc, rpc_transport_t *trans,
         req->trans_private = msg->private;
 
         INIT_LIST_HEAD (&req->txlist);
+        INIT_LIST_HEAD (&req->request_list);
         req->payloadsize = 0;
 
         /* By this time, the data bytes for the auth scheme would have already
@@ -583,7 +577,7 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
         rpcsvc_request_t       *req            = NULL;
         int                     ret            = -1;
         uint16_t                port           = 0;
-        gf_boolean_t            is_unix        = _gf_false;
+        gf_boolean_t            is_unix        = _gf_false, empty = _gf_false;
         gf_boolean_t            unprivileged   = _gf_false;
         drc_cached_op_t        *reply          = NULL;
         rpcsvc_drc_globals_t   *drc            = NULL;
@@ -635,7 +629,8 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
                         /* Non-privileged user, fail request */
                         gf_log (GF_RPCSVC, GF_LOG_ERROR,
                                 "Request received from non-"
-                                "privileged port. Failing request");
+                                "privileged port. Failing request for %s.",
+                                req->trans->peerinfo.identifier);
                         req->rpc_status = MSG_DENIED;
                         req->rpc_err = AUTH_ERROR;
                         req->auth_err = RPCSVC_AUTH_REJECT;
@@ -694,13 +689,24 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
                 }
 
                 if (req->synctask) {
-                        if (msg->hdr_iobuf)
-                                req->hdr_iobuf = iobuf_ref (msg->hdr_iobuf);
-
                         ret = synctask_new (THIS->ctx->env,
                                             (synctask_fn_t) actor_fn,
                                             rpcsvc_check_and_reply_error, NULL,
                                             req);
+                } else if (req->ownthread) {
+                        pthread_mutex_lock (&req->prog->queue_lock);
+                        {
+                                empty = list_empty (&req->prog->request_queue);
+
+                                list_add_tail (&req->request_list,
+                                               &req->prog->request_queue);
+
+                                if (empty)
+                                        pthread_cond_signal (&req->prog->queue_cond);
+                        }
+                        pthread_mutex_unlock (&req->prog->queue_lock);
+
+                        ret = 0;
                 } else {
                         ret = actor_fn (req);
                 }
@@ -874,6 +880,20 @@ err:
         return txrecord;
 }
 
+static uint32_t
+rpc_callback_new_callid (struct rpc_transport *trans)
+{
+        uint32_t callid = 0;
+
+        pthread_mutex_lock (&trans->lock);
+        {
+                callid = ++trans->xid;
+        }
+        pthread_mutex_unlock (&trans->lock);
+
+        return callid;
+}
+
 int
 rpcsvc_fill_callback (int prognum, int progver, int procnum, int payload,
                       uint32_t xid, struct rpc_msg *request)
@@ -1010,6 +1030,7 @@ int rpcsvc_request_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
         struct iovec            iov         = {0, };
         struct iobuf            *iobuf      = NULL;
         ssize_t                 xdr_size    = 0;
+        struct iobref           *iobref     = NULL;
 
         if (!req)
                 goto out;
@@ -1032,12 +1053,24 @@ int rpcsvc_request_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
         iov.iov_len = ret;
         count = 1;
 
+        iobref = iobref_new ();
+        if (!iobref) {
+                ret = -1;
+                gf_log ("rpcsvc", GF_LOG_WARNING, "Failed to create iobref");
+                goto out;
+        }
+
+        iobref_add (iobref, iobuf);
+
         ret = rpcsvc_callback_submit (rpc, trans, prog, procnum,
-                                      &iov, count);
+                                      &iov, count, iobref);
 
 out:
         if (iobuf)
                 iobuf_unref (iobuf);
+
+        if (iobref)
+                iobref_unref (iobref);
 
         return ret;
 }
@@ -1045,13 +1078,16 @@ out:
 int
 rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
                         rpcsvc_cbk_program_t *prog, int procnum,
-                        struct iovec *proghdr, int proghdrcount)
+                        struct iovec *proghdr, int proghdrcount,
+                        struct iobref *iobref)
 {
         struct iobuf          *request_iob = NULL;
         struct iovec           rpchdr      = {0,};
         rpc_transport_req_t    req;
         int                    ret         = -1;
         int                    proglen     = 0;
+        uint32_t               xid         = 0;
+        gf_boolean_t           new_iobref  = _gf_false;
 
         if (!rpc) {
                 goto out;
@@ -1063,21 +1099,32 @@ rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
                 proglen += iov_length (proghdr, proghdrcount);
         }
 
+        xid = rpc_callback_new_callid (trans);
+
         request_iob = rpcsvc_callback_build_record (rpc, prog->prognum,
                                                     prog->progver, procnum,
-                                                    proglen,
-                                                    GF_UNIVERSAL_ANSWER,
-                                                    &rpchdr);
+                                                    proglen, xid, &rpchdr);
         if (!request_iob) {
                 gf_log ("rpcsvc", GF_LOG_WARNING,
                         "cannot build rpc-record");
                 goto out;
         }
+        if (!iobref) {
+                iobref = iobref_new ();
+                if (!iobref) {
+                        gf_log ("rpcsvc", GF_LOG_WARNING, "Failed to create iobref");
+                        goto out;
+                }
+                new_iobref = 1;
+        }
+
+        iobref_add (iobref, request_iob);
 
         req.msg.rpchdr = &rpchdr;
         req.msg.rpchdrcount = 1;
         req.msg.proghdr = proghdr;
         req.msg.proghdrcount = proghdrcount;
+        req.msg.iobref = iobref;
 
         ret = rpc_transport_submit_request (trans, &req);
         if (ret == -1) {
@@ -1090,6 +1137,9 @@ rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
 
 out:
         iobuf_unref (request_iob);
+
+        if (new_iobref)
+               iobref_unref (iobref);
 
         return ret;
 }
@@ -1516,7 +1566,6 @@ rpcsvc_program_unregister (rpcsvc_t *svc, rpcsvc_program_t *program)
                         " program failed");
                 goto out;
         }
-
         pthread_mutex_lock (&svc->rpclock);
         {
                 list_for_each_entry (prog, &svc->programs, program) {
@@ -1536,6 +1585,12 @@ rpcsvc_program_unregister (rpcsvc_t *svc, rpcsvc_program_t *program)
         gf_log (GF_RPCSVC, GF_LOG_DEBUG, "Program unregistered: %s, Num: %d,"
                 " Ver: %d, Port: %d", prog->progname, prog->prognum,
                 prog->progver, prog->progport);
+
+        if (prog->ownthread) {
+                prog->alive = _gf_false;
+                ret = 0;
+                goto out;
+        }
 
         pthread_mutex_lock (&svc->rpclock);
         {
@@ -1584,43 +1639,6 @@ rpcsvc_transport_peeraddr (rpc_transport_t *trans, char *addrstr, int addrlen,
                                           sasize);
 }
 
-
-rpc_transport_t *
-rpcsvc_transport_create (rpcsvc_t *svc, dict_t *options, char *name)
-{
-        int                ret   = -1;
-        rpc_transport_t   *trans = NULL;
-
-        trans = rpc_transport_load (svc->ctx, options, name);
-        if (!trans) {
-                gf_log (GF_RPCSVC, GF_LOG_WARNING, "cannot create listener, "
-                        "initing the transport failed");
-                goto out;
-        }
-
-        ret = rpc_transport_listen (trans);
-        if (ret == -1) {
-                gf_log (GF_RPCSVC, GF_LOG_WARNING,
-                        "listening on transport failed");
-                goto out;
-        }
-
-        ret = rpc_transport_register_notify (trans, rpcsvc_notify, svc);
-        if (ret == -1) {
-                gf_log (GF_RPCSVC, GF_LOG_WARNING, "registering notify failed");
-                goto out;
-        }
-
-        ret = 0;
-out:
-        if ((ret == -1) && (trans)) {
-                rpc_transport_disconnect (trans);
-                trans = NULL;
-        }
-
-        return trans;
-}
-
 rpcsvc_listener_t *
 rpcsvc_listener_alloc (rpcsvc_t *svc, rpc_transport_t *trans)
 {
@@ -1658,9 +1676,23 @@ rpcsvc_create_listener (rpcsvc_t *svc, dict_t *options, char *name)
                 goto out;
         }
 
-        trans = rpcsvc_transport_create (svc, options, name);
+        trans = rpc_transport_load (svc->ctx, options, name);
         if (!trans) {
-                /* LOG TODO */
+                gf_log (GF_RPCSVC, GF_LOG_WARNING, "cannot create listener, "
+                        "initing the transport failed");
+                goto out;
+        }
+
+        ret = rpc_transport_listen (trans);
+        if (ret == -EADDRINUSE || ret == -1) {
+                gf_log (GF_RPCSVC, GF_LOG_WARNING,
+                        "listening on transport failed");
+                goto out;
+        }
+
+        ret = rpc_transport_register_notify (trans, rpcsvc_notify, svc);
+        if (ret == -1) {
+                gf_log (GF_RPCSVC, GF_LOG_WARNING, "registering notify failed");
                 goto out;
         }
 
@@ -1672,7 +1704,7 @@ rpcsvc_create_listener (rpcsvc_t *svc, dict_t *options, char *name)
         ret = 0;
 out:
         if (!listener && trans) {
-                rpc_transport_disconnect (trans);
+                rpc_transport_disconnect (trans, _gf_true);
         }
 
         return ret;
@@ -1763,7 +1795,11 @@ out:
 
         GF_FREE (transport_name);
 
-        return count;
+        if (count > 0) {
+                return count;
+        } else {
+                return ret;
+        }
 }
 
 
@@ -1820,6 +1856,55 @@ out:
         return ret;
 }
 
+void *
+rpcsvc_request_handler (void *arg)
+{
+        rpcsvc_program_t *program = arg;
+        rpcsvc_request_t *req     = NULL;
+        rpcsvc_actor_t   *actor   = NULL;
+        gf_boolean_t      done    = _gf_false;
+        int               ret     = 0;
+
+        if (!program)
+                return NULL;
+
+        while (1) {
+                pthread_mutex_lock (&program->queue_lock);
+                {
+                        if (!program->alive
+                            && list_empty (&program->request_queue)) {
+                                done = 1;
+                                goto unlock;
+                        }
+
+                        while (list_empty (&program->request_queue))
+                                pthread_cond_wait (&program->queue_cond,
+                                                   &program->queue_lock);
+
+                        req = list_entry (program->request_queue.next,
+                                          typeof (*req), request_list);
+
+                        list_del_init (&req->request_list);
+                }
+        unlock:
+                pthread_mutex_unlock (&program->queue_lock);
+
+                if (done)
+                        break;
+
+                THIS = req->svc->xl;
+
+                actor = rpcsvc_program_actor (req);
+
+                ret = actor->actor (req);
+
+                if (ret != 0) {
+                        rpcsvc_check_and_reply_error (ret, NULL, req);
+                }
+        }
+
+        return NULL;
+}
 
 int
 rpcsvc_program_register (rpcsvc_t *svc, rpcsvc_program_t *program)
@@ -1861,6 +1946,21 @@ rpcsvc_program_register (rpcsvc_t *svc, rpcsvc_program_t *program)
         memcpy (newprog, program, sizeof (*program));
 
         INIT_LIST_HEAD (&newprog->program);
+        INIT_LIST_HEAD (&newprog->request_queue);
+        pthread_mutex_init (&newprog->queue_lock, NULL);
+        pthread_cond_init (&newprog->queue_cond, NULL);
+
+        newprog->alive = _gf_true;
+
+        /* make sure synctask gets priority over ownthread */
+        if (newprog->synctask)
+                newprog->ownthread = _gf_false;
+
+        if (newprog->ownthread) {
+                gf_thread_create (&newprog->thread, NULL,
+                                  rpcsvc_request_handler,
+                                  newprog, "rpcsvcrh");
+        }
 
         pthread_mutex_lock (&svc->rpclock);
         {
@@ -1908,21 +2008,28 @@ build_prog_details (rpcsvc_request_t *req, gf_dump_rsp *rsp)
         if (!req || !req->trans || !req->svc)
                 goto out;
 
-        list_for_each_entry (program, &req->svc->programs, program) {
-                prog = GF_CALLOC (1, sizeof (*prog), 0);
-                if (!prog)
-                        goto out;
-                prog->progname = program->progname;
-                prog->prognum  = program->prognum;
-                prog->progver  = program->progver;
-                if (!rsp->prog)
-                        rsp->prog = prog;
+        pthread_mutex_lock (&req->svc->rpclock);
+        {
+                list_for_each_entry (program, &req->svc->programs, program) {
+                        prog = GF_CALLOC (1, sizeof (*prog), 0);
+                        if (!prog)
+                                goto unlock;
+
+                        prog->progname = program->progname;
+                        prog->prognum  = program->prognum;
+                        prog->progver  = program->progver;
+
+                        if (!rsp->prog)
+                                rsp->prog = prog;
+                        if (prev)
+                                prev->next = prog;
+                        prev = prog;
+                }
                 if (prev)
-                        prev->next = prog;
-                prev = prog;
+                        ret = 0;
         }
-        if (prev)
-                ret = 0;
+unlock:
+        pthread_mutex_unlock (&req->svc->rpclock);
 out:
         return ret;
 }

@@ -1,0 +1,275 @@
+From 21154511978486010405a1d3a826d46dd8b9d324 Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Mon, 18 Sep 2017 14:34:54 +0530
+Subject: [PATCH 114/128] eventsapi: Add JWT signing support
+
+New argument added to accept secret to generate JWT token. This patch
+does not affect the backward compatibility.
+
+Usage:
+
+    gluster-eventsapi webhook-add <url> [-t <TOKEN>] \
+        [-s SECRET]
+
+With `--token` argument, Token header will be added as is.
+
+    Authorization: Bearer <TOKEN>
+
+In case of shared secret, Gluster will generate JWT token using the
+secret and then add it to Authorization header.
+
+    Authorization: Bearer <GENERATED_TOKEN>
+
+Secret/Token can be updated using `webhook-mod` command.
+
+Generated token will include the following payload,
+
+    {
+       "iss": "gluster",
+       "exp": EXPIRY_TIME,
+       "sub": EVENT_TYPE,
+       "iat": EVENT_TIME
+     }
+
+Where: iss - Issuer, exp - Expiry Time, sub - Event Type
+       used as Subject, iat - Event Time used as Issue Time
+
+>upstream mainline patch : https://review.gluster.org/#/c/18405
+
+BUG: 1466129
+Change-Id: Ib6b6fab23fb212d7f5e9bbc9e1416a9e9813ab1b
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126551
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ events/src/peer_eventsapi.py | 40 ++++++++++++++++++++++++++++++++++-----
+ events/src/utils.py          | 45 +++++++++++++++++++++++++++++++++++---------
+ glusterfs.spec.in            |  4 ++--
+ 3 files changed, 73 insertions(+), 16 deletions(-)
+
+diff --git a/events/src/peer_eventsapi.py b/events/src/peer_eventsapi.py
+index 59808ad..3a6a0eb 100644
+--- a/events/src/peer_eventsapi.py
++++ b/events/src/peer_eventsapi.py
+@@ -18,6 +18,7 @@ import fcntl
+ from errno import EACCES, EAGAIN
+ import signal
+ import sys
++import time
+ 
+ import requests
+ from prettytable import PrettyTable
+@@ -26,7 +27,7 @@ from gluster.cliutils import (Cmd, node_output_ok, node_output_notok,
+                               sync_file_to_peers, GlusterCmdException,
+                               output_error, execute_in_peers, runcli,
+                               set_common_args_func)
+-from events.utils import LockedOpen
++from events.utils import LockedOpen, get_jwt_token
+ 
+ from events.eventsapiconf import (WEBHOOKS_FILE_TO_SYNC,
+                                   WEBHOOKS_FILE,
+@@ -307,6 +308,8 @@ class WebhookAddCmd(Cmd):
+         parser.add_argument("url", help="URL of Webhook")
+         parser.add_argument("--bearer_token", "-t", help="Bearer Token",
+                             default="")
++        parser.add_argument("--secret", "-s",
++                            help="Secret to add JWT Bearer Token", default="")
+ 
+     def run(self, args):
+         create_webhooks_file_if_not_exists(args)
+@@ -318,7 +321,8 @@ class WebhookAddCmd(Cmd):
+                                     errcode=ERROR_WEBHOOK_ALREADY_EXISTS,
+                                     json_output=args.json)
+ 
+-            data[args.url] = args.bearer_token
++            data[args.url] = {"token": args.bearer_token,
++                              "secret": args.secret}
+             file_content_overwrite(WEBHOOKS_FILE, data)
+ 
+         sync_to_peers(args)
+@@ -331,6 +335,8 @@ class WebhookModCmd(Cmd):
+         parser.add_argument("url", help="URL of Webhook")
+         parser.add_argument("--bearer_token", "-t", help="Bearer Token",
+                             default="")
++        parser.add_argument("--secret", "-s",
++                            help="Secret to add JWT Bearer Token", default="")
+ 
+     def run(self, args):
+         create_webhooks_file_if_not_exists(args)
+@@ -342,7 +348,16 @@ class WebhookModCmd(Cmd):
+                                     errcode=ERROR_WEBHOOK_NOT_EXISTS,
+                                     json_output=args.json)
+ 
+-            data[args.url] = args.bearer_token
++            if isinstance(data[args.url], str) or \
++               isinstance(data[args.url], unicode):
++                data[args.url]["token"] = data[args.url]
++
++            if args.bearer_token != "":
++                data[args.url]["token"] = args.bearer_token
++
++            if args.secret != "":
++                data[args.url]["secret"] = args.secret
++
+             file_content_overwrite(WEBHOOKS_FILE, data)
+ 
+         sync_to_peers(args)
+@@ -376,11 +391,19 @@ class NodeWebhookTestCmd(Cmd):
+     def args(self, parser):
+         parser.add_argument("url")
+         parser.add_argument("bearer_token")
++        parser.add_argument("secret")
+ 
+     def run(self, args):
+         http_headers = {}
++        hashval = ""
+         if args.bearer_token != ".":
+-            http_headers["Authorization"] = "Bearer " + args.bearer_token
++            hashval = args.bearer_token
++
++        if args.secret != ".":
++            hashval = get_jwt_token(args.secret, "TEST", int(time.time()))
++
++        if hashval:
++            http_headers["Authorization"] = "Bearer " + hashval
+ 
+         try:
+             resp = requests.post(args.url, headers=http_headers)
+@@ -401,16 +424,23 @@ class WebhookTestCmd(Cmd):
+     def args(self, parser):
+         parser.add_argument("url", help="URL of Webhook")
+         parser.add_argument("--bearer_token", "-t", help="Bearer Token")
++        parser.add_argument("--secret", "-s",
++                            help="Secret to generate Bearer Token")
+ 
+     def run(self, args):
+         url = args.url
+         bearer_token = args.bearer_token
++        secret = args.secret
++
+         if not args.url:
+             url = "."
+         if not args.bearer_token:
+             bearer_token = "."
++        if not args.secret:
++            secret = "."
+ 
+-        out = execute_in_peers("node-webhook-test", [url, bearer_token])
++        out = execute_in_peers("node-webhook-test", [url, bearer_token,
++                                                     secret])
+ 
+         if not args.json:
+             table = PrettyTable(["NODE", "NODE STATUS", "WEBHOOK STATUS"])
+diff --git a/events/src/utils.py b/events/src/utils.py
+index 2a77b13..5130720 100644
+--- a/events/src/utils.py
++++ b/events/src/utils.py
+@@ -13,10 +13,11 @@ import json
+ import os
+ import logging
+ import fcntl
+-from errno import ESRCH, EBADF
++from errno import EBADF
+ from threading import Thread
+ import multiprocessing
+ from Queue import Queue
++from datetime import datetime, timedelta
+ 
+ from eventsapiconf import (LOG_FILE,
+                            WEBHOOKS_FILE,
+@@ -183,15 +184,33 @@ def autoload_webhooks():
+             load_webhooks()
+ 
+ 
+-def publish_to_webhook(url, token, message_queue):
++def get_jwt_token(secret, event_type, event_ts, jwt_expiry_time_seconds=60):
++    import jwt
++    payload = {
++        "exp": datetime.utcnow() + timedelta(seconds=jwt_expiry_time_seconds),
++        "iss": "gluster",
++        "sub": event_type,
++        "iat": event_ts
++    }
++    return jwt.encode(payload, secret, algorithm='HS256')
++
++
++def publish_to_webhook(url, token, secret, message_queue):
+     # Import requests here since not used in any other place
+     import requests
+ 
+     http_headers = {"Content-Type": "application/json"}
+     while True:
+-        message_json = message_queue.get()
++        hashval = ""
++        event_type, event_ts, message_json = message_queue.get()
+         if token != "" and token is not None:
+-            http_headers["Authorization"] = "Bearer " + token
++            hashval = token
++
++        if secret != "" and secret is not None:
++            hashval = get_jwt_token(secret, event_type, event_ts)
++
++        if hashval:
++            http_headers["Authorization"] = "Bearer " + hashval
+ 
+         try:
+             resp = requests.post(url, headers=http_headers, data=message_json)
+@@ -218,7 +237,7 @@ def publish_to_webhook(url, token, message_queue):
+ def plugin_webhook(message):
+     message_json = json.dumps(message, sort_keys=True)
+     logger.debug("EVENT: {0}".format(message_json))
+-    webhooks_pool.send(message_json)
++    webhooks_pool.send(message["event"], message["ts"], message_json)
+ 
+ 
+ class LockedOpen(object):
+@@ -298,9 +317,17 @@ class PidFile(object):
+ 
+ def webhook_monitor(proc_queue, webhooks):
+     queues = {}
+-    for url, token in webhooks.items():
++    for url, data in webhooks.items():
++        if isinstance(data, str) or isinstance(data, unicode):
++            token = data
++            secret = None
++        else:
++            token = data["token"]
++            secret = data["secret"]
++
+         queues[url] = Queue()
+-        t = Thread(target=publish_to_webhook, args=(url, token, queues[url]))
++        t = Thread(target=publish_to_webhook, args=(url, token, secret,
++                                                    queues[url]))
+         t.start()
+ 
+     # Get the message sent to Process queue and distribute to all thread queues
+@@ -329,8 +356,8 @@ class WebhookThreadPool(object):
+         self.proc.terminate()
+         self.start()
+ 
+-    def send(self, message):
+-        self.queue.put(message)
++    def send(self, event_type, event_ts, message):
++        self.queue.put((event_type, event_ts, message))
+ 
+ 
+ def init_webhook_pool():
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 56a62a9..29329fa 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -671,9 +671,9 @@ Requires:         %{name}-server%{?_isa} = %{version}-%{release}
+ Requires:         python2 python-prettytable
+ Requires:         python2-gluster = %{version}-%{release}
+ %if ( 0%{?rhel} )
+-Requires:         python-requests
++Requires:         python-requests python-jwt
+ %else
+-Requires:         python2-requests
++Requires:         python2-requests python2-jwt
+ %endif
+ %if ( 0%{?rhel} && 0%{?rhel} < 7 )
+ Requires:         python-argparse
+-- 
+1.8.3.1
+

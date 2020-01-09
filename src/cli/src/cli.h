@@ -10,11 +10,6 @@
 #ifndef __CLI_H__
 #define __CLI_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpc-clnt.h"
 #include "glusterfs.h"
 #include "protocol-common.h"
@@ -30,9 +25,6 @@
 
 #define DEFAULT_EVENT_POOL_SIZE            16384
 #define CLI_GLUSTERD_PORT                  24007
-#define CLI_DEFAULT_CONN_TIMEOUT             120
-#define CLI_DEFAULT_CMD_TIMEOUT              120
-#define CLI_TEN_MINUTES_TIMEOUT              600 //Longer timeout for volume top
 #define DEFAULT_CLI_LOG_FILE_DIRECTORY     DATADIR "/log/glusterfs"
 #define CLI_VOL_STATUS_BRICK_LEN              43
 #define CLI_TAB_LENGTH                         8
@@ -46,6 +38,9 @@ enum argp_option_keys {
 	ARGP_DEBUG_KEY = 133,
 	ARGP_PORT_KEY = 'p',
 };
+
+int cli_default_conn_timeout;
+int cli_ten_minutes_timeout;
 
 typedef enum {
         COLD_BRICK_COUNT,
@@ -61,22 +56,23 @@ typedef enum {
         MAX
 } values;
 
-#define GLUSTER_MODE_SCRIPT    (1 << 0)
-#define GLUSTER_MODE_ERR_FATAL (1 << 1)
-#define GLUSTER_MODE_XML       (1 << 2)
-#define GLUSTER_MODE_WIGNORE   (1 << 3)
+#define GLUSTER_MODE_SCRIPT             (1 << 0)
+#define GLUSTER_MODE_ERR_FATAL          (1 << 1)
+#define GLUSTER_MODE_XML                (1 << 2)
+#define GLUSTER_MODE_WIGNORE            (1 << 3)
+#define GLUSTER_MODE_WIGNORE_PARTITION  (1 << 4)
 
 
-#define GLUSTERD_GET_QUOTA_AUX_MOUNT_PATH(abspath, volname, path)      \
-        snprintf (abspath, sizeof (abspath)-1,                          \
-                  DEFAULT_VAR_RUN_DIRECTORY"/%s%s", volname, path);
+#define GLUSTERD_GET_QUOTA_LIST_MOUNT_PATH(abspath, volname, path) do {       \
+        snprintf (abspath, sizeof (abspath)-1,                                \
+                  DEFAULT_VAR_RUN_DIRECTORY"/%s_quota_list%s", volname, path);\
+        } while (0)
 
 struct cli_state;
 struct cli_cmd_word;
 struct cli_cmd_tree;
 struct cli_cmd;
 
-extern char *cli_vol_type_str[];
 extern char *cli_vol_status_str[];
 extern char *cli_vol_task_status_str[];
 
@@ -161,6 +157,7 @@ struct cli_local {
         int                     vol_count;
 #endif
         gf_lock_t               lock;
+        struct list_head        dict_list;
 };
 
 struct cli_volume_status {
@@ -174,12 +171,10 @@ struct cli_volume_status {
         char          *pid_str;
         char          *free;
         char          *total;
-#ifdef GF_LINUX_HOST_OS
         char          *fs_name;
         char          *mount_options;
         char          *device;
         char          *inode_size;
-#endif
 };
 
 struct snap_config_opt_vals_ {
@@ -240,7 +235,7 @@ cli_submit_request (struct rpc_clnt *rpc, void *req, call_frame_t *frame,
 
 int32_t
 cli_cmd_volume_create_parse (struct cli_state *state, const char **words,
-                             int wordcount, dict_t **options);
+                             int wordcount, dict_t **options, char **bricks);
 
 int32_t
 cli_cmd_volume_reset_parse (const char **words, int wordcount, dict_t **opt);
@@ -260,9 +255,10 @@ cli_cmd_bitrot_parse (const char **words, int wordcount, dict_t **opt);
 int32_t
 cli_cmd_volume_set_parse (struct cli_state *state, const char **words,
                           int wordcount, dict_t **options, char **op_errstr);
+
 int32_t
-cli_cmd_ganesha_parse (struct cli_state *state, const char **words,
-                       int wordcount, dict_t **options, char **op_errstr);
+cli_cmd_get_state_parse (struct cli_state *state, const char **words,
+                         int wordcount, dict_t **options, char **op_errstr);
 
 int32_t
 cli_cmd_volume_add_brick_parse (const char **words, int wordcount,
@@ -277,12 +273,21 @@ cli_cmd_volume_tier_parse (const char **words, int wordcount,
                            dict_t **options);
 
 int32_t
+cli_cmd_volume_old_tier_parse (const char **words, int wordcount,
+                           dict_t **options);
+
+int32_t
 cli_cmd_volume_remove_brick_parse (const char **words, int wordcount,
-                                   dict_t **options, int *question);
+                                   dict_t **options, int *question,
+                                   int *brick_count);
 
 int32_t
 cli_cmd_volume_replace_brick_parse (const char **words, int wordcount,
                                    dict_t **options);
+
+int32_t
+cli_cmd_volume_reset_brick_parse (const char **words, int wordcount,
+                                  dict_t **options);
 
 int32_t
 cli_cmd_log_rotate_parse (const char **words, int wordcount, dict_t **options);
@@ -425,7 +430,7 @@ cli_xml_output_vol_remove_brick_detach_tier (gf_boolean_t status_op,
                                              const char *op);
 
 int
-cli_xml_output_vol_replace_brick (char *op, dict_t *dict, int op_ret,
+cli_xml_output_vol_replace_brick (dict_t *dict, int op_ret,
                                   int op_errno, char *op_errstr);
 
 int
@@ -443,11 +448,8 @@ int
 cli_xml_output_vol_status_tasks_detail (cli_local_t *local, dict_t *dict);
 
 int
-cli_xml_output_common (xmlTextWriterPtr writer, int op_ret, int op_errno,
-                       char *op_errstr);
-int
-cli_xml_snapshot_delete (xmlTextWriterPtr writer, xmlDocPtr doc, dict_t *dict,
-                        gf_cli_rsp *rsp);
+cli_xml_snapshot_delete (cli_local_t *local, dict_t *dict, gf_cli_rsp *rsp);
+
 int
 cli_xml_snapshot_begin_composite_op (cli_local_t *local);
 
@@ -490,5 +492,4 @@ print_quota_list_empty (char *path, int type);
 
 int
 gf_gsync_status_t_comparator (const void *p, const void *q);
-
 #endif /* __CLI_H__ */

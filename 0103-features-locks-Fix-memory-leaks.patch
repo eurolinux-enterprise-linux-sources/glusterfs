@@ -1,0 +1,116 @@
+From 09c73d2c7793d2316c62837a80b41904a2a5b15f Mon Sep 17 00:00:00 2001
+From: Xavier Hernandez <jahernan@redhat.com>
+Date: Mon, 20 Nov 2017 10:51:09 +0100
+Subject: [PATCH 103/128] features/locks: Fix memory leaks
+
+> Upstream patch: https://review.gluster.org/18812
+
+Change-Id: Ic1d2e17a7d14389b6734d1b88bd28c0a2907bbd6
+BUG: 1507361
+Signed-off-by: Xavier Hernandez <jahernan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/125955
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/features/locks/src/clear.c   | 2 +-
+ xlators/features/locks/src/common.c  | 1 +
+ xlators/features/locks/src/entrylk.c | 3 ++-
+ xlators/features/locks/src/inodelk.c | 7 ++++---
+ xlators/features/locks/src/posix.c   | 3 +++
+ 5 files changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/xlators/features/locks/src/clear.c b/xlators/features/locks/src/clear.c
+index d7c210f..22c03b5 100644
+--- a/xlators/features/locks/src/clear.c
++++ b/xlators/features/locks/src/clear.c
+@@ -184,7 +184,7 @@ clrlk_clear_posixlk (xlator_t *this, pl_inode_t *pl_inode, clrlk_args *args,
+                         } else {
+                                 gcount++;
+                         }
+-                        GF_FREE (plock);
++                        __destroy_lock(plock);
+                 }
+         }
+         pthread_mutex_unlock (&pl_inode->mutex);
+diff --git a/xlators/features/locks/src/common.c b/xlators/features/locks/src/common.c
+index 4b63c43..7311126 100644
+--- a/xlators/features/locks/src/common.c
++++ b/xlators/features/locks/src/common.c
+@@ -438,6 +438,7 @@ pl_inode_get (xlator_t *this, inode_t *inode)
+ 
+                 ret = __inode_ctx_put (inode, this, (uint64_t)(long)(pl_inode));
+                 if (ret) {
++                        pthread_mutex_destroy (&pl_inode->mutex);
+                         GF_FREE (pl_inode);
+                         pl_inode = NULL;
+                         goto unlock;
+diff --git a/xlators/features/locks/src/entrylk.c b/xlators/features/locks/src/entrylk.c
+index 4231d76..8e9008b 100644
+--- a/xlators/features/locks/src/entrylk.c
++++ b/xlators/features/locks/src/entrylk.c
+@@ -784,7 +784,7 @@ pl_common_entrylk (call_frame_t *frame, xlator_t *this,
+                 break;
+ 
+         default:
+-                inode_unref (pinode->inode);
++                need_inode_unref = _gf_true;
+                 gf_log (this->name, GF_LOG_ERROR,
+                         "Unexpected case in entrylk (cmd=%d). Please file"
+                         "a bug report at http://bugs.gluster.com", cmd);
+@@ -960,6 +960,7 @@ pl_entrylk_client_cleanup (xlator_t *this, pl_ctx_t *ctx)
+ 			__pl_entrylk_unref (l);
+ 		}
+ 		pthread_mutex_unlock (&pinode->mutex);
++
+                 inode_unref (pinode->inode);
+         }
+ 
+diff --git a/xlators/features/locks/src/inodelk.c b/xlators/features/locks/src/inodelk.c
+index e1702c7..4aebac6 100644
+--- a/xlators/features/locks/src/inodelk.c
++++ b/xlators/features/locks/src/inodelk.c
+@@ -721,9 +721,6 @@ out:
+ 	if (ctx)
+ 		pthread_mutex_unlock (&ctx->lock);
+ 
+-        if (need_inode_unref)
+-                inode_unref (pl_inode->inode);
+-
+         /* The following (extra) unref corresponds to the ref that
+          * was done at the time the lock was granted.
+          */
+@@ -732,6 +729,10 @@ out:
+                 grant_blocked_inode_locks (this, pl_inode, dom);
+         }
+ 
++        if (need_inode_unref) {
++                inode_unref (pl_inode->inode);
++        }
++
+         return ret;
+ }
+ 
+diff --git a/xlators/features/locks/src/posix.c b/xlators/features/locks/src/posix.c
+index ff9a3da..a158227 100644
+--- a/xlators/features/locks/src/posix.c
++++ b/xlators/features/locks/src/posix.c
+@@ -2472,6 +2472,7 @@ pl_forget (xlator_t *this,
+                                                   list) {
+ 
+                                 list_del (&rw_req->list);
++                                call_stub_destroy(rw_req->stub);
+                                 GF_FREE (rw_req);
+                         }
+                 }
+@@ -2555,6 +2556,8 @@ pl_forget (xlator_t *this,
+ 
+         }
+ 
++        pthread_mutex_destroy(&pl_inode->mutex);
++
+         GF_FREE (pl_inode);
+ 
+         return 0;
+-- 
+1.8.3.1
+

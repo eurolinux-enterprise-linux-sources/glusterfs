@@ -11,11 +11,6 @@
 #ifndef __LOGGING_H__
 #define __LOGGING_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <sys/time.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -42,6 +37,7 @@
 #endif
 #define GF_PRI_BLKSIZE     PRId32
 #define GF_PRI_SIZET       "zu"
+#define GF_PRI_ATOMIC      PRIu64
 
 #ifdef GF_DARWIN_HOST_OS
 #define GF_PRI_TIME "ld"
@@ -94,8 +90,9 @@ typedef enum {
         /* NOTE: In the future journald, lumberjack, next new thing here */
 } gf_log_logger_t;
 
-#define DEFAULT_LOG_FILE_DIRECTORY            DATADIR "/log/glusterfs"
-#define DEFAULT_LOG_LEVEL                     GF_LOG_INFO
+#define DEFAULT_LOG_FILE_DIRECTORY          DATADIR "/log/glusterfs"
+#define DEFAULT_QUOTA_CRAWL_LOG_DIRECTORY   DATADIR "/log/glusterfs/quota_crawl"
+#define DEFAULT_LOG_LEVEL                   GF_LOG_INFO
 
 typedef struct gf_log_handle_ {
         pthread_mutex_t   logfile_mutex;
@@ -104,7 +101,6 @@ typedef struct gf_log_handle_ {
         gf_loglevel_t     loglevel;
         int               gf_log_syslog;
         gf_loglevel_t     sys_log_level;
-        char              gf_log_xl_log_set;
         char             *filename;
         FILE             *logfile;
         FILE             *gf_log_logfile;
@@ -120,6 +116,7 @@ typedef struct gf_log_handle_ {
         uint32_t          timeout;
         pthread_mutex_t   log_buf_lock;
         struct _gf_timer *log_flush_timer;
+        int               localtime;
 } gf_log_handle_t;
 
 
@@ -139,7 +136,7 @@ typedef struct log_buf_ {
         struct list_head msg_list;
 } log_buf_t;
 
-void gf_log_globals_init (void *ctx);
+void gf_log_globals_init (void *ctx, gf_loglevel_t level);
 int gf_log_init (void *data, const char *filename, const char *ident);
 
 void gf_log_logrotate (int signum);
@@ -284,6 +281,8 @@ void gf_log_disable_syslog (void);
 void gf_log_enable_syslog (void);
 gf_loglevel_t gf_log_get_loglevel (void);
 void gf_log_set_loglevel (gf_loglevel_t level);
+int gf_log_get_localtime (void);
+void gf_log_set_localtime (int);
 void gf_log_flush (void);
 gf_loglevel_t gf_log_get_xl_loglevel (void *xl);
 void gf_log_set_xl_loglevel (void *xl, gf_loglevel_t level);
@@ -328,5 +327,25 @@ gf_log_disable_suppression_before_exit (struct _glusterfs_ctx *ctx);
         gf_log ((xl)->name, GF_LOG_WARNING, format, ##args)
 #define GF_ERROR(xl, format, args...)                           \
         gf_log ((xl)->name, GF_LOG_ERROR, format, ##args)
+
+int
+_gf_slog (const char *domain, const char *file, const char *function, int line,
+          gf_loglevel_t level, const char *event, ...);
+
+int
+_gf_smsg (const char *domain, const char *file, const char *function,
+          int32_t line, gf_loglevel_t level, int errnum, int trace,
+          uint64_t msgid, const char *event, ...);
+
+/* Interface to log messages with message IDs */
+#define gf_smsg(dom, levl, errnum, msgid, event...) do {              \
+                _gf_smsg (dom, __FILE__, __FUNCTION__, __LINE__,      \
+                          levl, errnum, 0, msgid, ##event);           \
+        } while (0)
+
+#define gf_slog(dom, levl, event...) do {                             \
+                _gf_slog (dom, __FILE__, __FUNCTION__, __LINE__,      \
+                          levl, ##event);                             \
+        } while (0)
 
 #endif /* __LOGGING_H__ */

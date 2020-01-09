@@ -1,0 +1,993 @@
+From 40d6af4d4c42b1880abcf576a9a9b6e734298ff0 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Sat, 10 Feb 2018 12:25:15 +0530
+Subject: [PATCH 225/236] glusterfsd: Memleak in glusterfsd process while 
+ brick mux is on
+
+Problem: At the time of stopping the volume while brick multiplex is
+         enabled memory is not cleanup from all server side xlators.
+
+Solution: To cleanup memory for all server side xlators call fini
+          in glusterfs_handle_terminate after send GF_EVENT_CLEANUP
+          notification to top xlator.
+
+> BUG: 1544090
+> (cherry picked from commit 7c3cc485054e4ede1efb358552135b432fb7047a)
+> (upstream patch review link https://review.gluster.org/#/c/19616/)
+
+BUG: 1535281
+Change-Id: Ia10dc7f2605aa50f2b90b3fe4eb380ba9299e2fc
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136216
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ glusterfsd/src/glusterfsd-mgmt.c                   | 67 ++++++++++++++++++++
+ glusterfsd/src/glusterfsd.c                        | 13 ----
+ glusterfsd/src/glusterfsd.h                        |  3 +
+ xlators/debug/io-stats/src/io-stats.c              |  1 -
+ xlators/features/bit-rot/src/stub/bit-rot-stub.c   | 22 +++----
+ .../features/changelog/src/changelog-ev-handle.c   |  8 ++-
+ .../features/changelog/src/changelog-rpc-common.c  |  4 ++
+ xlators/features/changelog/src/changelog.c         | 18 ++----
+ .../changetimerecorder/src/changetimerecorder.c    | 15 ++---
+ xlators/features/index/src/index.c                 | 21 ++++---
+ xlators/features/leases/src/leases.c               | 15 +++--
+ xlators/features/marker/src/marker.c               | 69 ++++++++++++---------
+ xlators/features/quota/src/quota.c                 | 25 +++++++-
+ xlators/features/shard/src/shard.c                 |  3 +
+ xlators/features/trash/src/trash.c                 | 15 ++++-
+ xlators/features/upcall/src/upcall.c               | 18 +++++-
+ .../performance/decompounder/src/decompounder.c    |  7 +++
+ xlators/performance/io-threads/src/io-threads.c    |  6 +-
+ xlators/protocol/server/src/server-rpc-fops.c      |  7 +++
+ xlators/protocol/server/src/server.c               |  1 -
+ xlators/storage/posix/src/posix-handle.h           |  6 ++
+ xlators/storage/posix/src/posix-helpers.c          |  1 +
+ xlators/storage/posix/src/posix.c                  | 71 ++++++++++++----------
+ xlators/system/posix-acl/src/posix-acl.c           |  4 +-
+ 24 files changed, 281 insertions(+), 139 deletions(-)
+
+diff --git a/glusterfsd/src/glusterfsd-mgmt.c b/glusterfsd/src/glusterfsd-mgmt.c
+index ef53d09..8f4450b 100644
+--- a/glusterfsd/src/glusterfsd-mgmt.c
++++ b/glusterfsd/src/glusterfsd-mgmt.c
+@@ -197,6 +197,72 @@ glusterfs_autoscale_threads (glusterfs_ctx_t *ctx, int incr, xlator_t *this)
+         rpcsvc_ownthread_reconf (conf->rpc, pool->eventthreadcount);
+ }
+ 
++static int
++xlator_mem_free (xlator_t *xl)
++{
++        volume_opt_list_t *vol_opt = NULL;
++        volume_opt_list_t *tmp     = NULL;
++
++        if (!xl)
++                return 0;
++
++        GF_FREE (xl->name);
++        GF_FREE (xl->type);
++        xl->name = NULL;
++        xl->type = NULL;
++
++        if (xl->options) {
++                dict_ref (xl->options);
++                dict_unref (xl->options);
++                xl->options = NULL;
++        }
++
++        list_for_each_entry_safe (vol_opt, tmp, &xl->volume_options, list) {
++                list_del_init (&vol_opt->list);
++                GF_FREE (vol_opt);
++        }
++
++        return 0;
++}
++
++void
++xlator_call_fini (xlator_t *this) {
++        if (!this)
++                return;
++        xlator_call_fini (this->next);
++        this->fini (this);
++}
++
++void
++xlator_mem_cleanup (xlator_t *this) {
++        xlator_list_t     *list = this->children;
++        xlator_t          *trav = list->xlator;
++        inode_table_t     *inode_table = NULL;
++        xlator_t          *prev = trav;
++
++        inode_table = this->itable;
++
++        xlator_call_fini (trav);
++
++        while (prev) {
++                trav = prev->next;
++                xlator_mem_free (prev);
++                prev = trav;
++        }
++
++        if (inode_table) {
++                inode_table_destroy (inode_table);
++                this->itable = NULL;
++        }
++
++        if (this->fini) {
++                this->fini (this);
++        }
++
++        xlator_mem_free (this);
++}
++
++
+ int
+ glusterfs_handle_terminate (rpcsvc_request_t *req)
+ {
+@@ -263,6 +329,7 @@ glusterfs_handle_terminate (rpcsvc_request_t *req)
+                 gf_log (THIS->name, GF_LOG_INFO, "detaching not-only"
+                          " child %s", xlator_req.name);
+                 top->notify (top, GF_EVENT_CLEANUP, victim);
++                xlator_mem_cleanup (victim);
+         }
+ err:
+         if (!lockflag)
+diff --git a/glusterfsd/src/glusterfsd.c b/glusterfsd/src/glusterfsd.c
+index 3ae89a6..6b7adc4 100644
+--- a/glusterfsd/src/glusterfsd.c
++++ b/glusterfsd/src/glusterfsd.c
+@@ -1416,20 +1416,7 @@ cleanup_and_exit (int signum)
+         }
+ #endif
+ 
+-        /* call fini() of each xlator */
+-
+-        /*call fini for glusterd xlator */
+-        /* TODO : Invoke fini for rest of the xlators */
+         trav = NULL;
+-        if (ctx->active)
+-                trav = ctx->active->top;
+-        while (trav) {
+-                if (should_call_fini(ctx,trav)) {
+-                        THIS = trav;
+-                        trav->fini (trav);
+-                }
+-                trav = trav->next;
+-        }
+ 
+         /* NOTE: Only the least significant 8 bits i.e (signum & 255)
+            will be available to parent process on calling exit() */
+diff --git a/glusterfsd/src/glusterfsd.h b/glusterfsd/src/glusterfsd.h
+index 43cef52..a72acc8 100644
+--- a/glusterfsd/src/glusterfsd.h
++++ b/glusterfsd/src/glusterfsd.h
+@@ -126,5 +126,8 @@ int glusterfs_volume_top_read_perf (uint32_t blk_size, uint32_t blk_count,
+ void
+ glusterfs_autoscale_threads (glusterfs_ctx_t *ctx, int incr, xlator_t *this);
+ 
++void
++xlator_mem_cleanup (xlator_t *this);
++
+ extern glusterfs_ctx_t *glusterfsd_ctx;
+ #endif /* __GLUSTERFSD_H__ */
+diff --git a/xlators/debug/io-stats/src/io-stats.c b/xlators/debug/io-stats/src/io-stats.c
+index a46d116..f46474b 100644
+--- a/xlators/debug/io-stats/src/io-stats.c
++++ b/xlators/debug/io-stats/src/io-stats.c
+@@ -300,7 +300,6 @@ is_fop_latency_started (call_frame_t *frame)
+                                                throughput, iosstat);           \
+         } while (0)
+ 
+-
+ static int
+ ios_fd_ctx_get (fd_t *fd, xlator_t *this, struct ios_fd **iosfd)
+ {
+diff --git a/xlators/features/bit-rot/src/stub/bit-rot-stub.c b/xlators/features/bit-rot/src/stub/bit-rot-stub.c
+index 4be7caa..05cac63 100644
+--- a/xlators/features/bit-rot/src/stub/bit-rot-stub.c
++++ b/xlators/features/bit-rot/src/stub/bit-rot-stub.c
+@@ -228,18 +228,6 @@ notify (xlator_t *this, int event, void *data, ...)
+         if (!priv)
+                 return 0;
+ 
+-        switch (event) {
+-        case GF_EVENT_CLEANUP:
+-                if (priv->signth) {
+-                        (void) gf_thread_cleanup_xint (priv->signth);
+-                        priv->signth = 0;
+-                }
+-                if (priv->container.thread) {
+-                        (void) gf_thread_cleanup_xint (priv->container.thread);
+-                        priv->container.thread = 0;
+-                }
+-                break;
+-        }
+         default_notify (this, event, data);
+         return 0;
+ }
+@@ -262,6 +250,7 @@ fini (xlator_t *this)
+                         "Could not cancel sign serializer thread");
+                 goto out;
+         }
++        priv->signth = 0;
+ 
+         while (!list_empty (&priv->squeue)) {
+                 sigstub = list_first_entry (&priv->squeue,
+@@ -283,12 +272,19 @@ fini (xlator_t *this)
+                 goto out;
+         }
+ 
++        priv->container.thread = 0;
++
+         while (!list_empty (&priv->container.bad_queue)) {
+                 stub = list_first_entry (&priv->container.bad_queue, call_stub_t,
+                                          list);
+                 list_del_init (&stub->list);
+                 call_stub_destroy (stub);
+-        };
++        }
++
++        if (priv->local_pool) {
++                mem_pool_destroy (priv->local_pool);
++                priv->local_pool = NULL;
++        }
+ 
+         pthread_mutex_destroy (&priv->container.bad_lock);
+         pthread_cond_destroy (&priv->container.bad_cond);
+diff --git a/xlators/features/changelog/src/changelog-ev-handle.c b/xlators/features/changelog/src/changelog-ev-handle.c
+index 38e127b..3e8dc9a 100644
+--- a/xlators/features/changelog/src/changelog-ev-handle.c
++++ b/xlators/features/changelog/src/changelog-ev-handle.c
+@@ -163,12 +163,14 @@ changelog_rpc_notify (struct rpc_clnt *rpc,
+                  */
+                 rpc_clnt_unref (crpc->rpc);
+ 
+-                selection = &priv->ev_selection;
++                if (priv)
++                        selection = &priv->ev_selection;
+ 
+                 LOCK (&crpc->lock);
+                 {
+-                        changelog_deselect_event (this, selection,
+-                                                  crpc->filter);
++                        if (selection)
++                                changelog_deselect_event (this, selection,
++                                                          crpc->filter);
+                         changelog_set_disconnect_flag (crpc, _gf_true);
+                 }
+                 UNLOCK (&crpc->lock);
+diff --git a/xlators/features/changelog/src/changelog-rpc-common.c b/xlators/features/changelog/src/changelog-rpc-common.c
+index 08cd41e..21bef76 100644
+--- a/xlators/features/changelog/src/changelog-rpc-common.c
++++ b/xlators/features/changelog/src/changelog-rpc-common.c
+@@ -275,6 +275,10 @@ changelog_rpc_server_destroy (xlator_t *this, rpcsvc_t *rpc, char *sockfile,
+ 
+         (void) rpcsvc_unregister_notify (rpc, fn, this);
+         sys_unlink (sockfile);
++        if (rpc->rxpool) {
++                mem_pool_destroy (rpc->rxpool);
++                rpc->rxpool = NULL;
++        }
+ 
+         GF_FREE (rpc);
+ }
+diff --git a/xlators/features/changelog/src/changelog.c b/xlators/features/changelog/src/changelog.c
+index 8b22a04..a472208 100644
+--- a/xlators/features/changelog/src/changelog.c
++++ b/xlators/features/changelog/src/changelog.c
+@@ -2110,20 +2110,6 @@ notify (xlator_t *this, int event, void *data, ...)
+         if (!priv)
+                 goto out;
+ 
+-        if (event == GF_EVENT_CLEANUP) {
+-                if (priv->connector) {
+-                        (void) gf_thread_cleanup_xint (priv->connector);
+-                        priv->connector = 0;
+-                }
+-
+-                for (; i < NR_DISPATCHERS; i++) {
+-                        if (priv->ev_dispatcher[i]) {
+-                                (void) gf_thread_cleanup_xint (priv->ev_dispatcher[i]);
+-                                priv->ev_dispatcher[i] = 0;
+-                        }
+-               }
+-        }
+-
+         if (event == GF_EVENT_TRANSLATOR_OP) {
+ 
+                 dict = data;
+@@ -2901,6 +2887,9 @@ fini (xlator_t *this)
+                 /* cleanup barrier related objects */
+                 changelog_barrier_pthread_destroy (priv);
+ 
++                /* cleanup helper threads */
++                changelog_cleanup_helper_threads (this, priv);
++
+                 /* cleanup allocated options */
+                 changelog_freeup_options (this, priv);
+ 
+@@ -2911,6 +2900,7 @@ fini (xlator_t *this)
+         }
+ 
+         this->private = NULL;
++        this->local_pool = NULL;
+ 
+         return;
+ }
+diff --git a/xlators/features/changetimerecorder/src/changetimerecorder.c b/xlators/features/changetimerecorder/src/changetimerecorder.c
+index 99519d1..5f82d33 100644
+--- a/xlators/features/changetimerecorder/src/changetimerecorder.c
++++ b/xlators/features/changetimerecorder/src/changetimerecorder.c
+@@ -19,7 +19,6 @@
+ #include "tier-ctr-interface.h"
+ 
+ /*******************************inode forget***********************************/
+-
+ int
+ ctr_forget (xlator_t *this, inode_t *inode)
+ {
+@@ -2310,15 +2309,6 @@ notify (xlator_t *this, int event, void *data, ...)
+        if (!priv)
+                goto out;
+ 
+-       if (event == GF_EVENT_CLEANUP) {
+-               if (fini_db (priv->_db_conn)) {
+-                       gf_msg (this->name, GF_LOG_WARNING, 0,
+-                                CTR_MSG_CLOSE_DB_CONN_FAILED, "Failed closing "
+-                                "db connection");
+-               }
+-               if (priv->_db_conn)
+-                        priv->_db_conn = NULL;
+-       }
+        ret = default_notify (this, event, data);
+ 
+ out:
+@@ -2359,6 +2349,10 @@ fini (xlator_t *this)
+                                 CTR_MSG_CLOSE_DB_CONN_FAILED, "Failed closing "
+                                 "db connection");
+                 }
++
++                if (priv->_db_conn)
++                        priv->_db_conn = NULL;
++
+                 GF_FREE (priv->ctr_db_path);
+                 if (pthread_mutex_destroy (&priv->compact_lock)) {
+                         gf_msg (this->name, GF_LOG_WARNING, 0,
+@@ -2368,6 +2362,7 @@ fini (xlator_t *this)
+         }
+         GF_FREE (priv);
+         mem_pool_destroy (this->local_pool);
++        this->local_pool = NULL;
+ 
+         return;
+ }
+diff --git a/xlators/features/index/src/index.c b/xlators/features/index/src/index.c
+index 8590482..f3b0270 100644
+--- a/xlators/features/index/src/index.c
++++ b/xlators/features/index/src/index.c
+@@ -2444,6 +2444,13 @@ fini (xlator_t *this)
+         priv = this->private;
+         if (!priv)
+                 goto out;
++
++        priv->down = _gf_true;
++        pthread_cond_broadcast (&priv->cond);
++        if (priv->thread) {
++                gf_thread_cleanup_xint (priv->thread);
++                priv->thread = 0;
++        }
+         this->private = NULL;
+         LOCK_DESTROY (&priv->lock);
+         pthread_cond_destroy (&priv->cond);
+@@ -2455,8 +2462,11 @@ fini (xlator_t *this)
+         if (priv->complete_watchlist)
+                 dict_unref (priv->complete_watchlist);
+         GF_FREE (priv);
+-        mem_pool_destroy (this->local_pool);
+-        this->local_pool = NULL;
++
++        if (this->local_pool) {
++                mem_pool_destroy (this->local_pool);
++                this->local_pool = NULL;
++        }
+ out:
+         return;
+ }
+@@ -2526,13 +2536,6 @@ notify (xlator_t *this, int event, void *data, ...)
+         if (!priv)
+                 return 0;
+ 
+-        switch (event) {
+-        case GF_EVENT_CLEANUP:
+-                priv->down = _gf_true;
+-                pthread_cond_broadcast (&priv->cond);
+-                break;
+-        }
+-
+         ret = default_notify (this, event, data);
+         return ret;
+ }
+diff --git a/xlators/features/leases/src/leases.c b/xlators/features/leases/src/leases.c
+index 551dd9b..a8ffb35 100644
+--- a/xlators/features/leases/src/leases.c
++++ b/xlators/features/leases/src/leases.c
+@@ -1062,14 +1062,17 @@ fini (xlator_t *this)
+ 
+         priv->fini = _gf_true;
+         pthread_cond_broadcast (&priv->cond);
+-        pthread_join (priv->recall_thr, NULL);
+-
+-        priv->inited_recall_thr = _gf_false;
++        if (priv->recall_thr) {
++                gf_thread_cleanup_xint (priv->recall_thr);
++                priv->recall_thr = 0;
++                priv->inited_recall_thr = _gf_false;
++        }
+ 
+         GF_FREE (priv);
+-
+-        glusterfs_ctx_tw_put (this->ctx);
+-
++        if (this->ctx->tw) {
++                glusterfs_ctx_tw_put (this->ctx);
++                this->ctx->tw = NULL;
++        }
+         return 0;
+ }
+ 
+diff --git a/xlators/features/marker/src/marker.c b/xlators/features/marker/src/marker.c
+index b51b9cc..3094c68 100644
+--- a/xlators/features/marker/src/marker.c
++++ b/xlators/features/marker/src/marker.c
+@@ -3193,9 +3193,9 @@ mem_acct_init (xlator_t *this)
+ int32_t
+ init_xtime_priv (xlator_t *this, dict_t *options)
+ {
+-        data_t          *data    = NULL;
+         int32_t          ret     = -1;
+         marker_conf_t   *priv    = NULL;
++        char            *tmp_opt = NULL;
+ 
+         GF_VALIDATE_OR_GOTO ("marker", this, out);
+         GF_VALIDATE_OR_GOTO (this->name, options, out);
+@@ -3203,29 +3203,11 @@ init_xtime_priv (xlator_t *this, dict_t *options)
+ 
+         priv = this->private;
+ 
+-        if((data = dict_get (options, VOLUME_UUID)) != NULL) {
+-                priv->volume_uuid = data->data;
++        ret = dict_get_str (options, "volume-uuid", &tmp_opt);
+ 
+-                ret = gf_uuid_parse (priv->volume_uuid, priv->volume_uuid_bin);
+-                if (ret == -1) {
+-                        gf_log (this->name, GF_LOG_ERROR,
+-                                "invalid volume uuid %s", priv->volume_uuid);
+-                        goto out;
+-                }
+-
+-                ret = gf_asprintf (& (priv->marker_xattr), "%s.%s.%s",
+-                                   MARKER_XATTR_PREFIX, priv->volume_uuid,
+-                                   XTIME);
+-
+-                if (ret == -1){
+-                        priv->marker_xattr = NULL;
+-                        goto out;
+-                }
+-
+-                gf_log (this->name, GF_LOG_DEBUG,
+-                        "volume-uuid = %s", priv->volume_uuid);
+-        } else {
++        if (ret) {
+                 priv->volume_uuid = NULL;
++                tmp_opt = "";
+ 
+                 gf_log (this->name, GF_LOG_ERROR,
+                         "please specify the volume-uuid"
+@@ -3233,16 +3215,32 @@ init_xtime_priv (xlator_t *this, dict_t *options)
+ 
+                 return -1;
+         }
++        gf_asprintf (&priv->volume_uuid, "%s", tmp_opt);
+ 
+-        if ((data = dict_get (options, TIMESTAMP_FILE)) != NULL) {
+-                priv->timestamp_file = data->data;
++        ret = gf_uuid_parse (priv->volume_uuid, priv->volume_uuid_bin);
+ 
+-                gf_log (this->name, GF_LOG_DEBUG,
+-                        "the timestamp-file is = %s",
+-                        priv->timestamp_file);
++        if (ret == -1) {
++                gf_log (this->name, GF_LOG_ERROR,
++                        "invalid volume uuid %s", priv->volume_uuid);
++                goto out;
++        }
+ 
+-        } else {
++        ret = gf_asprintf (&(priv->marker_xattr), "%s.%s.%s",
++                           MARKER_XATTR_PREFIX, priv->volume_uuid,
++                           XTIME);
++
++        if (ret == -1) {
++                priv->marker_xattr = NULL;
++                goto out;
++        }
++
++        gf_log (this->name, GF_LOG_DEBUG,
++                "volume-uuid = %s", priv->volume_uuid);
++
++        ret = dict_get_str (options, "timestamp-file", &tmp_opt);
++        if (ret) {
+                 priv->timestamp_file = NULL;
++                tmp_opt = "";
+ 
+                 gf_log (this->name, GF_LOG_ERROR,
+                         "please specify the timestamp-file"
+@@ -3251,6 +3249,15 @@ init_xtime_priv (xlator_t *this, dict_t *options)
+                 goto out;
+         }
+ 
++        ret = gf_asprintf (&priv->timestamp_file, "%s", tmp_opt);
++        if (ret == -1) {
++                priv->timestamp_file = NULL;
++                goto out;
++        }
++
++        gf_log (this->name, GF_LOG_DEBUG,
++                "the timestamp-file is = %s", priv->timestamp_file);
++
+         ret = 0;
+ out:
+         return ret;
+@@ -3292,6 +3299,12 @@ marker_priv_cleanup (xlator_t *this)
+         LOCK_DESTROY (&priv->lock);
+ 
+         GF_FREE (priv);
++
++        if (this->local_pool) {
++                mem_pool_destroy (this->local_pool);
++                this->local_pool = NULL;
++        }
++
+ out:
+         return;
+ }
+diff --git a/xlators/features/quota/src/quota.c b/xlators/features/quota/src/quota.c
+index af7b65a..c4817bc 100644
+--- a/xlators/features/quota/src/quota.c
++++ b/xlators/features/quota/src/quota.c
+@@ -5221,12 +5221,14 @@ quota_priv_dump (xlator_t *this)
+         GF_ASSERT (this);
+ 
+         priv = this->private;
++        if (!priv)
++                goto out;
+ 
+         gf_proc_dump_add_section ("xlators.features.quota.priv", this->name);
+ 
+         ret = TRY_LOCK (&priv->lock);
+         if (ret)
+-             goto out;
++                goto out;
+         else {
+                 gf_proc_dump_write("soft-timeout", "%d", priv->soft_timeout);
+                 gf_proc_dump_write("hard-timeout", "%d", priv->hard_timeout);
+@@ -5246,6 +5248,27 @@ out:
+ void
+ fini (xlator_t *this)
+ {
++        quota_priv_t *priv = NULL;
++        rpc_clnt_t   *rpc  = NULL;
++        int           i = 0, cnt = 0;
++
++        priv = this->private;
++        if (!priv)
++                return;
++        rpc = priv->rpc_clnt;
++        priv->rpc_clnt = NULL;
++        this->private = NULL;
++        if (rpc) {
++                cnt = GF_ATOMIC_GET (rpc->refcount);
++                for (i = 0; i < cnt; i++)
++                        rpc_clnt_unref (rpc);
++        }
++        LOCK_DESTROY (&priv->lock);
++        GF_FREE (priv);
++        if (this->local_pool) {
++                mem_pool_destroy (this->local_pool);
++                this->local_pool = NULL;
++        }
+         return;
+ }
+ 
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index 945458e..29989d3 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -5514,6 +5514,9 @@ shard_forget (xlator_t *this, inode_t *inode)
+         shard_priv_t       *priv     = NULL;
+ 
+         priv = this->private;
++        if (!priv)
++                return 0;
++
+         inode_ctx_del (inode, this, &ctx_uint);
+         if (!ctx_uint)
+                 return 0;
+diff --git a/xlators/features/trash/src/trash.c b/xlators/features/trash/src/trash.c
+index 4a41a14..d114858 100644
+--- a/xlators/features/trash/src/trash.c
++++ b/xlators/features/trash/src/trash.c
+@@ -33,7 +33,6 @@ trash_unlink_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                          struct iatt *preoldparent, struct iatt *postoldparent,
+                          struct iatt *prenewparent, struct iatt *postnewparent,
+                          dict_t *xdata);
+-
+ /* Common routines used in this translator */
+ 
+ /**
+@@ -2406,6 +2405,7 @@ notify (xlator_t *this, int event, void *data, ...)
+                         ret = create_internalop_directory (this);
+ 
+         }
++
+ out:
+         ret = default_notify (this, event, data);
+         if (ret)
+@@ -2587,10 +2587,11 @@ void
+ fini (xlator_t *this)
+ {
+         trash_private_t *priv = NULL;
++        inode_table_t     *inode_table = NULL;
+ 
+         GF_VALIDATE_OR_GOTO ("trash", this, out);
+         priv = this->private;
+-
++        inode_table = priv->trash_itable;
+         if (priv) {
+                 if (priv->newtrash_dir)
+                         GF_FREE (priv->newtrash_dir);
+@@ -2600,9 +2601,17 @@ fini (xlator_t *this)
+                         GF_FREE (priv->brick_path);
+                 if (priv->eliminate)
+                         wipe_eliminate_path (&priv->eliminate);
++                if (inode_table) {
++                        inode_table_destroy (inode_table);
++                        priv->trash_itable = NULL;
++                }
+                 GF_FREE (priv);
+         }
+-        mem_pool_destroy (this->local_pool);
++
++        if (this->local_pool) {
++                mem_pool_destroy (this->local_pool);
++                this->local_pool = NULL;
++        }
+         this->private = NULL;
+ out:
+         return;
+diff --git a/xlators/features/upcall/src/upcall.c b/xlators/features/upcall/src/upcall.c
+index 3e1d307..66d22f6 100644
+--- a/xlators/features/upcall/src/upcall.c
++++ b/xlators/features/upcall/src/upcall.c
+@@ -2447,8 +2447,11 @@ fini (xlator_t *this)
+ 
+         priv->fini = 1;
+ 
+-        if (priv->reaper_init_done)
+-                pthread_join (priv->reaper_thr, NULL);
++        if (priv->reaper_thr) {
++                gf_thread_cleanup_xint (priv->reaper_thr);
++                priv->reaper_thr = 0;
++                priv->reaper_init_done = _gf_false;
++        }
+ 
+         dict_unref (priv->xattrs);
+         LOCK_DESTROY (&priv->inode_ctx_lk);
+@@ -2458,13 +2461,24 @@ fini (xlator_t *this)
+          * before calling xlator_fini */
+         GF_FREE (priv);
+ 
++        if (this->local_pool) {
++                mem_pool_destroy (this->local_pool);
++                this->local_pool = NULL;
++        }
++
+         return 0;
+ }
+ 
+ int
+ upcall_forget (xlator_t *this, inode_t *inode)
+ {
++        upcall_private_t *priv          = this->private;
++
++        if (!priv)
++                goto out;
++
+         upcall_cleanup_inode_ctx (this, inode);
++out:
+         return 0;
+ }
+ 
+diff --git a/xlators/performance/decompounder/src/decompounder.c b/xlators/performance/decompounder/src/decompounder.c
+index d3d9b9f..095a300 100644
+--- a/xlators/performance/decompounder/src/decompounder.c
++++ b/xlators/performance/decompounder/src/decompounder.c
+@@ -946,5 +946,12 @@ out:
+ int32_t
+ fini (xlator_t *this)
+ {
++        if (!this)
++                return 0;
++
++        if (this->local_pool) {
++                mem_pool_destroy (this->local_pool);
++                this->local_pool = NULL;
++        }
+         return 0;
+ }
+diff --git a/xlators/performance/io-threads/src/io-threads.c b/xlators/performance/io-threads/src/io-threads.c
+index 7c020e2..1e1816a 100644
+--- a/xlators/performance/io-threads/src/io-threads.c
++++ b/xlators/performance/io-threads/src/io-threads.c
+@@ -356,7 +356,8 @@ iot_schedule (call_frame_t *frame, xlator_t *this, call_stub_t *stub)
+ out:
+         gf_msg_debug (this->name, 0, "%s scheduled as %s fop",
+                       gf_fop_list[stub->fop], iot_get_pri_meaning (pri));
+-        ret = do_iot_schedule (this->private, stub, pri);
++        if (this->private)
++                ret = do_iot_schedule (this->private, stub, pri);
+         return ret;
+ }
+ 
+@@ -1073,8 +1074,7 @@ notify (xlator_t *this, int32_t event, void *data, ...)
+ {
+         iot_conf_t *conf = this->private;
+ 
+-        if ((GF_EVENT_PARENT_DOWN == event) ||
+-            (GF_EVENT_CLEANUP == event))
++        if (GF_EVENT_PARENT_DOWN == event)
+                 iot_exit_threads (conf);
+ 
+         default_notify (this, event, data);
+diff --git a/xlators/protocol/server/src/server-rpc-fops.c b/xlators/protocol/server/src/server-rpc-fops.c
+index 21f78a3..91d5c03 100644
+--- a/xlators/protocol/server/src/server-rpc-fops.c
++++ b/xlators/protocol/server/src/server-rpc-fops.c
+@@ -3487,6 +3487,13 @@ rpc_receive_common (rpcsvc_request_t *req, call_frame_t **fr,
+                 SERVER_REQ_SET_ERROR (req, ret);
+                 goto out;
+         }
++
++        if (!(*fr)->root->client->bound_xl->itable) {
++                /* inode_table is not allocated successful in server_setvolume */
++                SERVER_REQ_SET_ERROR (req, ret);
++                goto out;
++        }
++
+         ret = 0;
+ 
+ out:
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index 89fde39..737bb96 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -1578,7 +1578,6 @@ notify (xlator_t *this, int32_t event, void *data, ...)
+                                                      victim->name);
+                         /* we need the protocol/server xlator here as 'this' */
+                         glusterfs_autoscale_threads (ctx, -1, this);
+-                        default_notify (victim, GF_EVENT_CLEANUP, data);
+                 }
+                 break;
+ 
+diff --git a/xlators/storage/posix/src/posix-handle.h b/xlators/storage/posix/src/posix-handle.h
+index a40feb5..cb1f84e 100644
+--- a/xlators/storage/posix/src/posix-handle.h
++++ b/xlators/storage/posix/src/posix-handle.h
+@@ -180,6 +180,12 @@
+ 
+ 
+ #define MAKE_INODE_HANDLE(rpath, this, loc, iatt_p) do {                \
++        if (!this->private) {                                           \
++                gf_msg ("make_inode_handle", GF_LOG_ERROR, 0,           \
++                         P_MSG_INODE_HANDLE_CREATE,                     \
++                         "private is NULL, fini is already called");    \
++                break;                                                  \
++        }                                                               \
+         if (gf_uuid_is_null (loc->gfid)) {                              \
+                 gf_msg (this->name, GF_LOG_ERROR, 0,                    \
+                         P_MSG_INODE_HANDLE_CREATE,                      \
+diff --git a/xlators/storage/posix/src/posix-helpers.c b/xlators/storage/posix/src/posix-helpers.c
+index 4107265..334175d 100644
+--- a/xlators/storage/posix/src/posix-helpers.c
++++ b/xlators/storage/posix/src/posix-helpers.c
+@@ -1972,6 +1972,7 @@ abort:
+                         gf_log (THIS->name, GF_LOG_INFO, "detaching not-only "
+                                 " child %s", priv->base_path);
+                         top->notify (top, GF_EVENT_CLEANUP, victim);
++                        xlator_mem_cleanup (victim);
+                 }
+         }
+ 
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index d1ef8a2..74ee98f 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -172,6 +172,8 @@ posix_forget (xlator_t *this, inode_t *inode)
+         struct posix_private   *priv_posix  = NULL;
+ 
+         priv_posix = (struct posix_private *) this->private;
++        if (!priv_posix)
++                return 0;
+ 
+         ret = inode_ctx_del (inode, this, &ctx_uint);
+         if (!ctx_uint)
+@@ -226,6 +228,7 @@ posix_lookup (call_frame_t *frame, xlator_t *this,
+         VALIDATE_OR_GOTO (frame, out);
+         VALIDATE_OR_GOTO (this, out);
+         VALIDATE_OR_GOTO (loc, out);
++        VALIDATE_OR_GOTO (this->private, out);
+ 
+         priv = this->private;
+ 
+@@ -1304,6 +1307,8 @@ posix_releasedir (xlator_t *this,
+         }
+ 
+         priv = this->private;
++        if (!priv)
++                goto out;
+ 
+         pthread_mutex_lock (&priv->janitor_lock);
+         {
+@@ -2103,6 +2108,7 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
+         VALIDATE_OR_GOTO (frame, out);
+         VALIDATE_OR_GOTO (this, out);
+         VALIDATE_OR_GOTO (loc, out);
++        VALIDATE_OR_GOTO (this->private, out);
+ 
+         SET_FS_ID (frame->root->uid, frame->root->gid);
+         MAKE_ENTRY_HANDLE (real_path, par_path, this, loc, &stbuf);
+@@ -3880,6 +3886,8 @@ posix_release (xlator_t *this, fd_t *fd)
+                         "pfd->dir is %p (not NULL) for file fd=%p",
+                         pfd->dir, fd);
+         }
++        if (!priv)
++                goto out;
+ 
+         pthread_mutex_lock (&priv->janitor_lock);
+         {
+@@ -4067,6 +4075,7 @@ posix_setxattr (call_frame_t *frame, xlator_t *this,
+ 
+         VALIDATE_OR_GOTO (frame, out);
+         VALIDATE_OR_GOTO (this, out);
++        VALIDATE_OR_GOTO (this->private, out);
+         VALIDATE_OR_GOTO (loc, out);
+         VALIDATE_OR_GOTO (dict, out);
+ 
+@@ -4650,6 +4659,7 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
+         VALIDATE_OR_GOTO (frame, out);
+         VALIDATE_OR_GOTO (this, out);
+         VALIDATE_OR_GOTO (loc, out);
++        VALIDATE_OR_GOTO (this->private, out);
+ 
+         SET_FS_ID (frame->root->uid, frame->root->gid);
+         MAKE_INODE_HANDLE (real_path, this, loc, NULL);
+@@ -4757,11 +4767,12 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
+                 goto done;
+         }
+         if (loc->inode && name && (XATTR_IS_PATHINFO (name))) {
+-                if (LOC_HAS_ABSPATH (loc))
++                VALIDATE_OR_GOTO (this->private, out);
++                if (LOC_HAS_ABSPATH (loc)) {
+                         MAKE_REAL_PATH (rpath, this, loc->path);
+-                else
++                } else {
+                         rpath = real_path;
+-
++                }
+                 (void) snprintf (host_buf, sizeof(host_buf),
+                                  "<POSIX(%s):%s:%s>", priv->base_path,
+                                  ((priv->node_uuid_pathinfo
+@@ -7018,9 +7029,6 @@ notify (xlator_t *this,
+         void *data,
+         ...)
+ {
+-        struct posix_private *priv = NULL;
+-
+-        priv = this->private;
+         switch (event)
+         {
+         case GF_EVENT_PARENT_UP:
+@@ -7029,31 +7037,6 @@ notify (xlator_t *this,
+                 default_notify (this, GF_EVENT_CHILD_UP, data);
+         }
+         break;
+-        case GF_EVENT_CLEANUP:
+-                if (priv->health_check) {
+-                        priv->health_check_active = _gf_false;
+-                        pthread_cancel (priv->health_check);
+-                        priv->health_check = 0;
+-                }
+-                if (priv->disk_space_check) {
+-                        priv->disk_space_check_active = _gf_false;
+-                        pthread_cancel (priv->disk_space_check);
+-                        priv->disk_space_check = 0;
+-                }
+-                if (priv->janitor) {
+-                        (void) gf_thread_cleanup_xint (priv->janitor);
+-                        priv->janitor = 0;
+-                }
+-                if (priv->fsyncer) {
+-                        (void) gf_thread_cleanup_xint (priv->fsyncer);
+-                        priv->fsyncer = 0;
+-                }
+-                if (priv->mount_lock) {
+-                        (void) sys_closedir (priv->mount_lock);
+-                        priv->mount_lock = NULL;
+-                }
+-
+-        break;
+         default:
+                 /* */
+                 break;
+@@ -7917,10 +7900,36 @@ fini (xlator_t *this)
+         if (!priv)
+                 return;
+         this->private = NULL;
++        if (priv->health_check) {
++                priv->health_check_active = _gf_false;
++                pthread_cancel (priv->health_check);
++                priv->health_check = 0;
++        }
++        if (priv->disk_space_check) {
++                priv->disk_space_check_active = _gf_false;
++                pthread_cancel (priv->disk_space_check);
++                priv->disk_space_check = 0;
++        }
++        if (priv->janitor) {
++                (void) gf_thread_cleanup_xint (priv->janitor);
++                priv->janitor = 0;
++        }
++        if (priv->fsyncer) {
++                (void) gf_thread_cleanup_xint (priv->fsyncer);
++                priv->fsyncer = 0;
++        }
+         /*unlock brick dir*/
+         if (priv->mount_lock)
+                 (void) sys_closedir (priv->mount_lock);
++
++        GF_FREE (priv->base_path);
++        LOCK_DESTROY (&priv->lock);
++        pthread_mutex_destroy (&priv->janitor_lock);
++        pthread_mutex_destroy (&priv->fsync_mutex);
++        GF_FREE (priv->hostname);
++        GF_FREE (priv->trash_path);
+         GF_FREE (priv);
++
+         return;
+ }
+ struct xlator_dumpops dumpops = {
+diff --git a/xlators/system/posix-acl/src/posix-acl.c b/xlators/system/posix-acl/src/posix-acl.c
+index 5dac688..aadd6fc 100644
+--- a/xlators/system/posix-acl/src/posix-acl.c
++++ b/xlators/system/posix-acl/src/posix-acl.c
+@@ -582,13 +582,15 @@ posix_acl_unref (xlator_t *this, struct posix_acl *acl)
+         int                     refcnt = 0;
+ 
+         conf = this->private;
++        if (!conf)
++                goto out;
+ 
+         LOCK(&conf->acl_lock);
+         {
+                 refcnt = --acl->refcnt;
+         }
+         UNLOCK(&conf->acl_lock);
+-
++out:
+         if (!refcnt)
+                 posix_acl_destroy (this, acl);
+ }
+-- 
+1.8.3.1
+

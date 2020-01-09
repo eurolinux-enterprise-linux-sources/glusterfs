@@ -1,0 +1,514 @@
+From 2278782dddf80611c7305ed982532647e38b5664 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Mon, 16 Oct 2017 14:18:31 +0530
+Subject: [PATCH 49/74] Revert "packaging: (ganesha) remove glusterfs-ganesha
+ subpackage and related files)"
+
+This reverts commit 0cf2963f12a8b540a7042605d8c79f638fdf6cee.
+
+Change-Id: Id6e7585021bd4dd78a59580cfa4838bdd4e539a0
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+---
+ configure.ac                                       |   3 +
+ extras/Makefile.am                                 |   2 +-
+ extras/ganesha/Makefile.am                         |   2 +
+ extras/ganesha/config/Makefile.am                  |   4 +
+ extras/ganesha/config/ganesha-ha.conf.sample       |  19 ++++
+ extras/ganesha/scripts/Makefile.am                 |   4 +
+ extras/ganesha/scripts/create-export-ganesha.sh    |  91 +++++++++++++++
+ extras/ganesha/scripts/dbus-send.sh                |  61 +++++++++++
+ extras/ganesha/scripts/generate-epoch.py           |  48 ++++++++
+ extras/hook-scripts/start/post/Makefile.am         |   2 +-
+ extras/hook-scripts/start/post/S31ganesha-start.sh | 122 +++++++++++++++++++++
+ glusterfs.spec.in                                  |  10 +-
+ 12 files changed, 362 insertions(+), 6 deletions(-)
+ create mode 100644 extras/ganesha/Makefile.am
+ create mode 100644 extras/ganesha/config/Makefile.am
+ create mode 100644 extras/ganesha/config/ganesha-ha.conf.sample
+ create mode 100644 extras/ganesha/scripts/Makefile.am
+ create mode 100755 extras/ganesha/scripts/create-export-ganesha.sh
+ create mode 100755 extras/ganesha/scripts/dbus-send.sh
+ create mode 100755 extras/ganesha/scripts/generate-epoch.py
+ create mode 100755 extras/hook-scripts/start/post/S31ganesha-start.sh
+
+diff --git a/configure.ac b/configure.ac
+index dfccd40..c8e6e44 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -207,6 +207,9 @@ AC_CONFIG_FILES([Makefile
+                 extras/init.d/glustereventsd-Debian
+                 extras/init.d/glustereventsd-Redhat
+                 extras/init.d/glustereventsd-FreeBSD
++                extras/ganesha/Makefile
++                extras/ganesha/config/Makefile
++                extras/ganesha/scripts/Makefile
+                 extras/systemd/Makefile
+                 extras/systemd/glusterd.service
+                 extras/systemd/glustereventsd.service
+diff --git a/extras/Makefile.am b/extras/Makefile.am
+index 6863772..2812a4c 100644
+--- a/extras/Makefile.am
++++ b/extras/Makefile.am
+@@ -8,7 +8,7 @@ EditorModedir = $(docdir)
+ EditorMode_DATA = glusterfs-mode.el glusterfs.vim
+ 
+ SUBDIRS = init.d systemd benchmarking hook-scripts $(OCF_SUBDIR) LinuxRPM \
+-          $(GEOREP_EXTRAS_SUBDIR) snap_scheduler firewalld cliutils
++          $(GEOREP_EXTRAS_SUBDIR) ganesha snap_scheduler firewalld cliutils
+ 
+ confdir = $(sysconfdir)/glusterfs
+ conf_DATA = glusterfs-logrotate gluster-rsyslog-7.2.conf gluster-rsyslog-5.8.conf \
+diff --git a/extras/ganesha/Makefile.am b/extras/ganesha/Makefile.am
+new file mode 100644
+index 0000000..542de68
+--- /dev/null
++++ b/extras/ganesha/Makefile.am
+@@ -0,0 +1,2 @@
++SUBDIRS = scripts config
++CLEANFILES =
+diff --git a/extras/ganesha/config/Makefile.am b/extras/ganesha/config/Makefile.am
+new file mode 100644
+index 0000000..c729273
+--- /dev/null
++++ b/extras/ganesha/config/Makefile.am
+@@ -0,0 +1,4 @@
++EXTRA_DIST= ganesha-ha.conf.sample
++
++confdir = $(sysconfdir)/ganesha
++conf_DATA = ganesha-ha.conf.sample
+diff --git a/extras/ganesha/config/ganesha-ha.conf.sample b/extras/ganesha/config/ganesha-ha.conf.sample
+new file mode 100644
+index 0000000..c22892b
+--- /dev/null
++++ b/extras/ganesha/config/ganesha-ha.conf.sample
+@@ -0,0 +1,19 @@
++# Name of the HA cluster created.
++# must be unique within the subnet
++HA_NAME="ganesha-ha-360"
++#
++# N.B. you may use short names or long names; you may not use IP addrs.
++# Once you select one, stay with it as it will be mildly unpleasant to
++# clean up if you switch later on. Ensure that all names - short and/or
++# long - are in DNS or /etc/hosts on all machines in the cluster.
++#
++# The subset of nodes of the Gluster Trusted Pool that form the ganesha
++# HA cluster. Hostname is specified.
++HA_CLUSTER_NODES="server1,server2,..."
++#HA_CLUSTER_NODES="server1.lab.redhat.com,server2.lab.redhat.com,..."
++#
++# Virtual IPs for each of the nodes specified above.
++VIP_server1="10.0.2.1"
++VIP_server2="10.0.2.2"
++#VIP_server1_lab_redhat_com="10.0.2.1"
++#VIP_server2_lab_redhat_com="10.0.2.2"
+diff --git a/extras/ganesha/scripts/Makefile.am b/extras/ganesha/scripts/Makefile.am
+new file mode 100644
+index 0000000..9ee8867
+--- /dev/null
++++ b/extras/ganesha/scripts/Makefile.am
+@@ -0,0 +1,4 @@
++EXTRA_DIST= create-export-ganesha.sh generate-epoch.py dbus-send.sh
++
++scriptsdir = $(libexecdir)/ganesha
++scripts_SCRIPTS = create-export-ganesha.sh generate-epoch.py
+diff --git a/extras/ganesha/scripts/create-export-ganesha.sh b/extras/ganesha/scripts/create-export-ganesha.sh
+new file mode 100755
+index 0000000..1ffba42
+--- /dev/null
++++ b/extras/ganesha/scripts/create-export-ganesha.sh
+@@ -0,0 +1,91 @@
++#!/bin/bash
++
++#This script is called by glusterd when the user
++#tries to export a volume via NFS-Ganesha.
++#An export file specific to a volume
++#is created in GANESHA_DIR/exports.
++
++# Try loading the config from any of the distro
++# specific configuration locations
++if [ -f /etc/sysconfig/ganesha ]
++        then
++        . /etc/sysconfig/ganesha
++fi
++if [ -f /etc/conf.d/ganesha ]
++        then
++        . /etc/conf.d/ganesha
++fi
++if [ -f /etc/default/ganesha ]
++        then
++        . /etc/default/ganesha
++fi
++
++GANESHA_DIR=${1%/}
++OPTION=$2
++VOL=$3
++CONF=$GANESHA_DIR"/ganesha.conf"
++declare -i EXPORT_ID
++
++function check_cmd_status()
++{
++        if [ "$1" != "0" ]
++                 then
++                 rm -rf $GANESHA_DIR/exports/export.$VOL.conf
++                 sed -i /$VOL.conf/d $CONF
++                 exit 1
++        fi
++}
++
++
++if [ ! -d "$GANESHA_DIR/exports" ];
++        then
++        mkdir $GANESHA_DIR/exports
++        check_cmd_status `echo $?`
++fi
++
++function write_conf()
++{
++echo -e "# WARNING : Using Gluster CLI will overwrite manual
++# changes made to this file. To avoid it, edit the
++# file and run ganesha-ha.sh --refresh-config."
++
++echo "EXPORT{"
++echo "      Export_Id = 2;"
++echo "      Path = \"/$VOL\";"
++echo "      FSAL {"
++echo "           name = "GLUSTER";"
++echo "           hostname=\"localhost\";"
++echo  "          volume=\"$VOL\";"
++echo "           }"
++echo "      Access_type = RW;"
++echo "      Disable_ACL = true;"
++echo '      Squash="No_root_squash";'
++echo "      Pseudo=\"/$VOL\";"
++echo '      Protocols = "3", "4" ;'
++echo '      Transports = "UDP","TCP";'
++echo '      SecType = "sys";'
++echo "     }"
++}
++if [ "$OPTION" = "on" ];
++then
++        if ! (cat $CONF | grep  $VOL.conf\"$ )
++        then
++                write_conf $@ > $GANESHA_DIR/exports/export.$VOL.conf
++                echo "%include \"$GANESHA_DIR/exports/export.$VOL.conf\"" >> $CONF
++                count=`ls -l $GANESHA_DIR/exports/*.conf | wc -l`
++                if [ "$count" = "1" ] ; then
++                        EXPORT_ID=2
++                else
++                        EXPORT_ID=`cat $GANESHA_DIR/.export_added`
++                        check_cmd_status `echo $?`
++                        EXPORT_ID=EXPORT_ID+1
++                        sed -i s/Export_Id.*/"Export_Id= $EXPORT_ID ;"/ \
++                        $GANESHA_DIR/exports/export.$VOL.conf
++                        check_cmd_status `echo $?`
++                fi
++                echo $EXPORT_ID > $GANESHA_DIR/.export_added
++        fi
++else
++        rm -rf $GANESHA_DIR/exports/export.$VOL.conf
++        sed -i /$VOL.conf/d $CONF
++fi
+diff --git a/extras/ganesha/scripts/dbus-send.sh b/extras/ganesha/scripts/dbus-send.sh
+new file mode 100755
+index 0000000..c071d03
+--- /dev/null
++++ b/extras/ganesha/scripts/dbus-send.sh
+@@ -0,0 +1,61 @@
++#!/bin/bash
++
++# Try loading the config from any of the distro
++# specific configuration locations
++if [ -f /etc/sysconfig/ganesha ]
++        then
++        . /etc/sysconfig/ganesha
++fi
++if [ -f /etc/conf.d/ganesha ]
++        then
++        . /etc/conf.d/ganesha
++fi
++if [ -f /etc/default/ganesha ]
++        then
++        . /etc/default/ganesha
++fi
++
++GANESHA_DIR=${1%/}
++OPTION=$2
++VOL=$3
++CONF=$GANESHA_DIR"/ganesha.conf"
++
++function check_cmd_status()
++{
++        if [ "$1" != "0" ]
++        then
++                logger "dynamic export failed on node :${hostname -s}"
++        fi
++}
++
++#This function keeps track of export IDs and increments it with every new entry
++function dynamic_export_add()
++{
++        dbus-send  --system \
++--dest=org.ganesha.nfsd  /org/ganesha/nfsd/ExportMgr \
++org.ganesha.nfsd.exportmgr.AddExport  string:$GANESHA_DIR/exports/export.$VOL.conf \
++string:"EXPORT(Path=/$VOL)"
++        check_cmd_status `echo $?`
++}
++
++#This function removes an export dynamically(uses the export_id of the export)
++function dynamic_export_remove()
++{
++        removed_id=`cat $GANESHA_DIR/exports/export.$VOL.conf |\
++grep Export_Id | awk -F"[=,;]" '{print$2}'| tr -d '[[:space:]]'`
++        dbus-send --print-reply --system \
++--dest=org.ganesha.nfsd /org/ganesha/nfsd/ExportMgr \
++org.ganesha.nfsd.exportmgr.RemoveExport uint16:$removed_id
++        check_cmd_status `echo $?`
++}
++
++if [ "$OPTION" = "on" ];
++then
++        dynamic_export_add $@
++fi
++
++if [ "$OPTION" = "off" ];
++then
++        dynamic_export_remove $@
++fi
++
+diff --git a/extras/ganesha/scripts/generate-epoch.py b/extras/ganesha/scripts/generate-epoch.py
+new file mode 100755
+index 0000000..5db5e56
+--- /dev/null
++++ b/extras/ganesha/scripts/generate-epoch.py
+@@ -0,0 +1,48 @@
++#!/usr/bin/python
++#
++# Copyright (c) 2016 Red Hat, Inc. <http://www.redhat.com>
++# This file is part of GlusterFS.
++#
++# This file is licensed to you under your choice of the GNU Lesser
++# General Public License, version 3 or any later version (LGPLv3 or
++# later), or the GNU General Public License, version 2 (GPLv2), in all
++# cases as published by the Free Software Foundation.
++#
++# Generates unique epoch value on each gluster node to be used by
++# nfs-ganesha service on that node.
++#
++# Configure 'EPOCH_EXEC' option to this script path in
++# '/etc/sysconfig/ganesha' file used by nfs-ganesha service.
++#
++# Construct epoch as follows -
++#        first 32-bit contains the now() time
++#        rest 32-bit value contains the local glusterd node uuid
++
++import time
++import binascii
++
++# Calculate the now() time into a 64-bit integer value
++def epoch_now():
++        epoch_time = int(time.mktime(time.localtime())) << 32
++        return epoch_time
++
++# Read glusterd UUID and extract first 32-bit of it
++def epoch_uuid():
++        file_name = '/var/lib/glusterd/glusterd.info'
++
++        for line in open(file_name):
++                if "UUID" in line:
++                        glusterd_uuid = line.split('=')[1].strip()
++
++        uuid_bin = binascii.unhexlify(glusterd_uuid.replace("-",""))
++
++        epoch_uuid = int(uuid_bin.encode('hex'), 32) & 0xFFFF0000
++        return epoch_uuid
++
++# Construct epoch as follows -
++#        first 32-bit contains the now() time
++#        rest 32-bit value contains the local glusterd node uuid
++epoch = (epoch_now() | epoch_uuid())
++print str(epoch)
++
++exit(0)
+diff --git a/extras/hook-scripts/start/post/Makefile.am b/extras/hook-scripts/start/post/Makefile.am
+index 384a582..03bb300 100644
+--- a/extras/hook-scripts/start/post/Makefile.am
++++ b/extras/hook-scripts/start/post/Makefile.am
+@@ -1,4 +1,4 @@
+-EXTRA_DIST = S29CTDBsetup.sh S30samba-start.sh
++EXTRA_DIST = S29CTDBsetup.sh S30samba-start.sh S31ganesha-start.sh
+ 
+ hookdir = $(GLUSTERD_WORKDIR)/hooks/1/start/post/
+ hook_SCRIPTS = $(EXTRA_DIST)
+diff --git a/extras/hook-scripts/start/post/S31ganesha-start.sh b/extras/hook-scripts/start/post/S31ganesha-start.sh
+new file mode 100755
+index 0000000..90ba6bc
+--- /dev/null
++++ b/extras/hook-scripts/start/post/S31ganesha-start.sh
+@@ -0,0 +1,122 @@
++#!/bin/bash
++PROGNAME="Sganesha-start"
++OPTSPEC="volname:,gd-workdir:"
++VOL=
++declare -i EXPORT_ID
++ganesha_key="ganesha.enable"
++GANESHA_DIR="/var/run/gluster/shared_storage/nfs-ganesha"
++CONF1="$GANESHA_DIR/ganesha.conf"
++GLUSTERD_WORKDIR=
++
++function parse_args ()
++{
++        ARGS=$(getopt -l $OPTSPEC  -o "o" -name $PROGNAME $@)
++        eval set -- "$ARGS"
++
++        while true; do
++            case $1 in
++                --volname)
++                    shift
++                    VOL=$1
++                    ;;
++                --gd-workdir)
++                    shift
++                    GLUSTERD_WORKDIR=$1
++                    ;;
++                *)
++                    shift
++                    break
++                    ;;
++            esac
++            shift
++        done
++}
++
++
++
++#This function generates a new export entry as export.volume_name.conf
++function write_conf()
++{
++echo -e "# WARNING : Using Gluster CLI will overwrite manual
++# changes made to this file. To avoid it, edit the
++# file, copy it over to all the NFS-Ganesha nodes
++# and run ganesha-ha.sh --refresh-config."
++
++echo "EXPORT{"
++echo "      Export_Id = 2;"
++echo "      Path = \"/$VOL\";"
++echo "      FSAL {"
++echo "           name = \"GLUSTER\";"
++echo "           hostname=\"localhost\";"
++echo "           volume=\"$VOL\";"
++echo "           }"
++echo "      Access_type = RW;"
++echo "      Disable_ACL = true;"
++echo "      Squash=\"No_root_squash\";"
++echo "      Pseudo=\"/$VOL\";"
++echo "      Protocols = \"3\", \"4\" ;"
++echo "      Transports = \"UDP\",\"TCP\";"
++echo "      SecType = \"sys\";"
++echo "}"
++}
++
++#It adds the export dynamically by sending dbus signals
++function export_add()
++{
++        dbus-send --print-reply --system --dest=org.ganesha.nfsd \
++/org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.AddExport \
++string:$GANESHA_DIR/exports/export.$VOL.conf string:"EXPORT(Export_Id=$EXPORT_ID)"
++
++}
++
++# based on src/scripts/ganeshactl/Ganesha/export_mgr.py
++function is_exported()
++{
++        local volume="${1}"
++
++        dbus-send --type=method_call --print-reply --system \
++                  --dest=org.ganesha.nfsd /org/ganesha/nfsd/ExportMgr \
++                  org.ganesha.nfsd.exportmgr.ShowExports \
++            | grep -w -q "/${volume}"
++
++        return $?
++}
++
++# Check the info file (contains the volume options) to see if Ganesha is
++# enabled for this volume.
++function ganesha_enabled()
++{
++        local volume="${1}"
++        local info_file="${GLUSTERD_WORKDIR}/vols/${VOL}/info"
++        local enabled="off"
++
++        enabled=$(grep -w ${ganesha_key} ${info_file} | cut -d"=" -f2)
++
++        [ "${enabled}" == "on" ]
++
++        return $?
++}
++
++parse_args $@
++
++if ganesha_enabled ${VOL} && ! is_exported ${VOL}
++then
++        if [ ! -e ${GANESHA_DIR}/exports/export.${VOL}.conf ]
++        then
++                #Remove export entry from nfs-ganesha.conf
++                sed -i /$VOL.conf/d  $CONF1
++                write_conf ${VOL} > ${GANESHA_DIR}/exports/export.${VOL}.conf
++                EXPORT_ID=`cat $GANESHA_DIR/.export_added`
++                EXPORT_ID=EXPORT_ID+1
++                echo $EXPORT_ID > $GANESHA_DIR/.export_added
++                sed -i s/Export_Id.*/"Export_Id=$EXPORT_ID;"/ \
++                        $GANESHA_DIR/exports/export.$VOL.conf
++                echo "%include \"$GANESHA_DIR/exports/export.$VOL.conf\"" >> $CONF1
++        else
++                EXPORT_ID=$(grep ^[[:space:]]*Export_Id $GANESHA_DIR/exports/export.$VOL.conf |\
++                          awk -F"[=,;]" '{print $2}' | tr -d '[[:space:]]')
++        fi
++        export_add $VOL
++fi
++
++exit 0
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 10339fe..6e710e5 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -262,7 +262,6 @@ Obsoletes:        hekafs
+ Obsoletes:        %{name}-common < %{version}-%{release}
+ Obsoletes:        %{name}-core < %{version}-%{release}
+ Obsoletes:        %{name}-ufo
+-Obsoletes:        %{name}-ganesha
+ Provides:         %{name}-common = %{version}-%{release}
+ Provides:         %{name}-core = %{version}-%{release}
+ 
+@@ -1275,6 +1274,9 @@ exit 0
+ 
+ %if ( 0%{?_build_server} )
+ %files ganesha
++%{_sysconfdir}/ganesha/*
++%{_libexecdir}/ganesha/*
++%{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
+ %endif
+ 
+ %if ( 0%{?_build_server} )
+@@ -2121,6 +2123,9 @@ fi
+ 
+ %changelog
+ * Mon Nov 13 2017 Jiffin Tony Thottan <jthottan@redhat.com>
++- Adding ganesha bits back in gluster repository #1499784
++
++* Mon Nov 13 2017 Jiffin Tony Thottan <jthottan@redhat.com>
+ - DOWNSTREAM ONLY - revert of 83abcb(gnfs in an optional subpackage)
+ 
+ * Tue Oct 10 2017 Milind Changire <mchangir@redhat.com>
+@@ -2178,9 +2183,6 @@ fi
+ * Thu Feb 16 2017 Niels de Vos <ndevos@redhat.com>
+ - Obsolete and Provide python-gluster for upgrading from glusterfs < 3.10
+ 
+-* Tue Feb 7 2017 Kaleb S. KEITHLEY <kkeithle@redhat.com>
+-- remove ganesha (#1418417)
+-
+ * Wed Feb 1 2017 Poornima G <pgurusid@redhat.com>
+ - Install /var/lib/glusterd/groups/metadata-cache by default
+ 
+-- 
+1.8.3.1
+

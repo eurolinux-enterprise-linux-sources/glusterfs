@@ -19,6 +19,7 @@
 typedef enum {
         RPC_CLNT_CONNECT,
         RPC_CLNT_DISCONNECT,
+        RPC_CLNT_PING,
         RPC_CLNT_MSG,
         RPC_CLNT_DESTROY
 } rpc_clnt_event_t;
@@ -28,7 +29,6 @@ typedef enum {
 #define SFRAME_GET_PROGVER(sframe) (sframe->rpcreq->prog->progver)
 #define SFRAME_GET_PROCNUM(sframe) (sframe->rpcreq->procnum)
 
-struct xptr_clnt;
 struct rpc_req;
 struct rpc_clnt;
 struct rpc_clnt_config;
@@ -140,6 +140,7 @@ struct rpc_clnt_connection {
         gf_timer_t              *ping_timer;
         struct rpc_clnt         *rpc_clnt;
         char                     connected;
+        gf_boolean_t             disconnected;
         struct saved_frames     *saved_frames;
         int32_t                  frame_timeout;
 	struct timeval           last_sent;
@@ -149,6 +150,7 @@ struct rpc_clnt_connection {
 	int32_t                  ping_timeout;
         uint64_t                 pingcnt;
         uint64_t                 msgcnt;
+        uint64_t                 cleanup_gen;
 };
 typedef struct rpc_clnt_connection rpc_clnt_connection_t;
 
@@ -174,7 +176,7 @@ typedef struct rpc_clnt {
         rpc_clnt_notify_t      notifyfn;
         rpc_clnt_connection_t  conn;
         void                  *mydata;
-        uint64_t               xid;
+        gf_atomic_t            xid;
 
         /* list of cb programs registered with rpc-clnt */
         struct list_head       programs;
@@ -196,6 +198,8 @@ struct rpc_clnt *rpc_clnt_new (dict_t *options, xlator_t *owner,
                                char *name, uint32_t reqpool_size);
 
 int rpc_clnt_start (struct rpc_clnt *rpc);
+
+int rpc_clnt_cleanup_and_start (struct rpc_clnt *rpc);
 
 int rpc_clnt_register_notify (struct rpc_clnt *rpc, rpc_clnt_notify_t fn,
                               void *mydata);
@@ -230,10 +234,14 @@ struct rpc_clnt *
 rpc_clnt_unref (struct rpc_clnt *rpc);
 
 int rpc_clnt_connection_cleanup (rpc_clnt_connection_t *conn);
+int rpc_clnt_reconnect_cleanup (rpc_clnt_connection_t *conn);
 
 void rpc_clnt_set_connected (rpc_clnt_connection_t *conn);
 
 void rpc_clnt_unset_connected (rpc_clnt_connection_t *conn);
+
+gf_boolean_t is_rpc_clnt_disconnected (rpc_clnt_connection_t *conn);
+
 void rpc_clnt_reconnect (void *trans_ptr);
 
 void rpc_clnt_reconfig (struct rpc_clnt *rpc, struct rpc_clnt_config *config);

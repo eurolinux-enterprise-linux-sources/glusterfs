@@ -1,0 +1,225 @@
+From 4bf98e63a481aea6143e8f404aa4650f7a80e317 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Wed, 3 Jan 2018 14:29:51 +0530
+Subject: [PATCH 120/128] glusterd: connect to an existing brick process when
+ qourum status is NOT_APPLICABLE_QUORUM
+
+First of all, this patch reverts commit 635c1c3 as the same is causing a
+regression with bricks not coming up on time when a node is rebooted.
+This patch tries to fix the problem in a different way by just trying to
+connect to an existing running brick when quorum status is not
+applicable.
+
+> upstream patch : https://review.gluster.org/#/c/19134/
+
+Change-Id: I0efb5901832824b1c15dcac529bffac85173e097
+BUG: 1509102
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126996
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c     |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-handshake.c     |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c         |  1 +
+ xlators/mgmt/glusterd/src/glusterd-replace-brick.c |  3 ++-
+ xlators/mgmt/glusterd/src/glusterd-server-quorum.c | 27 ++++++++++++++++++----
+ xlators/mgmt/glusterd/src/glusterd-utils.c         | 13 +++++++----
+ xlators/mgmt/glusterd/src/glusterd-utils.h         |  3 ++-
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c    |  3 ++-
+ 8 files changed, 40 insertions(+), 14 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index e88fa3f..416412e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -1554,7 +1554,7 @@ glusterd_op_perform_add_bricks (glusterd_volinfo_t *volinfo, int32_t count,
+                         }
+                 }
+                 ret = glusterd_brick_start (volinfo, brickinfo,
+-                                            _gf_true);
++                                            _gf_true, _gf_false);
+                 if (ret)
+                         goto out;
+                 i++;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handshake.c b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+index 35aeca3..3d1dfb2 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handshake.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+@@ -658,7 +658,7 @@ glusterd_create_missed_snap (glusterd_missed_snap_info *missed_snapinfo,
+         }
+ 
+         brickinfo->snap_status = 0;
+-        ret = glusterd_brick_start (snap_vol, brickinfo, _gf_false);
++        ret = glusterd_brick_start (snap_vol, brickinfo, _gf_false, _gf_false);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_WARNING, 0,
+                         GD_MSG_BRICK_DISCONNECTED, "starting the "
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 86f18f0..b1a6e06 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -2437,6 +2437,7 @@ glusterd_start_bricks (glusterd_volinfo_t *volinfo)
+                         pthread_mutex_lock (&brickinfo->restart_mutex);
+                         {
+                                 ret = glusterd_brick_start (volinfo, brickinfo,
++                                                            _gf_false,
+                                                             _gf_false);
+                         }
+                         pthread_mutex_unlock (&brickinfo->restart_mutex);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+index b11adf1..a037323 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+@@ -429,7 +429,8 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
+                 goto out;
+ 
+         if (GLUSTERD_STATUS_STARTED == volinfo->status) {
+-                ret = glusterd_brick_start (volinfo, new_brickinfo, _gf_false);
++                ret = glusterd_brick_start (volinfo, new_brickinfo, _gf_false,
++                                            _gf_false);
+                 if (ret)
+                         goto out;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-server-quorum.c b/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
+index 995a568..b01bfaa 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
++++ b/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
+@@ -314,6 +314,7 @@ glusterd_do_volume_quorum_action (xlator_t *this, glusterd_volinfo_t *volinfo,
+         glusterd_brickinfo_t *brickinfo     = NULL;
+         gd_quorum_status_t   quorum_status  = NOT_APPLICABLE_QUORUM;
+         gf_boolean_t         follows_quorum = _gf_false;
++        gf_boolean_t         quorum_status_unchanged = _gf_false;
+ 
+         if (volinfo->status != GLUSTERD_STATUS_STARTED) {
+                 volinfo->quorum_status = NOT_APPLICABLE_QUORUM;
+@@ -341,9 +342,10 @@ glusterd_do_volume_quorum_action (xlator_t *this, glusterd_volinfo_t *volinfo,
+          * the bricks that are down are brought up again. In this process it
+          * also brings up the brick that is purposefully taken down.
+          */
+-        if (quorum_status != NOT_APPLICABLE_QUORUM &&
+-            volinfo->quorum_status == quorum_status)
++        if (volinfo->quorum_status == quorum_status) {
++                quorum_status_unchanged = _gf_true;
+                 goto out;
++        }
+ 
+         if (quorum_status == MEETS_QUORUM) {
+                 gf_msg (this->name, GF_LOG_CRITICAL, 0,
+@@ -368,9 +370,10 @@ glusterd_do_volume_quorum_action (xlator_t *this, glusterd_volinfo_t *volinfo,
+                         if (!brickinfo->start_triggered) {
+                                 pthread_mutex_lock (&brickinfo->restart_mutex);
+                                 {
+-                                        glusterd_brick_start (volinfo,
+-                                                              brickinfo,
+-                                                              _gf_false);
++                                        ret = glusterd_brick_start (volinfo,
++                                                                    brickinfo,
++                                                                    _gf_false,
++                                                                    _gf_false);
+                                 }
+                                 pthread_mutex_unlock (&brickinfo->restart_mutex);
+                         }
+@@ -392,6 +395,20 @@ glusterd_do_volume_quorum_action (xlator_t *this, glusterd_volinfo_t *volinfo,
+                 }
+         }
+ out:
++        if (quorum_status_unchanged) {
++                list_for_each_entry (brickinfo, &volinfo->bricks, brick_list) {
++                        if (!glusterd_is_local_brick (this, volinfo, brickinfo))
++                                continue;
++                        ret = glusterd_brick_start (volinfo, brickinfo,
++                                                    _gf_false, _gf_true);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_BRICK_DISCONNECTED, "Failed to "
++                                        "connect to %s:%s", brickinfo->hostname,
++                                        brickinfo->path);
++                        }
++                }
++        }
+         return;
+ }
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 1b2cc43..f1b365f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -5796,7 +5796,8 @@ glusterd_get_sock_from_brick_pid (int pid, char *sockpath, size_t len)
+ int
+ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                       glusterd_brickinfo_t *brickinfo,
+-                      gf_boolean_t wait)
++                      gf_boolean_t wait,
++                      gf_boolean_t only_connect)
+ {
+         int                     ret   = -1;
+         xlator_t                *this = NULL;
+@@ -5847,7 +5848,9 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                 ret = 0;
+                 goto out;
+         }
+-        brickinfo->start_triggered = _gf_true;
++        if (!only_connect)
++                brickinfo->start_triggered = _gf_true;
++
+         GLUSTERD_GET_BRICK_PIDFILE (pidfile, volinfo, brickinfo, conf);
+         if (gf_is_service_running (pidfile, &pid)) {
+                 if (brickinfo->status != GF_BRICK_STARTING &&
+@@ -5905,6 +5908,8 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                 }
+                 return 0;
+         }
++        if (only_connect)
++                return 0;
+ 
+ run:
+         ret = _mk_rundir_p (volinfo);
+@@ -6032,7 +6037,7 @@ glusterd_restart_bricks (glusterd_conf_t *conf)
+                                         {
+                                                 glusterd_brick_start
+                                                          (volinfo, brickinfo,
+-                                                          _gf_false);
++                                                          _gf_false, _gf_false);
+                                         }
+                                         pthread_mutex_unlock
+                                                 (&brickinfo->restart_mutex);
+@@ -6081,7 +6086,7 @@ glusterd_restart_bricks (glusterd_conf_t *conf)
+                                         {
+                                                 glusterd_brick_start
+                                                          (volinfo, brickinfo,
+-                                                          _gf_false);
++                                                          _gf_false, _gf_false);
+                                         }
+                                         pthread_mutex_unlock
+                                                 (&brickinfo->restart_mutex);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.h b/xlators/mgmt/glusterd/src/glusterd-utils.h
+index abaec4b..9194da0 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.h
+@@ -277,7 +277,8 @@ glusterd_all_volume_cond_check (glusterd_condition_func func, int status,
+ int
+ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                       glusterd_brickinfo_t *brickinfo,
+-                      gf_boolean_t wait);
++                      gf_boolean_t wait,
++                      gf_boolean_t only_connect);
+ int
+ glusterd_brick_stop (glusterd_volinfo_t *volinfo,
+                      glusterd_brickinfo_t *brickinfo,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index de97e6a..414f9ba 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -2564,7 +2564,8 @@ glusterd_start_volume (glusterd_volinfo_t *volinfo, int flags,
+                 if (flags & GF_CLI_FLAG_OP_FORCE) {
+                         brickinfo->start_triggered = _gf_false;
+                 }
+-                ret = glusterd_brick_start (volinfo, brickinfo, wait);
++                ret = glusterd_brick_start (volinfo, brickinfo, wait,
++                                            _gf_false);
+                 /* If 'force' try to start all bricks regardless of success or
+                  * failure
+                  */
+-- 
+1.8.3.1
+

@@ -186,6 +186,21 @@ start_glusterfs ()
     fi
 
 #options with values start here
+    if [ -n "$halo_max_latency" ]; then
+      cmd_line=$(echo "$cmd_line --xlator-option \
+ *replicate*.halo-max-latency=$halo_max_latency");
+    fi
+
+    if [ -n "$halo_max_replicas" ]; then
+      cmd_line=$(echo "$cmd_line --xlator-option \
+ *replicate*.halo-max-replicas=$halo_max_replicas");
+    fi
+
+    if [ -n "$halo_min_replicas" ]; then
+      cmd_line=$(echo "$cmd_line --xlator-option \
+ *replicate*.halo-min-replicas=$halo_min_replicas");
+    fi
+
     if [ -n "$log_level" ]; then
         cmd_line=$(echo "$cmd_line --log-level=$log_level");
     fi
@@ -200,6 +215,10 @@ start_glusterfs ()
 
     if [ -n "$use_readdirp" ]; then
         cmd_line=$(echo "$cmd_line --use-readdirp=$use_readdirp");
+    fi
+
+    if [ -n "$event_history" ]; then
+        cmd_line=$(echo "$cmd_line --event-history=$event_history");
     fi
 
     if [ -n "$volume_name" ]; then
@@ -228,6 +247,10 @@ start_glusterfs ()
 
     if [ -n "$cong_threshold" ]; then
         cmd_line=$(echo "$cmd_line --congestion-threshold=$cong_threshold");
+    fi
+
+    if [ -n "$oom_score_adj" ]; then
+        cmd_line=$(echo "$cmd_line --oom-score-adj=$oom_score_adj");
     fi
 
     if [ -n "$fuse_mountopts" ]; then
@@ -291,6 +314,10 @@ start_glusterfs ()
 
     if [ -n "$fuse_mountopts" ]; then
         cmd_line=$(echo "$cmd_line --fuse-mountopts=$fuse_mountopts");
+    fi
+
+    if [ -n "$subdir_mount" ]; then
+        cmd_line=$(echo "$cmd_line --subdir-mount=/$subdir_mount");
     fi
 
     cmd_line=$(echo "$cmd_line $mount_point");
@@ -411,6 +438,9 @@ with_options()
         "volume-id")
             volume_id=$value
             ;;
+        "subdir-mount")
+            subdir_mount=$value
+            ;;
         "volfile-check")
             volfile_check=$value
             ;;
@@ -444,6 +474,9 @@ with_options()
         "congestion-threshold")
             cong_threshold=$value
             ;;
+        "oom-score-adj")
+            oom_score_adj=$value
+            ;;
         "xlator-option")
             xlator_option=$value
             ;;
@@ -452,6 +485,9 @@ with_options()
             ;;
         "use-readdirp")
             use_readdirp=$value
+            ;;
+        "event-history")
+            event_history=$value
             ;;
         "no-root-squash")
             if [ $value = "yes" ] ||
@@ -471,6 +507,18 @@ with_options()
             # standard SElinux mount options to pass to the kernel
             [ -z "$fuse_mountopts" ] || fuse_mountopts="$fuse_mountopts,"
             fuse_mountopts="${fuse_mountopts}$key=\"$value\""
+            ;;
+        "halo-max-latency")
+            halo_max_latency=$value
+            ;;
+        "halo-max-replicas")
+            halo_max_replicas=$value
+            ;;
+        "halo-min-replicas")
+          halo_min_replicas=$value
+          ;;
+        x-*)
+            # comments or userspace application-specific options, drop them
             ;;
         *)
             warn "Invalid option: $key"
@@ -516,10 +564,29 @@ without_options()
          # "mount -t glusterfs" sends this, but it's useless.
         "rw")
             ;;
+         # TODO: not sure how to handle this yet
+        "async"|"sync"|"dirsync"|\
+        "mand"|"nomand"|\
+        "silent"|"loud"|\
+        "iversion"|"noiversion"|\
+        "nofail")
+            warn "mount option '${option}' is not handled (yet?)"
+            ;;
+         # standard mount options to pass to the kernel
+        "atime"|"noatime"|"diratime"|"nodiratime"|\
+        "relatime"|"norelatime"|\
+        "strictatime"|"nostrictatime"|"lazyatime"|"nolazyatime"|\
+        "dev"|"nodev"|"exec"|"noexec"|"suid"|"nosuid"|"auto_unmount")
+            [ -z "$fuse_mountopts" ] || fuse_mountopts="$fuse_mountopts,"
+            fuse_mountopts="${fuse_mountopts}${option}"
+            ;;
          # these ones are interpreted during system initialization
-        "noauto")
+        "auto"|"noauto")
             ;;
         "_netdev")
+            ;;
+        x-*)
+            # comments or userspace application-specific options, drop them
             ;;
         *)
             warn "Invalid option $option";
@@ -566,13 +633,16 @@ main ()
         ## `mount` specifies options as a last argument
         shift 2;
     fi
-    while getopts "Vo:hn" opt; do
+    while getopts "Vo:hns" opt; do
         case "${opt}" in
             o)
                 parse_options ${OPTARG};
 		shift 2;
                 ;;
             n)
+                ;;
+            s)
+                # accept+ignore sloppy mount, passed by autofs
                 ;;
             V)
                 ${cmd_line} -V;
@@ -595,10 +665,20 @@ main ()
     fi
 
     [ -r "$volfile_loc" ] || {
-        server_ip=$(echo "$volfile_loc" | sed -n 's/\([a-zA-Z0-9:.\-]*\):.*/\1/p');
+        # '%' included to support ipv6 link local addresses
+        server_ip=$(echo "$volfile_loc" | sed -n 's/\([a-zA-Z0-9:%.\-]*\):.*/\1/p');
         volume_str=$(echo "$volfile_loc" | sed -n 's/.*:\([^ ]*\).*/\1/p');
         [ -n "$volume_str" ] && {
-            volume_id="$volume_str";
+            volume_id=$volume_str
+            volume_str_temp=$volume_str
+            first_char=$(echo "$volume_str" | cut -c 1)
+            [ ${first_char} = '/' ] && {
+                volume_str_temp=$(echo "$volume_str" | cut -c 2-)
+            }
+            [ $(echo $volume_str_temp | grep -c "/") -eq 1 ] && {
+                volume_id=$(echo "$volume_str_temp" | cut -f1 -d '/');
+                subdir_mount=$(echo "$volume_str_temp" | cut -f2- -d '/');
+            }
         }
         volfile_loc="";
         [ -z "$volume_id" -o -z "$server_ip" ] && {

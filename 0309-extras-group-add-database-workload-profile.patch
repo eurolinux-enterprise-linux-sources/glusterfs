@@ -1,0 +1,114 @@
+From 03bda9edb70d855cf602da06fde02c6131db3287 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Thu, 28 Jun 2018 10:42:56 +0530
+Subject: [PATCH 309/325] extras/group : add database workload profile
+
+Running DB workload patterns with all perf xlators enabled as default has
+resulted into some inconsistency issues. Based on the internal testing done by
+Elko Kuric (ekuric@redhat.com) there're certain set of perf xlators which need
+to be turned off to get these types of workload supported by Gluster.
+
+The proposal is to leverage group profile infrastructure to group together all
+those tunables at one place so that users just need to apply the profile to the
+volume to use it for the data base workload.
+
+Credits : Elko Kuric (ekuric@redhat.com)
+
+> upstream patch : https://review.gluster.org/#/c/20414/
+
+>Change-Id: I8a50e915278ad4085b9aaa3f160a33af7c0b0444
+>fixes: bz#1596020
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+
+>Change-Id: I8a50e915278ad4085b9aaa3f160a33af7c0b0444
+>BUG: 1596076
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+>Reviewed-on: https://code.engineering.redhat.com/gerrit/142750
+>Tested-by: RHGS Build Bot <nigelb@redhat.com>
+>Reviewed-by: Milind Changire <mchangir@redhat.com>
+>Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+
+Change-Id: I8a50e915278ad4085b9aaa3f160a33af7c0b0444
+BUG: 1597506
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143320
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ .testignore              | 1 +
+ extras/Makefile.am       | 4 +++-
+ extras/group-db-workload | 8 ++++++++
+ glusterfs.spec.in        | 4 ++++
+ 4 files changed, 16 insertions(+), 1 deletion(-)
+ create mode 100644 extras/group-db-workload
+
+diff --git a/.testignore b/.testignore
+index 72c0b38..4a72bc4 100644
+--- a/.testignore
++++ b/.testignore
+@@ -33,6 +33,7 @@ extras/command-completion/README
+ extras/create_new_xlator/README.md
+ extras/glusterfs.vim
+ extras/group-gluster-block
++extras/group-db-workload
+ extras/group-metadata-cache
+ extras/group-nl-cache
+ extras/group-virt.example
+diff --git a/extras/Makefile.am b/extras/Makefile.am
+index d9572ac..7b791af 100644
+--- a/extras/Makefile.am
++++ b/extras/Makefile.am
+@@ -12,7 +12,7 @@ SUBDIRS = init.d systemd benchmarking hook-scripts $(OCF_SUBDIR) LinuxRPM \
+ 
+ confdir = $(sysconfdir)/glusterfs
+ conf_DATA = glusterfs-logrotate gluster-rsyslog-7.2.conf gluster-rsyslog-5.8.conf \
+-	logger.conf.example glusterfs-georep-logrotate group-virt.example group-metadata-cache group-gluster-block group-nl-cache
++	logger.conf.example glusterfs-georep-logrotate group-virt.example group-metadata-cache group-gluster-block group-nl-cache group-db-workload
+ 
+ voldir = $(sysconfdir)/glusterfs
+ vol_DATA = glusterd.vol
+@@ -47,3 +47,5 @@ install-data-local:
+ 		$(DESTDIR)$(GLUSTERD_WORKDIR)/groups/gluster-block
+ 	$(INSTALL_DATA) $(top_srcdir)/extras/group-nl-cache \
+ 		$(DESTDIR)$(GLUSTERD_WORKDIR)/groups/nl-cache
++	$(INSTALL_DATA) $(top_srcdir)/extras/group-db-workload \
++		$(DESTDIR)$(GLUSTERD_WORKDIR)/groups/db-workload
+diff --git a/extras/group-db-workload b/extras/group-db-workload
+new file mode 100644
+index 0000000..c9caf21
+--- /dev/null
++++ b/extras/group-db-workload
+@@ -0,0 +1,8 @@
++performance.open-behind=off
++performance.write-behind=off
++performance.stat-prefetch=off
++performance.quick-read=off
++performance.strict-o-direct=on
++performance.read-ahead=off
++performance.io-cache=off
++performance.readdir-ahead=off
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 36b465a..c3f5748 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1513,6 +1513,7 @@ exit 0
+             %attr(0644,-,-) %{_sharedstatedir}/glusterd/groups/virt
+             %attr(0644,-,-) %{_sharedstatedir}/glusterd/groups/metadata-cache
+             %attr(0644,-,-) %{_sharedstatedir}/glusterd/groups/gluster-block
++            %attr(0644,-,-) %{_sharedstatedir}/glusterd/groups/db-workload
+             %attr(0644,-,-) %{_sharedstatedir}/glusterd/groups/nl-cache
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glusterfind
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glusterfind/.keys
+@@ -2160,6 +2161,9 @@ fi
+ %endif
+ 
+ %changelog
++* Fri Jul 6 2018 Atin Mukherjee <amukherj@redhat.com>
++- Added db group profile (#1597506)
++
+ * Mon Apr 23 2018 Milind Changire <mchangir@redhat.com>
+ - make RHGS release number available in /usr/share/glusterfs/release (#1570514)
+ 
+-- 
+1.8.3.1
+

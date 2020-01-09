@@ -1,0 +1,58 @@
+From 867536a4ced38d72a7d980cd34bcbf0ce876206a Mon Sep 17 00:00:00 2001
+From: Soumya Koduri <skoduri@redhat.com>
+Date: Fri, 18 Nov 2016 12:47:06 +0530
+Subject: [PATCH 25/74] build: Add dependency on netstat for glusterfs-ganesha
+ pkg
+
+portblock resource-agent needs netstat command but this dependency
+should have been ideally added to resource-agents package. But the
+fixes (bug1395594, bug1395596) are going to be available only
+in the future RHEL 6.9 and RHEL 7.4 releases. Hence as an interim
+workaround, we agreed to add this dependency for glusterfs-ganesha package.
+
+label : DOWNSTREAM ONLY
+
+Change-Id: I6ac1003103755d7534dd079c821bbaacd8dd94b8
+Signed-off-by: Soumya Koduri <skoduri@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/90529
+Reviewed-by: Jiffin Thottan <jthottan@redhat.com>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ glusterfs.spec.in | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index ab61688..343e88f 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -414,6 +414,11 @@ Requires:         nfs-ganesha-gluster, pcs, dbus
+ %if ( 0%{?rhel} && 0%{?rhel} == 6 )
+ Requires:         cman, pacemaker, corosync
+ %endif
++%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 5 )
++# we need portblock resource-agent in 3.9.5 and later.
++Requires:         resource-agents >= 3.9.5
++Requires:         net-tools
++%endif
+ 
+ %description ganesha
+ GlusterFS is a distributed file-system capable of scaling to several
+@@ -2225,6 +2230,14 @@ end
+ * Thu Nov 24 2016 Jiffin Tony Thottan <jhottan@redhat.com>
+ - remove S31ganesha-reset.sh from hooks (#1397795)
+ 
++* Fri Nov 18 2016 Soumya Koduri <skoduri@redhat.com>
++- As an interim fix add dependency on netstat(/net-tools) for glusterfs-ganesha package (#1395574)
++
++* Fri Nov 11 2016 Soumya Koduri <skoduri@redhat.com>
++- Add dependency on portblock resource agent for ganesha package (#1278336)
++- Fix incorrect Requires for portblock resource agent (#1278336)
++- Update version checks for portblock resource agent on RHEL (#1278336)
++
+ * Fri Oct 14 2016 Milind Changire <mchangir@redhat.com>
+ - Changed pretrans scripts to use os.tmpname() for enhanced security
+   for server builds only (#1362044)
+-- 
+1.8.3.1
+

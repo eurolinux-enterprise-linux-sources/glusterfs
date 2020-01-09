@@ -1,0 +1,572 @@
+From cd8c116ba97432f585408de509280a501816d3a5 Mon Sep 17 00:00:00 2001
+From: Sunil Kumar Acharya <sheggodu@redhat.com>
+Date: Thu, 23 Mar 2017 12:50:41 +0530
+Subject: [PATCH 121/128] cluster/ec: OpenFD heal implementation for EC
+
+Existing EC code doesn't try to heal the OpenFD to
+avoid unnecessary healing of the data later.
+
+Fix implements the healing of open FDs before
+carrying out file operations on them by making an
+attempt to open the FDs on required up nodes.
+
+>BUG: 1431955
+>Change-Id: Ib696f59c41ffd8d5678a484b23a00bb02764ed15
+>Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Upstream Patch: https://review.gluster.org/17077
+3.13 Patch: https://review.gluster.org/19176
+
+BUG: 1509810
+Change-Id: Ib696f59c41ffd8d5678a484b23a00bb02764ed15
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/127271
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Javier Hernandez Juan <jahernan@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/basic/ec/ec-fix-openfd.t         | 109 +++++++++++++++++++++++++++++++
+ tests/bugs/core/bug-908146.t           |  12 +---
+ tests/volume.rc                        |  12 ++++
+ xlators/cluster/ec/src/ec-common.c     | 113 +++++++++++++++++++++++++++++++++
+ xlators/cluster/ec/src/ec-common.h     |   4 ++
+ xlators/cluster/ec/src/ec-dir-read.c   |   8 ++-
+ xlators/cluster/ec/src/ec-dir-write.c  |   1 +
+ xlators/cluster/ec/src/ec-helpers.c    |  29 +++++----
+ xlators/cluster/ec/src/ec-inode-read.c |   3 +
+ xlators/cluster/ec/src/ec-types.h      |  59 +++++++++++------
+ 10 files changed, 307 insertions(+), 43 deletions(-)
+ create mode 100644 tests/basic/ec/ec-fix-openfd.t
+
+diff --git a/tests/basic/ec/ec-fix-openfd.t b/tests/basic/ec/ec-fix-openfd.t
+new file mode 100644
+index 0000000..b62fbf4
+--- /dev/null
++++ b/tests/basic/ec/ec-fix-openfd.t
+@@ -0,0 +1,109 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../fileio.rc
++
++# This test checks for open fd heal on EC
++
++#Create Volume
++cleanup
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 disperse 3 redundancy 1 $H0:$B0/${V0}{0..2}
++TEST $CLI volume set $V0 performance.read-after-open yes
++TEST $CLI volume set $V0 performance.lazy-open no
++TEST $CLI volume set $V0 performance.open-behind off
++TEST $CLI volume set $V0 disperse.background-heals 0
++TEST $CLI volume heal $V0 disable
++TEST $CLI volume start $V0
++
++#Mount the volume
++TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "3" ec_child_up_count $V0 0
++
++#Touch a file
++TEST touch "$M0/test_file"
++
++#Kill a brick
++TEST kill_brick $V0 $H0 $B0/${V0}0
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "2" ec_child_up_count $V0 0
++
++#Open the file in write mode
++TEST fd=`fd_available`
++TEST fd_open $fd 'rw' "$M0/test_file"
++
++#Bring up the killed brick
++TEST $CLI volume start $V0 force
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "3" ec_child_up_count $V0 0
++
++#Test the fd count
++EXPECT "0" get_fd_count $V0 $H0 $B0/${V0}0 test_file
++EXPECT "1" get_fd_count $V0 $H0 $B0/${V0}1 test_file
++EXPECT "1" get_fd_count $V0 $H0 $B0/${V0}2 test_file
++
++#Write to file
++dd iflag=fullblock if=/dev/random bs=1024 count=2 >&$fd 2>/dev/null
++
++#Test the fd count
++EXPECT "1" get_fd_count $V0 $H0 $B0/${V0}0 test_file
++
++#Close fd
++TEST fd_close $fd
++
++#Stop the volume
++TEST $CLI volume stop $V0
++
++#Start the volume
++TEST $CLI volume start $V0
++
++#Kill brick1
++TEST kill_brick $V0 $H0 $B0/${V0}0
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "2" ec_child_up_count $V0 0
++
++#Unmount and mount
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0;
++TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "2" ec_child_up_count $V0 0
++
++#Calculate md5 sum
++md5sum0=`get_md5_sum "$M0/test_file"`
++
++#Bring up the brick
++TEST $CLI volume start $V0 force
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "3" ec_child_up_count $V0 0
++
++#Kill brick2
++TEST kill_brick $V0 $H0 $B0/${V0}1
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "2" ec_child_up_count $V0 0
++
++#Unmount and mount
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
++TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "2" ec_child_up_count $V0 0
++
++#Calculate md5 sum
++md5sum1=`get_md5_sum "$M0/test_file"`
++
++#Bring up the brick
++TEST $CLI volume start $V0 force
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "3" ec_child_up_count $V0 0
++
++#Kill brick3
++TEST kill_brick $V0 $H0 $B0/${V0}2
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "2" ec_child_up_count $V0 0
++
++#Unmount and mount
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
++TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "2" ec_child_up_count $V0 0
++
++#Calculate md5 sum
++md5sum2=`get_md5_sum "$M0/test_file"`
++
++#compare the md5sum
++EXPECT "$md5sum0" echo $md5sum1
++EXPECT "$md5sum0" echo $md5sum2
++EXPECT "$md5sum1" echo $md5sum2
++
++cleanup
+diff --git a/tests/bugs/core/bug-908146.t b/tests/bugs/core/bug-908146.t
+index bf34992..327be6e 100755
+--- a/tests/bugs/core/bug-908146.t
++++ b/tests/bugs/core/bug-908146.t
+@@ -2,18 +2,8 @@
+ 
+ . $(dirname $0)/../../include.rc
+ . $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../fileio.rc
+ 
+-function get_fd_count {
+-        local vol=$1
+-        local host=$2
+-        local brick=$3
+-        local fname=$4
+-        local gfid_str=$(gf_gfid_xattr_to_str $(gf_get_gfid_xattr $brick/$fname))
+-        local statedump=$(generate_brick_statedump $vol $host $brick)
+-        local count=$(grep "gfid=$gfid_str" $statedump -A2 | grep fd-count | cut -f2 -d'=' | tail -1)
+-        rm -f $statedump
+-        echo $count
+-}
+ cleanup;
+ 
+ TEST glusterd
+diff --git a/tests/volume.rc b/tests/volume.rc
+index 1cee648..1ca17ab 100644
+--- a/tests/volume.rc
++++ b/tests/volume.rc
+@@ -796,3 +796,15 @@ function count_sh_entries()
+ {
+     ls $1/.glusterfs/indices/xattrop | grep -v "xattrop-" | wc -l
+ }
++
++function get_fd_count {
++        local vol=$1
++        local host=$2
++        local brick=$3
++        local fname=$4
++        local gfid_str=$(gf_gfid_xattr_to_str $(gf_get_gfid_xattr $brick/$fname))
++        local statedump=$(generate_brick_statedump $vol $host $brick)
++        local count=$(grep "gfid=$gfid_str" $statedump -A2 | grep fd-count | cut -f2 -d'=' | tail -1)
++        rm -f $statedump
++        echo $count
++}
+diff --git a/xlators/cluster/ec/src/ec-common.c b/xlators/cluster/ec/src/ec-common.c
+index f86ecf8..18ed274 100644
+--- a/xlators/cluster/ec/src/ec-common.c
++++ b/xlators/cluster/ec/src/ec-common.c
+@@ -25,6 +25,114 @@
+                                    EC_FLAG_WAITING_DATA_DIRTY |\
+                                    EC_FLAG_WAITING_METADATA_DIRTY)
+ 
++void
++ec_update_fd_status (fd_t *fd, xlator_t *xl, int idx,
++                     int32_t ret_status)
++{
++        ec_fd_t *fd_ctx;
++
++        if (fd == NULL)
++                return;
++
++        LOCK (&fd->lock);
++        {
++                fd_ctx = __ec_fd_get(fd, xl);
++                if (fd_ctx) {
++                        if (ret_status >= 0)
++                                fd_ctx->fd_status[idx] = EC_FD_OPENED;
++                        else
++                                fd_ctx->fd_status[idx] = EC_FD_NOT_OPENED;
++                }
++        }
++        UNLOCK (&fd->lock);
++}
++
++static int
++ec_fd_ctx_need_open (fd_t *fd, xlator_t *this, uintptr_t *need_open)
++{
++    int i = 0;
++    int count = 0;
++    ec_t *ec = NULL;
++    ec_fd_t *fd_ctx = NULL;
++
++    ec = this->private;
++    *need_open = 0;
++
++    fd_ctx = ec_fd_get (fd, this);
++    if (!fd_ctx)
++        return count;
++
++    LOCK (&fd->lock);
++    {
++        for (i = 0; i < ec->nodes; i++) {
++                if ((fd_ctx->fd_status[i] == EC_FD_NOT_OPENED) &&
++                    (ec->xl_up & (1<<i))) {
++                        fd_ctx->fd_status[i] = EC_FD_OPENING;
++                        *need_open |= (1<<i);
++                        count++;
++                }
++        }
++    }
++    UNLOCK (&fd->lock);
++
++    /* If fd needs to open on minimum number of nodes
++     * then ignore fixing the fd as it has been
++     * requested from heal operation.
++     */
++    if (count >= ec->fragments)
++        count = 0;
++
++    return count;
++}
++
++static gf_boolean_t
++ec_is_fd_fixable (fd_t *fd)
++{
++    if (!fd || !fd->inode)
++        return _gf_false;
++    else if (fd_is_anonymous (fd))
++        return _gf_false;
++    else if (gf_uuid_is_null (fd->inode->gfid))
++        return _gf_false;
++
++    return _gf_true;
++}
++
++static void
++ec_fix_open (ec_fop_data_t *fop)
++{
++    int                call_count = 0;
++    uintptr_t           need_open = 0;
++    int                       ret = 0;
++    loc_t                     loc = {0, };
++
++    if (!ec_is_fd_fixable (fop->fd))
++        goto out;
++
++    /* Evaluate how many remote fd's to be opened */
++    call_count = ec_fd_ctx_need_open (fop->fd, fop->xl, &need_open);
++    if (!call_count)
++        goto out;
++
++    loc.inode = inode_ref (fop->fd->inode);
++    gf_uuid_copy (loc.gfid, fop->fd->inode->gfid);
++    ret = loc_path (&loc, NULL);
++    if (ret < 0) {
++        goto out;
++    }
++
++    if (IA_IFDIR == fop->fd->inode->ia_type) {
++        ec_opendir(fop->frame, fop->xl, need_open, EC_MINIMUM_ONE,
++                   NULL, NULL, &fop->loc[0], fop->fd, NULL);
++    } else{
++        ec_open(fop->frame, fop->xl, need_open, EC_MINIMUM_ONE,
++                NULL, NULL, &loc, fop->fd->flags, fop->fd, NULL);
++    }
++
++out:
++    loc_wipe (&loc);
++}
++
+ off_t
+ ec_range_end_get (off_t fl_start, size_t fl_size)
+ {
+@@ -1647,6 +1755,11 @@ void ec_lock_acquired(ec_lock_link_t *link)
+ 
+     ec_lock_apply(link);
+ 
++    if (fop->use_fd &&
++        (link->update[EC_DATA_TXN] || link->update[EC_METADATA_TXN])) {
++        ec_fix_open(fop);
++    }
++
+     ec_lock_resume_shared(&list);
+ }
+ 
+diff --git a/xlators/cluster/ec/src/ec-common.h b/xlators/cluster/ec/src/ec-common.h
+index dec81ca..c0ad604 100644
+--- a/xlators/cluster/ec/src/ec-common.h
++++ b/xlators/cluster/ec/src/ec-common.h
+@@ -135,4 +135,8 @@ ec_heal_inspect (call_frame_t *frame, ec_t *ec,
+                  ec_heal_need_t *need_heal);
+ int32_t
+ ec_get_heal_info (xlator_t *this, loc_t *loc, dict_t **dict);
++
++void
++ec_update_fd_status (fd_t *fd, xlator_t *xl,
++                     int child_index, int32_t ret_status);
+ #endif /* __EC_COMMON_H__ */
+diff --git a/xlators/cluster/ec/src/ec-dir-read.c b/xlators/cluster/ec/src/ec-dir-read.c
+index 48afe54..b44bb42 100644
+--- a/xlators/cluster/ec/src/ec-dir-read.c
++++ b/xlators/cluster/ec/src/ec-dir-read.c
+@@ -19,7 +19,11 @@
+ #include "ec-method.h"
+ #include "ec-fops.h"
+ 
+-/* FOP: opendir */
++/****************************************************************
++ *
++ * File Operation: opendir
++ *
++ ***************************************************************/
+ 
+ int32_t ec_combine_opendir(ec_fop_data_t * fop, ec_cbk_data_t * dst,
+                            ec_cbk_data_t * src)
+@@ -88,6 +92,8 @@ int32_t ec_opendir_cbk(call_frame_t * frame, void * cookie, xlator_t * this,
+         }
+ 
+         ec_combine(cbk, ec_combine_opendir);
++
++        ec_update_fd_status (fd, this, idx, op_ret);
+     }
+ 
+ out:
+diff --git a/xlators/cluster/ec/src/ec-dir-write.c b/xlators/cluster/ec/src/ec-dir-write.c
+index 150dc66..7779d48 100644
+--- a/xlators/cluster/ec/src/ec-dir-write.c
++++ b/xlators/cluster/ec/src/ec-dir-write.c
+@@ -71,6 +71,7 @@ ec_dir_write_cbk (call_frame_t *frame, xlator_t *this,
+ out:
+         if (cbk)
+                 ec_combine (cbk, ec_combine_write);
++
+         if (fop)
+                 ec_complete (fop);
+         return 0;
+diff --git a/xlators/cluster/ec/src/ec-helpers.c b/xlators/cluster/ec/src/ec-helpers.c
+index 0c66948..d54340c 100644
+--- a/xlators/cluster/ec/src/ec-helpers.c
++++ b/xlators/cluster/ec/src/ec-helpers.c
+@@ -751,27 +751,32 @@ ec_inode_t * ec_inode_get(inode_t * inode, xlator_t * xl)
+ 
+ ec_fd_t * __ec_fd_get(fd_t * fd, xlator_t * xl)
+ {
++    int i = 0;
+     ec_fd_t * ctx = NULL;
+     uint64_t value = 0;
++    ec_t *ec = xl->private;
+ 
+-    if ((__fd_ctx_get(fd, xl, &value) != 0) || (value == 0))
+-    {
+-        ctx = GF_MALLOC(sizeof(*ctx), ec_mt_ec_fd_t);
+-        if (ctx != NULL)
+-        {
++    if ((__fd_ctx_get(fd, xl, &value) != 0) || (value == 0)) {
++        ctx = GF_MALLOC(sizeof(*ctx) + (sizeof (ec_fd_status_t) * ec->nodes),
++                        ec_mt_ec_fd_t);
++        if (ctx != NULL) {
+             memset(ctx, 0, sizeof(*ctx));
+ 
+-            value = (uint64_t)(uintptr_t)ctx;
+-            if (__fd_ctx_set(fd, xl, value) != 0)
+-            {
+-                GF_FREE(ctx);
++            for (i = 0; i < ec->nodes; i++) {
++                if (fd_is_anonymous (fd)) {
++                        ctx->fd_status[i] = EC_FD_OPENED;
++                } else {
++                        ctx->fd_status[i] = EC_FD_NOT_OPENED;
++                }
++            }
+ 
++            value = (uint64_t)(uintptr_t)ctx;
++            if (__fd_ctx_set(fd, xl, value) != 0) {
++                GF_FREE (ctx);
+                 return NULL;
+             }
+         }
+-    }
+-    else
+-    {
++    } else {
+         ctx = (ec_fd_t *)(uintptr_t)value;
+     }
+ 
+diff --git a/xlators/cluster/ec/src/ec-inode-read.c b/xlators/cluster/ec/src/ec-inode-read.c
+index 33fd7f5..24fcdb9 100644
+--- a/xlators/cluster/ec/src/ec-inode-read.c
++++ b/xlators/cluster/ec/src/ec-inode-read.c
+@@ -739,6 +739,9 @@ int32_t ec_open_cbk(call_frame_t * frame, void * cookie, xlator_t * this,
+         }
+ 
+         ec_combine(cbk, ec_combine_open);
++
++        ec_update_fd_status (fd, this, idx, op_ret);
++
+     }
+ 
+ out:
+diff --git a/xlators/cluster/ec/src/ec-types.h b/xlators/cluster/ec/src/ec-types.h
+index a891ff5..3129586 100644
+--- a/xlators/cluster/ec/src/ec-types.h
++++ b/xlators/cluster/ec/src/ec-types.h
+@@ -124,6 +124,13 @@ enum _ec_heal_need {
+         EC_HEAL_MUST
+ };
+ 
++/* Enumartions to indicate FD status. */
++typedef enum {
++    EC_FD_NOT_OPENED,
++    EC_FD_OPENED,
++    EC_FD_OPENING
++} ec_fd_status_t;
++
+ struct _ec_config {
+     uint32_t version;
+     uint8_t  algorithm;
+@@ -137,6 +144,7 @@ struct _ec_fd {
+     loc_t     loc;
+     uintptr_t open;
+     int32_t   flags;
++    ec_fd_status_t fd_status[0];
+ };
+ 
+ struct _ec_inode {
+@@ -263,17 +271,21 @@ struct _ec_lock_link {
+     off_t             fl_end;
+ };
+ 
++/* EC xlator data structure to collect all the data required to perform
++ * the file operation.*/
+ struct _ec_fop_data {
+-    int32_t            id;
++    int32_t            id;           /* ID of the file operation */
+     int32_t            refs;
+     int32_t            state;
+-    int32_t            minimum;
++    int32_t            minimum;      /* Mininum number of successful
++                                        operation required to conclude a
++                                        fop as successful */
+     int32_t            expected;
+     int32_t            winds;
+     int32_t            jobs;
+     int32_t            error;
+     ec_fop_data_t     *parent;
+-    xlator_t          *xl;
++    xlator_t          *xl;           /* points to EC xlator */
+     call_frame_t      *req_frame;    /* frame of the calling xlator */
+     call_frame_t      *frame;        /* frame used by this fop */
+     struct list_head   cbk_list;     /* sorted list of groups of answers */
+@@ -299,10 +311,10 @@ struct _ec_fop_data {
+     uid_t              uid;
+     gid_t              gid;
+ 
+-    ec_wind_f          wind;
+-    ec_handler_f       handler;
++    ec_wind_f          wind;          /* Function to wind to */
++    ec_handler_f       handler;       /* FOP manager function */
+     ec_resume_f        resume;
+-    ec_cbk_t           cbks;
++    ec_cbk_t           cbks;          /* Callback function for this FOP */
+     void              *data;
+     ec_heal_t         *heal;
+     struct list_head   healer;
+@@ -310,7 +322,8 @@ struct _ec_fop_data {
+     uint64_t           user_size;
+     uint32_t           head;
+ 
+-    int32_t            use_fd;
++    int32_t            use_fd;        /* Indicates whether this FOP uses FD or
++                                         not */
+ 
+     dict_t            *xdata;
+     dict_t            *dict;
+@@ -324,10 +337,12 @@ struct _ec_fop_data {
+     gf_xattrop_flags_t xattrop_flags;
+     dev_t              dev;
+     inode_t           *inode;
+-    fd_t              *fd;
++    fd_t              *fd;              /* FD of the file on which FOP is
++                                           being carried upon */
+     struct iatt        iatt;
+     char              *str[2];
+-    loc_t              loc[2];
++    loc_t              loc[2];          /* Holds the location details for
++                                           the file */
+     struct gf_flock    flock;
+     struct iovec      *vector;
+     struct iobref     *buffers;
+@@ -555,18 +570,24 @@ struct _ec {
+     xlator_t          *xl;
+     int32_t            healers;
+     int32_t            heal_waiters;
+-    int32_t            nodes;
++    int32_t            nodes;                /* Total number of bricks(n) */
+     int32_t            bits_for_nodes;
+-    int32_t            fragments;
+-    int32_t            redundancy;
+-    uint32_t           fragment_size;
+-    uint32_t           stripe_size;
+-    int32_t            up;
++    int32_t            fragments;            /* Data bricks(k) */
++    int32_t            redundancy;           /* Redundant bricks(m) */
++    uint32_t           fragment_size;        /* Size of fragment/chunk on a
++                                                brick. */
++    uint32_t           stripe_size;          /* (fragment_size * fragments)
++                                                maximum size of user data
++                                                stored in one stripe. */
++    int32_t            up;                   /* Represents whether EC volume is
++                                                up or not. */
+     uint32_t           idx;
+-    uint32_t           xl_up_count;
+-    uintptr_t          xl_up;
+-    uint32_t           xl_notify_count;
+-    uintptr_t          xl_notify;
++    uint32_t           xl_up_count;          /* Number of UP bricks. */
++    uintptr_t          xl_up;                /* Bit flag representing UP
++                                                bricks */
++    uint32_t           xl_notify_count;      /* Number of notifications. */
++    uintptr_t          xl_notify;            /* Bit flag representing
++                                                notification for bricks. */
+     uintptr_t          node_mask;
+     xlator_t         **xl_list;
+     gf_lock_t          lock;
+-- 
+1.8.3.1
+

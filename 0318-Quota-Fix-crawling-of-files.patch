@@ -1,0 +1,60 @@
+From 4ef66d687918c87393b26b8e72d5eb2f5f9e30f0 Mon Sep 17 00:00:00 2001
+From: Sanoj Unnikrishnan <sunnikri@redhat.com>
+Date: Mon, 16 Jul 2018 11:16:24 +0530
+Subject: [PATCH 318/325] Quota: Fix crawling of files
+
+Problem: Running "find ." does not crawl files. It goes over the
+directories and lists all dentries with getdents system call.
+Hence the files are not looked up.
+
+Solution:
+explicitly triggerr stat on files with find . -exec stat {} \;
+since crawl can take slightly longer, updating timeout in test case
+
+Backport of,
+> Change-Id: If3c1fba2ed8e300c9cc08c1b5c1ba93cb8e4d6b6
+> bug: 1533000
+> patch: https://review.gluster.org/#/c/20057/
+> Signed-off-by: Sanoj Unnikrishnan <sunnikri@redhat.com>
+
+BUG: 1581231
+Change-Id: I39768e22a7139f77de1740432b9de4a5c870b359
+Signed-off-by: Sanoj Unnikrishnan <sunnikri@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144022
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ tests/bugs/quota/bug-1293601.t             | 2 +-
+ xlators/mgmt/glusterd/src/glusterd-quota.c | 4 +++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/tests/bugs/quota/bug-1293601.t b/tests/bugs/quota/bug-1293601.t
+index 52b03bc..def4ef9 100644
+--- a/tests/bugs/quota/bug-1293601.t
++++ b/tests/bugs/quota/bug-1293601.t
+@@ -27,6 +27,6 @@ EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT "1.0MB" quotausage "/"
+ TEST $CLI volume quota $V0 disable
+ TEST $CLI volume quota $V0 enable
+ 
+-EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT "1.0MB" quotausage "/"
++EXPECT_WITHIN 40 "1.0MB" quotausage "/"
+ 
+ cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-quota.c b/xlators/mgmt/glusterd/src/glusterd-quota.c
+index 1c3a801..6d3918b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-quota.c
++++ b/xlators/mgmt/glusterd/src/glusterd-quota.c
+@@ -341,7 +341,9 @@ _glusterd_quota_initiate_fs_crawl (glusterd_conf_t *priv,
+ 
+                 if (type == GF_QUOTA_OPTION_TYPE_ENABLE ||
+                     type == GF_QUOTA_OPTION_TYPE_ENABLE_OBJECTS)
+-                        runner_add_args (&runner, "/usr/bin/find", ".", NULL);
++                        runner_add_args (&runner, "/usr/bin/find", ".",
++                                         "-exec", "/usr/bin/stat",
++                                         "{}", "\\", ";", NULL);
+ 
+                 else if (type == GF_QUOTA_OPTION_TYPE_DISABLE) {
+ 
+-- 
+1.8.3.1
+

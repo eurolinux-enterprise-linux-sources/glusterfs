@@ -8,7 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
+#ifdef RPC_XDR
+%#include "rpc-pragmas.h"
+#endif
+%#include "compat.h"
+
 /* .x file defined as according to the RFC */
+
+%#include "xdr-common.h"
 
 const MAXNETOBJ_SZ = 1024;
 const LM_MAXSTRLEN = 1024;

@@ -51,9 +51,6 @@ cleanup;
 
 #Basic checks
 TEST glusterd
-TEST pidof glusterd
-TEST $CLI volume info
-
 
 #Create and start a tiered volume
 create_dist_tier_vol $NUM_BRICKS
@@ -104,3 +101,4 @@ TEST getfattr -n "user.test_xattr" $M0/dir1/FILE1
 
 cleanup;
 
+#G_TESTDEF_TEST_STATUS_NETBSD7=BAD_TEST,BUG=000000

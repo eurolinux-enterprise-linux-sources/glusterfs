@@ -1,0 +1,76 @@
+From fd0a8f99f853e923d485acfcdda556156105c8d1 Mon Sep 17 00:00:00 2001
+From: Poornima G <pgurusid@redhat.com>
+Date: Mon, 13 Nov 2017 12:55:06 +0530
+Subject: [PATCH 150/180] dht: Fill first_up_subvol before use in dht_opendir
+
+Reported by: Sam McLeod
+
+> Upstream patch: https://review.gluster.org/#/c/18723/
+
+Change-Id: Ic8f9b46b173796afd70aff1042834b03ac3e80b2
+BUG: 1529072
+Signed-off-by: Poornima G <pgurusid@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130059
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+Tested-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ tests/bugs/readdir-ahead/bug-1512437.t | 23 +++++++++++++++++++++++
+ xlators/cluster/dht/src/dht-common.c   |  5 +++++
+ 2 files changed, 28 insertions(+)
+ create mode 100755 tests/bugs/readdir-ahead/bug-1512437.t
+
+diff --git a/tests/bugs/readdir-ahead/bug-1512437.t b/tests/bugs/readdir-ahead/bug-1512437.t
+new file mode 100755
+index 0000000..50eaa7d
+--- /dev/null
++++ b/tests/bugs/readdir-ahead/bug-1512437.t
+@@ -0,0 +1,23 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup;
++
++TEST glusterd
++
++TEST $CLI volume create $V0 $H0:$B0/${V0}1
++TEST $CLI volume start $V0
++
++TEST $CLI volume set $V0 parallel-readdir on
++TEST $CLI volume set $V0 readdir-optimize on
++
++TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0
++TEST mkdir -p $M0/subdir1/subdir2;
++umount $M0
++TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0
++count=`ls -1 $M0/subdir1 | wc -l`
++TEST [ $count -eq 1 ]
++
++cleanup;
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 727a47b..1262732 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -5043,6 +5043,7 @@ dht_opendir (call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+                 op_errno = ENOMEM;
+                 goto err;
+         }
++        local->first_up_subvol = dht_first_up_subvol (this);
+ 
+         if (!xdata) {
+                 xdata = dict_new ();
+@@ -5070,6 +5071,10 @@ dht_opendir (call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+                 subvolumes = conf->local_subvols;
+         }
+ 
++        /* In case of parallel-readdir, the readdir-ahead will be loaded
++         * below dht, in this case, if we want to enable or disable SKIP_DIRs
++         * it has to be done in opendir, so that prefetching logic in
++         * readdir-ahead, honors it */
+         for (i = 0; i < call_count; i++) {
+                 if (conf->readdir_optimize == _gf_true) {
+                         if (subvolumes[i] != local->first_up_subvol) {
+-- 
+1.8.3.1
+

@@ -1,0 +1,138 @@
+From b69a36e8c61a0e1d45b3def6436d223bd14e76ef Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Tue, 28 Nov 2017 13:37:43 +0530
+Subject: [PATCH 098/128] snapshot : snapshot creation failed after brick
+ reset/replace
+
+Problem : snapshot creation was failing after brick reset/replace
+
+Fix : changed code to set mount_dir value in rsp_dict during prerequisites
+      phase i.e glusterd_brick_op_prerequisites call and removed form prevalidate
+      phase.
+Upstream patch : https://review.gluster.org/c/18730/
+
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+>BUG: 1512451
+
+BUG: 1507394
+Change-Id: Ief5d0fafe882a7eb1a7da8535b7c7ce6f011604c
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124467
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ ...51-snapshot-creation-failed-after-brick-reset.t | 39 ++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-replace-brick.c |  8 -----
+ xlators/mgmt/glusterd/src/glusterd-reset-brick.c   | 10 ------
+ xlators/mgmt/glusterd/src/glusterd-utils.c         |  9 +++++
+ 4 files changed, 48 insertions(+), 18 deletions(-)
+ create mode 100644 tests/bugs/snapshot/bug-1512451-snapshot-creation-failed-after-brick-reset.t
+
+diff --git a/tests/bugs/snapshot/bug-1512451-snapshot-creation-failed-after-brick-reset.t b/tests/bugs/snapshot/bug-1512451-snapshot-creation-failed-after-brick-reset.t
+new file mode 100644
+index 0000000..0624a5d
+--- /dev/null
++++ b/tests/bugs/snapshot/bug-1512451-snapshot-creation-failed-after-brick-reset.t
+@@ -0,0 +1,39 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../cluster.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../snapshot.rc
++
++cleanup;
++TEST verify_lvm_version
++TEST launch_cluster 2
++TEST setup_lvm 2
++
++TEST $CLI_1 peer probe $H2
++EXPECT_WITHIN $PROBE_TIMEOUT 1 peer_count
++
++TEST $CLI_1 volume create $V0 $H1:$L1/B1 $H2:$L2/B1
++EXPECT 'Created' volinfo_field $V0 'Status'
++
++TEST $CLI_1 volume start $V0
++EXPECT 'Started' volinfo_field $V0 'Status'
++
++TEST $CLI_1 snapshot create ${V0}_snap1 ${V0} no-timestamp
++TEST snapshot_exists 1 ${V0}_snap1
++
++TEST $CLI_1 snapshot delete ${V0}_snap1
++TEST ! snapshot_exists 1 ${V0}_snap1
++
++TEST $CLI_1 volume reset-brick $V0 $H1:$L1/B1 start
++TEST $CLI_1 volume reset-brick $V0 $H1:$L1/B1 $H1:$L1/B1 commit force
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status_1 $V0 $H1 $L1/B1
++
++TEST $CLI_1 snapshot create ${V0}_snap1 ${V0} no-timestamp
++TEST snapshot_exists 1 ${V0}_snap1
++
++TEST $CLI_1 snapshot delete ${V0}_snap1
++TEST ! snapshot_exists 1 ${V0}_snap1
++
++cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+index 18fc741..0e28608 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+@@ -319,14 +319,6 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
+                         goto out;
+                 }
+ 
+-                ret = dict_set_dynstr_with_alloc (rsp_dict, "brick1.mount_dir",
+-                                                  dst_brickinfo->mount_dir);
+-                if (ret) {
+-                        gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                GD_MSG_DICT_SET_FAILED,
+-                                "Failed to set brick1.mount_dir");
+-                        goto out;
+-                }
+ 
+                 ret = dict_set_int32 (rsp_dict, "brick_count", 1);
+                 if (ret) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-reset-brick.c b/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
+index abb44e0..10ee6f4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
+@@ -208,16 +208,6 @@ glusterd_reset_brick_prevalidate (dict_t *dict, char **op_errstr,
+                 goto out;
+         }
+ 
+-        ret = dict_set_dynstr_with_alloc (rsp_dict,
+-                                  "brick1.mount_dir",
+-                                   dst_brickinfo->mount_dir);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                        GD_MSG_DICT_SET_FAILED,
+-                        "Failed to set brick1.mount_dir");
+-                goto out;
+-        }
+-
+         ret = dict_set_int32 (rsp_dict, "brick_count", 1);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index f611fbb..23fc6e9 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -13648,6 +13648,15 @@ glusterd_brick_op_prerequisites (dict_t *dict,
+                                         (*src_brickinfo)->port);
+                         }
+                 }
++                /* setting mount_dir */
++                ret = dict_set_dynstr_with_alloc (rsp_dict, "brick1.mount_dir",
++                                                  (*src_brickinfo)->mount_dir);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DICT_SET_FAILED,
++                                "Failed to set brick1.mount_dir");
++                        goto out;
++                }
+ 
+                 v = *volinfo;
+                 b = *src_brickinfo;
+-- 
+1.8.3.1
+

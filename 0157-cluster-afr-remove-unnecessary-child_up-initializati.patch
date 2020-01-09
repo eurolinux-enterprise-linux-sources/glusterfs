@@ -1,0 +1,45 @@
+From d4f44782105268a9f1780f8ed53a98a28ba09053 Mon Sep 17 00:00:00 2001
+From: Xavier Hernandez <jahernan@redhat.com>
+Date: Thu, 1 Feb 2018 16:06:32 +0100
+Subject: [PATCH 157/180] cluster/afr: remove unnecessary child_up
+ initialization
+
+The child_up array was initialized with all elements being -1 to
+allow afr_notify() to differentiate down bricks from bricks that
+haven't reported yet. With current implementation this is not needed
+anymore and it was causing unexpected results when other parts of
+the code considered that if child_up[i] != 0, it meant that it was up.
+
+> Upstream patch: https://review.gluster.org/19440
+
+Change-Id: I2a9d712ee64c512f24bd5cd3a48dcb37e3139472
+BUG: 1541932
+Signed-off-by: Xavier Hernandez <jahernan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130431
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/afr/src/afr.c | 7 -------
+ 1 file changed, 7 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr.c b/xlators/cluster/afr/src/afr.c
+index 84dbcc0..d3aee77 100644
+--- a/xlators/cluster/afr/src/afr.c
++++ b/xlators/cluster/afr/src/afr.c
+@@ -583,13 +583,6 @@ init (xlator_t *this)
+                 goto out;
+         }
+ 
+-        for (i = 0; i < child_count; i++)
+-                priv->child_up[i] = -1; /* start with unknown state.
+-                                           this initialization needed
+-                                           for afr_notify() to work
+-                                           reliably
+-                                        */
+-
+         priv->children = GF_CALLOC (sizeof (xlator_t *), child_count,
+                                     gf_afr_mt_xlator_t);
+         if (!priv->children) {
+-- 
+1.8.3.1
+

@@ -75,6 +75,52 @@ gf_fuse_unmount (const char *mountpoint, int fd)
 
 /* gluster-specific routines */
 
+/* Unmounting in a daemon that lurks 'till main process exits */
+int
+gf_fuse_unmount_daemon (const char *mountpoint, int fd)
+{
+        int   ret = -1;
+        pid_t pid = -1;
+
+        if (fd == -1)
+                return -1;
+
+        int ump[2] = {0,};
+
+        ret = pipe(ump);
+        if (ret == -1) {
+                close (fd);
+                return -1;
+        }
+
+        pid = fork ();
+        switch (pid) {
+                char c = 0;
+                sigset_t sigset;
+        case 0:
+
+                close_fds_except (ump, 1);
+
+                setsid();
+                chdir("/");
+                sigfillset(&sigset);
+                sigprocmask(SIG_BLOCK, &sigset, NULL);
+
+                read (ump[0], &c, 1);
+
+                gf_fuse_unmount (mountpoint, fd);
+                exit (0);
+        case -1:
+                close (fd);
+                fd = -1;
+                ret = -1;
+                close (ump[1]);
+        }
+        close (ump[0]);
+
+        return ret;
+}
+
 static char *
 escape (char *s)
 {
@@ -106,8 +152,7 @@ escape (char *s)
 
 static int
 fuse_mount_fusermount (const char *mountpoint, char *fsname,
-                       unsigned long mountflags, char *mnt_param,
-                       int fd)
+                       char *mnt_param, int fd)
 {
         int  pid = -1;
         int  res = 0;
@@ -130,8 +175,7 @@ fuse_mount_fusermount (const char *mountpoint, char *fsname,
                 return -1;
         }
         ret = asprintf (&fm_mnt_params,
-                        "%s%s,fsname=%s,nonempty,subtype=glusterfs",
-                        (mountflags & MS_RDONLY) ? "ro," : "",
+                        "%s,fsname=%s,nonempty,subtype=glusterfs",
                         mnt_param, efsname);
         FREE (efsname);
         if (ret == -1) {
@@ -224,19 +268,101 @@ build_iovec_argf(struct iovec **iov, int *iovlen, const char *name,
 }
 #endif /* __FreeBSD__ */
 
+struct mount_flags {
+        const char *opt;
+        mount_flag_t flag;
+        int on;
+} mount_flags[] = {
+        /* We provide best effort cross platform support for mount flags by
+         * defining the ones which are commonly used in Unix-like OS-es.
+         */
+        {"ro",      MS_RDONLY,      1},
+        {"nosuid",  MS_NOSUID,      1},
+        {"nodev",   MS_NODEV,       1},
+        {"noatime", MS_NOATIME,     1},
+        {"noexec",  MS_NOEXEC,      1},
+#ifdef GF_LINUX_HOST_OS
+        {"rw",      MS_RDONLY,      0},
+        {"suid",    MS_NOSUID,      0},
+        {"dev",     MS_NODEV,       0},
+        {"exec",    MS_NOEXEC,      0},
+        {"async",   MS_SYNCHRONOUS, 0},
+        {"sync",    MS_SYNCHRONOUS, 1},
+        {"atime",   MS_NOATIME,     0},
+        {"dirsync", MS_DIRSYNC,     1},
+#endif
+        {NULL,      0,              0}
+};
+
+static int
+mount_param_to_flag (char *mnt_param, mount_flag_t *mntflags,
+                     char **mnt_param_new)
+{
+        gf_boolean_t found = _gf_false;
+        struct mount_flags *flag = NULL;
+        char *param_tok = NULL;
+        token_iter_t tit = {0,};
+        gf_boolean_t iter_end = _gf_false;
+
+        /* Allocate a buffer that will hold the mount parameters remaining
+         * after the ones corresponding to mount flags are processed and
+         * removed.The length of the original params are a good upper bound
+         * of the size needed.
+         */
+        *mnt_param_new = strdup (mnt_param);
+        if (!*mnt_param_new)
+                return -1;
+
+        for (param_tok = token_iter_init (*mnt_param_new, ',', &tit) ;;) {
+                iter_end = next_token (&param_tok, &tit);
+
+                found = _gf_false;
+                for (flag = mount_flags; flag->opt; flag++) {
+                        /* Compare the mount flag name to the param
+                         * name at hand.
+                         */
+                        if (strcmp (flag->opt, param_tok) == 0) {
+                                /* If there is a match, adjust mntflags
+                                 * accordingly and break.
+                                 */
+                                if (flag->on) {
+                                        *mntflags |= flag->flag;
+                                } else {
+                                        *mntflags &= ~flag->flag;
+                                }
+                                found = _gf_true;
+                                break;
+                        }
+                }
+                /* Exclude flag names from new parameter list. */
+                if (found)
+                        drop_token (param_tok, &tit);
+
+                if (iter_end)
+                        break;
+        }
+
+        return 0;
+}
+
 static int
 fuse_mount_sys (const char *mountpoint, char *fsname,
-                unsigned long mountflags, char *mnt_param, int fd)
+                char *mnt_param, int fd)
 {
         int ret = -1;
         unsigned mounted = 0;
         char *mnt_param_mnt = NULL;
         char *fstype = "fuse.glusterfs";
         char *source = fsname;
+        mount_flag_t mountflags = 0;
+        char *mnt_param_new = NULL;
 
-        ret = asprintf (&mnt_param_mnt,
-                        "%s,fd=%i,rootmode=%o,user_id=%i,group_id=%i",
-                        mnt_param, fd, S_IFDIR, getuid (), getgid ());
+        ret = mount_param_to_flag (mnt_param, &mountflags, &mnt_param_new);
+        if (ret == 0)
+                ret = asprintf (&mnt_param_mnt,
+                                "%s,fd=%i,rootmode=%o,user_id=%i,group_id=%i",
+                                mnt_param_new, fd, S_IFDIR, getuid (),
+                                getgid ());
         if (ret == -1) {
                 GFFUSE_LOGERR ("Out of memory");
 
@@ -295,7 +421,7 @@ fuse_mount_sys (const char *mountpoint, char *fsname,
 
                 ret = asprintf (&mnt_param_mtab, "%s%s",
                                 mountflags & MS_RDONLY ? "ro," : "",
-                                mnt_param);
+                                mnt_param_new);
                 if (ret == -1)
                         GFFUSE_LOGERR ("Out of memory");
                 else {
@@ -320,6 +446,7 @@ out:
                         umount2 (mountpoint, 2); /* lazy umount */
         }
         FREE (mnt_param_mnt);
+        FREE (mnt_param_new);
         if (source != fsname)
                 FREE (source);
 
@@ -328,8 +455,7 @@ out:
 
 int
 gf_fuse_mount (const char *mountpoint, char *fsname,
-               unsigned long mountflags, char *mnt_param,
-               pid_t *mnt_pid, int status_fd)
+               char *mnt_param, pid_t *mnt_pid, int status_fd)
 {
         int   fd  = -1;
         pid_t pid = -1;
@@ -356,16 +482,19 @@ gf_fuse_mount (const char *mountpoint, char *fsname,
                                 exit (pid == -1 ? 1 : 0);
                 }
 
-                ret = fuse_mount_sys (mountpoint, fsname, mountflags, mnt_param,
-                                      fd);
+                ret = fuse_mount_sys (mountpoint, fsname, mnt_param, fd);
                 if (ret == -1) {
                         gf_log ("glusterfs-fuse", GF_LOG_INFO,
-                                "direct mount failed (%s) errno %d, "
-                                "retry to mount via fusermount",
+                                "direct mount failed (%s) errno %d",
                                 strerror (errno), errno);
 
-                        ret = fuse_mount_fusermount (mountpoint, fsname,
-                                                     mountflags, mnt_param, fd);
+                        if (errno == EPERM) {
+                                gf_log ("glusterfs-fuse", GF_LOG_INFO,
+                                        "retry to mount via fusermount");
+
+                                ret = fuse_mount_fusermount (mountpoint, fsname,
+                                                             mnt_param, fd);
+                        }
                 }
 
                 if (ret == -1)

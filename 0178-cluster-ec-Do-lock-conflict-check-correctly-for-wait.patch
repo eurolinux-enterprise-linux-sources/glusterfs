@@ -1,0 +1,90 @@
+From 684f7a9f2f6d79ac45fdf2cf994c5fca139e51cd Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Wed, 31 Jan 2018 22:10:46 +0530
+Subject: [PATCH 178/180] cluster/ec: Do lock conflict check correctly for
+ wait-list
+
+Problem:
+ec_link_has_lock_conflict() is traversing over only owner_list
+but the function is also getting called with wait_list.
+
+Fix:
+Modify ec_link_has_lock_conflict() to traverse lists correctly.
+Updated the callers to reflect the changes.
+
+ >BUG: 1540896
+ >Change-Id: Ibd7ea10f4498e7c2761f9a6faac6d5cb7d750c91
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+
+Master Patch: https://review.gluster.org/19415
+Release-3.13 Patch: https://review.gluster.org/19428
+
+BUG: 1540908
+Change-Id: I859aab86d591c22d635bf7a2ef17b77b605d32d8
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129249
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/ec/src/ec-common.c | 23 +++++++++++++++--------
+ 1 file changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/xlators/cluster/ec/src/ec-common.c b/xlators/cluster/ec/src/ec-common.c
+index 051fff6..bd2ae50 100644
+--- a/xlators/cluster/ec/src/ec-common.c
++++ b/xlators/cluster/ec/src/ec-common.c
+@@ -1643,18 +1643,27 @@ ec_lock_update_fd(ec_lock_t *lock, ec_fop_data_t *fop)
+ }
+ 
+ static gf_boolean_t
+-ec_link_has_lock_conflict (ec_lock_link_t *link, struct list_head *owners)
++ec_link_has_lock_conflict (ec_lock_link_t *link, gf_boolean_t waitlist_check)
+ {
+-        ec_lock_link_t *owner_link = NULL;
++        ec_lock_link_t *trav_link = NULL;
+         ec_t           *ec = link->fop->xl->private;
+ 
+         if (!ec->parallel_writes)
+                 return _gf_true;
+ 
+-        list_for_each_entry (owner_link, owners, owner_list) {
+-                if (ec_lock_conflict (owner_link, link))
++        list_for_each_entry (trav_link, &link->lock->owners, owner_list) {
++                if (ec_lock_conflict (trav_link, link))
+                         return _gf_true;
+         }
++
++        if (!waitlist_check)
++                return _gf_false;
++
++        list_for_each_entry (trav_link, &link->lock->waiting, wait_list) {
++                if (ec_lock_conflict (trav_link, link))
++                        return _gf_true;
++        }
++
+         return _gf_false;
+ }
+ 
+@@ -1676,7 +1685,7 @@ ec_lock_wake_shared(ec_lock_t *lock, struct list_head *list)
+ 
+         /* If the fop is not shareable, only this fop can be assigned as owner.
+          * Other fops will need to wait until this one finishes. */
+-        if (ec_link_has_lock_conflict (link, &lock->owners)) {
++        if (ec_link_has_lock_conflict (link, _gf_false)) {
+             conflict = _gf_true;
+         }
+ 
+@@ -1923,9 +1932,7 @@ ec_lock_assign_owner(ec_lock_link_t *link)
+          * owners, or waiters(to prevent starvation).
+          * Otherwise we need to wait.
+          */
+-        if (!lock->acquired ||
+-            ec_link_has_lock_conflict (link, &lock->owners) ||
+-            ec_link_has_lock_conflict (link, &lock->waiting)) {
++        if (!lock->acquired || ec_link_has_lock_conflict (link, _gf_true)) {
+             ec_trace("LOCK_QUEUE_WAIT", fop, "lock=%p", lock);
+ 
+             list_add_tail(&link->wait_list, &lock->waiting);
+-- 
+1.8.3.1
+

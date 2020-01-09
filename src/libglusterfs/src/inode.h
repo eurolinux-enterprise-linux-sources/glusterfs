@@ -11,11 +11,6 @@
 #ifndef _INODE_H
 #define _INODE_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -86,6 +81,10 @@ struct _inode_ctx {
                 uint64_t    value2;
                 void       *ptr2;
         };
+        int                 ref; /* This is for debugging inode ref leaks,
+                                    basically helps in identifying the xlator
+                                    causing th ref leak, it is printed in
+                                    statedump */
 };
 
 struct _inode {
@@ -284,4 +283,9 @@ inode_needs_lookup (inode_t *inode, xlator_t *this);
 int
 inode_has_dentry (inode_t *inode);
 
+size_t
+inode_ctx_size (inode_t *inode);
+
+void
+inode_find_directory_name (inode_t *inode, const char **name);
 #endif /* _INODE_H */

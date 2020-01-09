@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "locking.h"
 #include "marker-quota.h"
 #include "marker-common.h"
@@ -65,11 +60,21 @@ out:
 int32_t
 mq_inode_loc_fill (const char *parent_gfid, inode_t *inode, loc_t *loc)
 {
-        char            *resolvedpath = NULL;
-        inode_t         *parent       = NULL;
-        int              ret          = -1;
+        char                *resolvedpath = NULL;
+        inode_t             *parent       = NULL;
+        quota_inode_ctx_t   *ctx          = NULL;
+        xlator_t            *this         = NULL;
+        int                  ret          = -1;
 
-        if ((!inode) || (!loc))
+        this = THIS;
+
+        if (inode == NULL) {
+                gf_log_callingfn ("marker", GF_LOG_ERROR, "loc fill failed, "
+                                  "inode is NULL");
+                return ret;
+        }
+
+        if (loc == NULL)
                 return ret;
 
         if ((inode) && __is_root_gfid (inode->gfid)) {
@@ -101,6 +106,17 @@ ignore_parent:
         if (ret < 0)
                 goto err;
 
+        ret = mq_inode_ctx_get (inode, this, &ctx);
+        if (ret < 0 || ctx == NULL)
+                ctx = mq_inode_ctx_new (inode, this);
+        if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_WARNING, "mq_inode_ctx_new "
+                        "failed for %s", uuid_utoa (inode->gfid));
+                ret = -1;
+                goto err;
+        }
+        ret = 0;
+
 err:
         if (parent)
                 inode_unref (parent);
@@ -130,11 +146,9 @@ out:
         return ctx;
 }
 
-void
-mq_contri_fini (void *data)
+static void
+mq_contri_fini (inode_contribution_t *contri)
 {
-        inode_contribution_t *contri = data;
-
         LOCK_DESTROY (&contri->lock);
         GF_FREE (contri);
 }

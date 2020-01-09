@@ -1,0 +1,35 @@
+From 96a8b43272b935341c4c431c31fb8ae101fc4acd Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 6 Mar 2018 21:59:44 +0530
+Subject: [PATCH 177/180] hooks: fix workdir in S13create-subdir-mounts.sh
+
+>Change-Id: Id3eff498091ad9fa4651e93b66903426e76776d6
+>BUG: 1549915
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Upstream patch: https://review.gluster.org/#/c/19682/
+
+BUG: 1508999
+Change-Id: Id3eff498091ad9fa4651e93b66903426e76776d6
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131994
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh b/extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh
+index 95e624e..1a6923e 100755
+--- a/extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh
++++ b/extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh
+@@ -6,7 +6,7 @@
+ ##---------------------------------------------------------------------------
+ 
+ MOUNT_DIR=`mktemp -d -t ${0##*/}.XXXXXX`;
+-OPTSPEC="volname:,go-workdir"
++OPTSPEC="volname:,version:,gd-workdir:,volume-op:"
+ PROGNAME="add-brick-create-subdir"
+ VOL_NAME=test
+ GLUSTERD_WORKDIR="/var/lib/glusterd"
+-- 
+1.8.3.1
+

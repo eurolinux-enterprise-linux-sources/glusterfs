@@ -1,0 +1,70 @@
+From aa20e41c3087f9ec68d0a7890ed953e5bc7aa096 Mon Sep 17 00:00:00 2001
+From: "Kaleb S. KEITHLEY" <kkeithle@redhat.com>
+Date: Wed, 26 Jul 2017 10:36:11 -0400
+Subject: [PATCH 67/74] packaging: own files in
+ (/var)/run/gluster/shared_storage/nfs-ganesha
+
+The nfs-ganesha rpm owns /etc/ganesha and /etc/ganesha/ganesha.conf,
+but gluster-ganesha installs a ganesha-ha.conf.sample in /etc/ganesha/
+
+Ganesha HA expects to find the config files in /var/run/.../nfs-ganesha
+and for there to be symlinks from /etc/ganesha/* to /var/run/...
+
+As exports are created the ganesha export files are written to
+/var/run/gluster/shared_storage/nfs-ganesha/exports/*
+
+This change creates rpm %ghosts for most of these files to manage
+ownership within rpm and ensure they are not deleted or overwritten
+during package install/upgrade/removal. The name of the exports varies,
+so it's not possible AFAIK to create wildcard %ghosts for them.
+
+Change-Id: Ic4389291c0af0bd72c22fa742cdfa2011b9286f3
+Signed-off-by: Kaleb S. KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://review.gluster.org/17883
+Smoke: Gluster Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+---
+ glusterfs.spec.in | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index e6e2ba3..cbc77c3 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -818,6 +818,13 @@ sed -i 's|option working-directory /etc/glusterd|option working-directory %{_sha
+ install -D -p -m 0644 extras/glusterfs-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs
+ 
++# ganesha ghosts
++mkdir -p %{buildroot}%{_sysconfdir}/ganesha
++touch %{buildroot}%{_sysconfdir}/ganesha/ganesha-ha.conf
++mkdir -p %{buildroot}%{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/exports
++touch %{buildroot}%{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha.conf
++touch %{buildroot}%{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha-ha.conf
++
+ %if ( 0%{!?_without_georeplication:1} )
+ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/geo-replication
+ touch %{buildroot}%{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
+@@ -1309,10 +1316,16 @@ exit 0
+ 
+ %if ( 0%{?_build_server} )
+ %files ganesha
+-%{_sysconfdir}/ganesha/*
++%dir %{_libexecdir}/ganesha
+ %{_libexecdir}/ganesha/*
+ %{_prefix}/lib/ocf/resource.d/heartbeat/*
+ %{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
++%{_sysconfdir}/ganesha/ganesha-ha.conf.sample
++%ghost %config(noreplace) %{_sysconfdir}/ganesha/ganesha-ha.conf
++%ghost %dir %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha
++%ghost %dir %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/exports
++%ghost %config(noreplace) %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha.conf
++%ghost %config(noreplace) %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha-ha.conf
+ %endif
+ 
+ %if ( 0%{?_build_server} )
+-- 
+1.8.3.1
+

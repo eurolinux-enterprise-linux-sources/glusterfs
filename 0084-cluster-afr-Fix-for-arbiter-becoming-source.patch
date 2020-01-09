@@ -1,0 +1,237 @@
+From 5579f616c2c21a2a2cd2ef70b58149df85550db7 Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Mon, 27 Nov 2017 12:51:16 +0530
+Subject: [PATCH 084/128] cluster/afr: Fix for arbiter becoming source
+
+Problem:
+When eager-lock is on, and two writes happen in parallel on a FD
+we were observing the following behaviour:
+- First write fails on one data brick
+- Since the post-op is not yet happened, the inode refresh will get
+  both the data bricks as readable and set it in the inode context
+- In flight split brain check see both the data bricks as readable
+  and allows the second write
+- Second write fails on the other data brick
+- Now the post-op happens and marks both the data bricks as bad and
+  arbiter will become source for healing
+
+Fix:
+Adding one more variable called write_suvol in inode context and it
+will have the in memory representation of the writable subvols. Inode
+refresh will not update this value and its lifetime is pre-op through
+unlock in the afr transaction. Initially the pre-op will set this
+value same as read_subvol in inode context and then in the in flight
+split brain check we will use this value instead of read_subvol.
+After all the checks we will update the value of this and set the
+read_subvol same as this to avoid having incorrect value in that.
+
+Upstream patch: https://review.gluster.org/#/c/18049/
+
+> Change-Id: I2ef6904524ab91af861d59690974bbc529ab1af3
+> BUG: 1482064
+> Signed-off-by: karthik-us <ksubrahm@redhat.com>
+
+Change-Id: I91cd21e378a7ae3757c2209fcb91a613d73e09ee
+BUG: 1401969
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124292
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c      | 76 ++++++++++++++++++++++++++++++-
+ xlators/cluster/afr/src/afr-lk-common.c   | 18 ++++++--
+ xlators/cluster/afr/src/afr-transaction.c |  4 ++
+ xlators/cluster/afr/src/afr.h             | 10 ++++
+ 4 files changed, 102 insertions(+), 6 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 9c96056..a8ba5a0 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -149,6 +149,7 @@ __afr_inode_ctx_get (xlator_t *this, inode_t *inode, afr_inode_ctx_t **ctx)
+                 }
+                 tmp_ctx->spb_choice = -1;
+                 tmp_ctx->read_subvol = 0;
++                tmp_ctx->write_subvol = 0;
+         } else {
+                 tmp_ctx = (afr_inode_ctx_t *) ctx_int;
+         }
+@@ -216,7 +217,7 @@ __afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+         if (ret < 0)
+                 return ret;
+ 
+-        val = ctx->read_subvol;
++        val = ctx->write_subvol;
+ 
+         metadatamap_old = metadatamap = (val & 0x000000000000ffff);
+         datamap_old = datamap = (val & 0x00000000ffff0000) >> 16;
+@@ -276,6 +277,7 @@ __afr_set_in_flight_sb_status (xlator_t *this, afr_local_t *local,
+                 (((uint64_t) datamap) << 16) |
+                 (((uint64_t) event) << 32);
+ 
++        ctx->write_subvol = val;
+         ctx->read_subvol = val;
+ 
+         return ret;
+@@ -6421,3 +6423,75 @@ afr_serialize_xattrs_with_delimiter (call_frame_t *frame, xlator_t *this,
+ out:
+         return ret;
+ }
++
++int
++afr_write_subvol_set (call_frame_t *frame, xlator_t *this)
++{
++        afr_local_t      *local = NULL;
++        afr_inode_ctx_t  *ctx   = NULL;
++        uint64_t          val   = 0;
++        uint64_t          val1  = 0;
++        int               ret   = -1;
++
++        local = frame->local;
++        LOCK(&local->inode->lock);
++        {
++                ret = __afr_inode_ctx_get (this, local->inode, &ctx);
++                if (ret < 0) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                AFR_MSG_DICT_GET_FAILED,
++                                "ERROR GETTING INODE CTX");
++                        UNLOCK(&local->inode->lock);
++                        return ret;
++                }
++
++                val = ctx->write_subvol;
++                /*
++                 * We need to set the value of write_subvol to read_subvol in 2
++                 * cases:
++                 * 1. Initially when the value is 0. i.e., it's the first lock
++                 * request.
++                 * 2. If it's a metadata transaction. If metadata transactions
++                 * comes in between data transactions and we have a brick
++                 * disconnect, the next metadata transaction won't get the
++                 * latest value of readables, since we do resetting of
++                 * write_subvol in unlock code path only if it's a data
++                 * transaction. To handle those scenarios we need to set the
++                 * value of write_subvol to read_subvol in case of metadata
++                 * transactions.
++                */
++                if (val == 0 ||
++                    local->transaction.type == AFR_METADATA_TRANSACTION) {
++                        val1 = ctx->read_subvol;
++                        ctx->write_subvol = val1;
++                }
++        }
++        UNLOCK (&local->inode->lock);
++
++        return 0;
++}
++
++int
++afr_write_subvol_reset (call_frame_t *frame, xlator_t *this)
++{
++        afr_local_t      *local = NULL;
++        afr_inode_ctx_t  *ctx   = NULL;
++        int               ret   = -1;
++
++        local = frame->local;
++        LOCK(&local->inode->lock);
++        {
++                ret = __afr_inode_ctx_get (this, local->inode, &ctx);
++                if (ret < 0) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                AFR_MSG_DICT_GET_FAILED,
++                                "ERROR GETTING INODE CTX");
++                        UNLOCK(&local->inode->lock);
++                        return ret;
++                }
++                ctx->write_subvol = 0;
++        }
++        UNLOCK(&local->inode->lock);
++
++        return 0;
++}
+diff --git a/xlators/cluster/afr/src/afr-lk-common.c b/xlators/cluster/afr/src/afr-lk-common.c
+index 1f2a117..c17f60f 100644
+--- a/xlators/cluster/afr/src/afr-lk-common.c
++++ b/xlators/cluster/afr/src/afr-lk-common.c
+@@ -613,12 +613,16 @@ static int32_t
+ afr_unlock_common_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                        int32_t op_ret, int32_t op_errno, dict_t *xdata)
+ {
+-        afr_local_t         *local    = NULL;
+-        afr_internal_lock_t *int_lock = NULL;
+-        int call_count = 0;
++        afr_local_t             *local          = NULL;
++        afr_internal_lock_t     *int_lock       = NULL;
++        afr_fd_ctx_t            *fd_ctx         = NULL;
++        afr_private_t           *priv           = NULL;
++        int                      call_count     = 0;
++        int                      ret            = 0;
+ 
+         local    = frame->local;
+         int_lock = &local->internal_lock;
++        priv = this->private;
+ 
+         LOCK (&frame->lock);
+         {
+@@ -629,11 +633,15 @@ afr_unlock_common_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         if (call_count == 0) {
+                 gf_msg_trace (this->name, 0,
+                               "All internal locks unlocked");
+-
++                if (local->fd) {
++                        fd_ctx = afr_fd_ctx_get (local->fd, this);
++                        if (0 == AFR_COUNT (fd_ctx->lock_acquired, priv->child_count))
++                                ret = afr_write_subvol_reset (frame, this);
++                }
+                 int_lock->lock_cbk (frame, this);
+         }
+ 
+-        return 0;
++        return ret;
+ }
+ 
+ void
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 35621d9..91c4f78 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -1791,6 +1791,10 @@ afr_changelog_pre_op (call_frame_t *frame, xlator_t *this)
+ 	if (pre_nop)
+ 		goto next;
+ 
++        ret = afr_write_subvol_set (frame, this);
++        if (ret)
++                goto err;
++
+ 	if (!local->pre_op_compat) {
+ 		dict_copy (xdata_req, local->xdata_req);
+ 		goto next;
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index c4ceb66..672d053 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -837,6 +837,7 @@ typedef struct _afr_local {
+ 
+ typedef struct _afr_inode_ctx {
+         uint64_t        read_subvol;
++        uint64_t        write_subvol;
+         int             spb_choice;
+         gf_timer_t      *timer;
+         gf_boolean_t    need_refresh;
+@@ -1262,4 +1263,13 @@ int
+ afr_serialize_xattrs_with_delimiter (call_frame_t *frame, xlator_t *this,
+                                      char *buf, const char *default_str,
+                                      int32_t *serz_len, char delimiter);
++
++int
++__afr_inode_ctx_get (xlator_t *this, inode_t *inode, afr_inode_ctx_t **ctx);
++
++int
++afr_write_subvol_set (call_frame_t *frame, xlator_t *this);
++
++int
++afr_write_subvol_reset (call_frame_t *frame, xlator_t *this);
+ #endif /* __AFR_H__ */
+-- 
+1.8.3.1
+

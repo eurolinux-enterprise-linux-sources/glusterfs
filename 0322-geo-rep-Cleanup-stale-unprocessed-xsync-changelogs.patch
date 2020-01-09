@@ -1,0 +1,47 @@
+From ee764746030bb04a702504e3e4c0f8115928aef5 Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Thu, 7 Dec 2017 04:46:08 -0500
+Subject: [PATCH 322/325] geo-rep: Cleanup stale unprocessed xsync changelogs
+
+When geo-replication is in hybrid crawl, it crawls
+the file system and generates xsync changelogs.
+These changelogs are later processed to sync the
+data. If the worker goes to Faulty before processing
+all the generated xsync changelogs, those changelogs
+remain and is not cleaned up. When the worker
+comes back, it will re-crawl and re-generate xsync
+changelogs. So this patch cleans up the stale
+unprocessed xsync changelogs.
+
+Backport of:
+ > Patch: https://review.gluster.org/18983
+ > Issue: #376
+
+BUG: 1599037
+Change-Id: Ib92920c716c7d27e1eeb4bc4ebaf3efb48e0694d
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144102
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ geo-replication/syncdaemon/master.py | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/geo-replication/syncdaemon/master.py b/geo-replication/syncdaemon/master.py
+index e484692..64e9836 100644
+--- a/geo-replication/syncdaemon/master.py
++++ b/geo-replication/syncdaemon/master.py
+@@ -1527,6 +1527,10 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
+                 pass
+             else:
+                 raise
++        # Purge stale unprocessed xsync changelogs
++        for f in os.listdir(self.tempdir):
++            if f.startswith("XSYNC-CHANGELOG"):
++                os.remove(os.path.join(self.tempdir, f))
+ 
+     def crawl(self):
+         """
+-- 
+1.8.3.1
+

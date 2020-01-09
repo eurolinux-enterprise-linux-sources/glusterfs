@@ -11,16 +11,11 @@
 #ifndef _ARBITER_H
 #define _ARBITER_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "locking.h"
 #include "common-utils.h"
 
 typedef struct arbiter_inode_ctx_ {
-        struct iatt *iattbuf;
+        struct iatt iattbuf;
 } arbiter_inode_ctx_t;
 
 #endif /* _ARBITER_H */

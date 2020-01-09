@@ -1,0 +1,32 @@
+From c5b4f68e24c718dcbc5f4ebe0094dcb900ac5314 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 20 Sep 2016 12:43:43 +0530
+Subject: [PATCH 22/74] build: ignore %{sbindir}/conf.py* for RHEL-5
+
+commit dca6f06 has introduced this file in a very wrong location
+for a Python file. And rpmbuild is behaving very differently than
+RHEL-6 as regards ignoring .pyc and .pyo files.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I574a500586162917102ae8eb32b939885d2b2d4c
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index f83ae5e..8f30020 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1118,6 +1118,7 @@ exit 0
+ %exclude %{_sbindir}/glusterd
+ %exclude %{_sbindir}/snap_scheduler.py
+ %exclude %{_datadir}/glusterfs/scripts/stop-all-gluster-processes.sh
++%exclude %{_sbindir}/conf.py*
+ %if 0%{?_tmpfilesdir:1}
+ %exclude %{_tmpfilesdir}/gluster.conf
+ %endif
+-- 
+1.8.3.1
+

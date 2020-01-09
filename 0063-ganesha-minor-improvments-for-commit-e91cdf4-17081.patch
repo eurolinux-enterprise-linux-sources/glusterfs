@@ -1,0 +1,34 @@
+From 1212ea61f7c2e04529ec6fa40bba447fc2bd0fe8 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Wed, 3 May 2017 12:47:14 +0530
+Subject: [PATCH 63/74] ganesha : minor improvments for commit e91cdf4 (17081)
+
+Change-Id: I3af13e081c5e46cc6f2c132e7a5106ac3355c850
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://review.gluster.org/17152
+Smoke: Gluster Build System <jenkins@build.gluster.org>
+Reviewed-by: soumya k <skoduri@redhat.com>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+---
+ extras/ganesha/scripts/ganesha-ha.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/extras/ganesha/scripts/ganesha-ha.sh b/extras/ganesha/scripts/ganesha-ha.sh
+index db2fa54..0e4d23a 100644
+--- a/extras/ganesha/scripts/ganesha-ha.sh
++++ b/extras/ganesha/scripts/ganesha-ha.sh
+@@ -275,7 +275,7 @@ string:\"EXPORT(Export_Id=$export_id)\" 2>&1")
+                 ret=$?
+                 logger <<< "${output}"
+                 if [ ${ret} -ne 0 ]; then
+-                        echo "Refresh-config failed on ${current_host}"
++                        echo "Refresh-config failed on ${current_host}. Please check logs on ${current_host}"
+                 else
+                         echo "Refresh-config completed on ${current_host}."
+                 fi
+-- 
+1.8.3.1
+

@@ -1,0 +1,79 @@
+From 1425f0c723c7f3811a4104efdf3cb55f0bb02731 Mon Sep 17 00:00:00 2001
+From: Csaba Henk <csaba@redhat.com>
+Date: Fri, 15 Dec 2017 08:22:21 +0100
+Subject: [PATCH 112/128] write-behind: Allow trickling-writes to be
+ configurable
+
+This is the undisputed/trivial part of Shreyas' patch
+he attached to https://bugzilla.redhat.com/1364740 (of
+which the current bug is a clone).
+
+We need more evaluation for the page_size and window_size
+bits before taking them on.
+
+> Change-Id: Iaa0b9a69d35e522b77a52a09acef47460e8ae3e9
+> BUG: 1428060
+> Co-authored-by: Shreyas Siravara <sshreyas@fb.com>
+> Signed-off-by: Csaba Henk <csaba@redhat.com>
+> Reviewed-on: https://review.gluster.org/18719
+
+Change-Id: Iaa0b9a69d35e522b77a52a09acef47460e8ae3e9
+BUG: 1426042
+Co-authored-by: Shreyas Siravara <sshreyas@fb.com>
+Signed-off-by: Csaba Henk <csaba@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/125932
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ libglusterfs/src/globals.h                      |  4 +++-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c | 12 ++++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index c627cfe..692d49d 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -43,7 +43,7 @@
+  */
+ #define GD_OP_VERSION_MIN  1 /* MIN is the fresh start op-version, mostly
+                                 should not change */
+-#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_13_0 /* MAX VERSION is the maximum
++#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_13_1 /* MAX VERSION is the maximum
+                                                   count in VME table, should
+                                                   keep changing with
+                                                   introduction of newer
+@@ -103,6 +103,8 @@
+ 
+ #define GD_OP_VERSION_3_13_0   31300 /* Op-version for GlusterFS 3.13.0 */
+ 
++#define GD_OP_VERSION_3_13_1   31301 /* Op-version for GlusterFS 3.13.1 */
++
+ #include "xlator.h"
+ 
+ /* THIS */
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index a57eb9e..c255be0 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -1762,6 +1762,18 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
++        { .key        = "performance.write-behind-trickling-writes",
++          .voltype    = "performance/write-behind",
++          .option     = "trickling-writes",
++          .op_version = GD_OP_VERSION_3_13_1,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
++        { .key        = "performance.nfs.write-behind-trickling-writes",
++          .voltype    = "performance/write-behind",
++          .option     = "trickling-writes",
++          .op_version = GD_OP_VERSION_3_13_1,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
+         { .key        = "performance.lazy-open",
+           .voltype    = "performance/open-behind",
+           .option     = "lazy-open",
+-- 
+1.8.3.1
+

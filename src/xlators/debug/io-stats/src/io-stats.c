@@ -7,11 +7,8 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
 #include "xlator.h"
-#endif
+#include "syscall.h"
 
 /**
  * xlators/debug/io_stats :
@@ -24,7 +21,8 @@
  *  d) counts of write IO block size - since process start, last interval and per fd
  *  e) counts of all FOP types passing through it
  *
- *  Usage: setfattr -n io-stats-dump /tmp/filename /mnt/gluster
+ *  Usage: setfattr -n trusted.io-stats-dump /tmp/filename /mnt/gluster
+ *      output is written to /tmp/filename.<iostats xlator instance name>
  *
  */
 
@@ -38,8 +36,14 @@
 #include "logging.h"
 #include "cli1-xdr.h"
 #include "statedump.h"
+#include <pwd.h>
+#include <grp.h>
+#include "upcall-utils.h"
 
 #define MAX_LIST_MEMBERS 100
+#define DEFAULT_PWD_BUF_SZ 16384
+#define DEFAULT_GRP_BUF_SZ 16384
+#define IOS_BLOCK_COUNT_SIZE 32
 
 typedef enum {
         IOS_STATS_TYPE_NONE,
@@ -68,7 +72,7 @@ struct ios_stat {
         gf_lock_t       lock;
         uuid_t          gfid;
         char           *filename;
-        uint64_t        counters [IOS_STATS_TYPE_MAX];
+        gf_atomic_t     counters[IOS_STATS_TYPE_MAX];
         struct ios_stat_lat thru_counters [IOS_STATS_THRU_MAX];
         int             refcnt;
 };
@@ -86,6 +90,25 @@ struct ios_stat_head {
        struct ios_stat_list    *iosstats;
 };
 
+typedef struct _ios_sample_t {
+        uid_t  uid;
+        gid_t  gid;
+        char   identifier[UNIX_PATH_MAX];
+        glusterfs_fop_t fop_type;
+        struct timeval timestamp;
+        double elapsed;
+} ios_sample_t;
+
+
+typedef struct _ios_sample_buf_t {
+        uint64_t        pos;  /* Position in write buffer */
+        uint64_t        size;  /* Size of ring buffer */
+        uint64_t        collected;  /* Number of samples we've collected */
+        uint64_t        observed;  /* Number of FOPs we've observed */
+        ios_sample_t    *ios_samples;  /* Our list of samples */
+} ios_sample_buf_t;
+
+
 struct ios_lat {
         double      min;
         double      max;
@@ -94,11 +117,12 @@ struct ios_lat {
 };
 
 struct ios_global_stats {
-        uint64_t        data_written;
-        uint64_t        data_read;
-        uint64_t        block_count_write[32];
-        uint64_t        block_count_read[32];
-        uint64_t        fop_hits[GF_FOP_MAXVALUE];
+        gf_atomic_t     data_written;
+        gf_atomic_t     data_read;
+        gf_atomic_t     block_count_write[IOS_BLOCK_COUNT_SIZE];
+        gf_atomic_t     block_count_read[IOS_BLOCK_COUNT_SIZE];
+        gf_atomic_t     fop_hits[GF_FOP_MAXVALUE];
+        gf_atomic_t     upcall_hits[GF_UPCALL_FLAGS_MAXVALUE];
         struct timeval  started_at;
         struct ios_lat  latency[GF_FOP_MAXVALUE];
         uint64_t        nr_opens;
@@ -106,6 +130,14 @@ struct ios_global_stats {
         struct timeval  max_openfd_time;
 };
 
+typedef enum {
+        IOS_DUMP_TYPE_NONE      = 0,
+        IOS_DUMP_TYPE_FILE      = 1,
+        IOS_DUMP_TYPE_DICT      = 2,
+        IOS_DUMP_TYPE_JSON_FILE = 3,
+        IOS_DUMP_TYPE_SAMPLES   = 4,
+        IOS_DUMP_TYPE_MAX       = 5
+} ios_dump_type_t;
 
 struct ios_conf {
         gf_lock_t                 lock;
@@ -117,24 +149,40 @@ struct ios_conf {
         gf_boolean_t              measure_latency;
         struct ios_stat_head      list[IOS_STATS_TYPE_MAX];
         struct ios_stat_head      thru_list[IOS_STATS_THRU_MAX];
+        int32_t                   ios_dump_interval;
+        pthread_t                 dump_thread;
+        gf_boolean_t              dump_thread_should_die;
+        gf_lock_t                 ios_sampling_lock;
+        int32_t                   ios_sample_interval;
+        int32_t                   ios_sample_buf_size;
+        ios_sample_buf_t          *ios_sample_buf;
+        struct dnscache           *dnscache;
+        int32_t                   ios_dnscache_ttl_sec;
+        /*
+         * What we really need here is just a unique value to keep files
+         * created by this instance distinct from those created by any other.
+         * On the client side this isn't a problem, so we just use the
+         * translator name.  On the server side conflicts can occur, so the
+         * volfile-generation code automatically sets this (via an option)
+         * to be the brick path.
+         *
+         * NB While the *field* name has changed, it didn't seem worth changing
+         * all of the cases where "xlator_name" is used as a *variable* name.
+         */
+        char                      *unique_id;
+        ios_dump_type_t            dump_format;
+        char                      *dump_format_str;
 };
 
 
 struct ios_fd {
         char           *filename;
-        uint64_t        data_written;
-        uint64_t        data_read;
-        uint64_t        block_count_write[32];
-        uint64_t        block_count_read[32];
+        gf_atomic_t     data_written;
+        gf_atomic_t     data_read;
+        gf_atomic_t     block_count_write[IOS_BLOCK_COUNT_SIZE];
+        gf_atomic_t     block_count_read[IOS_BLOCK_COUNT_SIZE];
         struct timeval  opened_at;
 };
-
-typedef enum {
-        IOS_DUMP_TYPE_NONE = 0,
-        IOS_DUMP_TYPE_FILE = 1,
-        IOS_DUMP_TYPE_DICT = 2,
-        IOS_DUMP_TYPE_MAX  = 3
-} ios_dump_type_t;
 
 struct ios_dump_args {
         ios_dump_type_t type;
@@ -161,6 +209,13 @@ is_fop_latency_started (call_frame_t *frame)
         struct timeval epoch = {0,};
         return memcmp (&frame->begin, &epoch, sizeof (epoch));
 }
+
+#define _IOS_SAMP_DIR DEFAULT_LOG_FILE_DIRECTORY "/samples"
+#ifdef GF_LINUX_HOST_OS
+#define _IOS_DUMP_DIR DATADIR "/lib/glusterd/stats"
+#else
+#define _IOS_DUMP_DIR DATADIR "/db/glusterd/stats"
+#endif
 
 #define END_FOP_LATENCY(frame, op)                                      \
         do {                                                            \
@@ -193,8 +248,8 @@ is_fop_latency_started (call_frame_t *frame)
                 conf = this->private;                                   \
                 if (!conf)                                              \
                         break;                                          \
-                conf->cumulative.fop_hits[GF_FOP_##op]++;               \
-                conf->incremental.fop_hits[GF_FOP_##op]++;              \
+                GF_ATOMIC_INC (conf->cumulative.fop_hits[GF_FOP_##op]); \
+                GF_ATOMIC_INC (conf->incremental.fop_hits[GF_FOP_##op]);\
         } while (0)
 
 #define UPDATE_PROFILE_STATS(frame, op)                                       \
@@ -204,127 +259,49 @@ is_fop_latency_started (call_frame_t *frame)
                 if (!is_fop_latency_started (frame))                          \
                         break;                                                \
                 conf = this->private;                                         \
-                LOCK (&conf->lock);                                           \
-                {                                                             \
-                        if (conf && conf->measure_latency &&                  \
-                            conf->count_fop_hits) {                           \
-                                BUMP_FOP(op);                                 \
-                                gettimeofday (&frame->end, NULL);             \
-                                update_ios_latency (conf, frame, GF_FOP_##op);\
-                        }                                                     \
+                if (conf && conf->measure_latency &&                          \
+                    conf->count_fop_hits) {                                   \
+                        BUMP_FOP (op);                                        \
+                        gettimeofday (&frame->end, NULL);                     \
+                        update_ios_latency (conf, frame, GF_FOP_##op);        \
                 }                                                             \
-                UNLOCK (&conf->lock);                                         \
         } while (0)
 
-#define BUMP_READ(fd, len)                                              \
-        do {                                                            \
-                struct ios_conf  *conf = NULL;                          \
-                struct ios_fd    *iosfd = NULL;                         \
-                int               lb2 = 0;                              \
-                                                                        \
-                conf = this->private;                                   \
-                lb2 = log_base2 (len);                                  \
-                ios_fd_ctx_get (fd, this, &iosfd);                      \
-                if (!conf)                                              \
-                        break;                                          \
-                                                                        \
-                LOCK (&conf->lock);                                     \
-                {                                                       \
-                        conf->cumulative.data_read += len;              \
-                        conf->incremental.data_read += len;             \
-                        conf->cumulative.block_count_read[lb2]++;       \
-                        conf->incremental.block_count_read[lb2]++;      \
-                                                                        \
-                        if (iosfd) {                                    \
-                                iosfd->data_read += len;                \
-                                iosfd->block_count_read[lb2]++;         \
-                        }                                               \
-                }                                                       \
-                UNLOCK (&conf->lock);                                   \
-        } while (0)
-
-
-#define BUMP_WRITE(fd, len)                                             \
-        do {                                                            \
-                struct ios_conf  *conf = NULL;                          \
-                struct ios_fd    *iosfd = NULL;                         \
-                int               lb2 = 0;                              \
-                                                                        \
-                conf = this->private;                                   \
-                lb2 = log_base2 (len);                                  \
-                ios_fd_ctx_get (fd, this, &iosfd);                      \
-                if (!conf)                                              \
-                        break;                                          \
-                                                                        \
-                LOCK (&conf->lock);                                     \
-                {                                                       \
-                        conf->cumulative.data_written += len;           \
-                        conf->incremental.data_written += len;          \
-                        conf->cumulative.block_count_write[lb2]++;      \
-                        conf->incremental.block_count_write[lb2]++;     \
-                                                                        \
-                        if (iosfd) {                                    \
-                                iosfd->data_written += len;             \
-                                iosfd->block_count_write[lb2]++;        \
-                        }                                               \
-                }                                                       \
-                UNLOCK (&conf->lock);                                   \
-        } while (0)
-
-
-#define BUMP_STATS(iosstat, type)                                               \
-        do {                                                                    \
-                struct ios_conf         *conf = NULL;                           \
-                uint64_t                 value = 0;                             \
-                                                                                \
-                conf = this->private;                                           \
-                                                                                \
-                LOCK(&iosstat->lock);                                           \
-                {                                                               \
-                        iosstat->counters[type]++;                              \
-                        value = iosstat->counters[type];                        \
-                }                                                               \
-                UNLOCK (&iosstat->lock);                                        \
-                ios_stat_add_to_list (&conf->list[type],                        \
-                                     value, iosstat);                           \
-                                                                                \
-        } while (0)
-
-
-#define BUMP_THROUGHPUT(iosstat, type)						\
-        do {									\
-                struct ios_conf         *conf = NULL;				\
-                double                   elapsed;				\
-                struct timeval          *begin, *end;				\
-                double                   throughput;				\
-               int                      flag = 0;                              \
-                                                                                \
-                begin = &frame->begin;						\
-                end   = &frame->end;						\
-                                                                                \
-                elapsed = (end->tv_sec - begin->tv_sec) * 1e6			\
-                        + (end->tv_usec - begin->tv_usec);			\
-                throughput = op_ret / elapsed;					\
-                                                                                \
-                conf = this->private;						\
-                LOCK(&iosstat->lock);						\
-                {								\
-                        if (iosstat->thru_counters[type].throughput             \
-                                <= throughput) {                                \
-                                iosstat->thru_counters[type].throughput =       \
-                                                                throughput;     \
-                                gettimeofday (&iosstat->                        \
-                                             thru_counters[type].time, NULL);   \
+#define BUMP_THROUGHPUT(iosstat, type)                                         \
+        do {                                                                   \
+                struct ios_conf         *conf = NULL;                          \
+                double                   elapsed;                              \
+                struct timeval          *begin, *end;                          \
+                double                   throughput;                           \
+                int                      flag = 0;                             \
+                                                                               \
+                begin = &frame->begin;                                         \
+                end   = &frame->end;                                           \
+                                                                               \
+                elapsed = (end->tv_sec - begin->tv_sec) * 1e6                  \
+                        + (end->tv_usec - begin->tv_usec);                     \
+                throughput = op_ret / elapsed;                                 \
+                                                                               \
+                conf = this->private;                                          \
+                LOCK (&iosstat->lock);                                         \
+                {                                                              \
+                        if (iosstat->thru_counters[type].throughput            \
+                                <= throughput) {                               \
+                                iosstat->thru_counters[type].throughput =      \
+                                                                throughput;    \
+                                gettimeofday (&iosstat->                       \
+                                             thru_counters[type].time, NULL);  \
                                flag = 1;                                       \
-                        }							\
-                }								\
-                UNLOCK (&iosstat->lock);					\
-               if (flag)                                                       \
+                        }                                                      \
+                }                                                              \
+                UNLOCK (&iosstat->lock);                                       \
+                if (flag)                                                      \
                        ios_stat_add_to_list (&conf->thru_list[type],           \
                                                throughput, iosstat);           \
         } while (0)
 
-int
+
+static int
 ios_fd_ctx_get (fd_t *fd, xlator_t *this, struct ios_fd **iosfd)
 {
         uint64_t      iosfd64 = 0;
@@ -340,8 +317,7 @@ ios_fd_ctx_get (fd_t *fd, xlator_t *this, struct ios_fd **iosfd)
 }
 
 
-
-int
+static int
 ios_fd_ctx_set (fd_t *fd, xlator_t *this, struct ios_fd *iosfd)
 {
         uint64_t   iosfd64 = 0;
@@ -353,7 +329,8 @@ ios_fd_ctx_set (fd_t *fd, xlator_t *this, struct ios_fd *iosfd)
         return ret;
 }
 
-int
+
+static int
 ios_stat_ref (struct ios_stat *iosstat)
 {
         LOCK (&iosstat->lock);
@@ -365,7 +342,8 @@ ios_stat_ref (struct ios_stat *iosstat)
         return iosstat->refcnt;
 }
 
-int
+
+static int
 ios_stat_unref (struct ios_stat *iosstat)
 {
         int cleanup = 0;
@@ -391,35 +369,8 @@ ios_stat_unref (struct ios_stat *iosstat)
         return 0;
 }
 
-int
-ios_inode_ctx_set (inode_t *inode, xlator_t *this, struct ios_stat *iosstat)
-{
-        uint64_t   iosstat64 = 0;
-        int        ret     = 0;
 
-        ios_stat_ref (iosstat);
-        iosstat64 = (unsigned long )iosstat;
-        ret = inode_ctx_put (inode, this, iosstat64);
-        return ret;
-}
-
-int
-ios_inode_ctx_get (inode_t *inode, xlator_t *this, struct ios_stat **iosstat)
-{
-        uint64_t      iosstat64 = 0;
-        unsigned long iosstatlong = 0;
-        int           ret = 0;
-
-        ret = inode_ctx_get (inode, this, &iosstat64);
-        iosstatlong = iosstat64;
-        if (ret != -1)
-                *iosstat = (void *) iosstatlong;
-
-        return ret;
-
-}
-
-int
+static int
 ios_stat_add_to_list (struct ios_stat_head *list_head, uint64_t value,
                             struct ios_stat *iosstat)
 {
@@ -514,6 +465,180 @@ out:
         return 0;
 }
 
+
+static void
+ios_bump_read (xlator_t *this, fd_t *fd, size_t len)
+{
+        struct ios_conf  *conf = NULL;
+        struct ios_fd    *iosfd = NULL;
+        int               lb2 = 0;
+
+        conf = this->private;
+        lb2 = log_base2 (len);
+        ios_fd_ctx_get (fd, this, &iosfd);
+        if (!conf)
+                return;
+
+        GF_ATOMIC_ADD (conf->cumulative.data_read, len);
+        GF_ATOMIC_ADD (conf->incremental.data_read, len);
+        GF_ATOMIC_INC (conf->cumulative.block_count_read[lb2]);
+        GF_ATOMIC_INC (conf->incremental.block_count_read[lb2]);
+
+        if (iosfd) {
+                GF_ATOMIC_ADD (iosfd->data_read, len);
+                GF_ATOMIC_INC (iosfd->block_count_read[lb2]);
+        }
+}
+
+
+static void
+ios_bump_write (xlator_t *this, fd_t *fd, size_t len)
+{
+        struct ios_conf  *conf = NULL;
+        struct ios_fd    *iosfd = NULL;
+        int               lb2 = 0;
+
+        conf = this->private;
+        lb2 = log_base2 (len);
+        ios_fd_ctx_get (fd, this, &iosfd);
+        if (!conf)
+                return;
+
+        GF_ATOMIC_ADD (conf->cumulative.data_written, len);
+        GF_ATOMIC_ADD (conf->incremental.data_written, len);
+        GF_ATOMIC_INC (conf->cumulative.block_count_write[lb2]);
+        GF_ATOMIC_INC (conf->incremental.block_count_write[lb2]);
+
+        if (iosfd) {
+                GF_ATOMIC_ADD (iosfd->data_written, len);
+                GF_ATOMIC_INC (iosfd->block_count_write[lb2]);
+        }
+}
+
+
+static void
+ios_bump_upcall (xlator_t *this, gf_upcall_flags_t event)
+{
+        struct ios_conf  *conf = NULL;
+
+        conf = this->private;
+        if (!conf)
+                return;
+        if (conf->count_fop_hits) {
+                GF_ATOMIC_INC (conf->cumulative.upcall_hits[event]);
+                GF_ATOMIC_INC (conf->incremental.upcall_hits[event]);
+        }
+}
+
+
+static void
+ios_bump_stats (xlator_t *this, struct ios_stat *iosstat,
+                ios_stats_type_t type)
+{
+        struct ios_conf         *conf = NULL;
+        uint64_t                 value = 0;
+
+        conf = this->private;
+
+        value = GF_ATOMIC_INC (iosstat->counters[type]);
+        ios_stat_add_to_list (&conf->list[type], value, iosstat);
+}
+
+
+int
+ios_inode_ctx_set (inode_t *inode, xlator_t *this, struct ios_stat *iosstat)
+{
+        uint64_t   iosstat64 = 0;
+        int        ret     = 0;
+
+        ios_stat_ref (iosstat);
+        iosstat64 = (unsigned long) iosstat;
+        ret = inode_ctx_put (inode, this, iosstat64);
+        return ret;
+}
+
+int
+ios_inode_ctx_get (inode_t *inode, xlator_t *this, struct ios_stat **iosstat)
+{
+        uint64_t      iosstat64 = 0;
+        unsigned long iosstatlong = 0;
+        int           ret = 0;
+
+        ret = inode_ctx_get (inode, this, &iosstat64);
+        iosstatlong = iosstat64;
+        if (ret != -1)
+                *iosstat = (void *) iosstatlong;
+
+        return ret;
+
+}
+
+/*
+ * So why goto all this trouble?  Why not just queue up some samples in
+ * a big list and malloc away?  Well malloc is expensive relative
+ * to what we are measuring, so cannot have any malloc's (or worse
+ * callocs) in our measurement code paths.  Instead, we are going to
+ * pre-allocate a circular buffer and collect a maximum number of samples.
+ * Prior to dumping them all we'll create a new buffer and swap the
+ * old buffer with the new, and then proceed to dump the statistics
+ * in our dump thread.
+ *
+ */
+ios_sample_buf_t *
+ios_create_sample_buf (size_t buf_size)
+{
+        ios_sample_buf_t *ios_sample_buf = NULL;
+        ios_sample_t     *ios_samples = NULL;
+
+        ios_sample_buf = GF_CALLOC (1,
+                sizeof (*ios_sample_buf),
+                gf_io_stats_mt_ios_sample_buf);
+        if (!ios_sample_buf)
+                goto err;
+
+        ios_samples = GF_CALLOC (buf_size,
+                sizeof (*ios_samples),
+                gf_io_stats_mt_ios_sample);
+
+        if (!ios_samples)
+                goto err;
+
+        ios_sample_buf->ios_samples = ios_samples;
+        ios_sample_buf->size = buf_size;
+        ios_sample_buf->pos = 0;
+        ios_sample_buf->observed = 0;
+        ios_sample_buf->collected = 0;
+
+        return ios_sample_buf;
+err:
+        GF_FREE (ios_sample_buf);
+        return NULL;
+}
+
+void
+ios_destroy_sample_buf (ios_sample_buf_t *ios_sample_buf)
+{
+        GF_FREE (ios_sample_buf->ios_samples);
+        GF_FREE (ios_sample_buf);
+}
+
+static int
+ios_init_sample_buf (struct ios_conf *conf)
+{
+        int32_t        ret = -1;
+
+        GF_ASSERT (conf);
+        LOCK (&conf->lock);
+        conf->ios_sample_buf = ios_create_sample_buf (
+                conf->ios_sample_buf_size);
+        if (!conf->ios_sample_buf)
+                goto out;
+        ret = 0;
+out:
+        UNLOCK (&conf->lock);
+        return ret;
+}
+
 static int
 ios_stats_cleanup (xlator_t *this, inode_t *inode)
 {
@@ -540,11 +665,12 @@ ios_stats_cleanup (xlator_t *this, inode_t *inode)
                         fprintf (logfp, fmt);                   \
                         fprintf (logfp, "\n");                  \
                 }                                               \
-                gf_log (this->name, GF_LOG_INFO, fmt);        \
+                gf_log (this->name, GF_LOG_DEBUG, fmt);        \
         } while (0)
 
 int
-ios_dump_file_stats (struct ios_stat_head *list_head, xlator_t *this, FILE* logfp)
+ios_dump_file_stats (struct ios_stat_head *list_head, xlator_t *this,
+                     FILE *logfp)
 {
         struct ios_stat_list *entry = NULL;
 
@@ -561,7 +687,7 @@ ios_dump_file_stats (struct ios_stat_head *list_head, xlator_t *this, FILE* logf
 
 int
 ios_dump_throughput_stats (struct ios_stat_head *list_head, xlator_t *this,
-                            FILE* logfp, ios_stats_type_t type)
+                           FILE *logfp, ios_stats_thru_t type)
 {
         struct ios_stat_list *entry = NULL;
         struct timeval        time  = {0, };
@@ -585,8 +711,477 @@ ios_dump_throughput_stats (struct ios_stat_head *list_head, xlator_t *this,
 }
 
 int
+_io_stats_get_key_prefix (xlator_t *this, char **key_prefix) {
+        char                  *key_root = "gluster";
+        char                  *xlator_name = NULL;
+        char                  *instance_name = NULL;
+        size_t                key_len = 0;
+        int                   bytes_written = 0;
+        int                   i = 0;
+        int                   ret = 0;
+        struct ios_conf       *conf = this->private;
+
+        xlator_name = strdupa (conf->unique_id);
+        for (i = 0; i < strlen (xlator_name); i++) {
+                if (xlator_name[i] == '/')
+                        xlator_name[i] = '_';
+        }
+
+        instance_name = this->instance_name;
+        if (this->name && strcmp (this->name, "glustershd") == 0) {
+                xlator_name = "shd";
+        } else if (this->prev &&
+                   strcmp (this->prev->name, "nfs-server") == 0) {
+                xlator_name = "nfsd";
+                if (this->prev->instance_name)
+                        instance_name = strdupa (this->prev->instance_name);
+        }
+
+        if (strcmp (__progname, "glusterfsd") == 0)
+                key_root = "gluster.brick";
+
+        if (instance_name) {
+                /* +3 for 2 x "." + NULL */
+                key_len = strlen (key_root) + strlen (xlator_name) +
+                        strlen (instance_name) + 3;
+                *key_prefix = GF_CALLOC (key_len, sizeof (char),
+                        gf_common_mt_char);
+                if (!key_prefix) {
+                        ret = -ENOMEM;
+                        goto err;
+                }
+                bytes_written = snprintf (*key_prefix, key_len, "%s.%s.%s",
+                        key_root, xlator_name, instance_name);
+                if (bytes_written != key_len - 1) {
+                        ret = -EINVAL;
+                        goto err;
+                }
+        } else {
+                /* +2 for 1 x "." + NULL */
+                key_len = strlen (key_root) + strlen (xlator_name) + 2;
+                *key_prefix = GF_CALLOC (key_len, sizeof (char),
+                        gf_common_mt_char);
+                if (!key_prefix) {
+                        ret = -ENOMEM;
+                        goto err;
+                }
+                bytes_written = snprintf (*key_prefix, key_len, "%s.%s",
+                        key_root, xlator_name);
+                if (bytes_written != key_len - 1) {
+                        ret = -EINVAL;
+                        goto err;
+                }
+        }
+        return 0;
+err:
+        GF_FREE (*key_prefix);
+        *key_prefix = NULL;
+        return ret;
+}
+
+int
+io_stats_dump_global_to_json_logfp (xlator_t *this,
+    struct ios_global_stats *stats, struct timeval *now, int interval,
+    FILE *logfp)
+{
+        int                   i = 0;
+        int                   j = 0;
+        struct ios_conf       *conf = NULL;
+        char                  *key_prefix = NULL;
+        char                  *str_prefix = NULL;
+        char                  *lc_fop_name = NULL;
+        int                   ret = 1;  /* Default to error */
+        int                   rw_size;
+        char                  *rw_unit = NULL;
+        uint64_t              fop_hits;
+        float                 fop_lat_ave;
+        float                 fop_lat_min;
+        float                 fop_lat_max;
+        double                interval_sec;
+
+        interval_sec = ((now->tv_sec * 1000000.0 + now->tv_usec) -
+                (stats->started_at.tv_sec * 1000000.0 +
+                 stats->started_at.tv_usec)) / 1000000.0;
+
+        conf = this->private;
+
+        ret = _io_stats_get_key_prefix (this, &key_prefix);
+        if (ret) {
+                goto out;
+        }
+
+        if (interval == -1) {
+                str_prefix = "aggr";
+
+        } else {
+                str_prefix = "inter";
+        }
+        ios_log (this, logfp, "{");
+
+        for (i = 0; i < 31; i++) {
+                rw_size = (1 << i);
+                if (rw_size >= 1024 * 1024) {
+                        rw_size = rw_size / (1024 * 1024);
+                        rw_unit = "mb";
+                } else if (rw_size >= 1024) {
+                        rw_size = rw_size / 1024;
+                        rw_unit = "kb";
+                } else {
+                        rw_unit = "b";
+                }
+
+                if (interval == -1) {
+                        ios_log (this, logfp,
+                                "\"%s.%s.read_%d%s\": \"%"GF_PRI_ATOMIC"\",",
+                                key_prefix, str_prefix, rw_size, rw_unit,
+                                GF_ATOMIC_GET (stats->block_count_read[i]));
+                        ios_log (this, logfp,
+                                "\"%s.%s.write_%d%s\": \"%"GF_PRI_ATOMIC"\",",
+                                key_prefix, str_prefix, rw_size, rw_unit,
+                                GF_ATOMIC_GET (stats->block_count_write[i]));
+                } else {
+                        ios_log (this, logfp,
+                                "\"%s.%s.read_%d%s_per_sec\": \"%0.2lf\",",
+                                key_prefix, str_prefix, rw_size, rw_unit,
+                                (double)
+                                (GF_ATOMIC_GET (stats->block_count_read[i]) /
+                                 interval_sec));
+                        ios_log (this, logfp,
+                                "\"%s.%s.write_%d%s_per_sec\": \"%0.2lf\",",
+                                key_prefix, str_prefix, rw_size, rw_unit,
+                                (double)
+                                (GF_ATOMIC_GET (stats->block_count_write[i]) /
+                                 interval_sec));
+                }
+        }
+
+        if (interval == -1) {
+                ios_log (this, logfp, "\"%s.%s.fds.open_count\": \"%"PRId64
+                        "\",", key_prefix, str_prefix,
+                        conf->cumulative.nr_opens);
+                ios_log (this, logfp,
+                        "\"%s.%s.fds.max_open_count\": \"%"PRId64"\",",
+                        key_prefix, str_prefix, conf->cumulative.max_nr_opens);
+        }
+
+        for (i = 0; i < GF_FOP_MAXVALUE; i++) {
+                lc_fop_name = strdupa (gf_fop_list[i]);
+                for (j = 0; lc_fop_name[j]; j++) {
+                        lc_fop_name[j] = tolower (lc_fop_name[j]);
+                }
+
+                fop_hits = GF_ATOMIC_GET (stats->fop_hits[i]);
+                fop_lat_ave = 0.0;
+                fop_lat_min = 0.0;
+                fop_lat_max = 0.0;
+                if (fop_hits) {
+                        if (stats->latency[i].avg) {
+                                fop_lat_ave = stats->latency[i].avg;
+                                fop_lat_min = stats->latency[i].min;
+                                fop_lat_max = stats->latency[i].max;
+                        }
+                }
+                if (interval == -1) {
+                        ios_log (this, logfp,
+                                "\"%s.%s.fop.%s.count\": \"%"GF_PRI_ATOMIC"\",",
+                                key_prefix, str_prefix, lc_fop_name,
+                                fop_hits);
+                } else {
+                        ios_log (this, logfp,
+                                "\"%s.%s.fop.%s.per_sec\": \"%0.2lf\",",
+                                key_prefix, str_prefix, lc_fop_name,
+                                (double)(fop_hits / interval_sec));
+                }
+
+                ios_log (this, logfp,
+                        "\"%s.%s.fop.%s.latency_ave_usec\": \"%0.2lf\",",
+                         key_prefix, str_prefix, lc_fop_name, fop_lat_ave);
+                ios_log (this, logfp,
+                        "\"%s.%s.fop.%s.latency_min_usec\": \"%0.2lf\",",
+                         key_prefix, str_prefix, lc_fop_name, fop_lat_min);
+                ios_log (this, logfp,
+                        "\"%s.%s.fop.%s.latency_max_usec\": \"%0.2lf\",",
+                        key_prefix, str_prefix, lc_fop_name, fop_lat_max);
+        }
+
+        for (i = 0; i < GF_UPCALL_FLAGS_MAXVALUE; i++) {
+                lc_fop_name = strdupa (gf_upcall_list[i]);
+                for (j = 0; lc_fop_name[j]; j++) {
+                        lc_fop_name[j] = tolower (lc_fop_name[j]);
+                }
+                fop_hits = GF_ATOMIC_GET (stats->upcall_hits[i]);
+                if (interval == -1) {
+                        ios_log (this, logfp,
+                                "\"%s.%s.fop.%s.count\": \"%"GF_PRI_ATOMIC"\",",
+                                key_prefix, str_prefix, lc_fop_name,
+                                fop_hits);
+                } else {
+                        ios_log (this, logfp,
+                                "\"%s.%s.fop.%s.per_sec\": \"%0.2lf\",",
+                                key_prefix, str_prefix, lc_fop_name,
+                                (double)(fop_hits / interval_sec));
+                }
+        }
+
+        if (interval == -1) {
+                ios_log (this, logfp, "\"%s.%s.uptime\": \"%"PRId64"\",",
+                         key_prefix, str_prefix,
+                         (uint64_t) (now->tv_sec - stats->started_at.tv_sec));
+                ios_log (this, logfp, "\"%s.%s.bytes_read\": \""
+                         "%"GF_PRI_ATOMIC"\",", key_prefix, str_prefix,
+                         GF_ATOMIC_GET (stats->data_read));
+                ios_log (this, logfp, "\"%s.%s.bytes_written\": \""
+                         "%"GF_PRI_ATOMIC"\"", key_prefix, str_prefix,
+                         GF_ATOMIC_GET (stats->data_written));
+        } else {
+                ios_log (this, logfp,
+                         "\"%s.%s.sample_interval_sec\": \"%0.2lf\",",
+                         key_prefix, str_prefix,
+                         interval_sec);
+                ios_log (this, logfp,
+                         "\"%s.%s.bytes_read_per_sec\": \"%0.2lf\",",
+                         key_prefix, str_prefix, (double)
+                         (GF_ATOMIC_GET (stats->data_read) / interval_sec));
+                ios_log (this, logfp,
+                         "\"%s.%s.bytes_written_per_sec\": \"%0.2lf\"",
+                         key_prefix, str_prefix, (double)
+                         (GF_ATOMIC_GET (stats->data_written) / interval_sec));
+        }
+
+        ios_log (this, logfp, "}");
+        ret = 0;
+out:
+        GF_FREE (key_prefix);
+        return ret;
+}
+
+char *
+_resolve_username (xlator_t *this, uid_t uid)
+{
+        struct passwd pwd;
+        struct passwd *pwd_result = NULL;
+        size_t pwd_buf_len;
+        char   *pwd_buf = NULL;
+        char   *ret = NULL;
+
+        /* Prepare our buffer for the uid->username translation */
+#ifdef _SC_GETGR_R_SIZE_MAX
+        pwd_buf_len = sysconf (_SC_GETGR_R_SIZE_MAX);
+#else
+        pwd_buf_len = -1;
+#endif
+        if (pwd_buf_len == -1) {
+                pwd_buf_len = DEFAULT_PWD_BUF_SZ;  /* per the man page */
+        }
+
+        pwd_buf = alloca (pwd_buf_len);
+        if (!pwd_buf)
+                goto err;
+
+        getpwuid_r (uid, &pwd, pwd_buf, pwd_buf_len,
+                   &pwd_result);
+        if (!pwd_result)
+                goto err;
+
+        ret = gf_strdup (pwd.pw_name);
+        if (ret)
+                return ret;
+        else
+                gf_log (this->name, GF_LOG_ERROR,
+                        "gf_strdup failed, failing username "
+                        "resolution.");
+err:
+        return ret;
+}
+
+char *
+_resolve_group_name (xlator_t *this, gid_t gid)
+{
+        struct group grp;
+        struct group *grp_result = NULL;
+        size_t grp_buf_len;
+        char   *grp_buf = NULL;
+        char   *ret = NULL;
+
+        /* Prepare our buffer for the gid->group name translation */
+#ifdef _SC_GETGR_R_SIZE_MAX
+        grp_buf_len = sysconf (_SC_GETGR_R_SIZE_MAX);
+#else
+        grp_buf_len = -1;
+#endif
+        if (grp_buf_len == -1) {
+                grp_buf_len = DEFAULT_GRP_BUF_SZ;  /* per the man page */
+        }
+
+        grp_buf = alloca (grp_buf_len);
+        if (!grp_buf) {
+                goto err;
+        }
+
+        getgrgid_r (gid, &grp, grp_buf, grp_buf_len,
+                   &grp_result);
+        if (!grp_result)
+                goto err;
+
+        ret = gf_strdup (grp.gr_name);
+        if (ret)
+                return ret;
+        else
+                gf_log (this->name, GF_LOG_ERROR,
+                        "gf_strdup failed, failing username "
+                        "resolution.");
+err:
+        return ret;
+}
+
+
+/*
+ * This function writes out a latency sample to a given file descriptor
+ * and beautifies the output in the process.
+ */
+void
+_io_stats_write_latency_sample (xlator_t *this, ios_sample_t *sample,
+                                FILE *logfp)
+{
+        double epoch_time = 0.00;
+        char   *xlator_name = NULL;
+        char   *instance_name = NULL;
+        char   *hostname = NULL;
+        char   *identifier = NULL;
+        char   *port = NULL;
+        char   *port_pos = NULL;
+        char   *group_name = NULL;
+        char   *username = NULL;
+        struct ios_conf *conf = NULL;
+
+        conf = this->private;
+
+        epoch_time = (sample->timestamp).tv_sec +
+          ((sample->timestamp).tv_usec / 1000000.0);
+
+        if (strlen (sample->identifier) == 0) {
+                hostname = "Unknown";
+                port = "Unknown";
+        } else {
+                identifier = strdupa (sample->identifier);
+                port_pos = strrchr (identifier, ':');
+                if (!port_pos || strlen(port_pos) < 2)
+                        goto err;
+                port = strdupa (port_pos + 1);
+                if (!port)
+                        goto err;
+                *port_pos = '\0';
+                hostname = gf_rev_dns_lookup_cached (identifier,
+                                                     conf->dnscache);
+                if (!hostname)
+                        hostname = "Unknown";
+        }
+
+        xlator_name = conf->unique_id;
+        if (!xlator_name || strlen (xlator_name) == 0)
+                xlator_name = "Unknown";
+
+        instance_name = this->instance_name;
+        if (!instance_name || strlen (instance_name) == 0)
+                instance_name = "N/A";
+
+        /* Resolve the UID to a string username */
+        username = _resolve_username (this, sample->uid);
+        if (!username) {
+                username = GF_MALLOC (30, gf_common_mt_char);
+                sprintf (username, "%d", (int32_t)sample->uid);
+        }
+
+        /* Resolve the GID to a string group name */
+        group_name = _resolve_group_name (this, sample->gid);
+        if (!group_name) {
+                group_name = GF_MALLOC (30, gf_common_mt_char);
+                sprintf (group_name, "%d", (int32_t)sample->gid);
+        }
+
+        ios_log (this, logfp,
+                 "%0.6lf,%s,%s,%0.4lf,%s,%s,%s,%s,%s,%s",
+                 epoch_time, fop_enum_to_pri_string (sample->fop_type),
+                 gf_fop_string (sample->fop_type),
+                 sample->elapsed, xlator_name, instance_name, username,
+                 group_name, hostname, port);
+        goto out;
+err:
+        gf_log (this->name, GF_LOG_ERROR,
+                "Error parsing socket identifier");
+out:
+        GF_FREE (group_name);
+        GF_FREE (username);
+}
+
+/*
+ * Takes our current sample buffer in conf->io_sample_buf, and saves
+ * a reference to this, init's a new buffer, and then dumps out the
+ * contents of the saved reference.
+ */
+int
+io_stats_dump_latency_samples_logfp (xlator_t *this, FILE *logfp)
+{
+        uint64_t              i = 0;
+        struct ios_conf       *conf = NULL;
+        ios_sample_buf_t      *sample_buf = NULL;
+        int                   ret = 1;  /* Default to error */
+
+        conf = this->private;
+
+        /* Save pointer to old buffer; the CS equivalent of
+         * Indiana Jones: https://www.youtube.com/watch?v=Pr-8AP0To4k,
+         * though ours will end better I hope!
+         */
+        sample_buf = conf->ios_sample_buf;
+        if (!sample_buf) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "Sampling buffer is null, bailing!");
+                goto out;
+        }
+
+        /* Empty case, nothing to do, exit. */
+        if (sample_buf->collected == 0) {
+                gf_log (this->name, GF_LOG_DEBUG,
+                        "No samples, dump not required.");
+                ret = 0;
+                goto out;
+        }
+
+        /* Init a new buffer, so we are free to work on the one we saved a
+         * reference to above.
+         */
+        if (ios_init_sample_buf (conf) != 0) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "Failed to init new sampling buffer, out of memory?");
+                goto out;
+        }
+
+        /* Wrap-around case, dump from pos to sample_buf->size -1
+         * and then from 0 to sample_buf->pos (covered off by
+         * "simple case")
+         */
+        if (sample_buf->collected > sample_buf->pos + 1) {
+                for (i = sample_buf->pos; i < sample_buf->size; i++) {
+                        _io_stats_write_latency_sample (this,
+                                &(sample_buf->ios_samples[i]), logfp);
+                }
+        }
+
+        /* Simple case: Dump from 0 to sample_buf->pos */
+        for (i = 0; i < sample_buf->pos; i++) {
+                _io_stats_write_latency_sample (this,
+                        &(sample_buf->ios_samples[i]), logfp);
+        }
+        ios_destroy_sample_buf (sample_buf);
+
+out:
+        return ret;
+}
+
+int
 io_stats_dump_global_to_logfp (xlator_t *this, struct ios_global_stats *stats,
-                               struct timeval *now, int interval, FILE* logfp)
+                               struct timeval *now, int interval, FILE *logfp)
 {
         int                   i = 0;
         int                   per_line = 0;
@@ -597,6 +1192,9 @@ io_stats_dump_global_to_logfp (xlator_t *this, struct ios_global_stats *stats,
         char                  str_header[128] = {0};
         char                  str_read[128] = {0};
         char                  str_write[128] = {0};
+        uint64_t              fop_hits = 0;
+        uint64_t              block_count_read = 0;
+        uint64_t              block_count_write = 0;
 
         conf = this->private;
 
@@ -607,31 +1205,32 @@ io_stats_dump_global_to_logfp (xlator_t *this, struct ios_global_stats *stats,
                          interval);
         ios_log (this, logfp, "      Duration : %"PRId64" secs",
                  (uint64_t) (now->tv_sec - stats->started_at.tv_sec));
-        ios_log (this, logfp, "     BytesRead : %"PRId64,
-                 stats->data_read);
-        ios_log (this, logfp, "  BytesWritten : %"PRId64"\n",
-                 stats->data_written);
+        ios_log (this, logfp, "     BytesRead : %"GF_PRI_ATOMIC,
+                 GF_ATOMIC_GET (stats->data_read));
+        ios_log (this, logfp, "  BytesWritten : %"GF_PRI_ATOMIC"\n",
+                 GF_ATOMIC_GET (stats->data_written));
 
         snprintf (str_header, sizeof (str_header), "%-12s %c", "Block Size", ':');
         snprintf (str_read, sizeof (str_read), "%-12s %c", "Read Count", ':');
         snprintf (str_write, sizeof (str_write), "%-12s %c", "Write Count", ':');
         index = 14;
-        for (i = 0; i < 32; i++) {
-                if ((stats->block_count_read[i] == 0) &&
-                    (stats->block_count_write[i] == 0))
+        for (i = 0; i < IOS_BLOCK_COUNT_SIZE; i++) {
+                block_count_read = GF_ATOMIC_GET (stats->block_count_read[i]);
+                block_count_write = GF_ATOMIC_GET (stats->block_count_write[i]);
+                if ((block_count_read == 0) && (block_count_write == 0))
                         continue;
                 per_line++;
 
                 snprintf (str_header+index, sizeof (str_header)-index,
                           "%16dB+", (1<<i));
-                if (stats->block_count_read[i])
+                if (block_count_read)
                         snprintf (str_read+index, sizeof (str_read)-index,
-                                  "%18"PRId64, stats->block_count_read[i]);
+                                  "%18"PRId64, block_count_read);
                 else    snprintf (str_read+index, sizeof (str_read)-index,
                                   "%18s", "0");
-                if (stats->block_count_write[i])
+                if (block_count_write)
                         snprintf (str_write+index, sizeof (str_write)-index,
-                                  "%18"PRId64, stats->block_count_write[i]);
+                                  "%18"GF_PRI_ATOMIC, block_count_write);
                 else    snprintf (str_write+index, sizeof (str_write)-index,
                                   "%18s", "0");
 
@@ -670,16 +1269,27 @@ io_stats_dump_global_to_logfp (xlator_t *this, struct ios_global_stats *stats,
                  "-----------", "-----------", "-----------");
 
         for (i = 0; i < GF_FOP_MAXVALUE; i++) {
-                if (stats->fop_hits[i] && !stats->latency[i].avg)
-                        ios_log (this, logfp, "%-13s %10"PRId64" %11s "
+                fop_hits = GF_ATOMIC_GET (stats->fop_hits[i]);
+                if (fop_hits && !stats->latency[i].avg)
+                        ios_log (this, logfp, "%-13s %10"GF_PRI_ATOMIC" %11s "
                                  "us %11s us %11s us", gf_fop_list[i],
-                                 stats->fop_hits[i], "0", "0", "0");
-                else if (stats->fop_hits[i] && stats->latency[i].avg)
-                        ios_log (this, logfp, "%-13s %10"PRId64" %11.2lf us "
-                                 "%11.2lf us %11.2lf us", gf_fop_list[i],
-                                 stats->fop_hits[i], stats->latency[i].avg,
-                                 stats->latency[i].min, stats->latency[i].max);
+                                 fop_hits, "0", "0", "0");
+                else if (fop_hits && stats->latency[i].avg)
+                        ios_log (this, logfp, "%-13s %10"GF_PRI_ATOMIC" "
+                                 "%11.2lf us %11.2lf us %11.2lf us",
+                                 gf_fop_list[i], fop_hits,
+                                 stats->latency[i].avg, stats->latency[i].min,
+                                 stats->latency[i].max);
         }
+
+        for (i = 0; i < GF_UPCALL_FLAGS_MAXVALUE; i++) {
+                fop_hits = GF_ATOMIC_GET (stats->upcall_hits[i]);
+                if (fop_hits)
+                        ios_log (this, logfp, "%-13s %10"PRId64" %11s "
+                                 "us %11s us %11s us", gf_upcall_list[i],
+                                 fop_hits, "0", "0", "0");
+        }
+
         ios_log (this, logfp, "------ ----- ----- ----- ----- ----- ----- ----- "
                  " ----- ----- ----- -----\n");
 
@@ -728,13 +1338,15 @@ io_stats_dump_global_to_logfp (xlator_t *this, struct ios_global_stats *stats,
                 ios_log (this, logfp, "\nTIMESTAMP \t\t\t THROUGHPUT(KBPS)"
                          "\tFILE NAME");
                 list_head = &conf->thru_list[IOS_STATS_THRU_READ];
-                ios_dump_throughput_stats(list_head, this, logfp, IOS_STATS_TYPE_READ);
+                ios_dump_throughput_stats(list_head, this, logfp,
+                                          IOS_STATS_THRU_READ);
 
                 ios_log (this, logfp, "\n======Write Throughput File Stats======");
                 ios_log (this, logfp, "\nTIMESTAMP \t\t\t THROUGHPUT(KBPS)"
                          "\tFILE NAME");
                 list_head = &conf->thru_list[IOS_STATS_THRU_WRITE];
-                ios_dump_throughput_stats (list_head, this, logfp, IOS_STATS_TYPE_WRITE);
+                ios_dump_throughput_stats (list_head, this, logfp,
+                                           IOS_STATS_THRU_WRITE);
         }
         return 0;
 }
@@ -748,6 +1360,7 @@ io_stats_dump_global_to_dict (xlator_t *this, struct ios_global_stats *stats,
         uint64_t        sec = 0;
         int             i = 0;
         uint64_t        count = 0;
+        uint64_t        fop_hits = 0;
 
         GF_ASSERT (stats);
         GF_ASSERT (now);
@@ -775,27 +1388,29 @@ io_stats_dump_global_to_dict (xlator_t *this, struct ios_global_stats *stats,
 
         memset (key, 0, sizeof (key));
         snprintf (key, sizeof (key), "%d-total-read", interval);
-        ret = dict_set_uint64 (dict, key, stats->data_read);
+        ret = dict_set_uint64 (dict, key, GF_ATOMIC_GET (stats->data_read));
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "failed to set total "
-                       "read(%d) - %"PRId64, interval, stats->data_read);
+                       "read(%d) - %"GF_PRI_ATOMIC, interval,
+                       GF_ATOMIC_GET (stats->data_read));
                 goto out;
         }
 
         memset (key, 0, sizeof (key));
         snprintf (key, sizeof (key), "%d-total-write", interval);
-        ret = dict_set_uint64 (dict, key, stats->data_written);
+        ret = dict_set_uint64 (dict, key, GF_ATOMIC_GET (stats->data_written));
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "failed to set total "
-                        "write(%d) - %"PRId64, interval, stats->data_written);
+                        "write(%d) - %"GF_PRI_ATOMIC, interval,
+                        GF_ATOMIC_GET (stats->data_written));
                 goto out;
         }
         for (i = 0; i < 32; i++) {
-                if (stats->block_count_read[i]) {
+                count = GF_ATOMIC_GET (stats->block_count_read[i]);
+                if (count) {
                         memset (key, 0, sizeof (key));
                         snprintf (key, sizeof (key), "%d-read-%d", interval,
                                   (1 << i));
-                        count = stats->block_count_read[i];
                         ret = dict_set_uint64 (dict, key, count);
                         if (ret) {
                                 gf_log (this->name, GF_LOG_ERROR, "failed to "
@@ -806,11 +1421,11 @@ io_stats_dump_global_to_dict (xlator_t *this, struct ios_global_stats *stats,
                 }
         }
 
-        for (i = 0; i < 32; i++) {
-                if (stats->block_count_write[i]) {
+        for (i = 0; i < IOS_BLOCK_COUNT_SIZE; i++) {
+                count = GF_ATOMIC_GET (stats->block_count_write[i]);
+                if (count) {
                         snprintf (key, sizeof (key), "%d-write-%d", interval,
                                   (1<<i));
-                        count = stats->block_count_write[i];
                         ret = dict_set_uint64 (dict, key, count);
                         if (ret) {
                                 gf_log (this->name, GF_LOG_ERROR, "failed to "
@@ -822,14 +1437,15 @@ io_stats_dump_global_to_dict (xlator_t *this, struct ios_global_stats *stats,
         }
 
         for (i = 0; i < GF_FOP_MAXVALUE; i++) {
-                if (stats->fop_hits[i] == 0)
+                fop_hits = GF_ATOMIC_GET (stats->fop_hits[i]);
+                if (fop_hits == 0)
                         continue;
                 snprintf (key, sizeof (key), "%d-%d-hits", interval, i);
-                ret = dict_set_uint64 (dict, key, stats->fop_hits[i]);
+                ret = dict_set_uint64 (dict, key, fop_hits);
                 if (ret) {
-                        gf_log (this->name, GF_LOG_ERROR, "failed to "
-                                "set %s-fop-hits: %"PRIu64, gf_fop_list[i],
-                                stats->fop_hits[i]);
+                        gf_log (this->name, GF_LOG_ERROR, "failed to set "
+                                "%s-fop-hits: %"GF_PRI_ATOMIC, gf_fop_list[i],
+                                fop_hits);
                         goto out;
                 }
 
@@ -860,6 +1476,19 @@ io_stats_dump_global_to_dict (xlator_t *this, struct ios_global_stats *stats,
                         goto out;
                 }
         }
+        for (i = 0; i < GF_UPCALL_FLAGS_MAXVALUE; i++) {
+                fop_hits = GF_ATOMIC_GET (stats->upcall_hits[i]);
+                if (fop_hits == 0)
+                        continue;
+                snprintf (key, sizeof (key), "%d-%d-upcall-hits", interval, i);
+                ret = dict_set_uint64 (dict, key, fop_hits);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR, "failed to "
+                                "set %s-upcall-hits: %"PRIu64,
+                                gf_upcall_list[i], fop_hits);
+                        goto out;
+                }
+        }
 out:
         gf_log (this->name, GF_LOG_DEBUG, "returning %d", ret);
         return ret;
@@ -880,6 +1509,10 @@ io_stats_dump_global (xlator_t *this, struct ios_global_stats *stats,
 
 
         switch (args->type) {
+        case IOS_DUMP_TYPE_JSON_FILE:
+                ret = io_stats_dump_global_to_json_logfp (
+                    this, stats, now, interval, args->u.logfp);
+        break;
         case IOS_DUMP_TYPE_FILE:
                 ret = io_stats_dump_global_to_logfp (this, stats, now,
                                                      interval, args->u.logfp);
@@ -908,6 +1541,7 @@ ios_dump_args_init (struct ios_dump_args *args, ios_dump_type_t type,
 
         args->type = type;
         switch (args->type) {
+        case IOS_DUMP_TYPE_JSON_FILE:
         case IOS_DUMP_TYPE_FILE:
                 args->u.logfp = output;
                 break;
@@ -937,8 +1571,8 @@ io_stats_dump (xlator_t *this, struct ios_dump_args *args,
                gf1_cli_info_op op, gf_boolean_t is_peek)
 {
         struct ios_conf         *conf = NULL;
-        struct ios_global_stats  cumulative = {0, };
-        struct ios_global_stats  incremental = {0, };
+        struct ios_global_stats  cumulative = {{0,}, };
+        struct ios_global_stats  incremental = {{0,}, };
         int                      increment = 0;
         struct timeval           now;
 
@@ -991,6 +1625,10 @@ io_stats_dump_fd (xlator_t *this, struct ios_fd *iosfd)
         uint64_t                 sec = 0;
         uint64_t                 usec = 0;
         int                      i = 0;
+        uint64_t                 data_read = 0;
+        uint64_t                 data_written = 0;
+        uint64_t                 block_count_read = 0;
+        uint64_t                 block_count_write = 0;
 
         conf = this->private;
 
@@ -1023,29 +1661,73 @@ io_stats_dump_fd (xlator_t *this, struct ios_fd *iosfd)
                         "      Lifetime : %"PRId64"secs, %"PRId64"usecs",
                         sec, usec);
 
-        if (iosfd->data_read)
+        data_read = GF_ATOMIC_GET (iosfd->data_read);
+        if (data_read)
                 gf_log (this->name, GF_LOG_INFO,
-                        "     BytesRead : %"PRId64" bytes",
-                        iosfd->data_read);
+                        "     BytesRead : %"PRId64" bytes", data_read);
 
-        if (iosfd->data_written)
+        data_written = GF_ATOMIC_GET (iosfd->data_written);
+        if (data_written)
                 gf_log (this->name, GF_LOG_INFO,
                         "  BytesWritten : %"PRId64" bytes",
-                        iosfd->data_written);
+                        data_written);
 
         for (i = 0; i < 32; i++) {
-                if (iosfd->block_count_read[i])
-                        gf_log (this->name, GF_LOG_INFO,
-                                " Read %06db+ : %"PRId64,
-                                (1 << i), iosfd->block_count_read[i]);
+                block_count_read = GF_ATOMIC_GET (iosfd->block_count_read[i]);
+                if (block_count_read)
+                        gf_log (this->name, GF_LOG_INFO, " Read %06db+ :"
+                                "%"PRId64, (1 << i), block_count_read);
         }
-        for (i = 0; i < 32; i++) {
-                if (iosfd->block_count_write[i])
+        for (i = 0; i < IOS_BLOCK_COUNT_SIZE; i++) {
+                block_count_write = GF_ATOMIC_GET (iosfd->block_count_write[i]);
+                if (block_count_write)
                         gf_log (this->name, GF_LOG_INFO,
                                 "Write %06db+ : %"PRId64,
-                                (1 << i), iosfd->block_count_write[i]);
+                                (1 << i), block_count_write);
         }
         return 0;
+}
+
+void collect_ios_latency_sample (struct ios_conf *conf,
+                glusterfs_fop_t fop_type, double elapsed,
+                call_frame_t *frame)
+{
+        ios_sample_buf_t *ios_sample_buf = NULL;
+        ios_sample_t     *ios_sample = NULL;
+        struct timeval   *timestamp = NULL;
+        call_stack_t     *root = NULL;
+
+
+        ios_sample_buf = conf->ios_sample_buf;
+        LOCK (&conf->ios_sampling_lock);
+        if (conf->ios_sample_interval == 0 ||
+            ios_sample_buf->observed % conf->ios_sample_interval != 0)
+                goto out;
+
+        timestamp = &frame->begin;
+        root = frame->root;
+
+        ios_sample = &(ios_sample_buf->ios_samples[ios_sample_buf->pos]);
+        ios_sample->elapsed = elapsed;
+        ios_sample->fop_type = fop_type;
+        ios_sample->uid = root->uid;
+        ios_sample->gid = root->gid;
+        (ios_sample->timestamp).tv_sec = timestamp->tv_sec;
+        (ios_sample->timestamp).tv_usec = timestamp->tv_usec;
+        memcpy (&ios_sample->identifier, &root->identifier,
+                sizeof (root->identifier));
+
+        /* We've reached the end of the circular buffer, start from the
+         * beginning. */
+        if (ios_sample_buf->pos == (ios_sample_buf->size - 1))
+                ios_sample_buf->pos = 0;
+        else
+                ios_sample_buf->pos++;
+        ios_sample_buf->collected++;
+out:
+        ios_sample_buf->observed++;
+        UNLOCK (&conf->ios_sampling_lock);
+        return;
 }
 
 static void
@@ -1067,7 +1749,8 @@ update_ios_latency_stats (struct ios_global_stats   *stats, double elapsed,
 
         avg = stats->latency[op].avg;
 
-        stats->latency[op].avg = avg + (elapsed - avg) / stats->fop_hits[op];
+        stats->latency[op].avg = avg + (elapsed - avg) /
+                                       GF_ATOMIC_GET (stats->fop_hits[op]);
 }
 
 int
@@ -1085,6 +1768,7 @@ update_ios_latency (struct ios_conf *conf, call_frame_t *frame,
 
         update_ios_latency_stats (&conf->cumulative, elapsed, op);
         update_ios_latency_stats (&conf->incremental, elapsed, op);
+        collect_ios_latency_sample (conf, op, elapsed, frame);
 
         return 0;
 }
@@ -1208,6 +1892,29 @@ unlock_list_head:
         return ret;
 }
 
+static struct ios_stat*
+ios_init_iosstat (xlator_t *this, char *path, uuid_t gfid, inode_t *inode)
+{
+        struct ios_stat *iosstat = NULL;
+        int              i       = 0;
+
+        iosstat = GF_CALLOC (1, sizeof (*iosstat), gf_io_stats_mt_ios_stat);
+        if (!iosstat)
+                goto out;
+
+        iosstat->filename = gf_strdup (path);
+        gf_uuid_copy (iosstat->gfid, gfid);
+        LOCK_INIT (&iosstat->lock);
+
+        for (i = 0; i < IOS_STATS_TYPE_MAX; i++)
+                GF_ATOMIC_INIT (iosstat->counters[i], 0);
+
+        ios_inode_ctx_set (inode, this, iosstat);
+
+out:
+        return iosstat;
+}
+
 int
 io_stats_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                      int32_t op_ret, int32_t op_errno, fd_t *fd,
@@ -1252,15 +1959,9 @@ io_stats_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         }
         UNLOCK (&conf->lock);
 
-        iosstat = GF_CALLOC (1, sizeof (*iosstat), gf_io_stats_mt_ios_stat);
-        if (!iosstat) {
+        iosstat = ios_init_iosstat (this, path, buf->ia_gfid, inode);
+        if (!iosstat)
                 GF_FREE (path);
-                goto unwind;
-        }
-        iosstat->filename = gf_strdup (path);
-        gf_uuid_copy (iosstat->gfid, buf->ia_gfid);
-        LOCK_INIT (&iosstat->lock);
-        ios_inode_ctx_set (fd->inode, this, iosstat);
 
 unwind:
         UPDATE_PROFILE_STATS (frame, CREATE);
@@ -1274,10 +1975,11 @@ int
 io_stats_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                    int32_t op_ret, int32_t op_errno, fd_t *fd, dict_t *xdata)
 {
-        struct ios_fd *iosfd = NULL;
-        char          *path = NULL;
-        struct   ios_stat *iosstat = NULL;
+        struct ios_fd     *iosfd = NULL;
+        char              *path = NULL;
+        struct ios_stat   *iosstat = NULL;
         struct ios_conf   *conf = NULL;
+        int                i = 0;
 
         conf = this->private;
         path = frame->local;
@@ -1298,20 +2000,20 @@ io_stats_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         }
 
         iosfd->filename = path;
+        GF_ATOMIC_INIT (iosfd->data_read, 0);
+        GF_ATOMIC_INIT (iosfd->data_written, 0);
+        for (i = 0; i < IOS_BLOCK_COUNT_SIZE; i++) {
+                GF_ATOMIC_INIT (iosfd->block_count_write[i], 0);
+                GF_ATOMIC_INIT (iosfd->block_count_read[i], 0);
+        }
         gettimeofday (&iosfd->opened_at, NULL);
 
         ios_fd_ctx_set (fd, this, iosfd);
 
         ios_inode_ctx_get (fd->inode, this, &iosstat);
         if (!iosstat) {
-                iosstat = GF_CALLOC (1, sizeof (*iosstat),
-                                     gf_io_stats_mt_ios_stat);
-                if (iosstat) {
-                        iosstat->filename = gf_strdup (path);
-                        gf_uuid_copy (iosstat->gfid, fd->inode->gfid);
-                        LOCK_INIT (&iosstat->lock);
-                        ios_inode_ctx_set (fd->inode, this, iosstat);
-                }
+                iosstat = ios_init_iosstat (this, path, fd->inode->gfid,
+                                            fd->inode);
         }
 
         LOCK (&conf->lock);
@@ -1324,8 +2026,8 @@ io_stats_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         }
         UNLOCK (&conf->lock);
         if (iosstat) {
-              BUMP_STATS (iosstat, IOS_STATS_TYPE_OPEN);
-              iosstat = NULL;
+                ios_bump_stats (this, iosstat, IOS_STATS_TYPE_OPEN);
+                iosstat = NULL;
         }
 unwind:
         UPDATE_PROFILE_STATS (frame, OPEN);
@@ -1361,16 +2063,16 @@ io_stats_readv_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (op_ret > 0) {
                 len = iov_length (vector, count);
-                BUMP_READ (fd, len);
+                ios_bump_read (this, fd, len);
         }
 
         UPDATE_PROFILE_STATS (frame, READ);
         ios_inode_ctx_get (fd->inode, this, &iosstat);
 
         if (iosstat) {
-              BUMP_STATS (iosstat, IOS_STATS_TYPE_READ);
-              BUMP_THROUGHPUT (iosstat, IOS_STATS_THRU_READ);
-              iosstat = NULL;
+                ios_bump_stats (this, iosstat, IOS_STATS_TYPE_READ);
+                BUMP_THROUGHPUT (iosstat, IOS_STATS_THRU_READ);
+                iosstat = NULL;
         }
 
         STACK_UNWIND_STRICT (readv, frame, op_ret, op_errno,
@@ -1394,7 +2096,7 @@ io_stats_writev_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 frame->local = NULL;
                 ios_inode_ctx_get (inode, this, &iosstat);
                 if (iosstat) {
-                        BUMP_STATS (iosstat, IOS_STATS_TYPE_WRITE);
+                        ios_bump_stats (this, iosstat, IOS_STATS_TYPE_WRITE);
                         BUMP_THROUGHPUT (iosstat, IOS_STATS_THRU_WRITE);
                         inode = NULL;
                         iosstat = NULL;
@@ -1423,8 +2125,8 @@ io_stats_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         ios_inode_ctx_get (inode, this, &iosstat);
 
         if (iosstat) {
-              BUMP_STATS (iosstat, IOS_STATS_TYPE_READDIRP);
-              iosstat = NULL;
+                ios_bump_stats (this, iosstat, IOS_STATS_TYPE_READDIRP);
+                iosstat = NULL;
         }
 
         STACK_UNWIND_STRICT (readdirp, frame, op_ret, op_errno, buf, xdata);
@@ -1548,7 +2250,6 @@ io_stats_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                     struct iatt *preparent, struct iatt *postparent,
                     dict_t *xdata)
 {
-        struct ios_stat *iosstat = NULL;
         char   *path = frame->local;
 
         if (!path)
@@ -1558,13 +2259,8 @@ io_stats_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret < 0)
                 goto unwind;
 
-        iosstat = GF_CALLOC (1, sizeof (*iosstat), gf_io_stats_mt_ios_stat);
-        if (iosstat) {
-                LOCK_INIT (&iosstat->lock);
-                iosstat->filename = gf_strdup(path);
-                gf_uuid_copy (iosstat->gfid, buf->ia_gfid);
-                ios_inode_ctx_set (inode, this, iosstat);
-        }
+        /* allocate a struct ios_stat and set the inode ctx */
+        ios_init_iosstat (this, path, buf->ia_gfid, inode);
 
 unwind:
         /* local is assigned with path */
@@ -1614,7 +2310,7 @@ io_stats_opendir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         ret = ios_inode_ctx_get (fd->inode, this, &iosstat);
         if (!ret)
-                BUMP_STATS (iosstat, IOS_STATS_TYPE_OPENDIR);
+                ios_bump_stats (this, iosstat, IOS_STATS_TYPE_OPENDIR);
 
 unwind:
         STACK_UNWIND_STRICT (opendir, frame, op_ret, op_errno, fd, xdata);
@@ -1793,6 +2489,16 @@ io_stats_zerofill_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
         return 0;
 }
 
+int32_t
+io_stats_ipc_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                  int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS(frame, IPC);
+        STACK_UNWIND_STRICT (ipc, frame, op_ret, op_errno,
+                             xdata);
+        return 0;
+}
+
 int
 io_stats_lk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                  int32_t op_ret, int32_t op_errno, struct gf_flock *lock, dict_t *xdata)
@@ -1812,6 +2518,76 @@ io_stats_entrylk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         return 0;
 }
 
+int
+io_stats_fentrylk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                        int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS (frame, FENTRYLK);
+        STACK_UNWIND_STRICT (fentrylk, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+int
+io_stats_rchecksum_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                       int32_t op_ret, int32_t op_errno, uint32_t weak_checksum,
+                       uint8_t *strong_checksum, dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS (frame, RCHECKSUM);
+        STACK_UNWIND_STRICT (rchecksum, frame, op_ret, op_errno, weak_checksum,
+                            strong_checksum, xdata);
+        return 0;
+}
+
+int
+io_stats_seek_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                   int32_t op_ret, int32_t op_errno, off_t offset,
+                   dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS (frame, SEEK);
+        STACK_UNWIND_STRICT (seek, frame, op_ret, op_errno, offset, xdata);
+        return 0;
+}
+
+int
+io_stats_lease_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                   int32_t op_ret, int32_t op_errno,
+                   struct gf_lease *lease, dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS (frame, LEASE);
+        STACK_UNWIND_STRICT (lease, frame, op_ret, op_errno, lease, xdata);
+        return 0;
+}
+
+int
+io_stats_getactivelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno,
+                          lock_migration_info_t *locklist,
+                          dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS (frame, GETACTIVELK);
+        STACK_UNWIND_STRICT (getactivelk, frame, op_ret, op_errno,
+                             locklist, xdata);
+        return 0;
+}
+
+int
+io_stats_setactivelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS (frame, SETACTIVELK);
+        STACK_UNWIND_STRICT (setactivelk, frame, op_ret, op_errno, xdata);
+        return 0;
+}
+
+int
+io_stats_compound_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                     int32_t op_ret, int32_t op_errno, void *data,
+                     dict_t *xdata)
+{
+        UPDATE_PROFILE_STATS (frame, COMPOUND);
+        STACK_UNWIND_STRICT (compound, frame, op_ret, op_errno, data, xdata);
+        return 0;
+}
 
 int
 io_stats_xattrop_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
@@ -1853,6 +2629,20 @@ io_stats_entrylk (call_frame_t *frame, xlator_t *this,
                     FIRST_CHILD (this),
                     FIRST_CHILD (this)->fops->entrylk,
                     volume, loc, basename, cmd, type, xdata);
+        return 0;
+}
+
+int
+io_stats_fentrylk (call_frame_t *frame, xlator_t *this,
+		    const char *volume, fd_t *fd, const char *basename,
+		    entrylk_cmd cmd, entrylk_type type, dict_t *xdata)
+{
+       START_FOP_LATENCY (frame);
+
+       STACK_WIND (frame, io_stats_fentrylk_cbk,
+		    FIRST_CHILD(this),
+		    FIRST_CHILD(this)->fops->fentrylk,
+		    volume, fd, basename, cmd, type, xdata);
         return 0;
 }
 
@@ -2158,7 +2948,7 @@ io_stats_writev (call_frame_t *frame, xlator_t *this,
                 frame->local = fd->inode;
         len = iov_length (vector, count);
 
-        BUMP_WRITE (fd, len);
+        ios_bump_write (this, fd, len);
         START_FOP_LATENCY (frame);
 
         STACK_WIND (frame, io_stats_writev_cbk,
@@ -2224,34 +3014,194 @@ conditional_dump (dict_t *dict, char *key, data_t *value, void *data)
         char                 *filename = NULL;
         FILE                 *logfp = NULL;
         struct ios_dump_args args = {0};
+        int                   pid, namelen;
+        char                  dump_key[100];
+        char                 *slash_ptr = NULL;
 
         stub  = data;
         this  = stub->this;
 
-        filename = alloca (value->len + 1);
-        memset (filename, 0, value->len + 1);
+        /* Create a file name that is appended with the io-stats instance
+        name as well. This helps when there is more than a single io-stats
+        instance in the graph, or the client and server processes are running
+        on the same node */
+        /* hmmm... no check for this */
+        /* name format: <passed in path/filename>.<xlator name slashes to -> */
+        namelen = value->len + strlen (this->name) + 2; /* '.' and '\0' */
+        filename = alloca0 (namelen);
         memcpy (filename, data_to_str (value), value->len);
+        memcpy (filename + value->len, ".", 1);
+        memcpy (filename + value->len + 1, this->name, strlen(this->name));
 
-        if (fnmatch ("*io*stat*dump", key, 0) == 0) {
+        /* convert any slashes to '-' so that fopen works correctly */
+        slash_ptr = strchr (filename + value->len + 1, '/');
+        while (slash_ptr) {
+                *slash_ptr = '-';
+                slash_ptr = strchr (slash_ptr, '/');
+        }
 
-                if (!strncmp (filename, "", 1)) {
-                        gf_log (this->name, GF_LOG_ERROR, "No filename given");
-                        return -1;
-                }
-                logfp = fopen (filename, "w+");
-                if (!logfp) {
-                        gf_log (this->name, GF_LOG_ERROR, "failed to open %s "
+        pid = getpid ();
+
+        if (!strncmp (filename, "", 1)) {
+                gf_log (this->name, GF_LOG_ERROR, "No filename given");
+                return -1;
+        }
+        logfp = fopen (filename, "w+");
+        if (!logfp) {
+                gf_log (this->name, GF_LOG_ERROR, "failed to open %s "
                                 "for writing", filename);
-                        return -1;
-                    }
+                return -1;
+        }
+        sprintf (dump_key, "*io*stat*%d_json_dump", pid);
+        if (fnmatch (dump_key, key, 0) == 0) {
+                (void) ios_dump_args_init (
+                                &args, IOS_DUMP_TYPE_JSON_FILE,
+                                logfp);
+        } else {
                 (void) ios_dump_args_init (&args, IOS_DUMP_TYPE_FILE,
-                                           logfp);
-                io_stats_dump (this, &args, GF_CLI_INFO_ALL, _gf_false);
-                fclose (logfp);
+                                logfp);
+        }
+        io_stats_dump (this, &args, GF_CLI_INFO_ALL, _gf_false);
+        fclose (logfp);
+        return 0;
+}
+
+int
+_ios_destroy_dump_thread (struct ios_conf *conf) {
+        conf->dump_thread_should_die = _gf_true;
+        if (conf->ios_dump_interval > 0) {
+                (void) pthread_cancel (conf->dump_thread);
+                (void) pthread_join (conf->dump_thread, NULL);
         }
         return 0;
 }
 
+void *
+_ios_dump_thread (xlator_t *this) {
+        struct ios_conf         *conf = NULL;
+        FILE                    *stats_logfp = NULL;
+        FILE                    *samples_logfp = NULL;
+        struct ios_dump_args args = {0};
+        int                     i;
+        int                     stats_bytes_written = 0;
+        int                     samples_bytes_written = 0;
+        char                    stats_filename[PATH_MAX];
+        char                    samples_filename[PATH_MAX];
+        char                    *xlator_name;
+        char                    *instance_name;
+        gf_boolean_t            log_stats_fopen_failure = _gf_true;
+        gf_boolean_t            log_samples_fopen_failure = _gf_true;
+        int                     old_cancel_type;
+
+        conf = this->private;
+        gf_log (this->name, GF_LOG_INFO, "IO stats dump thread started, "
+                "polling IO stats every %d seconds", conf->ios_dump_interval);
+        xlator_name = strdupa (conf->unique_id);
+        for (i = 0; i < strlen (xlator_name); i++) {
+                if (xlator_name[i] == '/')
+                        xlator_name[i] = '_';
+        }
+        instance_name = this->instance_name;
+        if (this->name && strcmp (this->name, "glustershd") == 0) {
+                xlator_name = "shd";
+        } else if (this->prev &&
+                   strcmp (this->prev->name, "nfs-server") == 0) {
+                xlator_name = "nfsd";
+                instance_name = this->prev->instance_name;
+        }
+        if (sys_mkdir (_IOS_DUMP_DIR, S_IRWXU | S_IRWXO | S_IRWXG) == (-1)) {
+                if (errno != EEXIST) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "could not create stats-dump directory %s",
+                                _IOS_DUMP_DIR);
+                        goto out;
+                }
+        }
+        if (sys_mkdir (_IOS_SAMP_DIR, S_IRWXU | S_IRWXO | S_IRWXG) == (-1)) {
+                if (errno != EEXIST) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "could not create stats-sample directory %s",
+                                _IOS_SAMP_DIR);
+                        goto out;
+                }
+        }
+        if (instance_name) {
+                stats_bytes_written = snprintf (stats_filename, PATH_MAX,
+                        "%s/%s_%s_%s.dump", _IOS_DUMP_DIR,
+                        __progname, xlator_name, instance_name);
+                samples_bytes_written = snprintf (samples_filename, PATH_MAX,
+                        "%s/%s_%s_%s.samp", _IOS_SAMP_DIR,
+                        __progname, xlator_name, instance_name);
+        } else {
+                stats_bytes_written = snprintf (stats_filename, PATH_MAX,
+                        "%s/%s_%s.dump", _IOS_DUMP_DIR, __progname,
+                        xlator_name);
+                samples_bytes_written = snprintf (samples_filename, PATH_MAX,
+                        "%s/%s_%s.samp", _IOS_SAMP_DIR, __progname,
+                        xlator_name);
+        }
+        if ((stats_bytes_written >= PATH_MAX) ||
+            (samples_bytes_written >= PATH_MAX)) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Invalid path for stats dump (%s) and/or latency "
+                        "samples (%s)", stats_filename, samples_filename);
+                goto out;
+        }
+        while (1) {
+                if (conf->dump_thread_should_die)
+                        break;
+                (void) pthread_setcanceltype (PTHREAD_CANCEL_ASYNCHRONOUS,
+                                              &old_cancel_type);
+                sleep (conf->ios_dump_interval);
+                (void) pthread_setcanceltype (PTHREAD_CANCEL_DEFERRED,
+                                              &old_cancel_type);
+                /*
+                 * It's not clear whether we should reopen this each time, or
+                 * just hold it open and rewind/truncate on each iteration.
+                 * Leaving it alone for now.
+                 */
+                stats_logfp = fopen (stats_filename, "a+");
+                if (stats_logfp) {
+                        (void) ios_dump_args_init (&args,
+                                                   conf->dump_format,
+                                                   stats_logfp);
+                        io_stats_dump (this, &args, GF_CLI_INFO_ALL, _gf_false);
+                        fclose (stats_logfp);
+                        log_stats_fopen_failure = _gf_true;
+                } else if (log_stats_fopen_failure) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "could not open stats-dump file %s (%s)",
+                                stats_filename, strerror(errno));
+                        log_stats_fopen_failure = _gf_false;
+                }
+                samples_logfp = fopen (samples_filename, "w+");
+                if (samples_logfp) {
+                        io_stats_dump_latency_samples_logfp (this,
+                                                             samples_logfp);
+                        fclose (samples_logfp);
+                        log_samples_fopen_failure = _gf_true;
+                } else if (log_samples_fopen_failure) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "could not open samples-dump file %s (%s)",
+                                samples_filename, strerror(errno));
+                        log_samples_fopen_failure = _gf_false;
+                }
+        }
+out:
+        gf_log (this->name, GF_LOG_INFO, "IO stats dump thread terminated");
+        return NULL;
+}
+
+static gf_boolean_t
+match_special_xattr (dict_t *d, char *k, data_t *val, void *mdata)
+{
+        gf_boolean_t ret = _gf_false;
+        if (fnmatch ("*io*stat*dump", k, 0) == 0) {
+                ret = _gf_true;
+        }
+
+        return ret;
+}
 
 int
 io_stats_setxattr (call_frame_t *frame, xlator_t *this,
@@ -2268,7 +3218,8 @@ io_stats_setxattr (call_frame_t *frame, xlator_t *this,
         stub.inode = loc->inode;
         stub.path  = loc->path;
 
-        dict_foreach (dict, conditional_dump, &stub);
+        (void) dict_foreach_match (dict, match_special_xattr, NULL,
+                                   conditional_dump, &stub);
 
         START_FOP_LATENCY (frame);
 
@@ -2502,6 +3453,15 @@ io_stats_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
         return 0;
 }
 
+int32_t
+io_stats_ipc (call_frame_t *frame, xlator_t *this, int32_t op, dict_t *xdata)
+{
+        START_FOP_LATENCY(frame);
+
+        STACK_WIND (frame, io_stats_ipc_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->ipc, op, xdata);
+        return 0;
+}
 
 int
 io_stats_lk (call_frame_t *frame, xlator_t *this,
@@ -2516,6 +3476,83 @@ io_stats_lk (call_frame_t *frame, xlator_t *this,
         return 0;
 }
 
+int
+io_stats_rchecksum (call_frame_t *frame, xlator_t *this,
+                    fd_t *fd, off_t offset, int32_t len, dict_t *xdata)
+{
+        START_FOP_LATENCY (frame);
+
+        STACK_WIND (frame, io_stats_rchecksum_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->rchecksum,
+                    fd, offset, len, xdata);
+        return 0;
+}
+
+int
+io_stats_seek (call_frame_t *frame, xlator_t *this, fd_t *fd,
+                off_t offset, gf_seek_what_t what, dict_t *xdata)
+{
+        START_FOP_LATENCY (frame);
+
+        STACK_WIND (frame, io_stats_seek_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->seek,
+                    fd, offset, what, xdata);
+        return 0;
+}
+
+int
+io_stats_lease (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                struct gf_lease *lease, dict_t *xdata)
+{
+        START_FOP_LATENCY (frame);
+
+        STACK_WIND (frame, io_stats_lease_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->lease,
+                    loc, lease, xdata);
+        return 0;
+}
+
+int
+io_stats_getactivelk (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                      dict_t *xdata)
+{
+        START_FOP_LATENCY (frame);
+
+        STACK_WIND (frame, io_stats_getactivelk_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->getactivelk,
+                    loc, xdata);
+        return 0;
+}
+
+int
+io_stats_setactivelk (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                      lock_migration_info_t *locklist, dict_t *xdata)
+{
+        START_FOP_LATENCY (frame);
+
+        STACK_WIND (frame, io_stats_setactivelk_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->setactivelk,
+                    loc, locklist, xdata);
+        return 0;
+}
+
+int
+io_stats_compound (call_frame_t *frame, xlator_t *this,
+                   void *args, dict_t *xdata)
+{
+        START_FOP_LATENCY (frame);
+
+        STACK_WIND (frame, io_stats_compound_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->compound,
+                    args, xdata);
+        return 0;
+}
 
 int
 io_stats_release (xlator_t *this, fd_t *fd)
@@ -2628,6 +3665,7 @@ ios_destroy_top_stats (struct ios_conf *conf)
                         GF_FREE (list);
                         list_head->members--;
                 }
+                GF_FREE (list_head->iosstats);
         }
 
         for (i = 0; i < IOS_STATS_THRU_MAX; i++) {
@@ -2643,6 +3681,7 @@ ios_destroy_top_stats (struct ios_conf *conf)
                         GF_FREE (list);
                         list_head->members--;
                 }
+                GF_FREE (list_head->iosstats);
         }
 
         UNLOCK (&conf->lock);
@@ -2691,41 +3730,41 @@ io_priv (xlator_t *this)
         if(!conf->count_fop_hits || !conf->measure_latency)
                 return -1;
 
-        gf_proc_dump_write("cumulative.data_read", "%"PRIu64,
-                                                conf->cumulative.data_read);
-        gf_proc_dump_write("cumulative.data_written", "%"PRIu64,
-                                                conf->cumulative.data_written);
+        gf_proc_dump_write ("cumulative.data_read", "%"GF_PRI_ATOMIC,
+                            GF_ATOMIC_GET (conf->cumulative.data_read));
+        gf_proc_dump_write ("cumulative.data_written", "%"GF_PRI_ATOMIC,
+                            GF_ATOMIC_GET (conf->cumulative.data_written));
 
-        gf_proc_dump_write("incremental.data_read", "%"PRIu64,
-                                                conf->incremental.data_read);
-        gf_proc_dump_write("incremental.data_written", "%"PRIu64,
-                                                conf->incremental.data_written);
+        gf_proc_dump_write ("incremental.data_read", "%"GF_PRI_ATOMIC,
+                            GF_ATOMIC_GET (conf->incremental.data_read));
+        gf_proc_dump_write ("incremental.data_written", "%"GF_PRI_ATOMIC,
+                            GF_ATOMIC_GET (conf->incremental.data_written));
 
         snprintf (key_prefix_cumulative, GF_DUMP_MAX_BUF_LEN, "%s.cumulative",
-                                                                    this->name);
+                  this->name);
         snprintf (key_prefix_incremental, GF_DUMP_MAX_BUF_LEN, "%s.incremental",
-                                                                    this->name);
+                  this->name);
 
         for (i = 0; i < GF_FOP_MAXVALUE; i++) {
-                count = conf->cumulative.fop_hits[i];
+                count = GF_ATOMIC_GET (conf->cumulative.fop_hits[i]);
                 total = conf->cumulative.latency[i].total;
                 min = conf->cumulative.latency[i].min;
                 max = conf->cumulative.latency[i].max;
                 avg = conf->cumulative.latency[i].avg;
 
-                gf_proc_dump_build_key (key, key_prefix_cumulative,
+                gf_proc_dump_build_key (key, key_prefix_cumulative, "%s",
                                         (char *)gf_fop_list[i]);
 
                 gf_proc_dump_write (key,"%"PRId64",%"PRId64",%.03f,%.03f,%.03f",
                                     count, total, min, max, avg);
 
-                count = conf->incremental.fop_hits[i];
+                count = GF_ATOMIC_GET (conf->incremental.fop_hits[i]);
                 total = conf->incremental.latency[i].total;
                 min = conf->incremental.latency[i].min;
                 max = conf->incremental.latency[i].max;
                 avg = conf->incremental.latency[i].avg;
 
-                gf_proc_dump_build_key (key, key_prefix_incremental,
+                gf_proc_dump_build_key (key, key_prefix_incremental, "%s",
                                         (char *)gf_fop_list[i]);
 
                 gf_proc_dump_write (key,"%"PRId64",%"PRId64",%.03f,%.03f,%.03f",
@@ -2734,6 +3773,19 @@ io_priv (xlator_t *this)
         }
 
         return 0;
+}
+
+static void
+ios_set_log_format_code (struct ios_conf *conf)
+{
+        if (strcmp (conf->dump_format_str, "json") == 0)
+                conf->dump_format = IOS_DUMP_TYPE_JSON_FILE;
+        else if (strcmp (conf->dump_format_str, "text") == 0)
+                conf->dump_format = IOS_DUMP_TYPE_FILE;
+        else if (strcmp (conf->dump_format_str, "dict") == 0)
+                conf->dump_format = IOS_DUMP_TYPE_DICT;
+        else if (strcmp (conf->dump_format_str, "samples") == 0)
+                conf->dump_format = IOS_DUMP_TYPE_SAMPLES;
 }
 
 int
@@ -2751,6 +3803,7 @@ reconfigure (xlator_t *this, dict_t *options)
         int                 logger = -1;
         uint32_t            log_buf_size = 0;
         uint32_t            log_flush_timeout = 0;
+        int32_t             old_dump_interval;
 
         if (!this || !this->private)
                 goto out;
@@ -2766,6 +3819,21 @@ reconfigure (xlator_t *this, dict_t *options)
         GF_OPTION_RECONF ("latency-measurement", conf->measure_latency,
                           options, bool, out);
 
+        old_dump_interval = conf->ios_dump_interval;
+        GF_OPTION_RECONF ("ios-dump-interval", conf->ios_dump_interval, options,
+                         int32, out);
+        if ((old_dump_interval <= 0) && (conf->ios_dump_interval > 0)) {
+                gf_thread_create (&conf->dump_thread, NULL,
+                                  (void *) &_ios_dump_thread, this, "iosdump");
+        }
+
+        GF_OPTION_RECONF ("ios-sample-interval", conf->ios_sample_interval,
+                         options, int32, out);
+        GF_OPTION_RECONF ("ios-dump-format", conf->dump_format_str, options,
+                          str, out);
+        ios_set_log_format_code (conf);
+        GF_OPTION_RECONF ("ios-sample-buf-size", conf->ios_sample_buf_size,
+                         options, int32, out);
         GF_OPTION_RECONF ("sys-log-level", sys_log_str, options, str, out);
         if (sys_log_str) {
                 sys_log_level = glusterd_check_log_level (sys_log_str);
@@ -2831,8 +3899,33 @@ ios_conf_destroy (struct ios_conf *conf)
                 return;
 
         ios_destroy_top_stats (conf);
+        _ios_destroy_dump_thread (conf);
+        ios_destroy_sample_buf (conf->ios_sample_buf);
         LOCK_DESTROY (&conf->lock);
+        GF_FREE(conf->dnscache);
         GF_FREE(conf);
+}
+
+static void
+ios_init_stats (struct ios_global_stats *stats)
+{
+        int i = 0;
+
+        GF_ATOMIC_INIT (stats->data_read, 0);
+        GF_ATOMIC_INIT (stats->data_written, 0);
+
+        for (i = 0; i < IOS_BLOCK_COUNT_SIZE; i++) {
+                GF_ATOMIC_INIT (stats->block_count_write[i], 0);
+                GF_ATOMIC_INIT (stats->block_count_read[i], 0);
+        }
+
+        for (i = 0; i < GF_FOP_MAXVALUE; i++)
+                GF_ATOMIC_INIT (stats->fop_hits[i], 0);
+
+        for (i = 0; i < GF_UPCALL_FLAGS_MAXVALUE; i++)
+                GF_ATOMIC_INIT (stats->upcall_hits[i], 0);
+
+        gettimeofday (&stats->started_at, NULL);
 }
 
 int
@@ -2873,14 +3966,20 @@ init (xlator_t *this)
         if (!conf)
                 goto out;
 
+        if (dict_get_str (this->options, "unique-id", &conf->unique_id) != 0) {
+                /* This is always set on servers, so we must be a client. */
+                conf->unique_id = this->name;
+        }
+
         /*
          * Init it just after calloc, so that we are sure the lock is inited
          * in case of error paths.
          */
         LOCK_INIT (&conf->lock);
+        LOCK_INIT (&conf->ios_sampling_lock);
 
-        gettimeofday (&conf->cumulative.started_at, NULL);
-        gettimeofday (&conf->incremental.started_at, NULL);
+        ios_init_stats (&conf->cumulative);
+        ios_init_stats (&conf->incremental);
 
         ret = ios_init_top_stats (conf);
         if (ret)
@@ -2891,7 +3990,29 @@ init (xlator_t *this)
         GF_OPTION_INIT ("count-fop-hits", conf->count_fop_hits, bool, out);
 
         GF_OPTION_INIT ("latency-measurement", conf->measure_latency,
-                          bool, out);
+                        bool, out);
+
+        GF_OPTION_INIT ("ios-dump-interval", conf->ios_dump_interval,
+                        int32, out);
+
+        GF_OPTION_INIT ("ios-sample-interval", conf->ios_sample_interval,
+                        int32, out);
+
+        GF_OPTION_INIT ("ios-dump-format", conf->dump_format_str, str, out);
+        ios_set_log_format_code (conf);
+
+        GF_OPTION_INIT ("ios-sample-buf-size", conf->ios_sample_buf_size,
+                        int32, out);
+
+        if (ios_init_sample_buf (conf) != 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Out of memory.");
+                return -1;
+        }
+
+        GF_OPTION_INIT ("ios-dnscache-ttl-sec", conf->ios_dnscache_ttl_sec,
+                        int32, out);
+        conf->dnscache = gf_dnscache_init (conf->ios_dnscache_ttl_sec);
 
         GF_OPTION_INIT ("sys-log-level", sys_log_str, str, out);
         if (sys_log_str) {
@@ -2902,7 +4023,8 @@ init (xlator_t *this)
         GF_OPTION_INIT ("log-level", log_str, str, out);
         if (log_str) {
                 log_level = glusterd_check_log_level (log_str);
-                gf_log_set_loglevel (log_level);
+                if (DEFAULT_LOG_LEVEL != log_level)
+                        gf_log_set_loglevel (log_level);
         }
 
         GF_OPTION_INIT ("logger", logger_str, str, out);
@@ -2923,8 +4045,11 @@ init (xlator_t *this)
         GF_OPTION_INIT ("log-flush-timeout", log_flush_timeout, time, out);
         gf_log_set_log_flush_timeout (log_flush_timeout);
 
-
         this->private = conf;
+        if (conf->ios_dump_interval > 0) {
+                gf_thread_create (&conf->dump_thread, NULL,
+                                  (void *) &_ios_dump_thread, this, "iosdump");
+        }
         ret = 0;
 out:
         if (!this->private) {
@@ -2944,9 +4069,9 @@ fini (xlator_t *this)
                 return;
 
         conf = this->private;
-        this->private = NULL;
 
         ios_conf_destroy (conf);
+        this->private = NULL;
         gf_log (this->name, GF_LOG_INFO,
                 "io-stats translator unloaded");
         return;
@@ -2965,6 +4090,8 @@ notify (xlator_t *this, int32_t event, void *data, ...)
         double        time = 0;
         gf_boolean_t  is_peek = _gf_false;
         va_list ap;
+        struct gf_upcall *up_data = NULL;
+        struct gf_upcall_cache_invalidation *up_ci = NULL;
 
         dict = data;
         va_start (ap, data);
@@ -3060,6 +4187,35 @@ notify (xlator_t *this, int32_t event, void *data, ...)
                         }
                 }
                 break;
+        case GF_EVENT_UPCALL:
+                up_data = (struct gf_upcall *)data;
+                ios_bump_upcall (this, GF_UPCALL);
+
+                switch (up_data->event_type) {
+                case GF_UPCALL_RECALL_LEASE:
+                        ios_bump_upcall (this, GF_UPCALL_LEASE_RECALL);
+                        break;
+                case GF_UPCALL_CACHE_INVALIDATION:
+                        up_ci = (struct gf_upcall_cache_invalidation *)up_data->data;
+                        if (up_ci->flags & (UP_XATTR | UP_XATTR_RM))
+                                ios_bump_upcall (this, GF_UPCALL_CI_XATTR);
+                        if (up_ci->flags & IATT_UPDATE_FLAGS)
+                                ios_bump_upcall (this, GF_UPCALL_CI_STAT);
+                        if (up_ci->flags & UP_RENAME_FLAGS)
+                                ios_bump_upcall (this, GF_UPCALL_CI_RENAME);
+                        if (up_ci->flags & UP_FORGET)
+                                ios_bump_upcall (this, GF_UPCALL_CI_FORGET);
+                        if (up_ci->flags & UP_NLINK)
+                                ios_bump_upcall (this, GF_UPCALL_CI_NLINK);
+                        break;
+                default:
+                        gf_msg_debug (this->name, 0, "Unknown upcall event "
+                                      "type :%d", up_data->event_type);
+                        break;
+                }
+
+                default_notify (this, event, data);
+                break;
         default:
                 default_notify (this, event, data);
                 break;
@@ -3108,6 +4264,7 @@ struct xlator_fops fops = {
         .inodelk     = io_stats_inodelk,
         .finodelk    = io_stats_finodelk,
         .entrylk     = io_stats_entrylk,
+        .fentrylk    = io_stats_fentrylk,
         .lookup      = io_stats_lookup,
         .xattrop     = io_stats_xattrop,
         .fxattrop    = io_stats_fxattrop,
@@ -3116,6 +4273,13 @@ struct xlator_fops fops = {
 	.fallocate   = io_stats_fallocate,
 	.discard     = io_stats_discard,
         .zerofill    = io_stats_zerofill,
+        .ipc         = io_stats_ipc,
+        .rchecksum   = io_stats_rchecksum,
+        .seek        = io_stats_seek,
+        .lease       = io_stats_lease,
+        .getactivelk = io_stats_getactivelk,
+        .setactivelk = io_stats_setactivelk,
+        .compound    = io_stats_compound,
 };
 
 struct xlator_cbks cbks = {
@@ -3130,6 +4294,46 @@ struct volume_options options[] = {
           .default_value = "off",
           .description = "If on stats related to file-operations would be "
                          "tracked inside GlusterFS data-structures."
+        },
+        { .key  = { "ios-dump-interval" },
+          .type = GF_OPTION_TYPE_INT,
+          .min = 0,
+          .max = 3600,
+          .default_value = "0",
+          .description = "Interval (in seconds) at which to auto-dump "
+                         "statistics. Zero disables automatic dumping."
+        },
+        { .key  = { "ios-sample-interval" },
+          .type = GF_OPTION_TYPE_INT,
+          .min = 0,
+          .max = 65535,
+          .default_value = "0",
+          .description = "Interval in which we want to collect FOP latency "
+                         "samples.  2 means collect a sample every 2nd FOP."
+        },
+        { .key = {"ios-dump-format"},
+          .type = GF_OPTION_TYPE_STR,
+          .default_value = "json",
+          .description = " The dump-format option specifies the format in which"
+                         " to dump the statistics. Select between \"text\", "
+                         "\"json\", \"dict\" and \"samples\". Default is "
+                         "\"json\".",
+          .value       = { "text", "json", "dict", "samples"}
+        },
+        { .key  = { "ios-sample-buf-size" },
+          .type = GF_OPTION_TYPE_INT,
+          .min = 1024,
+          .max = 1024*1024,
+          .default_value = "65535",
+          .description = "The maximum size of our FOP sampling ring buffer."
+        },
+        { .key  = { "ios-dnscache-ttl-sec" },
+          .type = GF_OPTION_TYPE_INT,
+          .min = 1,
+          .max = 3600 * 72,
+          .default_value = "86400",
+          .description = "The interval after wish a cached DNS entry will be "
+                         "re-validated.  Default: 24 hrs"
         },
         { .key  = { "latency-measurement" },
           .type = GF_OPTION_TYPE_BOOL,
@@ -3249,6 +4453,11 @@ struct volume_options options[] = {
           .description = "This option determines the maximum number of unique "
                          "log messages that can be buffered for a time equal to"
                          " the value of the option brick-log-flush-timeout."
+        },
+        { .key = {"unique-id"},
+          .type = GF_OPTION_TYPE_STR,
+          .default_value = "/no/such/path",
+          .description = "Unique ID for our files."
         },
         { .key  = {NULL} },
 

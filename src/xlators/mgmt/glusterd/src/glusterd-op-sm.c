@@ -8,10 +8,6 @@
    cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 #include <time.h>
 #include <sys/uio.h>
 #include <sys/resource.h>
@@ -40,6 +36,7 @@
 #include "glusterd-locks.h"
 #include "glusterd-messages.h"
 #include "glusterd-utils.h"
+#include "glusterd-quota.h"
 #include "syscall.h"
 #include "cli1-xdr.h"
 #include "common-utils.h"
@@ -61,42 +58,36 @@ static int
 glusterd_set_shared_storage (dict_t *dict, char *key, char *value,
                              char **op_errstr);
 
-/* Valid options for all volumes to be listed in the *
- * valid_all_vol_opts table. To add newer options to *
- * all volumes, we can just add more entries to this *
- * table                                             *
+/*
+ * Valid options for all volumes to be listed in the valid_all_vol_opts table.
+ * To add newer options to all volumes, we can just add more entries to this
+ * table.
+ *
+ * It's important that every value have a default, or have a special handler
+ * in glusterd_get_global_options_for_all_vols, or else we might crash there.
  */
-glusterd_all_vol_opts   valid_all_vol_opts[] = {
-        { GLUSTERD_QUORUM_RATIO_KEY },
-        { GLUSTERD_SHARED_STORAGE_KEY },
+glusterd_all_vol_opts valid_all_vol_opts[] = {
+        { GLUSTERD_QUORUM_RATIO_KEY,            "51" },
+        { GLUSTERD_SHARED_STORAGE_KEY,          "disable" },
+        /* This one actually gets filled in dynamically. */
+        { GLUSTERD_GLOBAL_OP_VERSION_KEY,       "BUG_NO_OP_VERSION"},
+        /*
+         * This one should be filled in dynamically, but it didn't used to be
+         * (before the defaults were added here) so the value is unclear.
+         *
+         * TBD: add a dynamic handler to set the appropriate value
+         */
+        { GLUSTERD_MAX_OP_VERSION_KEY,          "BUG_NO_MAX_OP_VERSION"},
+        { GLUSTERD_BRICK_MULTIPLEX_KEY,         "disable"},
+        /* Set this value to 0 by default implying brick-multiplexing
+         * behaviour with no limit set on the number of brick instances that
+         * can be attached per process.
+         * TBD: Discuss the default value for this. Maybe this should be a
+         * dynamic value depending on the memory specifications per node */
+        { GLUSTERD_BRICKMUX_LIMIT_KEY,          "0"},
+        { GLUSTERD_LOCALTIME_LOGGING_KEY,       "disable"},
         { NULL },
 };
-
-#define ALL_VOLUME_OPTION_CHECK(volname, key, ret, op_errstr, label)           \
-        do {                                                                   \
-                gf_boolean_t    _all   = !strcmp ("all", volname);             \
-                gf_boolean_t    _ratio = _gf_false;                            \
-                int32_t         i      = 0;                                    \
-                                                                               \
-                for (i = 0; valid_all_vol_opts[i].option; i++) {               \
-                        if (!strcmp (key, valid_all_vol_opts[i].option)) {     \
-                                _ratio = _gf_true;                             \
-                                break;                                         \
-                        }                                                      \
-                }                                                              \
-                                                                               \
-                if (_all && !_ratio) {                                         \
-                        ret = -1;                                              \
-                        *op_errstr = gf_strdup ("Not a valid option for all "  \
-                                                "volumes");                    \
-                        goto label;                                            \
-                } else if (!_all && _ratio) {                                  \
-                        ret = -1;                                              \
-                        *op_errstr = gf_strdup ("Not a valid option for "      \
-                                                "single volume");              \
-                        goto label;                                            \
-                }                                                              \
-         } while (0)
 
 static struct cds_list_head gd_op_sm_queue;
 synclock_t gd_op_sm_lock;
@@ -104,6 +95,10 @@ glusterd_op_info_t    opinfo = {{0},};
 
 int
 glusterd_bricks_select_rebalance_volume (dict_t *dict, char **op_errstr,
+                                         struct cds_list_head *selected);
+
+int
+glusterd_bricks_select_tier_volume (dict_t *dict, char **op_errstr,
                                          struct cds_list_head *selected);
 
 
@@ -149,7 +144,7 @@ glusterd_txn_opinfo_dict_fini ()
 
 void
 glusterd_txn_opinfo_init (glusterd_op_info_t  *opinfo,
-                          glusterd_op_sm_state_info_t *state, glusterd_op_t *op,
+                          glusterd_op_sm_state_info_t *state, int *op,
                           dict_t *op_ctx, rpcsvc_request_t *req)
 {
         glusterd_conf_t *conf = NULL;
@@ -403,8 +398,6 @@ static char *glusterd_op_sm_event_names[] = {
         "GD_OP_EVENT_INVALID"
 };
 
-extern struct volopt_map_entry glusterd_volopt_map[];
-
 char*
 glusterd_op_sm_state_name_get (int state)
 {
@@ -582,8 +575,9 @@ glusterd_brick_op_build_payload (glusterd_op_t op, glusterd_brickinfo_t *brickin
                 if (!brick_req)
                         goto out;
                 brick_req->op = GLUSTERD_BRICK_TERMINATE;
-                brick_req->name = "";
-        break;
+                brick_req->name = brickinfo->path;
+                glusterd_set_brick_status (brickinfo, GF_BRICK_STOPPING);
+                break;
         case GD_OP_PROFILE_VOLUME:
                 brick_req = GF_CALLOC (1, sizeof (*brick_req),
                                        gf_gld_mt_mop_brick_req_t);
@@ -621,6 +615,8 @@ glusterd_brick_op_build_payload (glusterd_op_t op, glusterd_brickinfo_t *brickin
         }
                 break;
         case GD_OP_REBALANCE:
+        case GD_OP_DETACH_TIER_STATUS:
+        case GD_OP_TIER_STATUS:
         case GD_OP_DEFRAG_BRICK_VOLUME:
                 brick_req = GF_CALLOC (1, sizeof (*brick_req),
                                        gf_gld_mt_mop_brick_req_t);
@@ -640,28 +636,13 @@ glusterd_brick_op_build_payload (glusterd_op_t op, glusterd_brickinfo_t *brickin
 
                 break;
         case GD_OP_SNAP:
-                brick_req = GF_CALLOC (1, sizeof (*brick_req),
-                                       gf_gld_mt_mop_brick_req_t);
-                if (!brick_req)
-                        goto out;
-
-                brick_req->op = GLUSTERD_BRICK_BARRIER;
-                ret = dict_get_str (dict, "volname", &volname);
-                if (ret)
-                        goto out;
-                brick_req->name = gf_strdup (volname);
-
-                break;
         case GD_OP_BARRIER:
                 brick_req = GF_CALLOC (1, sizeof(*brick_req),
                                        gf_gld_mt_mop_brick_req_t);
                 if (!brick_req)
                         goto out;
                 brick_req->op = GLUSTERD_BRICK_BARRIER;
-                ret = dict_get_str(dict, "volname", &volname);
-                if (ret)
-                        goto out;
-                brick_req->name = gf_strdup (volname);
+                brick_req->name = brickinfo->path;
                 break;
 
         default:
@@ -689,7 +670,6 @@ glusterd_node_op_build_payload (glusterd_op_t op, gd1_mgmt_brick_op_req **req,
 {
         int                     ret = -1;
         gd1_mgmt_brick_op_req   *brick_req = NULL;
-        char                    xlname[1024] = {0,};
         char                    *volname = NULL;
 
         GF_ASSERT (op < GD_OP_MAX);
@@ -720,6 +700,7 @@ glusterd_node_op_build_payload (glusterd_op_t op, gd1_mgmt_brick_op_req **req,
                 break;
 
         case GD_OP_SCRUB_STATUS:
+        case GD_OP_SCRUB_ONDEMAND:
                 brick_req = GF_CALLOC (1, sizeof(*brick_req),
                                        gf_gld_mt_mop_brick_req_t);
                 if (!brick_req)
@@ -776,15 +757,33 @@ out:
 }
 
 static int
+glusterd_validate_brick_mx_options (xlator_t *this, char *fullkey, char *value,
+                                    char **op_errstr)
+{
+        int             ret = 0;
+
+        //Placeholder function for now
+
+        return ret;
+}
+
+static int
 glusterd_validate_shared_storage (char *key, char *value, char *errstr)
 {
-        int32_t       ret      = -1;
-        int32_t       exists   = -1;
-        int32_t       count    = -1;
-        xlator_t     *this     = NULL;
+        int32_t            ret                      = -1;
+        int32_t            exists                   = -1;
+        int32_t            count                    = -1;
+        char              *op                       = NULL;
+        char               hook_script[PATH_MAX]    = "";
+        xlator_t          *this                     = NULL;
+        glusterd_conf_t   *conf                     = NULL;
 
         this = THIS;
         GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+
+        conf = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, conf, out);
+
         GF_VALIDATE_OR_GOTO (this->name, key, out);
         GF_VALIDATE_OR_GOTO (this->name, value, out);
         GF_VALIDATE_OR_GOTO (this->name, errstr, out);
@@ -806,7 +805,34 @@ glusterd_validate_shared_storage (char *key, char *value, char *errstr)
                 goto out;
         }
 
-        if (strcmp (value, "enable")) {
+        snprintf (hook_script, sizeof(hook_script),
+                  "%s"GLUSTERD_SHRD_STRG_HOOK_SCRIPT, conf->workdir);
+
+        ret = sys_access (hook_script, R_OK|X_OK);
+        if (ret) {
+                snprintf (errstr, PATH_MAX,
+                          "The hook-script (%s) required "
+                          "for this operation is not present. "
+                          "Please install the hook-script "
+                          "and retry", hook_script);
+                gf_msg (this->name, GF_LOG_ERROR, ENOENT,
+                        GD_MSG_FILE_OP_FAILED, "%s", errstr);
+                goto out;
+        }
+
+        if (!strncmp (value, "disable", strlen ("disable"))) {
+                ret = dict_get_str (conf->opts, GLUSTERD_SHARED_STORAGE_KEY,
+                                                                           &op);
+                if (ret || !strncmp (op, "disable", strlen ("disable"))) {
+                        snprintf (errstr, PATH_MAX, "Shared storage volume "
+                                  "does not exist. Please enable shared storage"
+                                  " for creating shared storage volume.");
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_SHARED_STORAGE_DOES_NOT_EXIST, "%s",
+                                errstr);
+                        ret = -1;
+                        goto out;
+                }
                 goto out;
         }
 
@@ -845,37 +871,91 @@ out:
 }
 
 static int
+glusterd_validate_localtime_logging (char *key, char *value, char *errstr)
+{
+        int32_t            ret                      = -1;
+        xlator_t          *this                     = NULL;
+        glusterd_conf_t   *conf                     = NULL;
+        int                already_enabled          = 0;
+
+        this = THIS;
+        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+
+        conf = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, conf, out);
+
+        GF_VALIDATE_OR_GOTO (this->name, key, out);
+        GF_VALIDATE_OR_GOTO (this->name, value, out);
+        GF_VALIDATE_OR_GOTO (this->name, errstr, out);
+
+        ret = 0;
+
+        if (strcmp (key, GLUSTERD_LOCALTIME_LOGGING_KEY)) {
+                goto out;
+        }
+
+        if ((strcmp (value, "enable")) &&
+            (strcmp (value, "disable"))) {
+                snprintf (errstr, PATH_MAX,
+                          "Invalid option(%s). Valid options "
+                          "are 'enable' and 'disable'", value);
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        GD_MSG_INVALID_ENTRY, "%s", errstr);
+                ret = -1;
+        }
+
+        already_enabled = gf_log_get_localtime ();
+
+        if (strcmp (value, "enable") == 0) {
+                gf_log_set_localtime (1);
+                if (!already_enabled)
+                        gf_msg (this->name, GF_LOG_INFO, 0,
+                                GD_MSG_LOCALTIME_LOGGING_ENABLE,
+                                "localtime logging enable");
+        } else if (strcmp (value, "disable") == 0) {
+                gf_log_set_localtime (0);
+                if (already_enabled)
+                        gf_msg (this->name, GF_LOG_INFO, 0,
+                                GD_MSG_LOCALTIME_LOGGING_DISABLE,
+                                "localtime logging disable");
+        }
+
+out:
+        return ret;
+}
+
+static int
 glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
 {
-        int                             ret                     = -1;
-        char                            *volname                = NULL;
-        int                             exists                  = 0;
-        char                            *key                    = NULL;
-        char                            *key_fixed              = NULL;
-        char                            *value                  = NULL;
-        char                            *val_dup                = NULL;
-        char                            str[100]                = {0, };
-        char                            *trash_path             = NULL;
-        int                             trash_path_len          = 0;
-        int                             count                   = 0;
-        int                             dict_count              = 0;
-        char                            errstr[PATH_MAX]        = {0, };
-        glusterd_volinfo_t              *volinfo                = NULL;
-        glusterd_brickinfo_t            *brickinfo              = NULL;
-        dict_t                          *val_dict               = NULL;
-        gf_boolean_t                    global_opt              = _gf_false;
-        glusterd_volinfo_t              *voliter                = NULL;
-        glusterd_conf_t                 *priv                   = NULL;
-        xlator_t                        *this                   = NULL;
-        uint32_t                        new_op_version          = 0;
-        uint32_t                        local_new_op_version    = 0;
-        uint32_t                        key_op_version          = 0;
-        uint32_t                        local_key_op_version    = 0;
-        gf_boolean_t                    origin_glusterd         = _gf_true;
-        gf_boolean_t                    check_op_version        = _gf_true;
-        gf_boolean_t                    trash_enabled           = _gf_false;
-        gf_boolean_t                    all_vol                 = _gf_false;
-        struct          stat            stbuf                   = {0, };
+        int                   ret                         = -1;
+        char                 *volname                     = NULL;
+        int                   exists                      = 0;
+        char                 *key                         = NULL;
+        char                 *key_fixed                   = NULL;
+        char                 *value                       = NULL;
+        char                 *val_dup                     = NULL;
+        char                  str[100]                    = {0, };
+        char                 *trash_path                  = NULL;
+        int                   trash_path_len              = 0;
+        int                   count                       = 0;
+        int                   dict_count                  = 0;
+        char                  errstr[PATH_MAX]            = {0, };
+        glusterd_volinfo_t   *volinfo                     = NULL;
+        glusterd_brickinfo_t *brickinfo                   = NULL;
+        dict_t               *val_dict                    = NULL;
+        gf_boolean_t          global_opt                  = _gf_false;
+        glusterd_volinfo_t   *voliter                     = NULL;
+        glusterd_conf_t      *priv                        = NULL;
+        xlator_t             *this                        = NULL;
+        uint32_t              new_op_version              = GD_OP_VERSION_MIN;
+        uint32_t              local_new_op_version        = GD_OP_VERSION_MIN;
+        uint32_t              local_new_client_op_version = GD_OP_VERSION_MIN;
+        uint32_t              key_op_version              = GD_OP_VERSION_MIN;
+        uint32_t              local_key_op_version        = GD_OP_VERSION_MIN;
+        gf_boolean_t          origin_glusterd             = _gf_true;
+        gf_boolean_t          check_op_version            = _gf_true;
+        gf_boolean_t          trash_enabled               = _gf_false;
+        gf_boolean_t          all_vol                     = _gf_false;
 
         GF_ASSERT (dict);
         this = THIS;
@@ -989,11 +1069,13 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                 ret = glusterd_validate_volume_id (dict, volinfo);
                 if (ret)
                         goto out;
+
+                local_new_op_version = volinfo->op_version;
+                local_new_client_op_version = volinfo->client_op_version;
+
         } else {
                 all_vol = _gf_true;
         }
-
-        local_new_op_version = priv->op_version;
 
         for ( count = 1; ret != 1 ; count++ ) {
                 global_opt = _gf_false;
@@ -1079,10 +1161,29 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                 if (key_fixed)
                         key = key_fixed;
 
+                if (strcmp (key, "cluster.granular-entry-heal") == 0) {
+                        /* For granular entry-heal, if the set command was
+                         * invoked through volume-set CLI, then allow the
+                         * command only if the volume is still in 'Created'
+                         * state
+                         */
+                        if ((dict_get (dict, "is-special-key") == NULL) &&
+                            (volinfo->status != GLUSTERD_STATUS_NONE)) {
+                                snprintf (errstr, sizeof (errstr), " 'gluster "
+                                          "volume set <VOLNAME> %s {enable, "
+                                          "disable}' is not supported. Use "
+                                          "'gluster volume heal <VOLNAME> "
+                                          "granular-entry-heal {enable, "
+                                          "disable}' instead.", key);
+                                ret = -1;
+                                goto out;
+                        }
+                }
+
                 /* Check if the key is cluster.op-version and set
                  * local_new_op_version to the value given if possible.
                  */
-                if (strcmp (key, "cluster.op-version") == 0) {
+                if (strcmp (key, GLUSTERD_GLOBAL_OP_VERSION_KEY) == 0) {
                         if (!all_vol) {
                                 ret = -1;
                                 snprintf (errstr, sizeof (errstr), "Option \""
@@ -1124,7 +1225,7 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                                         "%s", errstr);
                                 goto out;
                         }
-                        if (local_key_op_version > local_new_op_version) {
+                        if (local_key_op_version > priv->op_version) {
                                 local_new_op_version = local_key_op_version;
                         } else {
                                 ret = -1;
@@ -1133,7 +1234,7 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                                           " not be equal or lower than current"
                                           " cluster op-version (%d).",
                                           local_key_op_version,
-                                          local_new_op_version);
+                                          priv->op_version);
                                 gf_msg (this->name, GF_LOG_ERROR, 0,
                                         GD_MSG_VERSION_UNSUPPORTED,
                                         "%s", errstr);
@@ -1143,15 +1244,24 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                         goto cont;
                 }
 
-                ALL_VOLUME_OPTION_CHECK (volname, key, ret, op_errstr, out);
+                ALL_VOLUME_OPTION_CHECK (volname, _gf_false, key, ret,
+                                         op_errstr, out);
                 ret = glusterd_validate_quorum_options (this, key, value,
                                                         op_errstr);
+                if (ret)
+                        goto out;
+
+                ret = glusterd_validate_brick_mx_options (this, key, value,
+                                                          op_errstr);
                 if (ret)
                         goto out;
 
                 local_key_op_version = glusterd_get_op_version_for_key (key);
                 if (local_key_op_version > local_new_op_version)
                         local_new_op_version = local_key_op_version;
+                if (gd_is_client_option (key) &&
+                    (local_key_op_version > local_new_client_op_version))
+                        local_new_client_op_version = local_key_op_version;
 
                 sprintf (str, "op-version%d", count);
                 if (origin_glusterd) {
@@ -1189,6 +1299,24 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                 if (glusterd_check_globaloption (key))
                         global_opt = _gf_true;
 
+                ret = glusterd_validate_shared_storage (key, value, errstr);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_SHARED_STRG_VOL_OPT_VALIDATE_FAIL,
+                                "Failed to validate shared "
+                                "storage volume options");
+                        goto out;
+                }
+
+                ret = glusterd_validate_localtime_logging (key, value, errstr);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_LOCALTIME_LOGGING_VOL_OPT_VALIDATE_FAIL,
+                                "Failed to validate localtime "
+                                "logging volume options");
+                        goto out;
+                }
+
                 if (volinfo) {
                         ret = glusterd_volinfo_get (volinfo,
                                                 VKEY_FEATURES_TRASH, &val_dup);
@@ -1198,15 +1326,6 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                                 if (ret)
                                         goto out;
                         }
-                }
-
-                ret = glusterd_validate_shared_storage (key, value, errstr);
-                if (ret) {
-                        gf_msg (this->name, GF_LOG_ERROR, 0,
-                                GD_MSG_SHARED_STRG_VOL_OPT_VALIDATE_FAIL,
-                                "Failed to validate shared "
-                                "storage volume options");
-                        goto out;
                 }
 
                 if (!strcmp(key, "features.trash-dir") && trash_enabled) {
@@ -1236,7 +1355,7 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
 
                                         /* Checks whether a directory with
                                            given option exists or not */
-                                        if (!stat(trash_path, &stbuf)) {
+                                        if (!sys_access (trash_path, R_OK)) {
                                                 snprintf (errstr,
                                                           sizeof (errstr),
                                                           "Path %s exists",
@@ -1275,9 +1394,9 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                                         }
                                 }
                                 if (trash_path) {
-                                        GF_FREE (trash_path);
-                                        trash_path = NULL;
-                                        trash_path_len = 0;
+                                         GF_FREE (trash_path);
+                                         trash_path = NULL;
+                                         trash_path_len = 0;
                                 }
                         }
                 } else if (!strcmp(key, "features.trash-dir") && !trash_enabled) {
@@ -1332,10 +1451,10 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
                 }
         }
 
-        // Check if all the connected clients support the new op-version
-        ret = glusterd_check_client_op_version_support (volname,
-                                                        local_new_op_version,
-                                                        op_errstr);
+        /* Check if all the connected clients support the new client-op-version
+         */
+        ret = glusterd_check_client_op_version_support
+                (volname, local_new_client_op_version, op_errstr);
         if (ret)
                 goto out;
 
@@ -1391,6 +1510,82 @@ out:
         }
         return ret;
 }
+static int
+glusterd_water_limit_check (glusterd_volinfo_t *volinfo, gf_boolean_t is_hi,
+                char **op_errstr)
+{
+
+        int                                     ret            = -1;
+        char                                    *default_value = NULL;
+        char                                    *temp          = NULL;
+        uint64_t                                wm             = 0;
+        uint64_t                                default_wm     = 0;
+        struct volopt_map_entry                 *vmap          = NULL;
+        xlator_t                                *this          = NULL;
+        extern struct volopt_map_entry          glusterd_volopt_map[];
+        char                                    msg[2048]      = {0};
+
+        this = THIS;
+        GF_ASSERT (this);
+
+        if (is_hi)
+                ret = glusterd_volinfo_get (volinfo,
+                                            "cluster.watermark-low", &temp);
+        else
+                ret = glusterd_volinfo_get (volinfo,
+                                            "cluster.watermark-hi", &temp);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        GD_MSG_VOLINFO_GET_FAIL, "failed to get watermark");
+                goto out;
+        }
+
+        gf_string2bytesize_uint64 (temp, &wm);
+
+        if (is_hi)
+                for (vmap = glusterd_volopt_map; vmap->key; vmap++) {
+                        if (strcmp (vmap->key, "cluster.watermark-hi") == 0)
+                                default_value = vmap->value;
+                }
+        else
+                for (vmap = glusterd_volopt_map; vmap->key; vmap++) {
+                        if (strcmp (vmap->key, "cluster.watermark-low") == 0)
+                                default_value = vmap->value;
+                }
+
+        gf_string2bytesize_uint64 (default_value, &default_wm);
+
+        if (is_hi) {
+                if (default_wm <= wm) {
+                        snprintf (msg, sizeof (msg), "Resetting hi-watermark "
+                                  "to default will make it lower or equal to "
+                                  "the low-watermark, which is an invalid "
+                                  "configuration state. Please lower the "
+                                  "low-watermark first to the desired value "
+                                  "and then reset the hi-watermark.");
+                        ret = -1;
+                        goto out;
+                }
+        } else {
+                if (default_wm >= wm) {
+                        snprintf (msg, sizeof (msg), "Resetting low-watermark "
+                                  "to default will make it higher or equal to "
+                                  "the hi-watermark, which is an invalid "
+                                  "configuration state. Please raise the "
+                                  "hi-watermark first to the desired value "
+                                  "and then reset the low-watermark.");
+                        ret = -1;
+                        goto out;
+                }
+        }
+out:
+        if (msg[0] != '\0') {
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                        GD_MSG_TIER_WATERMARK_RESET_FAIL, "%s", msg);
+                *op_errstr = gf_strdup (msg);
+        }
+        return ret;
+}
 
 static int
 glusterd_op_stage_reset_volume (dict_t *dict, char **op_errstr)
@@ -1403,9 +1598,13 @@ glusterd_op_stage_reset_volume (dict_t *dict, char **op_errstr)
         char                                    *key_fixed = NULL;
         glusterd_volinfo_t                      *volinfo       = NULL;
         xlator_t                                *this = NULL;
+        glusterd_conf_t                         *priv    = NULL;
 
         this = THIS;
         GF_ASSERT (this);
+
+        priv = this->private;
+        GF_ASSERT (priv);
 
         ret = dict_get_str (dict, "volname", &volname);
 
@@ -1433,6 +1632,7 @@ glusterd_op_stage_reset_volume (dict_t *dict, char **op_errstr)
                 ret = glusterd_validate_volume_id (dict, volinfo);
                 if (ret)
                         goto out;
+
         }
 
         ret = dict_get_str (dict, "key", &key);
@@ -1441,11 +1641,22 @@ glusterd_op_stage_reset_volume (dict_t *dict, char **op_errstr)
                         GD_MSG_DICT_GET_FAILED, "Unable to get option key");
                 goto out;
         }
-        if (strcmp(key, "all")) {
+
+       if (strcmp(key, "all")) {
                 exists = glusterd_check_option_exists (key, &key_fixed);
                 if (exists == -1) {
                         ret = -1;
                         goto out;
+                } else if (strcmp (key, "cluster.watermark-low") == 0) {
+                        ret = glusterd_water_limit_check (volinfo, _gf_false,
+                                        op_errstr);
+                        if (ret)
+                                return ret;
+                } else if (strcmp (key, "cluster.watermark-hi") == 0) {
+                        ret = glusterd_water_limit_check (volinfo, _gf_true,
+                                        op_errstr);
+                        if (ret)
+                                return ret;
                 }
 
                 if (!exists) {
@@ -1479,7 +1690,7 @@ glusterd_op_stage_reset_volume (dict_t *dict, char **op_errstr)
                                 ret = -1;
                                 goto out;
                         }
-                        ALL_VOLUME_OPTION_CHECK (volname, key, ret,
+                        ALL_VOLUME_OPTION_CHECK (volname, _gf_false, key, ret,
                                                  op_errstr, out);
                 }
         }
@@ -1602,6 +1813,16 @@ glusterd_op_stage_status_volume (dict_t *dict, char **op_errstr)
                 goto out;
         }
 
+        if ((cmd & GF_CLI_STATUS_TIERD) &&
+            (priv->op_version < GD_OP_VERSION_3_10_0)) {
+                snprintf (msg, sizeof (msg), "The cluster is operating at "
+                          "version less than %d. Getting the "
+                          "status of tierd is not allowed in this state.",
+                          GD_OP_VERSION_3_10_0);
+                ret = -1;
+                goto out;
+        }
+
         if ((cmd & GF_CLI_STATUS_SNAPD) &&
             (priv->op_version < GD_OP_VERSION_3_6_0)) {
                 snprintf (msg, sizeof (msg), "The cluster is operating at "
@@ -1641,7 +1862,8 @@ glusterd_op_stage_status_volume (dict_t *dict, char **op_errstr)
         vol_opts = volinfo->dict;
 
         if ((cmd & GF_CLI_STATUS_NFS) != 0) {
-                nfs_disabled = dict_get_str_boolean (vol_opts, "nfs.disable",
+                nfs_disabled = dict_get_str_boolean (vol_opts,
+                                                     NFS_DISABLE_MAP_KEY,
                                                      _gf_false);
                 if (nfs_disabled) {
                         ret = -1;
@@ -1682,6 +1904,13 @@ glusterd_op_stage_status_volume (dict_t *dict, char **op_errstr)
                                   "bitrot enabled", volname);
                         goto out;
                 }
+        } else if ((cmd & GF_CLI_STATUS_TIERD) != 0) {
+                if (!glusterd_is_tierd_enabled (volinfo)) {
+                        ret = -1;
+                        snprintf (msg, sizeof (msg), "Volume %s does not have "
+                                  "tierd enabled.", volname);
+                        goto out;
+                }
         } else if ((cmd & GF_CLI_STATUS_SCRUB) != 0) {
                 if (!glusterd_is_bitrot_enabled (volinfo)) {
                         ret = -1;
@@ -1704,7 +1933,8 @@ glusterd_op_stage_status_volume (dict_t *dict, char **op_errstr)
                         goto out;
 
                 ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo,
-                                                              &brickinfo);
+                                                              &brickinfo,
+                                                              _gf_false);
                 if (ret) {
                         snprintf (msg, sizeof(msg), "No brick %s in"
                                   " volume %s", brick, volname);
@@ -1875,10 +2105,7 @@ out:
 static int
 _delete_reconfig_global_opt (dict_t *this, char *key, data_t *value, void *data)
 {
-        int32_t        *is_force = 0;
-
         GF_ASSERT (data);
-        is_force = (int32_t*)data;
 
         if (strcmp (GLUSTERD_GLOBAL_OPT_VERSION, key) == 0)
                 goto out;
@@ -1938,6 +2165,12 @@ glusterd_options_reset (glusterd_volinfo_t *volinfo, char *key,
                 if (ret)
                         goto out;
         }
+        if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+                svc = &(volinfo->tierd.svc);
+                ret = svc->reconfigure (volinfo);
+                if (ret)
+                        goto out;
+        }
 
         ret = glusterd_create_volfiles_and_notify_services (volinfo);
         if (ret) {
@@ -1979,8 +2212,6 @@ glusterd_op_reset_all_volume_options (xlator_t *this, dict_t *dict)
         gf_boolean_t    all             = _gf_false;
         char            *next_version   = NULL;
         gf_boolean_t    quorum_action   = _gf_false;
-        gf_boolean_t     option         = _gf_false;
-        char            *op_errstr      = NULL;
 
         conf = this->private;
         ret = dict_get_str (dict, "key", &key);
@@ -2009,20 +2240,6 @@ glusterd_op_reset_all_volume_options (xlator_t *this, dict_t *dict)
 
         if (key_fixed)
                 key = key_fixed;
-        option = dict_get_str_boolean (conf->opts, GLUSTERD_STORE_KEY_GANESHA_GLOBAL,
-                            _gf_false);
-        if (option) {
-                ret = tear_down_cluster();
-                if (ret == -1)
-                        gf_msg (THIS->name, GF_LOG_WARNING, errno,
-                                GD_MSG_DICT_GET_FAILED,
-                                "Could not tear down NFS-Ganesha cluster");
-                ret =  stop_ganesha (&op_errstr);
-                if (ret)
-                        gf_msg (THIS->name, GF_LOG_WARNING, 0,
-                                GD_MSG_NFS_GNS_STOP_FAIL,
-                                "Could not stop NFS-Ganesha service");
-        }
 
         ret = -1;
         dup_opt = dict_new ();
@@ -2131,16 +2348,6 @@ glusterd_op_reset_volume (dict_t *dict, char **op_rspstr)
 
         if (glusterd_is_quorum_changed (volinfo->dict, key, NULL))
                 quorum_action = _gf_true;
-        ret = glusterd_check_ganesha_export (volinfo);
-        if (ret) {
-                ret = ganesha_manage_export (dict, "off", op_rspstr);
-                if (ret) {
-                        gf_msg (THIS->name, GF_LOG_WARNING, 0,
-                                GD_MSG_NFS_GNS_RESET_FAIL,
-                                "Could not reset ganesha.enable key");
-                        ret = 0;
-                }
-        }
 
         ret = glusterd_options_reset (volinfo, key, &is_force);
         if (ret == -1) {
@@ -2174,8 +2381,13 @@ glusterd_stop_bricks (glusterd_volinfo_t *volinfo)
         cds_list_for_each_entry (brickinfo, &volinfo->bricks, brick_list) {
             /*TODO: Need to change @del_brick in brick_stop to _gf_true
              * once we enable synctask in peer rpc prog */
-                if (glusterd_brick_stop (volinfo, brickinfo, _gf_false))
+                if (glusterd_brick_stop (volinfo, brickinfo, _gf_false)) {
+                        gf_event (EVENT_BRICK_STOP_FAILED,
+                                  "peer=%s;volume=%s;brick=%s",
+                                  brickinfo->hostname, volinfo->volname,
+                                  brickinfo->path);
                         return -1;
+                }
         }
 
         return 0;
@@ -2197,6 +2409,10 @@ glusterd_start_bricks (glusterd_volinfo_t *volinfo)
                                 "Failed to start %s:%s for %s",
                                 brickinfo->hostname, brickinfo->path,
                                 volinfo->volname);
+                        gf_event (EVENT_BRICK_START_FAILED,
+                                  "peer=%s;volume=%s;brick=%s",
+                                  brickinfo->hostname, volinfo->volname,
+                                  brickinfo->path);
                         goto out;
                 }
         }
@@ -2207,20 +2423,110 @@ out:
 }
 
 static int
+glusterd_update_volumes_dict (glusterd_volinfo_t *volinfo)
+{
+        int              ret = -1;
+        xlator_t        *this = NULL;
+        glusterd_conf_t *conf = NULL;
+        char            *address_family_str = NULL;
+
+        this = THIS;
+        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+
+        conf = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, conf, out);
+
+        /* 3.9.0 onwards gNFS will be disabled by default. In case of an upgrade
+         * from anything below than 3.9.0 to 3.9.x the volume's dictionary will
+         * not have 'nfs.disable' key set which means the same will not be set
+         * to on until explicitly done. setnfs.disable to 'on' at op-version
+         * bump up flow is the ideal way here. The same is also applicable for
+         * transport.address-family where if the transport type is set to tcp
+         * then transport.address-family is defaulted to 'inet'.
+         */
+        if (conf->op_version >= GD_OP_VERSION_3_9_0) {
+                if (dict_get_str_boolean (volinfo->dict, NFS_DISABLE_MAP_KEY,
+                                          1)) {
+                        ret = dict_set_dynstr_with_alloc (volinfo->dict,
+                                                          NFS_DISABLE_MAP_KEY,
+                                                          "on");
+                        if (ret) {
+                                gf_msg (this->name, GF_LOG_ERROR, errno,
+                                        GD_MSG_DICT_SET_FAILED, "Failed to set "
+                                        "option ' NFS_DISABLE_MAP_KEY ' on "
+                                        "volume %s", volinfo->volname);
+                                goto out;
+                        }
+                }
+                ret = dict_get_str (volinfo->dict, "transport.address-family",
+                                    &address_family_str);
+                if (ret) {
+                        if (volinfo->transport_type == GF_TRANSPORT_TCP) {
+                                ret = dict_set_dynstr_with_alloc
+                                        (volinfo->dict,
+                                         "transport.address-family",
+                                         "inet");
+                                if (ret) {
+                                        gf_msg (this->name, GF_LOG_ERROR,
+                                                errno, GD_MSG_DICT_SET_FAILED,
+                                                "failed to set transport."
+                                                "address-family on %s",
+                                                volinfo->volname);
+                                        goto out;
+                                }
+                        }
+                }
+        }
+        ret = glusterd_store_volinfo (volinfo,
+                                      GLUSTERD_VOLINFO_VER_AC_INCREMENT);
+
+out:
+        return ret;
+}
+
+static int
+glusterd_set_brick_mx_opts (dict_t *dict, char *key, char *value,
+                            char **op_errstr)
+{
+        int32_t       ret                  = -1;
+        xlator_t     *this                 = NULL;
+        glusterd_conf_t *priv              = NULL;
+
+        this = THIS;
+        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+        GF_VALIDATE_OR_GOTO (this->name, dict, out);
+        GF_VALIDATE_OR_GOTO (this->name, key, out);
+        GF_VALIDATE_OR_GOTO (this->name, value, out);
+        GF_VALIDATE_OR_GOTO (this->name, op_errstr, out);
+
+        ret = 0;
+
+        priv = this->private;
+
+        if (!strcmp (key, GLUSTERD_BRICK_MULTIPLEX_KEY)) {
+                ret = dict_set_dynstr (priv->opts, key, gf_strdup (value));
+        }
+
+out:
+        return ret;
+}
+
+static int
 glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
                                     char **op_errstr)
 {
-        char            *key            = NULL;
-        char            *key_fixed      = NULL;
-        char            *value          = NULL;
-        char            *dup_value      = NULL;
-        int             ret             = -1;
-        glusterd_conf_t *conf           = NULL;
-        dict_t          *dup_opt        = NULL;
-        char            *next_version   = NULL;
-        gf_boolean_t    quorum_action   = _gf_false;
-        uint32_t        op_version      = 0;
-        glusterd_volinfo_t  *volinfo    = NULL;
+        char                *key                    = NULL;
+        char                *key_fixed              = NULL;
+        char                *value                  = NULL;
+        char                *dup_value              = NULL;
+        int                  ret                     = -1;
+        glusterd_conf_t     *conf                   = NULL;
+        dict_t              *dup_opt                = NULL;
+        char                *next_version           = NULL;
+        gf_boolean_t         quorum_action          = _gf_false;
+        uint32_t             op_version             = 0;
+        glusterd_volinfo_t  *volinfo                = NULL;
+        glusterd_svc_t      *svc                    = NULL;
 
         conf = this->private;
         ret = dict_get_str (dict, "key1", &key);
@@ -2254,10 +2560,18 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
                 goto out;
         }
 
+        ret = glusterd_set_brick_mx_opts (dict, key, value, op_errstr);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        GD_MSG_BRICK_MX_SET_FAIL,
+                        "Failed to set brick multiplexing option");
+                goto out;
+        }
+
         /* If the key is cluster.op-version, set conf->op_version to the value
          * if needed and save it.
          */
-        if (strcmp(key, "cluster.op-version") == 0) {
+        if (strcmp(key, GLUSTERD_GLOBAL_OP_VERSION_KEY) == 0) {
                 ret = 0;
 
                 ret = gf_string2uint (value, &op_version);
@@ -2266,18 +2580,68 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
 
                 if (op_version >= conf->op_version) {
                         conf->op_version = op_version;
+
+                        /* When a bump up happens, update the quota.conf file
+                         * as well. This is because, till 3.7 we had a quota
+                         * conf version v1.1 in quota.conf. When inode-quota
+                         * feature is introduced, this needs to be changed to
+                         * v1.2 in quota.conf and 16 bytes uuid in quota.conf
+                         * needs to be changed to 17 bytes. Look
+                         * glusterd_store_quota_config for more details.
+                         */
+                        cds_list_for_each_entry (volinfo, &conf->volumes,
+                                                 vol_list) {
+                                ret = glusterd_store_quota_config
+                                             (volinfo, NULL, NULL,
+                                              GF_QUOTA_OPTION_TYPE_UPGRADE,
+                                              NULL);
+                                if (ret)
+                                        goto out;
+                                ret = glusterd_update_volumes_dict (volinfo);
+                                if (ret)
+                                        goto out;
+                                if (!volinfo->is_snap_volume) {
+                                        svc = &(volinfo->snapd.svc);
+                                        ret = svc->manager (svc, volinfo,
+                                                            PROC_START_NO_WAIT);
+                                        if (ret)
+                                                goto out;
+                                }
+
+                                if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+                                        svc = &(volinfo->tierd.svc);
+                                        ret = svc->reconfigure (volinfo);
+                                        if (ret)
+                                                goto out;
+                                }
+
+                                ret = glusterd_create_volfiles_and_notify_services (volinfo);
+                                if (ret) {
+                                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                                GD_MSG_VOLFILE_CREATE_FAIL,
+                                                "Unable to create volfile for"
+                                                " 'volume set'");
+                                        goto out;
+                                }
+                                if (GLUSTERD_STATUS_STARTED
+                                                 == volinfo->status) {
+                                        ret = glusterd_svcs_reconfigure ();
+                                        if (ret) {
+                                                gf_msg (this->name,
+                                                        GF_LOG_ERROR, 0,
+                                                        GD_MSG_SVC_RESTART_FAIL,
+                                                        "Unable to restart "
+                                                        "services");
+                                                goto out;
+                                        }
+                                }
+                        }
                         ret = glusterd_store_global_info (this);
                         if (ret) {
                                 gf_msg (this->name, GF_LOG_ERROR, 0,
                                         GD_MSG_OP_VERS_STORE_FAIL,
                                         "Failed to store op-version.");
                         }
-                }
-                cds_list_for_each_entry (volinfo, &conf->volumes, vol_list) {
-                        ret = glusterd_store_volinfo
-                                (volinfo, GLUSTERD_VOLINFO_VER_AC_INCREMENT);
-                        if (ret)
-                                goto out;
                 }
                 /* No need to save cluster.op-version in conf->opts
                  */
@@ -2338,13 +2702,32 @@ out:
         return ret;
 }
 
+
+int
+glusterd_op_get_max_opversion (char **op_errstr, dict_t *rsp_dict)
+{
+        int                     ret             = -1;
+
+        GF_VALIDATE_OR_GOTO (THIS->name, rsp_dict, out);
+
+        ret = dict_set_int32 (rsp_dict, "max-opversion", GD_OP_VERSION_MAX);
+        if (ret) {
+                gf_msg (THIS->name, GF_LOG_ERROR, 0, GD_MSG_DICT_SET_FAILED,
+                        "Setting value for max-opversion to dict failed");
+                goto out;
+        }
+
+out:
+        gf_msg_debug (THIS->name, 0, "Returning %d", ret);
+        return ret;
+}
+
+
 static int
 glusterd_set_shared_storage (dict_t *dict, char *key, char *value,
                              char **op_errstr)
 {
         int32_t       ret                  = -1;
-        int32_t       exists               = -1;
-        int32_t       count                = -1;
         char          hooks_args[PATH_MAX] = {0, };
         char          errstr[PATH_MAX]     = {0, };
         xlator_t     *this                 = NULL;
@@ -2504,12 +2887,12 @@ glusterd_op_set_volume (dict_t *dict, char **errstr)
 
         for (count = 1; ret != -1 ; count++) {
 
-                sprintf (str, "key%d", count);
+                snprintf (str, sizeof str, "key%d", count);
                 ret = dict_get_str (dict, str, &key);
                 if (ret)
                         break;
 
-                sprintf (str, "value%d", count);
+                snprintf (str, sizeof str, "value%d", count);
                 ret = dict_get_str (dict, str, &value);
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -2544,9 +2927,6 @@ glusterd_op_set_volume (dict_t *dict, char **errstr)
                         }
                 }
 
-                ret =  glusterd_check_ganesha_cmd (key, value, errstr, dict);
-                if (ret == -1)
-                        goto out;
                 if (!is_key_glusterd_hooks_friendly (key)) {
                         ret = glusterd_check_option_exists (key, &key_fixed);
                         GF_ASSERT (ret);
@@ -2629,6 +3009,12 @@ glusterd_op_set_volume (dict_t *dict, char **errstr)
                         if (ret)
                                 goto out;
                 }
+                if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+                        svc = &(volinfo->tierd.svc);
+                        ret = svc->reconfigure (volinfo);
+                        if (ret)
+                                goto out;
+                }
                 ret = glusterd_create_volfiles_and_notify_services (volinfo);
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -2666,6 +3052,13 @@ glusterd_op_set_volume (dict_t *dict, char **errstr)
                                         goto out;
                         }
 
+                        if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+                                svc = &(volinfo->tierd.svc);
+                                ret = svc->reconfigure (volinfo);
+                                if (ret)
+                                        goto out;
+                        }
+
                         ret = glusterd_create_volfiles_and_notify_services (volinfo);
                         if (ret) {
                                 gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -2684,9 +3077,9 @@ glusterd_op_set_volume (dict_t *dict, char **errstr)
                         if (GLUSTERD_STATUS_STARTED == volinfo->status) {
                                 ret = glusterd_svcs_reconfigure ();
                                 if (ret) {
-                                        gf_msg (this->name, GF_LOG_WARNING, 0,
-                                                GD_MSG_NFS_SERVER_START_FAIL,
-                                                "Unable to restart NFS-Server");
+                                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                                GD_MSG_SVC_RESTART_FAIL,
+                                                 "Unable to restart services");
                                         goto out;
                                 }
                         }
@@ -2993,7 +3386,7 @@ _add_task_to_dict (dict_t *dict, glusterd_volinfo_t *volinfo, int op, int index)
         GF_ASSERT (this);
 
         switch (op) {
-        case GD_OP_DETACH_TIER:
+        case GD_OP_REMOVE_TIER_BRICK:
         case GD_OP_REMOVE_BRICK:
                 snprintf (key, sizeof (key), "task%d", index);
                 ret = _add_remove_bricks_to_dict (dict, volinfo, key);
@@ -3062,20 +3455,26 @@ glusterd_aggregate_task_status (dict_t *rsp_dict, glusterd_volinfo_t *volinfo)
         int        ret   = -1;
         int        tasks = 0;
         xlator_t  *this  = NULL;
+        glusterd_conf_t    *conf    = NULL;
 
         this = THIS;
         GF_ASSERT (this);
+        conf = this->private;
 
         if (!gf_uuid_is_null (volinfo->rebal.rebalance_id)) {
                 if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+                        if (conf->op_version > GD_OP_VERSION_3_10_0)
+                                goto done;
                         if (volinfo->rebal.op == GD_OP_REMOVE_BRICK)
-                                ret = _add_task_to_dict (rsp_dict, volinfo,
-                                                         GD_OP_DETACH_TIER,
-                                                         tasks);
+                                ret = _add_task_to_dict (rsp_dict,
+                                                volinfo,
+                                                GD_OP_REMOVE_TIER_BRICK,
+                                                tasks);
                         else if (volinfo->rebal.op == GD_OP_REBALANCE)
-                                ret = _add_task_to_dict (rsp_dict, volinfo,
-                                                         GD_OP_TIER_MIGRATE,
-                                                         tasks);
+                                ret = _add_task_to_dict (rsp_dict,
+                                                volinfo,
+                                                GD_OP_TIER_MIGRATE,
+                                                tasks);
                 } else
                 ret = _add_task_to_dict (rsp_dict, volinfo,
                                          volinfo->rebal.op, tasks);
@@ -3088,7 +3487,7 @@ glusterd_aggregate_task_status (dict_t *rsp_dict, glusterd_volinfo_t *volinfo)
                 }
                 tasks++;
         }
-
+done:
         ret = dict_set_int32 (rsp_dict, "tasks", tasks);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -3207,9 +3606,16 @@ glusterd_op_status_volume (dict_t *dict, char **op_errstr,
                         goto out;
                 other_count++;
                 node_count++;
+        } else if ((cmd & GF_CLI_STATUS_TIERD) != 0) {
+                ret = glusterd_add_tierd_to_dict (volinfo, rsp_dict,
+                                                 other_index);
+                if (ret)
+                        goto out;
+                other_count++;
+                node_count++;
         } else if ((cmd & GF_CLI_STATUS_SNAPD) != 0) {
-                ret = glusterd_add_node_to_dict ("snapd", rsp_dict, 0,
-                                                 vol_opts);
+                ret = glusterd_add_snapd_to_dict (volinfo, rsp_dict,
+                                                  other_index);
                 if (ret)
                         goto out;
                 other_count++;
@@ -3221,7 +3627,8 @@ glusterd_op_status_volume (dict_t *dict, char **op_errstr,
 
                 ret = glusterd_volume_brickinfo_get_by_brick (brick,
                                                               volinfo,
-                                                              &brickinfo);
+                                                              &brickinfo,
+                                                              _gf_false);
                 if (ret)
                         goto out;
 
@@ -3272,8 +3679,19 @@ glusterd_op_status_volume (dict_t *dict, char **op_errstr,
                                 node_count++;
                         }
 
+                        if (glusterd_is_tierd_enabled (volinfo)) {
+                                ret = glusterd_add_tierd_to_dict (volinfo,
+                                                                  rsp_dict,
+                                                                  other_index);
+                                if (ret)
+                                        goto out;
+                                other_count++;
+                                other_index++;
+                                node_count++;
+                        }
+
                         nfs_disabled = dict_get_str_boolean (vol_opts,
-                                                             "nfs.disable",
+                                                             NFS_DISABLE_MAP_KEY,
                                                              _gf_false);
                         if (!nfs_disabled) {
                                 ret = glusterd_add_node_to_dict
@@ -3412,6 +3830,12 @@ glusterd_op_sm_locking_failed (uuid_t *txn_id)
         opinfo.op_ret = -1;
         opinfo.op_errstr = gf_strdup ("locking failed for one of the peer.");
 
+        ret = glusterd_set_txn_opinfo (txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
         /* Inject a reject event such that unlocking gets triggered right away*/
         ret = glusterd_op_sm_inject_event (GD_OP_EVENT_RCVD_RJT, txn_id, NULL);
 
@@ -3508,6 +3932,15 @@ glusterd_op_ac_send_lock (glusterd_op_sm_event_t *event, void *ctx)
         rcu_read_unlock ();
 
         opinfo.pending_count = pending_count;
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
         if (!opinfo.pending_count)
                 ret = glusterd_op_sm_inject_all_acc (&event->txn_id);
 
@@ -3615,6 +4048,14 @@ glusterd_op_ac_send_unlock (glusterd_op_sm_event_t *event, void *ctx)
         rcu_read_unlock ();
 
         opinfo.pending_count = pending_count;
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
         if (!opinfo.pending_count)
                 ret = glusterd_op_sm_inject_all_acc (&event->txn_id);
 
@@ -3629,6 +4070,15 @@ glusterd_op_ac_ack_drain (glusterd_op_sm_event_t *event, void *ctx)
 
         if (opinfo.pending_count > 0)
                 opinfo.pending_count--;
+
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
 
         if (!opinfo.pending_count)
                 ret = glusterd_op_sm_inject_event (GD_OP_EVENT_ALL_ACK,
@@ -3649,11 +4099,9 @@ static int
 glusterd_op_ac_lock (glusterd_op_sm_event_t *event, void *ctx)
 {
         int32_t                         ret             = 0;
-        int32_t                         err             = 0;
         char                           *volname         = NULL;
         char                           *globalname      = NULL;
         glusterd_op_lock_ctx_t         *lock_ctx        = NULL;
-        glusterd_conf_t                *priv            = NULL;
         xlator_t                       *this            = NULL;
         uint32_t                        op_errno        = 0;
 
@@ -3661,7 +4109,6 @@ glusterd_op_ac_lock (glusterd_op_sm_event_t *event, void *ctx)
         GF_ASSERT (ctx);
 
         this = THIS;
-        priv = this->private;
 
         lock_ctx = (glusterd_op_lock_ctx_t *)ctx;
 
@@ -3803,6 +4250,14 @@ glusterd_op_ac_rcvd_lock_acc (glusterd_op_sm_event_t *event, void *ctx)
 
         if (opinfo.pending_count > 0)
                 opinfo.pending_count--;
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
 
         if (opinfo.pending_count > 0)
                 goto out;
@@ -3986,12 +4441,14 @@ glusterd_op_build_payload (dict_t **req, char **op_errstr, dict_t *op_ctx)
                                         if (ret)
                                                 goto out;
                                 }
-                                dict_destroy (req_dict);
+                                dict_unref (req_dict);
                                 req_dict = dict_ref (dict);
                         }
                         break;
 
                 case GD_OP_REMOVE_BRICK:
+                case GD_OP_DETACH_TIER_STATUS:
+                case GD_OP_REMOVE_TIER_BRICK:
                         {
                                 dict_t *dict = ctx;
                                 ret = dict_get_str (dict, "volname", &volname);
@@ -4012,7 +4469,7 @@ glusterd_op_build_payload (dict_t **req, char **op_errstr, dict_t *op_ctx)
                                         goto out;
                                 }
 
-                                dict_destroy (req_dict);
+                                dict_unref (req_dict);
                                 req_dict = dict_ref (dict);
                         }
                         break;
@@ -4051,7 +4508,11 @@ glusterd_op_build_payload (dict_t **req, char **op_errstr, dict_t *op_ctx)
                 case GD_OP_DEFRAG_BRICK_VOLUME:
                 case GD_OP_BARRIER:
                 case GD_OP_BITROT:
+                case GD_OP_TIER_START_STOP:
+                case GD_OP_TIER_STATUS:
                 case GD_OP_SCRUB_STATUS:
+                case GD_OP_SCRUB_ONDEMAND:
+                case GD_OP_RESET_BRICK:
                         {
                                 do_common = _gf_true;
                         }
@@ -4069,12 +4530,6 @@ glusterd_op_build_payload (dict_t **req, char **op_errstr, dict_t *op_ctx)
                 case GD_OP_SYNC_VOLUME:
                 case GD_OP_COPY_FILE:
                 case GD_OP_SYS_EXEC:
-                        {
-                                dict_copy (dict, req_dict);
-                        }
-                        break;
-
-                case GD_OP_GANESHA:
                         {
                                 dict_copy (dict, req_dict);
                         }
@@ -4119,6 +4574,7 @@ static int
 glusterd_op_ac_send_stage_op (glusterd_op_sm_event_t *event, void *ctx)
 {
         int                     ret = 0;
+	int                     ret1 = 0;
         rpc_clnt_procedure_t    *proc = NULL;
         glusterd_conf_t         *priv = NULL;
         xlator_t                *this = NULL;
@@ -4221,6 +4677,17 @@ glusterd_op_ac_send_stage_op (glusterd_op_sm_event_t *event, void *ctx)
 
         opinfo.pending_count = pending_count;
 out:
+        if (ret)
+                opinfo.op_ret = ret;
+
+        ret1 = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret1)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
         if (rsp_dict)
                 dict_unref (rsp_dict);
 
@@ -4270,8 +4737,10 @@ glusterd_op_volume_dict_uuid_to_hostname (dict_t *dict, const char *key_fmt,
                 memset (key, 0, sizeof (key));
                 snprintf (key, sizeof (key), key_fmt, i);
                 ret = dict_get_str (dict, key, &uuid_str);
-                if (ret)
+                if (ret) {
+                        ret = 0;
                         continue;
+                }
 
                 gf_msg_debug (this->name, 0, "Got uuid %s",
                         uuid_str);
@@ -4280,8 +4749,10 @@ glusterd_op_volume_dict_uuid_to_hostname (dict_t *dict, const char *key_fmt,
                 /* if parsing fails don't error out
                  * let the original value be retained
                  */
-                if (ret)
+                if (ret) {
+                        ret = 0;
                         continue;
+                }
 
                 hostname = glusterd_uuid_to_hostname (uuid);
                 if (hostname) {
@@ -4633,7 +5104,11 @@ glusterd_op_modify_op_ctx (glusterd_op_t op, void *ctx)
          * same
          */
         case GD_OP_DEFRAG_BRICK_VOLUME:
+        case GD_OP_TIER_STATUS:
+        case GD_OP_REMOVE_TIER_BRICK:
+        case GD_OP_DETACH_TIER_STATUS:
         case GD_OP_SCRUB_STATUS:
+        case GD_OP_SCRUB_ONDEMAND:
                 ret = dict_get_int32 (op_ctx, "count", &count);
                 if (ret) {
                         gf_msg_debug (this->name, 0,
@@ -4681,10 +5156,11 @@ glusterd_op_modify_op_ctx (glusterd_op_t op, void *ctx)
                                 GD_MSG_CONVERSION_FAILED,
                                 "Failed uuid to hostname conversion");
 
-                /* Since Both rebalance and bitrot scrub status are going to
-                 * use same code path till here, we should break in case
-                 * of scrub status */
-                if (op == GD_OP_SCRUB_STATUS) {
+                /* Since Both rebalance and bitrot scrub status/ondemand
+                 * are going to use same code path till here, we should
+                 * break in case of scrub status.
+                 */
+                if (op == GD_OP_SCRUB_STATUS || op == GD_OP_SCRUB_ONDEMAND) {
                         break;
                 }
 
@@ -4768,6 +5244,7 @@ static int
 glusterd_op_ac_send_commit_op (glusterd_op_sm_event_t *event, void *ctx)
 {
         int                     ret           = 0;
+        int                     ret1          = 0;
         rpc_clnt_procedure_t    *proc         = NULL;
         glusterd_conf_t         *priv         = NULL;
         xlator_t                *this         = NULL;
@@ -4855,6 +5332,17 @@ glusterd_op_ac_send_commit_op (glusterd_op_sm_event_t *event, void *ctx)
 out:
         if (dict)
                 dict_unref (dict);
+
+        if (ret)
+                opinfo.op_ret = ret;
+
+        ret1 = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret1)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
         if (ret) {
                 glusterd_op_sm_inject_event (GD_OP_EVENT_RCVD_RJT,
                                              &event->txn_id, NULL);
@@ -4888,6 +5376,16 @@ glusterd_op_ac_rcvd_stage_op_acc (glusterd_op_sm_event_t *event, void *ctx)
         if (opinfo.pending_count > 0)
                 opinfo.pending_count--;
 
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
+
         if (opinfo.pending_count > 0)
                 goto out;
 
@@ -4910,6 +5408,16 @@ glusterd_op_ac_stage_op_failed (glusterd_op_sm_event_t *event, void *ctx)
         if (opinfo.pending_count > 0)
                 opinfo.pending_count--;
 
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
+
         if (opinfo.pending_count > 0)
                 goto out;
 
@@ -4931,6 +5439,16 @@ glusterd_op_ac_commit_op_failed (glusterd_op_sm_event_t *event, void *ctx)
 
         if (opinfo.pending_count > 0)
                 opinfo.pending_count--;
+
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
 
         if (opinfo.pending_count > 0)
                 goto out;
@@ -4977,6 +5495,15 @@ glusterd_op_ac_brick_op_failed (glusterd_op_sm_event_t *event, void *ctx)
         else
                 free_errstr = _gf_true;
 
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
         if (opinfo.brick_pending_count > 0)
                 goto out;
 
@@ -5009,6 +5536,14 @@ glusterd_op_ac_rcvd_commit_op_acc (glusterd_op_sm_event_t *event, void *ctx)
 
         if (opinfo.pending_count > 0)
                 opinfo.pending_count--;
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
 
         if (opinfo.pending_count > 0)
                 goto out;
@@ -5054,6 +5589,14 @@ glusterd_op_ac_rcvd_unlock_acc (glusterd_op_sm_event_t *event, void *ctx)
 
         if (opinfo.pending_count > 0)
                 opinfo.pending_count--;
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
 
         if (opinfo.pending_count > 0)
                 goto out;
@@ -5252,6 +5795,7 @@ glusterd_op_ac_stage_op (glusterd_op_sm_event_t *event, void *ctx)
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_DICT_SET_FAILED,
                        "Failed to set transaction id.");
+                GF_FREE (txn_id);
                 goto out;
         }
 
@@ -5280,9 +5824,12 @@ glusterd_need_brick_op (glusterd_op_t op)
         switch (op) {
         case GD_OP_PROFILE_VOLUME:
         case GD_OP_STATUS_VOLUME:
+        case GD_OP_TIER_STATUS:
+        case GD_OP_DETACH_TIER_STATUS:
         case GD_OP_DEFRAG_BRICK_VOLUME:
         case GD_OP_HEAL_VOLUME:
         case GD_OP_SCRUB_STATUS:
+        case GD_OP_SCRUB_ONDEMAND:
                 ret = _gf_true;
                 break;
         default:
@@ -5367,6 +5914,7 @@ glusterd_op_ac_commit_op (glusterd_op_sm_event_t *event, void *ctx)
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_DICT_SET_FAILED,
                        "Failed to set transaction id.");
+                GF_FREE (txn_id);
                 goto out;
         }
 
@@ -5406,6 +5954,14 @@ glusterd_op_ac_send_commit_failed (glusterd_op_sm_event_t *event, void *ctx)
                 GF_FREE (opinfo.op_errstr);
                 opinfo.op_errstr = NULL;
         }
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
 
         gf_msg_debug (THIS->name, 0, "Returning with %d", ret);
         return ret;
@@ -5471,10 +6027,6 @@ glusterd_op_stage_validate (glusterd_op_t op, dict_t *dict, char **op_errstr,
 
                 case GD_OP_SET_VOLUME:
                         ret = glusterd_op_stage_set_volume (dict, op_errstr);
-                        break;
-
-                case GD_OP_GANESHA:
-                        ret = glusterd_op_stage_set_ganesha (dict, op_errstr);
                         break;
 
                 case GD_OP_RESET_VOLUME:
@@ -5545,6 +6097,7 @@ glusterd_op_stage_validate (glusterd_op_t op, dict_t *dict, char **op_errstr,
 
                 case GD_OP_BITROT:
                 case GD_OP_SCRUB_STATUS:
+                case GD_OP_SCRUB_ONDEMAND:
                         ret = glusterd_op_stage_bitrot (dict, op_errstr,
                                                         rsp_dict);
                         break;
@@ -5559,6 +6112,15 @@ glusterd_op_stage_validate (glusterd_op_t op, dict_t *dict, char **op_errstr,
         return ret;
 }
 
+static void
+glusterd_wait_for_blockers (glusterd_conf_t *priv)
+{
+        while (priv->blockers) {
+                synclock_unlock (&priv->big_lock);
+                sleep (1);
+                synclock_lock (&priv->big_lock);
+        }
+}
 
 int32_t
 glusterd_op_commit_perform (glusterd_op_t op, dict_t *dict, char **op_errstr,
@@ -5578,33 +6140,36 @@ glusterd_op_commit_perform (glusterd_op_t op, dict_t *dict, char **op_errstr,
                         break;
 
                 case GD_OP_STOP_VOLUME:
+                        glusterd_wait_for_blockers (this->private);
                         ret = glusterd_op_stop_volume (dict);
                         break;
 
                 case GD_OP_DELETE_VOLUME:
+                        glusterd_wait_for_blockers (this->private);
                         ret = glusterd_op_delete_volume (dict);
                         break;
 
                 case GD_OP_ADD_BRICK:
+                        glusterd_wait_for_blockers (this->private);
                         ret = glusterd_op_add_brick (dict, op_errstr);
                         break;
 
                 case GD_OP_REPLACE_BRICK:
+                        glusterd_wait_for_blockers (this->private);
                         ret = glusterd_op_replace_brick (dict, rsp_dict);
                         break;
 
                 case GD_OP_SET_VOLUME:
                         ret = glusterd_op_set_volume (dict, op_errstr);
                         break;
-                case GD_OP_GANESHA:
-                        ret = glusterd_op_set_ganesha (dict, op_errstr);
-                        break;
+
 
                 case GD_OP_RESET_VOLUME:
                         ret = glusterd_op_reset_volume (dict, op_errstr);
                         break;
 
                 case GD_OP_REMOVE_BRICK:
+                        glusterd_wait_for_blockers (this->private);
                         ret = glusterd_op_remove_brick (dict, op_errstr);
                         break;
 
@@ -5670,6 +6235,7 @@ glusterd_op_commit_perform (glusterd_op_t op, dict_t *dict, char **op_errstr,
 
                 case GD_OP_BITROT:
                 case GD_OP_SCRUB_STATUS:
+                case GD_OP_SCRUB_ONDEMAND:
                         ret = glusterd_op_bitrot (dict, op_errstr, rsp_dict);
                         break;
 
@@ -5726,6 +6292,12 @@ glusterd_bricks_select_stop_volume (dict_t *dict, char **op_errstr,
                                                    selected);
                                 pending_node = NULL;
                         }
+                        /*
+                         * This is not really the right place to do it, but
+                         * it's the most convenient.
+                         * TBD: move this to *after* the RPC
+                         */
+                        brickinfo->status = GF_BRICK_STOPPED;
                 }
         }
 
@@ -5748,7 +6320,6 @@ glusterd_bricks_select_remove_brick (dict_t *dict, char **op_errstr,
         glusterd_pending_node_t                 *pending_node = NULL;
         int32_t                                 command = 0;
         int32_t                                 force = 0;
-
 
         ret = dict_get_str (dict, "volname", &volname);
 
@@ -5780,8 +6351,9 @@ glusterd_bricks_select_remove_brick (dict_t *dict, char **op_errstr,
                 goto out;
         }
 
-        if (command == GF_OP_CMD_DETACH_START)
-                return glusterd_bricks_select_rebalance_volume(dict, op_errstr, selected);
+        if (command == GF_DEFRAG_CMD_DETACH_START)
+                return glusterd_bricks_select_tier_volume(dict, op_errstr,
+                                                          selected);
 
         ret = dict_get_int32 (dict, "force", &force);
         if (ret) {
@@ -5802,7 +6374,8 @@ glusterd_bricks_select_remove_brick (dict_t *dict, char **op_errstr,
                 }
 
                 ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo,
-                                                              &brickinfo);
+                                                              &brickinfo,
+                                                              _gf_false);
 
                 if (ret)
                         goto out;
@@ -5820,6 +6393,12 @@ glusterd_bricks_select_remove_brick (dict_t *dict, char **op_errstr,
                                                    selected);
                                 pending_node = NULL;
                         }
+                        /*
+                         * This is not really the right place to do it, but
+                         * it's the most convenient.
+                         * TBD: move this to *after* the RPC
+                         */
+                        brickinfo->status = GF_BRICK_STOPPED;
                 }
                 i++;
         }
@@ -5842,14 +6421,13 @@ glusterd_bricks_select_profile_volume (dict_t *dict, char **op_errstr,
         glusterd_brickinfo_t                    *brickinfo = NULL;
         glusterd_pending_node_t                 *pending_node = NULL;
         char                                    *brick = NULL;
-
-
+        int32_t                                 pid = -1;
+        char                                    pidfile[PATH_MAX] = {0};
 
         this = THIS;
         GF_ASSERT (this);
         priv = this->private;
         GF_ASSERT (priv);
-
 
         ret = dict_get_str (dict, "volname", &volname);
         if (ret) {
@@ -5910,6 +6488,18 @@ glusterd_bricks_select_profile_volume (dict_t *dict, char **op_errstr,
                 cds_list_for_each_entry (brickinfo, &volinfo->bricks,
                                          brick_list) {
                         if (glusterd_is_brick_started (brickinfo)) {
+                                /*
+                                 * In normal use, glusterd_is_brick_started
+                                 * will give us the answer we need.  However,
+                                 * in our tests the brick gets detached behind
+                                 * our back, so we need to double-check this
+                                 * way.
+                                 */
+                                GLUSTERD_GET_BRICK_PIDFILE (pidfile, volinfo,
+                                                            brickinfo, priv);
+                                if (!gf_is_service_running (pidfile, &pid)) {
+                                        continue;
+                                }
                                 pending_node = GF_CALLOC (1, sizeof (*pending_node),
                                                           gf_gld_mt_pending_node_t);
                                 if (!pending_node) {
@@ -5954,8 +6544,9 @@ glusterd_bricks_select_profile_volume (dict_t *dict, char **op_errstr,
                 }
                 ret = dict_get_str (dict, "brick", &brick);
                 if (!ret) {
-                        ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo,
-                                                                      &brickinfo);
+                        ret = glusterd_volume_brickinfo_get_by_brick
+                                                (brick, volinfo, &brickinfo,
+                                                 _gf_true);
                         if (ret)
                                 goto out;
 
@@ -6103,15 +6694,11 @@ _select_hxlator_with_matching_brick (xlator_t *this,
                                      glusterd_volinfo_t *volinfo, dict_t *dict,
                                      int *index)
 {
-        char                    *hostname = NULL;
         char                    *path = NULL;
         glusterd_brickinfo_t    *brickinfo = NULL;
-        glusterd_conf_t         *priv   = NULL;
         int                     hxl_children = 0;
 
-        priv = this->private;
         if (!dict ||
-            dict_get_str (dict, "per-replica-cmd-hostname", &hostname) ||
             dict_get_str (dict, "per-replica-cmd-path", &path))
                 return -1;
 
@@ -6123,7 +6710,8 @@ _select_hxlator_with_matching_brick (xlator_t *this,
                 if (gf_uuid_is_null (brickinfo->uuid))
                         (void)glusterd_resolve_brick (brickinfo);
 
-                if (!gf_uuid_compare (MY_UUID, brickinfo->uuid)) {
+                if ((!gf_uuid_compare (MY_UUID, brickinfo->uuid)) &&
+                    (!strncmp (brickinfo->path, path, strlen(path)))) {
                         _add_hxlator_to_dict (dict, volinfo,
                                               ((*index) - 1)/hxl_children, 0);
                         return 1;
@@ -6139,12 +6727,9 @@ _select_hxlators_with_local_bricks (xlator_t *this, glusterd_volinfo_t *volinfo,
                                     int *hxlator_count)
 {
         glusterd_brickinfo_t    *brickinfo = NULL;
-        glusterd_conf_t         *priv   = NULL;
         int                     hxl_children = 0;
         gf_boolean_t            add     = _gf_false;
-        int                     cmd_replica_index = -1;
 
-        priv = this->private;
         hxl_children = _get_hxl_children_count (volinfo);
 
         if ((*index) == 0)
@@ -6179,11 +6764,9 @@ _select_hxlators_for_full_self_heal (xlator_t *this,
                                      int *hxlator_count)
 {
         glusterd_brickinfo_t    *brickinfo = NULL;
-        glusterd_conf_t         *priv   = NULL;
         int                     hxl_children = 0;
         uuid_t                  candidate = {0};
 
-        priv = this->private;
         if ((*index) == 0)
                 (*index)++;
         if (volinfo->type == GF_CLUSTER_TYPE_DISPERSE) {
@@ -6349,8 +6932,6 @@ glusterd_shd_select_brick_xlator (dict_t *dict, gf_xl_afr_op_t heal_op,
         int                                     ret = -1;
         glusterd_conf_t                         *priv = NULL;
         xlator_t                                *this = NULL;
-        char                                    msg[2048] = {0,};
-        glusterd_pending_node_t                 *pending_node = NULL;
 
         this = THIS;
         GF_ASSERT (this);
@@ -6544,6 +7125,67 @@ out:
 }
 
 int
+glusterd_bricks_select_tier_volume (dict_t *dict, char **op_errstr,
+                                    struct cds_list_head *selected)
+{
+        int                                     ret = -1;
+        char                                    *volname = NULL;
+        glusterd_volinfo_t                      *volinfo = NULL;
+        xlator_t                                *this = NULL;
+        char                                    msg[2048] = {0,};
+        glusterd_pending_node_t                 *pending_node = NULL;
+        glusterd_brickinfo_t                    *brick  = NULL;
+        gf_boolean_t                            retval  = _gf_false;
+
+        this = THIS;
+        GF_VALIDATE_OR_GOTO (THIS->name, this, out);
+
+        ret = dict_get_str (dict, "volname", &volname);
+        if (ret) {
+                gf_msg ("glusterd", GF_LOG_ERROR, 0,
+                        GD_MSG_DICT_GET_FAILED, "volume name get failed");
+                goto out;
+        }
+
+        ret = glusterd_volinfo_find (volname, &volinfo);
+        if (ret) {
+                snprintf (msg, sizeof (msg), "Volume %s does not exist",
+                          volname);
+
+                *op_errstr = gf_strdup (msg);
+                gf_msg ("glusterd", GF_LOG_ERROR, 0,
+                        GD_MSG_VOL_NOT_FOUND, "%s", msg);
+                goto out;
+        }
+                /*check if this node needs tierd*/
+        cds_list_for_each_entry (brick, &volinfo->bricks, brick_list) {
+                if (gf_uuid_compare (MY_UUID, brick->uuid) == 0) {
+                        retval = _gf_true;
+                        break;
+                }
+        }
+
+        if (!retval)
+                goto out;
+
+        pending_node = GF_CALLOC (1, sizeof (*pending_node),
+                                  gf_gld_mt_pending_node_t);
+        if (!pending_node) {
+                ret = -1;
+                goto out;
+        } else {
+                pending_node->node = volinfo;
+                pending_node->type = GD_NODE_TIERD;
+                cds_list_add_tail (&pending_node->list, selected);
+                pending_node = NULL;
+        }
+        ret = 0;
+
+out:
+        return ret;
+}
+
+int
 glusterd_bricks_select_rebalance_volume (dict_t *dict, char **op_errstr,
                                          struct cds_list_head *selected)
 {
@@ -6604,7 +7246,6 @@ glusterd_bricks_select_status_volume (dict_t *dict, char **op_errstr,
         glusterd_pending_node_t *pending_node = NULL;
         xlator_t                *this = NULL;
         glusterd_conf_t         *priv = NULL;
-        glusterd_snapdsvc_t     *snapd = NULL;
 
         GF_ASSERT (dict);
 
@@ -6633,6 +7274,7 @@ glusterd_bricks_select_status_volume (dict_t *dict, char **op_errstr,
         case GF_CLI_STATUS_SHD:
         case GF_CLI_STATUS_QUOTAD:
         case GF_CLI_STATUS_SNAPD:
+        case GF_CLI_STATUS_TIERD:
         case GF_CLI_STATUS_BITD:
         case GF_CLI_STATUS_SCRUB:
                 break;
@@ -6660,7 +7302,8 @@ glusterd_bricks_select_status_volume (dict_t *dict, char **op_errstr,
                 }
                 ret = glusterd_volume_brickinfo_get_by_brick (brickname,
                                                               volinfo,
-                                                              &brickinfo);
+                                                              &brickinfo,
+                                                              _gf_false);
                 if (ret)
                         goto out;
 
@@ -6780,6 +7423,30 @@ glusterd_bricks_select_status_volume (dict_t *dict, char **op_errstr,
                 cds_list_add_tail (&pending_node->list, selected);
 
                 ret = 0;
+        } else if ((cmd & GF_CLI_STATUS_TIERD) != 0) {
+                if (!volinfo->tierd.svc.online) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TIERD_NOT_RUNNING, "tierd is not "
+                                "running");
+                        ret = -1;
+                        goto out;
+                }
+                pending_node = GF_CALLOC (1, sizeof (*pending_node),
+                                          gf_gld_mt_pending_node_t);
+                if (!pending_node) {
+                        gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
+                                GD_MSG_NO_MEMORY, "failed to allocate "
+                                "memory for pending node");
+                        ret = -1;
+                        goto out;
+                }
+
+                pending_node->node = (void *)(&volinfo->tierd);
+                pending_node->type = GD_NODE_TIERD;
+                pending_node->index = 0;
+                cds_list_add_tail (&pending_node->list, selected);
+
+                ret = 0;
         } else if ((cmd & GF_CLI_STATUS_SNAPD) != 0) {
                 if (!volinfo->snapd.svc.online) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -6842,7 +7509,6 @@ glusterd_bricks_select_scrub (dict_t *dict, char **op_errstr,
         xlator_t                  *this         = NULL;
         glusterd_conf_t           *priv         = NULL;
         glusterd_volinfo_t        *volinfo      = NULL;
-        glusterd_brickinfo_t      *brickinfo    = NULL;
         glusterd_pending_node_t   *pending_node = NULL;
 
         this = THIS;
@@ -7006,7 +7672,7 @@ out:
 static int
 glusterd_op_ac_rcvd_brick_op_acc (glusterd_op_sm_event_t *event, void *ctx)
 {
-        int                     ret = 0;
+        int                     ret = -1;
         glusterd_op_brick_rsp_ctx_t *ev_ctx = NULL;
         char                        *op_errstr = NULL;
         glusterd_op_t               op = GD_OP_NONE;
@@ -7017,13 +7683,14 @@ glusterd_op_ac_rcvd_brick_op_acc (glusterd_op_sm_event_t *event, void *ctx)
         xlator_t                    *this = NULL;
 
         this = THIS;
-        GF_ASSERT (this);
-        GF_ASSERT (event);
-        GF_ASSERT (ctx);
+        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+        GF_VALIDATE_OR_GOTO (this->name, event, out);
+        GF_VALIDATE_OR_GOTO (this->name, ctx, out);
         ev_ctx = ctx;
+        GF_VALIDATE_OR_GOTO(this->name, ev_ctx, out);
 
         req_ctx = ev_ctx->commit_ctx;
-        GF_ASSERT (req_ctx);
+        GF_VALIDATE_OR_GOTO (this->name, req_ctx, out);
 
         op = req_ctx->op;
         op_ctx = glusterd_op_get_ctx ();
@@ -7042,6 +7709,15 @@ glusterd_op_ac_rcvd_brick_op_acc (glusterd_op_sm_event_t *event, void *ctx)
         if (opinfo.brick_pending_count > 0)
                 opinfo.brick_pending_count--;
 
+
+        ret = glusterd_set_txn_opinfo (&event->txn_id, &opinfo);
+        if (ret)
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_TRANS_OPINFO_SET_FAIL,
+                                "Unable to set "
+                                "transaction's opinfo");
+
+
         glusterd_handle_node_rsp (req_ctx->dict, pending_entry, op, ev_ctx->rsp_dict,
                                   op_ctx, &op_errstr, type);
 
@@ -7052,7 +7728,7 @@ glusterd_op_ac_rcvd_brick_op_acc (glusterd_op_sm_event_t *event, void *ctx)
                                            ev_ctx->commit_ctx);
 
 out:
-        if (ev_ctx->rsp_dict)
+        if (ev_ctx && ev_ctx->rsp_dict)
                 dict_unref (ev_ctx->rsp_dict);
         GF_FREE (ev_ctx);
         gf_msg_debug (this->name, 0, "Returning %d", ret);
@@ -7095,7 +7771,12 @@ glusterd_op_bricks_select (glusterd_op_t op, dict_t *dict, char **op_errstr,
                 ret = glusterd_bricks_select_status_volume (dict, op_errstr,
                                                             selected);
                 break;
+        case GD_OP_TIER_STATUS:
+                ret = glusterd_bricks_select_tier_volume (dict, op_errstr,
+                                                          selected);
+                break;
 
+        case GD_OP_DETACH_TIER_STATUS:
         case GD_OP_DEFRAG_BRICK_VOLUME:
                 ret = glusterd_bricks_select_rebalance_volume (dict, op_errstr,
                                                                selected);
@@ -7108,6 +7789,7 @@ glusterd_op_bricks_select (glusterd_op_t op, dict_t *dict, char **op_errstr,
                 ret = glusterd_bricks_select_snap (dict, op_errstr, selected);
                 break;
         case GD_OP_SCRUB_STATUS:
+        case GD_OP_SCRUB_ONDEMAND:
                 ret = glusterd_bricks_select_scrub (dict, op_errstr, selected);
                 break;
         default:
@@ -7681,10 +8363,13 @@ glusterd_op_free_ctx (glusterd_op_t op, void *ctx)
                 case GD_OP_PROFILE_VOLUME:
                 case GD_OP_STATUS_VOLUME:
                 case GD_OP_REBALANCE:
+                case GD_OP_TIER_START_STOP:
                 case GD_OP_HEAL_VOLUME:
                 case GD_OP_STATEDUMP_VOLUME:
                 case GD_OP_CLEARLOCKS_VOLUME:
                 case GD_OP_DEFRAG_BRICK_VOLUME:
+                case GD_OP_MAX_OPVERSION:
+                case GD_OP_TIER_STATUS:
                         dict_unref (ctx);
                         break;
                 default:

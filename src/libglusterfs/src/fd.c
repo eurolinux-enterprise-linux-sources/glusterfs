@@ -15,11 +15,6 @@
 #include "statedump.h"
 #include "libglusterfs-messages.h"
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 
 static int
 gf_fd_fdtable_expand (fdtable_t *fdtable, uint32_t nr);
@@ -314,8 +309,7 @@ gf_fd_put (fdtable_t *fdtable, int32_t fd)
         fd_t *fdptr = NULL;
         fdentry_t *fde = NULL;
 
-        if (fd == -2)
-                /* anonymous fd */
+        if (fd == GF_ANON_FD_NO)
                 return;
 
         if (fdtable == NULL || fd < 0) {
@@ -750,7 +744,7 @@ fd_lookup_uint64 (inode_t *inode, uint64_t pid)
 }
 
 static fd_t *
-__fd_lookup_anonymous (inode_t *inode)
+__fd_lookup_anonymous (inode_t *inode, int32_t flags)
 {
         fd_t *iter_fd = NULL;
         fd_t *fd = NULL;
@@ -759,7 +753,7 @@ __fd_lookup_anonymous (inode_t *inode)
                 return NULL;
 
         list_for_each_entry (iter_fd, &inode->fd_list, inode_list) {
-                if (iter_fd->anonymous) {
+                if ((iter_fd->anonymous) && (flags == iter_fd->flags)) {
                         fd = __fd_ref (iter_fd);
                         break;
                 }
@@ -769,11 +763,11 @@ __fd_lookup_anonymous (inode_t *inode)
 }
 
 static fd_t *
-__fd_anonymous (inode_t *inode)
+__fd_anonymous (inode_t *inode, int32_t flags)
 {
         fd_t *fd = NULL;
 
-        fd = __fd_lookup_anonymous (inode);
+        fd = __fd_lookup_anonymous (inode, flags);
 
         /* if (fd); then we already have increased the refcount in
            __fd_lookup_anonymous(), so no need of one more fd_ref().
@@ -786,6 +780,7 @@ __fd_anonymous (inode_t *inode)
                         return NULL;
 
                 fd->anonymous = _gf_true;
+                fd->flags = GF_ANON_FD_FLAGS|flags;
 
                 __fd_bind (fd);
 
@@ -803,7 +798,26 @@ fd_anonymous (inode_t *inode)
 
         LOCK (&inode->lock);
         {
-                fd = __fd_anonymous (inode);
+                fd = __fd_anonymous (inode, GF_ANON_FD_FLAGS);
+        }
+        UNLOCK (&inode->lock);
+
+        return fd;
+}
+
+fd_t *
+fd_anonymous_with_flags (inode_t *inode, int32_t flags)
+{
+        fd_t *fd = NULL;
+
+        LOCK (&inode->lock);
+        {
+                if (flags & O_DIRECT)
+                        flags = GF_ANON_FD_FLAGS | O_DIRECT;
+                else
+                        flags = GF_ANON_FD_FLAGS;
+
+                fd = __fd_anonymous (inode, flags);
         }
         UNLOCK (&inode->lock);
 
@@ -811,7 +825,7 @@ fd_anonymous (inode_t *inode)
 }
 
 fd_t*
-fd_lookup_anonymous (inode_t *inode)
+fd_lookup_anonymous (inode_t *inode, int32_t flags)
 {
         fd_t *fd = NULL;
 
@@ -823,7 +837,7 @@ fd_lookup_anonymous (inode_t *inode)
 
         LOCK (&inode->lock);
         {
-                fd = __fd_lookup_anonymous (inode);
+                fd = __fd_lookup_anonymous (inode, flags);
         }
         UNLOCK (&inode->lock);
         return fd;
@@ -1168,7 +1182,7 @@ fdentry_dump_to_dict (fdentry_t *fdentry, char *prefix, dict_t *dict,
         if (fdentry->fd) {
                 memset (key, 0, sizeof (key));
                 snprintf (key, sizeof (key), "%s.pid", prefix);
-                ret = dict_set_int32 (dict, key, fdentry->fd->pid);
+                ret = dict_set_uint64 (dict, key, fdentry->fd->pid);
                 if (ret)
                         return;
 

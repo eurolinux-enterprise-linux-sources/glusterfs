@@ -1,0 +1,131 @@
+From 69e6933898a37ef7c929b2d4b5561e5e3a407be4 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Thu, 16 Aug 2018 17:04:22 +0530
+Subject: [PATCH 353/359] snapshot/handshake: store description after strdup
+
+problem:
+During a handshake, when we import a friend data
+snap description variable was just referenced to
+dictionary value.
+
+Solution:
+snap description should have a separate memory allocated
+through gf_strdup
+
+>Change-Id: I94da0c57919e1228919231d1563a001362b100b8
+>fixes: bz#1618004
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/glusterfs/+/20747/
+
+Change-Id: I94da0c57919e1228919231d1563a001362b100b8
+BUG: 1615578
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147521
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ ...-1618004-fix-memory-corruption-in-snap-import.t | 48 ++++++++++++++++++++++
+ .../mgmt/glusterd/src/glusterd-snapshot-utils.c    | 17 ++++++--
+ 2 files changed, 62 insertions(+), 3 deletions(-)
+ create mode 100644 tests/bugs/snapshot/bug-1618004-fix-memory-corruption-in-snap-import.t
+
+diff --git a/tests/bugs/snapshot/bug-1618004-fix-memory-corruption-in-snap-import.t b/tests/bugs/snapshot/bug-1618004-fix-memory-corruption-in-snap-import.t
+new file mode 100644
+index 0000000..a2c004e
+--- /dev/null
++++ b/tests/bugs/snapshot/bug-1618004-fix-memory-corruption-in-snap-import.t
+@@ -0,0 +1,48 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../snapshot.rc
++. $(dirname $0)/../../cluster.rc
++
++function get_volume_info ()
++{
++        local var=$1
++        $CLI_1 volume info $V0 | grep "^$var" | sed 's/.*: //'
++}
++
++cleanup;
++
++TEST verify_lvm_version
++TEST launch_cluster 2
++TEST setup_lvm 2
++
++TEST $CLI_1 peer probe $H2;
++EXPECT_WITHIN $PROBE_TIMEOUT 1 peer_count;
++
++TEST $CLI_1 volume create $V0 $H1:$L1 $H2:$L2
++EXPECT "$V0" get_volume_info 'Volume Name';
++EXPECT 'Created' get_volume_info 'Status';
++
++TEST $CLI_1 volume start $V0
++EXPECT 'Started' get_volume_info 'Status';
++
++
++# Setting system limit
++TEST $CLI_1 snapshot config activate-on-create enable
++
++TEST $CLI_1 snapshot create snap1 $V0 no-timestamp description "test"
++TEST kill_glusterd 1
++#deactivate snapshot for changing snap version, so that handshake will
++#happen when glusterd is restarted
++TEST $CLI_2 snapshot deactivate snap1
++TEST start_glusterd 1
++
++#Wait till handshake complete
++EXPECT_WITHIN ${PROCESS_UP_TIMEOUT} 'Stopped' snapshot_status snap1
++
++#Delete the snapshot, without this fix, delete will lead to assertion failure
++$CLI_1 snapshot delete all
++EXPECT '0' get_snap_count CLI_1;
++cleanup;
++
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+index ad206f6..48cf326 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+@@ -766,7 +766,7 @@ glusterd_add_snap_to_dict (glusterd_snap_t *snap, dict_t *peer_data,
+         }
+ 
+         if (snap->description) {
+-                snprintf (buf, sizeof(buf), "%s.snapid", prefix);
++                snprintf (buf, sizeof(buf), "%s.description", prefix);
+                 ret = dict_set_dynstr_with_alloc (peer_data, buf,
+                                                   snap->description);
+                 if (ret) {
+@@ -1551,6 +1551,7 @@ glusterd_import_friend_snap (dict_t *peer_data, int32_t snap_count,
+ {
+         char                 buf[NAME_MAX]    = "";
+         char                 prefix[NAME_MAX] = "";
++        char                *description      = NULL;
+         dict_t              *dict             = NULL;
+         glusterd_snap_t     *snap             = NULL;
+         glusterd_volinfo_t  *snap_vol         = NULL;
+@@ -1590,8 +1591,18 @@ glusterd_import_friend_snap (dict_t *peer_data, int32_t snap_count,
+         strncpy (snap->snapname, peer_snap_name, sizeof (snap->snapname) - 1);
+         gf_uuid_parse (peer_snap_id, snap->snap_id);
+ 
+-        snprintf (buf, sizeof(buf), "%s.snapid", prefix);
+-        ret = dict_get_str (peer_data, buf, &snap->description);
++        snprintf (buf, sizeof(buf), "%s.description", prefix);
++        ret = dict_get_str (peer_data, buf, &description);
++        if (ret == 0 && description) {
++                snap->description = gf_strdup (description);
++                if (snap->description == NULL) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_SNAP_CREATION_FAIL,
++                                "Saving the Snapshot Description Failed");
++                        ret = -1;
++                        goto out;
++                }
++        }
+ 
+         snprintf (buf, sizeof(buf), "%s.time_stamp", prefix);
+         ret = dict_get_int64 (peer_data, buf, &snap->time_stamp);
+-- 
+1.8.3.1
+

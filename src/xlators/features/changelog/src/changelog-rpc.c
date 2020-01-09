@@ -8,6 +8,7 @@
    cases as published by the Free Software Foundation.
 */
 
+#include "syscall.h"
 #include "changelog-rpc.h"
 #include "changelog-mem-types.h"
 #include "changelog-ev-handle.h"
@@ -18,7 +19,7 @@ static void
 changelog_cleanup_dispatchers (xlator_t *this,
                                changelog_priv_t *priv, int count)
 {
-        for (; count >= 0; count--) {
+        for (count--; count >= 0; count--) {
                 (void) changelog_thread_cleanup
                         (this, priv->ev_dispatcher[count]);
         }
@@ -70,6 +71,8 @@ changelog_init_rpc_threads (xlator_t *this, changelog_priv_t *priv,
         int               j    = 0;
         int               ret  = 0;
         changelog_clnt_t *conn = NULL;
+        char              thread_name[GF_THREAD_NAMEMAX] = {0,};
+
 
         conn = &priv->connections;
 
@@ -96,8 +99,8 @@ changelog_init_rpc_threads (xlator_t *this, changelog_priv_t *priv,
                 goto cleanup_active_lock;
 
         /* spawn reverse connection thread */
-        ret = pthread_create (&priv->connector,
-                              NULL, changelog_ev_connector, conn);
+        ret = gf_thread_create (&priv->connector,
+                                NULL, changelog_ev_connector, conn, "clogecon");
         if (ret != 0)
                 goto cleanup_wait_lock;
 
@@ -109,10 +112,13 @@ changelog_init_rpc_threads (xlator_t *this, changelog_priv_t *priv,
 
         /* spawn dispatcher threads */
         for (; j < nr_dispatchers; j++) {
-                ret = pthread_create (&priv->ev_dispatcher[j],
-                                      NULL, changelog_ev_dispatch, conn);
+                snprintf (thread_name, sizeof(thread_name),
+                          "%s%d", "clogd", j);
+                ret = gf_thread_create (&priv->ev_dispatcher[j],
+                                        NULL, changelog_ev_dispatch, conn,
+                                        thread_name);
                 if (ret != 0) {
-                        changelog_cleanup_dispatchers (this, priv, --j);
+                        changelog_cleanup_dispatchers (this, priv, j);
                         break;
                 }
         }
@@ -126,9 +132,9 @@ changelog_init_rpc_threads (xlator_t *this, changelog_priv_t *priv,
  cleanup_connector:
         (void) pthread_cancel (priv->connector);
  cleanup_wait_lock:
-        (void) LOCK_DESTROY (&conn->wait_lock);
+        LOCK_DESTROY (&conn->wait_lock);
  cleanup_active_lock:
-        (void) LOCK_DESTROY (&conn->active_lock);
+        LOCK_DESTROY (&conn->active_lock);
  cleanup_pending_cond:
         (void) pthread_cond_destroy (&conn->pending_cond);
  cleanup_pending_lock:
@@ -160,11 +166,12 @@ changelog_destroy_rpc_listner (xlator_t *this, changelog_priv_t *priv)
 }
 
 rpcsvc_t *
-changelog_init_rpc_listner (xlator_t *this, changelog_priv_t *priv,
+changelog_init_rpc_listener (xlator_t *this, changelog_priv_t *priv,
                             rbuf_t *rbuf, int nr_dispatchers)
 {
         int ret = 0;
         char sockfile[UNIX_PATH_MAX] = {0,};
+        rpcsvc_t *svcp;
 
         ret = changelog_init_rpc_threads (this, priv, rbuf, nr_dispatchers);
         if (ret)
@@ -172,9 +179,11 @@ changelog_init_rpc_listner (xlator_t *this, changelog_priv_t *priv,
 
         CHANGELOG_MAKE_SOCKET_PATH (priv->changelog_brick,
                                     sockfile, UNIX_PATH_MAX);
-        return changelog_rpc_server_init (this, sockfile, NULL,
+        (void) sys_unlink (sockfile);
+        svcp = changelog_rpc_server_init (this, sockfile, NULL,
                                           changelog_rpcsvc_notify,
                                           changelog_programs);
+        return svcp;
 }
 
 void
@@ -183,7 +192,7 @@ changelog_rpc_clnt_cleanup (changelog_rpc_clnt_t *crpc)
         if (!crpc)
                 return;
         crpc->c_clnt = NULL;
-        (void) LOCK_DESTROY (&crpc->lock);
+        LOCK_DESTROY (&crpc->lock);
         GF_FREE (crpc);
 }
 
@@ -199,7 +208,10 @@ changelog_rpc_clnt_init (xlator_t *this,
                 goto error_return;
         INIT_LIST_HEAD (&crpc->list);
 
-        crpc->ref = 0;
+        /* Take a ref, the last unref will be on RPC_CLNT_DESTROY
+         * which comes as a result of last rpc_clnt_unref.
+         */
+        crpc->ref = 1;
         changelog_set_disconnect_flag (crpc, _gf_false);
 
         crpc->filter = rpc_req->filter;
@@ -246,7 +258,9 @@ changelog_handle_probe (rpcsvc_request_t *req)
         ret = xdr_to_generic (req->msg[0],
                               &rpc_req, (xdrproc_t)xdr_changelog_probe_req);
         if (ret < 0) {
-                gf_log ("", GF_LOG_ERROR, "xdr decoding error");
+                gf_msg ("", GF_LOG_ERROR, 0,
+                        CHANGELOG_MSG_HANDLE_PROBE_ERROR,
+                        "xdr decoding error");
                 req->rpc_err = GARBAGE_ARGS;
                 goto handle_xdr_error;
         }

@@ -1,0 +1,59 @@
+From 164e0384d6ae0ac9be713b4167d2b7151a027dc4 Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Tue, 28 Nov 2017 18:48:31 +0530
+Subject: [PATCH 086/128] snapshot: lvm cleanup during snapshot remove
+
+Problem : During snapshot remove lvm cleanup was skipped for deactivated
+          snapshots by assuming that its mount point is not present.
+
+Fix : Do no skip lvm cleanup by checking active mount point.
+
+Upstream Patch : https://review.gluster.org/18654
+
+>BUG: 1509254
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+
+BUG: 1467903
+Change-Id: I856d2d647c75db8b37b7f430277daef6eb7580a8
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124534
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index 275abe3..5bdf27f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -2984,13 +2984,19 @@ glusterd_lvm_snapshot_remove (dict_t *rsp_dict, glusterd_volinfo_t *snap_vol)
+                         continue;
+                 }
+ 
+-                ret = sys_lstat (brick_mount_path, &stbuf);
+-                if (ret) {
+-                        gf_msg_debug (this->name, 0,
+-                                "Brick %s:%s already deleted.",
+-                                brickinfo->hostname, brickinfo->path);
+-                        ret = 0;
+-                        continue;
++                /* As deactivated snapshot have no active mount point we
++                 * check only for activated snapshot.
++                 */
++                if (snap_vol->status == GLUSTERD_STATUS_STARTED) {
++                        ret = sys_lstat (brick_mount_path, &stbuf);
++                        if (ret) {
++                                gf_msg_debug (this->name, 0,
++                                              "Brick %s:%s already deleted.",
++                                              brickinfo->hostname,
++                                              brickinfo->path);
++                                ret = 0;
++                                continue;
++                        }
+                 }
+ 
+                 if (brickinfo->snap_status == -1) {
+-- 
+1.8.3.1
+

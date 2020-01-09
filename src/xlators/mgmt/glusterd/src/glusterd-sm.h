@@ -10,11 +10,6 @@
 #ifndef _GLUSTERD_SM_H_
 #define _GLUSTERD_SM_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <pthread.h>
 #include "compat-uuid.h"
 
@@ -147,6 +142,7 @@ typedef enum glusterd_friend_sm_event_type_ {
         GD_FRIEND_EVENT_RCVD_REMOVE_FRIEND,
         GD_FRIEND_EVENT_REMOVE_FRIEND,
         GD_FRIEND_EVENT_CONNECTED,
+        GD_FRIEND_EVENT_NEW_NAME,
         GD_FRIEND_EVENT_MAX
 } glusterd_friend_sm_event_type_t;
 

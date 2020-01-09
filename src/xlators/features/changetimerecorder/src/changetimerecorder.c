@@ -13,6 +13,10 @@
 #include "gfdb_sqlite3.h"
 #include "ctr-helper.h"
 #include "ctr-messages.h"
+#include "syscall.h"
+
+#include "changetimerecorder.h"
+#include "tier-ctr-interface.h"
 
 /*******************************inode forget***********************************/
 
@@ -125,8 +129,9 @@ ctr_lookup_wind(call_frame_t                    *frame,
                 /* Copy hard link info*/
                 gf_uuid_copy (CTR_DB_REC(ctr_local).pargfid,
                         *((NEW_LINK_CX(ctr_inode_cx))->pargfid));
-                strcpy (CTR_DB_REC(ctr_local).file_name,
-                        NEW_LINK_CX(ctr_inode_cx)->basename);
+                strncpy (CTR_DB_REC(ctr_local).file_name,
+                         NEW_LINK_CX(ctr_inode_cx)->basename,
+                         sizeof(CTR_DB_REC(ctr_local).file_name));
 
                 /* Since we are in lookup we can ignore errors while
                  * Inserting in the DB, because there may be many
@@ -840,6 +845,11 @@ ctr_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         }
 
         ctr_local = frame->local;
+        if (!ctr_local) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_NULL_LOCAL,
+                        "ctr_local is NULL.");
+                goto out;
+        }
 
         /* This is not the only link */
         if (remaining_links > 1) {
@@ -1717,14 +1727,21 @@ ctr_db_query (xlator_t *this,
                 goto out;
         }
         if (!ipc_ctr_params->is_promote) {
-                if (ipc_ctr_params->write_freq_threshold == 0 &&
-                        ipc_ctr_params->read_freq_threshold == 0) {
+                if (ipc_ctr_params->emergency_demote) {
+                        /* emergency demotion mode */
+                        ret = find_all (conn_node,
+                                ctr_db_query_callback,
+                                (void *)&query_cbk_args,
+                                ipc_ctr_params->query_limit);
+                } else {
+                        if (ipc_ctr_params->write_freq_threshold == 0 &&
+                                ipc_ctr_params->read_freq_threshold == 0) {
                                 ret = find_unchanged_for_time (
                                         conn_node,
                                         ctr_db_query_callback,
                                         (void *)&query_cbk_args,
                                         &ipc_ctr_params->time_stamp);
-                } else {
+                        } else {
                                 ret = find_unchanged_for_time_freq (
                                         conn_node,
                                         ctr_db_query_callback,
@@ -1733,6 +1750,7 @@ ctr_db_query (xlator_t *this,
                                         ipc_ctr_params->write_freq_threshold,
                                         ipc_ctr_params->read_freq_threshold,
                                         _gf_false);
+                        }
                 }
         } else {
                 if (ipc_ctr_params->write_freq_threshold == 0 &&
@@ -1775,13 +1793,68 @@ out:
                 ret = query_cbk_args.count;
 
         if (query_cbk_args.query_fd >= 0) {
-                close (query_cbk_args.query_fd);
+                sys_close (query_cbk_args.query_fd);
                 query_cbk_args.query_fd = -1;
         }
 
         return ret;
 }
 
+void *
+ctr_compact_thread (void *args)
+{
+        int ret = -1;
+        void *db_conn = NULL;
+
+        xlator_t *this = NULL;
+        gf_ctr_private_t *priv = NULL;
+        gf_boolean_t compact_active = _gf_false;
+        gf_boolean_t compact_mode_switched = _gf_false;
+
+        this = (xlator_t *)args;
+
+        GF_VALIDATE_OR_GOTO("ctr", this, out);
+
+        priv = this->private;
+
+        db_conn = priv->_db_conn;
+        compact_active = priv->compact_active;
+        compact_mode_switched = priv->compact_mode_switched;
+
+        gf_msg ("ctr-compact", GF_LOG_INFO, 0, CTR_MSG_SET,
+                "Starting compaction");
+
+        ret = compact_db(db_conn, compact_active,
+                         compact_mode_switched);
+
+        if (ret) {
+                gf_msg ("ctr-compact", GF_LOG_ERROR, 0, CTR_MSG_SET,
+                        "Failed to perform the compaction");
+        }
+
+        ret = pthread_mutex_lock (&priv->compact_lock);
+
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                        "Failed to acquire lock");
+                goto out;
+        }
+
+        /* We are done compaction on this brick. Set all flags to false */
+        priv->compact_active = _gf_false;
+        priv->compact_mode_switched = _gf_false;
+
+        ret = pthread_mutex_unlock (&priv->compact_lock);
+
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                        "Failed to release lock");
+                goto out;
+        }
+
+out:
+        return NULL;
+}
 
 int
 ctr_ipc_helper (xlator_t *this, dict_t *in_dict,
@@ -1795,7 +1868,8 @@ ctr_ipc_helper (xlator_t *this, dict_t *in_dict,
         char *db_param = NULL;
         char *query_file = NULL;
         gfdb_ipc_ctr_params_t *ipc_ctr_params = NULL;
-
+        int result = 0;
+        pthread_t compact_thread;
 
         GF_VALIDATE_OR_GOTO ("ctr", this, out);
         GF_VALIDATE_OR_GOTO (this->name, this->private, out);
@@ -1881,11 +1955,78 @@ ctr_ipc_helper (xlator_t *this, dict_t *in_dict,
                 SET_DB_PARAM_TO_DICT(this->name, out_dict,
                                         db_param_key,
                                         db_param, ret, error);
+        } /* if its an attempt to compact the database */
+        else if (strncmp (ctr_ipc_ops, GFDB_IPC_CTR_SET_COMPACT_PRAGMA,
+                          strlen (GFDB_IPC_CTR_SET_COMPACT_PRAGMA)) == 0) {
+
+                ret = pthread_mutex_lock (&priv->compact_lock);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                                "Failed to acquire lock for compaction");
+                        goto out;
+                }
+
+                if ((priv->compact_active || priv->compact_mode_switched)) {
+                        /* Compaction in progress. LEAVE */
+                        gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                               "Compaction already in progress.");
+                        pthread_mutex_unlock (&priv->compact_lock);
+                        goto out;
+                }
+                /* At this point, we should be the only one on the brick */
+                /* compacting */
+
+                /* Grab the arguments from the dictionary */
+                ret = dict_get_int32 (in_dict, "compact_active", &result);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                               "Failed to get compaction type");
+                        goto out;
+                }
+
+                if (result) {
+                        priv->compact_active = _gf_true;
+                }
+
+                ret = dict_get_int32 (in_dict, "compact_mode_switched"
+                                     , &result);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                               "Failed to see if compaction switched");
+                        goto out;
+                }
+
+                if (result) {
+                        priv->compact_mode_switched = _gf_true;
+                        gf_msg ("ctr-compact", GF_LOG_TRACE, 0, CTR_MSG_SET,
+                                "Pre-thread: Compact mode switch is true");
+                } else {
+                        gf_msg ("ctr-compact", GF_LOG_TRACE, 0, CTR_MSG_SET,
+                                "Pre-thread: Compact mode switch is false");
+                }
+
+                ret = pthread_mutex_unlock (&priv->compact_lock);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                                "Failed to release lock for compaction");
+                        goto out;
+                }
+
+                ret = gf_thread_create (&compact_thread, NULL,
+                                        ctr_compact_thread, (void *)this,
+                                        "ctrcomp");
+
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0, CTR_MSG_SET,
+                                "Failed to spawn compaction thread");
+                        goto out;
+                }
+
+                goto out;
         } /* default case */
         else {
                 goto out;
         }
-
 
         ret = 0;
         goto out;
@@ -1957,7 +2098,7 @@ reconfigure (xlator_t *this, dict_t *options)
         priv = this->private;
         if (dict_get_str(options, "changetimerecorder.frequency",
                          &temp_str)) {
-                gf_msg(this->name, GF_LOG_INFO, 0, CTR_MSG_SET, "set");
+                gf_msg(this->name, GF_LOG_TRACE, 0, CTR_MSG_SET, "set");
         }
 
         GF_OPTION_RECONF ("ctr-enabled", priv->enabled, options,
@@ -2055,7 +2196,7 @@ init (xlator_t *this)
         if (!priv) {
                 gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
                         CTR_MSG_CALLOC_FAILED,
-                        "Calloc didnt work!!!");
+                        "Calloc did not work!!!");
                 goto error;
         }
 
@@ -2071,6 +2212,18 @@ init (xlator_t *this)
                                 CTR_DEFAULT_HARDLINK_EXP_PERIOD;
         priv->ctr_lookupheal_inode_timeout =
                                 CTR_DEFAULT_INODE_EXP_PERIOD;
+
+        /* For compaction */
+        priv->compact_active = _gf_false;
+        priv->compact_mode_switched = _gf_false;
+        ret_db = pthread_mutex_init (&priv->compact_lock, NULL);
+
+        if (ret_db) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        CTR_MSG_FATAL_ERROR,
+                        "FATAL: Failed initializing compaction mutex");
+                goto error;
+        }
 
         /*Extract ctr xlator options*/
         ret_db = extract_ctr_options (this, priv);
@@ -2116,6 +2269,7 @@ init (xlator_t *this)
                         goto error;
         }
 
+
         ret_db = 0;
         goto out;
 
@@ -2142,6 +2296,34 @@ out:
 
         this->private = (void *)priv;
         return 0;
+}
+
+int
+notify (xlator_t *this, int event, void *data, ...)
+{
+
+       gf_ctr_private_t *priv = NULL;
+       int               ret  = 0;
+
+       priv = this->private;
+
+       if (!priv)
+               goto out;
+
+       if (event == GF_EVENT_CLEANUP) {
+               if (fini_db (priv->_db_conn)) {
+                       gf_msg (this->name, GF_LOG_WARNING, 0,
+                                CTR_MSG_CLOSE_DB_CONN_FAILED, "Failed closing "
+                                "db connection");
+               }
+               if (priv->_db_conn)
+                        priv->_db_conn = NULL;
+       }
+       ret = default_notify (this, event, data);
+
+out:
+      return ret;
+
 }
 
 int32_t
@@ -2178,6 +2360,11 @@ fini (xlator_t *this)
                                 "db connection");
                 }
                 GF_FREE (priv->ctr_db_path);
+                if (pthread_mutex_destroy (&priv->compact_lock)) {
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                CTR_MSG_CLOSE_DB_CONN_FAILED, "Failed to "
+                                "destroy the compaction mutex");
+                }
         }
         GF_FREE (priv);
         mem_pool_destroy (this->local_pool);
@@ -2292,11 +2479,11 @@ struct volume_options options[] = {
         },
         { .key  = {GFDB_SQL_PARAM_WAL_AUTOCHECK},
           .type = GF_OPTION_TYPE_INT,
-          .default_value = "1000"
+          .default_value = "25000"
         },
         { .key  = {GFDB_SQL_PARAM_CACHE_SIZE},
           .type = GF_OPTION_TYPE_INT,
-          .default_value = "1000"
+          .default_value = "12500"
         },
         { .key  = {GFDB_SQL_PARAM_PAGE_SIZE},
           .type = GF_OPTION_TYPE_INT,

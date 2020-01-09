@@ -1,0 +1,31 @@
+From c59e78a5e8b7a1802f1f7caa1eab480a3395ba91 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Wed, 15 Nov 2017 12:18:57 +0530
+Subject: [PATCH 74/74] build: make /var/run available on RHEL-6
+
+make /var/run available on RHEL-6 as well
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Iec79478e2233bd3194030a2c75273fc2ba3d17bb
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index b6ba91c..da8a3e5 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -118,7 +118,7 @@
+ %endif
+ 
+ # From https://fedoraproject.org/wiki/Packaging:Python#Macros
+-%if ( 0%{?rhel} && 0%{?rhel} <= 5 )
++%if ( 0%{?rhel} && 0%{?rhel} <= 6 )
+ %{!?python2_sitelib: %global python2_sitelib %(python2 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")}
+ %{!?python2_sitearch: %global python2_sitearch %(python2 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")}
+ %global _rundir %{_localstatedir}/run
+-- 
+1.8.3.1
+

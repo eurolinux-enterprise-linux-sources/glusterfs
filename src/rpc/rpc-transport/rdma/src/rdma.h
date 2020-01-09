@@ -12,11 +12,6 @@
 #define _XPORT_RDMA_H
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #ifndef MAX_IOVEC
 #define MAX_IOVEC 16
 #endif /* MAX_IOVEC */
@@ -149,6 +144,7 @@ struct __gf_rdma_options {
 	uint8_t  attr_timeout;
 	uint8_t  attr_retry_cnt;
 	uint8_t  attr_rnr_retry;
+        uint32_t backlog;
 };
 typedef struct __gf_rdma_options gf_rdma_options_t;
 
@@ -388,6 +384,7 @@ struct __gf_rdma_private {
         pthread_mutex_t             recv_mutex;
         pthread_cond_t              recv_cond;
         gf_rdma_transport_entity_t  entity;
+        uint32_t                    backlog;
 };
 typedef struct __gf_rdma_private    gf_rdma_private_t;
 

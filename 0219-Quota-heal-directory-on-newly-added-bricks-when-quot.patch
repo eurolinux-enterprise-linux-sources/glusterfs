@@ -1,0 +1,449 @@
+From acfde85dc1e44f37432ee80619ed28cfe4df280b Mon Sep 17 00:00:00 2001
+From: Sanoj Unnikrishnan <sunnikri@redhat.com>
+Date: Wed, 4 Apr 2018 14:36:56 +0530
+Subject: [PATCH 219/236] Quota: heal directory on newly added bricks when
+ quota limit is reached
+
+Problem: if a lookup is done on a newly added brick for a path on which limit
+has been reached, the lookup fails to heal the directory tree due to quota.
+
+Solution: Tag the lookup as an internal fop and ignore it in quota.
+Since marking internal fop does not usually give enough contextual information.
+Introducing new flags to pass the contextual info.
+
+Adding dict_check_flag and dict_set_flag to aid flag operations.
+A flag is a single bit in a bit array (currently limited to 256 bits).
+
+Upstream Reference:
+> Change-Id: Ifb6a68bcaffedd425dd0f01f7db24edd5394c095
+> fixes: bz#1505355
+> BUG: 1505355
+> Signed-off-by: Sanoj Unnikrishnan <sunnikri@redhat.com>
+> Patch : https://review.gluster.org/#/c/18554/
+
+BUG: 1475779
+Change-Id: Ifb6a68bcaffedd425dd0f01f7db24edd5394c095
+Signed-off-by: Sanoj Unnikrishnan <sunnikri@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134506
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Hari Gowtham Gopal <hgowtham@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ libglusterfs/src/dict.c                     | 190 ++++++++++++++++++++++++++++
+ libglusterfs/src/dict.h                     |   8 ++
+ libglusterfs/src/glusterfs.h                |  27 ++++
+ xlators/cluster/dht/src/dht-selfheal.c      |  17 ++-
+ xlators/features/quota/src/quota-messages.h |  19 ++-
+ xlators/features/quota/src/quota.c          |  31 ++++-
+ xlators/storage/posix/src/posix-helpers.c   |   4 +
+ 7 files changed, 292 insertions(+), 4 deletions(-)
+
+diff --git a/libglusterfs/src/dict.c b/libglusterfs/src/dict.c
+index 243c929..ebcf694 100644
+--- a/libglusterfs/src/dict.c
++++ b/libglusterfs/src/dict.c
+@@ -2020,6 +2020,196 @@ err:
+         return ret;
+ }
+ 
++/*
++ * dict_check_flag can be used to check a one bit flag in an array of flags
++ * The flag argument indicates the bit position (within the array of bits).
++ * Currently limited to max of 256 flags for a key.
++ * return value,
++ * 1 : flag is set
++ * 0 : flag is not set
++ * <0: Error
++ */
++int
++dict_check_flag (dict_t *this, char *key, int flag)
++{
++        data_t  *data = NULL;
++        int     ret = -ENOENT;
++
++        ret = dict_get_with_ref (this, key, &data);
++        if (ret < 0) {
++                return ret;
++        }
++
++        if (BIT_VALUE((unsigned char *)(data->data), flag))
++                ret = 1;
++        else
++                ret = 0;
++
++        data_unref(data);
++        return ret;
++}
++
++/*
++ * _dict_modify_flag can be used to set/clear a bit flag in an array of flags
++ * flag: indicates the bit position. limited to max of DICT_MAX_FLAGS.
++ * op: Indicates operation DICT_FLAG_SET / DICT_FLAG_CLEAR
++ */
++static int
++_dict_modify_flag (dict_t *this, char *key, int flag, int op)
++{
++        data_t          *data           = NULL;
++        int             ret             = 0;
++        uint32_t        hash            = 0;
++        data_pair_t     *pair           = NULL;
++        char            *ptr            = NULL;
++        int             hashval         = 0;
++
++        if (!this || !key) {
++                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
++                                  LG_MSG_INVALID_ARG,
++                                  "dict OR key (%s) is NULL", key);
++                ret = -EINVAL;
++                goto err;
++        }
++
++        /*
++         * Using a size of 32 bytes to support max of 256
++         * flags in a single key. This should be suffcient.
++         */
++        GF_ASSERT(flag >= 0 && flag < DICT_MAX_FLAGS);
++
++        hash = SuperFastHash (key, strlen (key));
++        LOCK (&this->lock);
++        {
++                pair = dict_lookup_common (this, key, hash);
++
++                if (pair) {
++                        data = pair->value;
++                        if (op == DICT_FLAG_SET)
++                                BIT_SET((unsigned char *)(data->data), flag);
++                        else
++                                BIT_CLEAR((unsigned char *)(data->data), flag);
++                        ret = 0;
++                } else {
++                        ptr = GF_CALLOC(1, DICT_MAX_FLAGS / 8,
++                                        gf_common_mt_char);
++                        if (!ptr) {
++                                gf_msg("dict", GF_LOG_ERROR, ENOMEM,
++                                       LG_MSG_NO_MEMORY,
++                                       "unable to allocate flag bit array");
++                                ret = -ENOMEM;
++                                goto err;
++                        }
++
++                        data = data_from_dynptr(ptr, DICT_MAX_FLAGS / 8);
++
++                        if (!data) {
++                                gf_msg("dict", GF_LOG_ERROR, ENOMEM,
++                                       LG_MSG_NO_MEMORY,
++                                       "unable to allocate data");
++                                GF_FREE(ptr);
++                                ret = -ENOMEM;
++                                goto err;
++                        }
++
++                        if (op == DICT_FLAG_SET)
++                                BIT_SET((unsigned char *)(data->data), flag);
++                        else
++                                BIT_CLEAR((unsigned char *)(data->data), flag);
++
++                        if (this->free_pair_in_use) {
++                                pair = mem_get0 (THIS->ctx->dict_pair_pool);
++                                if (!pair) {
++                                        gf_msg("dict", GF_LOG_ERROR, ENOMEM,
++                                               LG_MSG_NO_MEMORY,
++                                               "unable to allocate dict pair");
++                                        ret = -ENOMEM;
++                                        goto err;
++                                }
++                        } else {
++                                pair = &this->free_pair;
++                                this->free_pair_in_use = _gf_true;
++                        }
++
++                        pair->key = (char *)GF_CALLOC(1, strlen (key) + 1,
++                                                      gf_common_mt_char);
++                        if (!pair->key) {
++                                gf_msg("dict", GF_LOG_ERROR, ENOMEM,
++                                       LG_MSG_NO_MEMORY,
++                                       "unable to allocate dict pair");
++                                ret = -ENOMEM;
++                                goto err;
++                        }
++                        strcpy (pair->key, key);
++                        pair->key_hash = hash;
++                        pair->value = data_ref (data);
++
++                        hashval = hash % this->hash_size;
++                        pair->hash_next = this->members[hashval];
++                        this->members[hashval] = pair;
++
++                        pair->next = this->members_list;
++                        pair->prev = NULL;
++                        if (this->members_list)
++                                this->members_list->prev = pair;
++                        this->members_list = pair;
++                        this->count++;
++
++
++                        if (this->max_count < this->count)
++                                this->max_count = this->count;
++                }
++        }
++
++        UNLOCK (&this->lock);
++        return 0;
++
++err:
++        UNLOCK (&this->lock);
++        if (pair) {
++                if (pair->key)
++                        free(pair->key);
++
++                if (pair == &this->free_pair) {
++                        this->free_pair_in_use = _gf_false;
++                } else {
++                        mem_put (pair);
++                }
++        }
++
++        if (data)
++                data_destroy(data);
++
++
++        gf_msg("dict", GF_LOG_ERROR, EINVAL,
++               LG_MSG_DICT_SET_FAILED,
++               "unable to set key (%s) in dict ", key);
++
++        return ret;
++}
++
++/*
++ * Todo:
++ * Add below primitives as needed:
++ * dict_check_flags(this, key, flag...): variadic function to check
++ *                                       multiple flags at a time.
++ * dict_set_flags(this, key, flag...): set multiple flags
++ * dict_clear_flags(this, key, flag...): reset multiple flags
++ */
++
++int
++dict_set_flag (dict_t *this, char *key, int flag)
++{
++        return _dict_modify_flag (this, key, flag, DICT_FLAG_SET);
++}
++
++int
++dict_clear_flag (dict_t *this, char *key, int flag)
++{
++        return _dict_modify_flag (this, key, flag, DICT_FLAG_CLEAR);
++}
++
++
+ int
+ dict_get_double (dict_t *this, char *key, double *val)
+ {
+diff --git a/libglusterfs/src/dict.h b/libglusterfs/src/dict.h
+index b131363..be3b0ad 100644
+--- a/libglusterfs/src/dict.h
++++ b/libglusterfs/src/dict.h
+@@ -60,6 +60,10 @@ typedef struct _data_pair data_pair_t;
+                                                                         \
+         } while (0)
+ 
++#define DICT_MAX_FLAGS            256
++#define DICT_FLAG_SET          1
++#define DICT_FLAG_CLEAR        0
++
+ struct _data {
+         unsigned char  is_static:1;
+         unsigned char  is_const:1;
+@@ -222,6 +226,10 @@ GF_MUST_CHECK int dict_set_uint32 (dict_t *this, char *key, uint32_t val);
+ GF_MUST_CHECK int dict_get_uint64 (dict_t *this, char *key, uint64_t *val);
+ GF_MUST_CHECK int dict_set_uint64 (dict_t *this, char *key, uint64_t val);
+ 
++GF_MUST_CHECK int dict_check_flag (dict_t *this, char *key, int flag);
++GF_MUST_CHECK int dict_set_flag (dict_t *this, char *key, int flag);
++GF_MUST_CHECK int dict_clear_flag (dict_t *this, char *key, int flag);
++
+ GF_MUST_CHECK int dict_get_double (dict_t *this, char *key, double *val);
+ GF_MUST_CHECK int dict_set_double (dict_t *this, char *key, double val);
+ 
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index 5d5f5c8..b161bf0 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -156,6 +156,33 @@
+ #define GLUSTERFS_VERSION_XCHG_KEY     "glusterfs.version.xchg"
+ 
+ #define GLUSTERFS_INTERNAL_FOP_KEY  "glusterfs-internal-fop"
++
++/* GlusterFS Internal FOP Indicator flags
++ * (To pass information on the context in which a paritcular
++ *  fop is performed between translators)
++ * The presence of a particular flag must be treated as an
++ * indicator of the context, however the flag is added only in
++ * a scenario where there is a need for such context across translators.
++ * So it cannot be an absolute information on context.
++ */
++#define GF_INTERNAL_CTX_KEY  "glusterfs.internal-ctx"
++
++/*
++ * Always append entries to end of the enum, do not delete entries.
++ * Currently dict_set_flag allows to set upto 256 flag, if the enum
++ * needs to grow beyond this dict_set_flag has to be changed accordingly
++ */
++enum gf_internal_fop_indicator {
++        GF_DHT_HEAL_DIR       /* Index 0 in bit array*/
++};
++
++/* Todo:
++ * Add GF_FOP_LINK_FILE         0x2ULL
++ * address GLUSTERFS_MARKER_DONT_ACCOUNT_KEY and
++ * GLUSTERFS_INTERNAL_FOP_KEY with this flag
++ */
++
++
+ #define DHT_CHANGELOG_RENAME_OP_KEY   "changelog.rename-op"
+ 
+ #define ZR_FILE_CONTENT_STR     "glusterfs.file."
+diff --git a/xlators/cluster/dht/src/dht-selfheal.c b/xlators/cluster/dht/src/dht-selfheal.c
+index c2c4034..7b192d3 100644
+--- a/xlators/cluster/dht/src/dht-selfheal.c
++++ b/xlators/cluster/dht/src/dht-selfheal.c
+@@ -1404,10 +1404,25 @@ dht_selfheal_dir_mkdir_lookup_done (call_frame_t *frame, xlator_t *this)
+         dht_dir_set_heal_xattr (this, local, dict, local->xattr, NULL,
+                                 NULL);
+ 
+-        if (!dict)
++        if (!dict) {
+                 gf_msg (this->name, GF_LOG_WARNING, 0,
+                         DHT_MSG_DICT_SET_FAILED,
+                         "dict is NULL, need to make sure gfids are same");
++                dict = dict_new ();
++                if (!dict)
++                        return -1;
++        }
++        ret = dict_set_flag (dict, GF_INTERNAL_CTX_KEY, GF_DHT_HEAL_DIR);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        DHT_MSG_DICT_SET_FAILED,
++                        "Failed to set dictionary value for"
++                        " key = %s at path: %s",
++                        GF_INTERNAL_CTX_KEY, loc->path);
++                /* We can still continue. As heal can still happen
++                 * unless quota limits have reached for the dir.
++                 */
++        }
+ 
+         cnt = layout->cnt;
+         for (i = 0; i < cnt; i++) {
+diff --git a/xlators/features/quota/src/quota-messages.h b/xlators/features/quota/src/quota-messages.h
+index b01fe98..7478b20 100644
+--- a/xlators/features/quota/src/quota-messages.h
++++ b/xlators/features/quota/src/quota-messages.h
+@@ -46,7 +46,7 @@
+  */
+ 
+ #define GLFS_QUOTA_BASE          GLFS_MSGID_COMP_QUOTA
+-#define GLFS_NUM_MESSAGES        23
++#define GLFS_NUM_MESSAGES        25
+ #define GLFS_MSGID_END     (GLFS_QUOTA_BASE + GLFS_NUM_MESSAGES + 1)
+ /* Messaged with message IDs */
+ #define glfs_msg_start_x GLFS_QUOTA_BASE, "Invalid: Start of messages"
+@@ -240,6 +240,23 @@
+ 
+ #define Q_MSG_RPC_SUBMIT_FAILED     (GLFS_QUOTA_BASE + 23)
+ 
++/*!
++ * @messageid 120024
++ * @diagnosis
++ * @recommendedaction
++ */
++
++#define Q_MSG_ENFORCEMENT_SKIPPED     (GLFS_QUOTA_BASE + 24)
++
++/*!
++ * @messageid 120025
++ * @diagnosis
++ * @recommendedaction
++ */
++
++#define Q_MSG_INTERNAL_FOP_KEY_MISSING    (GLFS_QUOTA_BASE + 25)
++
++
+ /*------------*/
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+ 
+diff --git a/xlators/features/quota/src/quota.c b/xlators/features/quota/src/quota.c
+index a307845..af7b65a 100644
+--- a/xlators/features/quota/src/quota.c
++++ b/xlators/features/quota/src/quota.c
+@@ -1591,6 +1591,28 @@ out:
+         return ret;
+ }
+ 
++/*
++ * return _gf_true if enforcement is needed and _gf_false otherwise
++ */
++gf_boolean_t
++should_quota_enforce (xlator_t *this, dict_t *dict, glusterfs_fop_t fop)
++{
++        int               ret = 0;
++
++        ret = dict_check_flag(dict, GF_INTERNAL_CTX_KEY, GF_DHT_HEAL_DIR);
++
++        if (fop == GF_FOP_MKDIR && ret == DICT_FLAG_SET) {
++                return _gf_false;
++        } else if (ret == -ENOENT) {
++                gf_msg (this->name, GF_LOG_DEBUG, EINVAL,
++			Q_MSG_INTERNAL_FOP_KEY_MISSING,
++                        "No internal fop context present");
++                goto out;
++        }
++out:
++        return _gf_true;
++}
++
+ int32_t
+ quota_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                   int32_t op_ret, int32_t op_errno, inode_t *inode,
+@@ -1965,7 +1987,6 @@ unwind:
+         return 0;
+ }
+ 
+-
+ int32_t
+ quota_mkdir (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
+              mode_t umask, dict_t *xdata)
+@@ -1976,9 +1997,15 @@ quota_mkdir (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
+         call_stub_t   *stub  = NULL;
+ 
+         priv = this->private;
+-
+         WIND_IF_QUOTAOFF (priv->is_quota_on, off);
+ 
++        if (!should_quota_enforce(this, xdata, GF_FOP_MKDIR)) {
++                gf_msg (this->name, GF_LOG_DEBUG, 0,
++			Q_MSG_ENFORCEMENT_SKIPPED,
++                        "Enforcement has been skipped(internal fop).");
++                goto off;
++        }
++
+         local = quota_local_new ();
+         if (local == NULL) {
+                 op_errno = ENOMEM;
+diff --git a/xlators/storage/posix/src/posix-helpers.c b/xlators/storage/posix/src/posix-helpers.c
+index ba1d8c3..4107265 100644
+--- a/xlators/storage/posix/src/posix-helpers.c
++++ b/xlators/storage/posix/src/posix-helpers.c
+@@ -1200,6 +1200,10 @@ posix_handle_pair (xlator_t *this, const char *real_path,
+         } else if (!strncmp(key, POSIX_ACL_ACCESS_XATTR, strlen(key))
+                    && stbuf && IS_DHT_LINKFILE_MODE (stbuf)) {
+                 goto out;
++        } else if (!strncmp(key, GF_INTERNAL_CTX_KEY, strlen(key))) {
++                /* ignore this key value pair */
++                ret = 0;
++                goto out;
+         } else {
+                 sys_ret = sys_lsetxattr (real_path, key, value->data,
+                                          value->len, flags);
+-- 
+1.8.3.1
+

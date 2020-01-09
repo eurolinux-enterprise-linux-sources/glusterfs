@@ -9,11 +9,6 @@
 */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "server.h"
 #include "server-helpers.h"
 #include "rpc-common-xdr.h"
@@ -22,6 +17,9 @@
 #include "glusterfs3.h"
 #include "authenticate.h"
 #include "server-messages.h"
+#include "syscall.h"
+#include "events.h"
+#include "syncop.h"
 
 struct __get_xl_struct {
         const char *name;
@@ -38,27 +36,6 @@ gf_compare_client_version (rpcsvc_request_t *req, int fop_prognum,
 
         return ret;
 }
-
-void __check_and_set (xlator_t *each, void *data)
-{
-        if (!strcmp (each->name,
-                     ((struct __get_xl_struct *) data)->name))
-                ((struct __get_xl_struct *) data)->reply = each;
-}
-
-static xlator_t *
-get_xlator_by_name (xlator_t *some_xl, const char *name)
-{
-        struct __get_xl_struct get = {
-                .name = name,
-                .reply = NULL
-        };
-
-        xlator_foreach (some_xl, __check_and_set, &get);
-
-        return get.reply;
-}
-
 
 int
 _volfile_update_checksum (xlator_t *this, char *key, uint32_t checksum)
@@ -213,7 +190,7 @@ _validate_volfile_checksum (xlator_t *this, char *key,
                 }
                 get_checksum_for_file (fd, &local_checksum);
                 _volfile_update_checksum (this, key, local_checksum);
-                close (fd);
+                sys_close (fd);
         }
 
         temp_volfile = conf->volfile;
@@ -272,7 +249,7 @@ server_getspec (rpcsvc_request_t *req)
                                           filename, sizeof (filename));
         if (ret > 0) {
                 /* to allocate the proper buffer to hold the file data */
-                ret = stat (filename, &stbuf);
+                ret = sys_stat (filename, &stbuf);
                 if (ret < 0){
                         gf_msg (this->name, GF_LOG_ERROR, errno,
                                 PS_MSG_STAT_ERROR, "Unable to stat %s (%s)",
@@ -307,7 +284,7 @@ server_getspec (rpcsvc_request_t *req)
                         op_errno = ENOMEM;
                         goto fail;
                 }
-                ret = read (spec_fd, rsp.spec, file_len);
+                ret = sys_read (spec_fd, rsp.spec, file_len);
         }
 
         /* convert to XDR */
@@ -319,7 +296,7 @@ fail:
         rsp.op_ret   = ret;
 
         if (spec_fd != -1)
-                close (spec_fd);
+                sys_close (spec_fd);
 
         server_submit_reply (NULL, req, &rsp, NULL, 0, NULL,
                              (xdrproc_t)xdr_gf_getspec_rsp);
@@ -327,12 +304,149 @@ fail:
         return 0;
 }
 
+static void
+server_first_lookup_done (rpcsvc_request_t *req, gf_setvolume_rsp *rsp) {
+
+        server_submit_reply (NULL, req, rsp, NULL, 0, NULL,
+                             (xdrproc_t)xdr_gf_setvolume_rsp);
+
+        GF_FREE (rsp->dict.dict_val);
+        GF_FREE (rsp);
+}
+
+static inode_t *
+do_path_lookup (xlator_t *xl, dict_t *dict, inode_t *parinode, char *basename)
+{
+        int ret = 0;
+        loc_t loc = {0,};
+        uuid_t gfid = {0,};
+        struct iatt iatt = {0,};
+        inode_t *inode = NULL;
+
+        loc.parent = parinode;
+        loc_touchup (&loc, basename);
+        loc.inode = inode_new (xl->itable);
+
+        gf_uuid_generate (gfid);
+        ret = dict_set_static_bin (dict, "gfid-req", gfid, 16);
+        if (ret) {
+                gf_log (xl->name, GF_LOG_ERROR,
+                        "failed to set 'gfid-req' for subdir");
+                goto out;
+        }
+
+        ret = syncop_lookup (xl, &loc, &iatt, NULL, dict, NULL);
+        if (ret < 0) {
+                gf_log (xl->name, GF_LOG_ERROR,
+                        "first lookup on subdir (%s) failed: %s",
+                        basename, strerror (errno));
+        }
+
+
+        /* Inode linking is required so that the
+           resolution happens all fine for future fops */
+        inode = inode_link (loc.inode, loc.parent, loc.name, &iatt);
+
+        /* Extra ref so the pointer is valid till client is valid */
+        /* FIXME: not a priority, but this can lead to some inode
+           leaks if subdir is more than 1 level depth. Leak is only
+           per subdir entry, and not dependent on number of
+           connections, so it should be fine for now */
+        inode_ref (inode);
+
+out:
+        return inode;
+}
+
+int
+server_first_lookup (xlator_t *this, client_t *client, dict_t *reply)
+{
+        loc_t               loc    = {0, };
+        struct iatt         iatt   = {0,};
+        dict_t             *dict   = NULL;
+        int                 ret    = 0;
+        xlator_t           *xl     = client->bound_xl;
+        char               *msg    = NULL;
+        inode_t *inode = NULL;
+        char *bname = NULL;
+        char *str = NULL;
+        char *tmp = NULL;
+        char *saveptr = NULL;
+
+        loc.path = "/";
+        loc.name = "";
+        loc.inode = xl->itable->root;
+        loc.parent = NULL;
+        gf_uuid_copy (loc.gfid, loc.inode->gfid);
+
+        ret = syncop_lookup (xl, &loc, &iatt, NULL, NULL, NULL);
+        if (ret < 0)
+                gf_log (xl->name, GF_LOG_ERROR, "lookup on root failed: %s",
+                        strerror (errno));
+        /* Ignore error from lookup, don't set
+         * failure in rsp->op_ret. lookup on a snapview-server
+         * can fail with ESTALE
+         */
+        /* TODO-SUBDIR-MOUNT: validate above comment with respect to subdir lookup */
+
+        if (client->subdir_mount) {
+                str = tmp = gf_strdup (client->subdir_mount);
+                dict = dict_new ();
+                inode = xl->itable->root;
+                bname = strtok_r (str, "/", &saveptr);
+                while (bname != NULL) {
+                        inode = do_path_lookup (xl, dict, inode, bname);
+                        if (inode == NULL) {
+                                gf_log (this->name, GF_LOG_ERROR,
+                                        "first lookup on subdir (%s) failed: %s",
+                                        client->subdir_mount, strerror (errno));
+                                ret = -1;
+                                goto fail;
+                        }
+                        bname = strtok_r (NULL, "/", &saveptr);
+                }
+
+                /* Can be used in server_resolve() */
+                gf_uuid_copy (client->subdir_gfid, inode->gfid);
+                client->subdir_inode = inode;
+        }
+
+        ret = 0;
+        goto out;
+
+fail:
+        /* we should say to client, it is not possible
+           to connect */
+        ret = gf_asprintf (&msg, "subdirectory for mount \"%s\" is not found",
+                           client->subdir_mount);
+        if (-1 == ret) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        PS_MSG_ASPRINTF_FAILED,
+                        "asprintf failed while setting error msg");
+        }
+        ret = dict_set_dynstr (reply, "ERROR", msg);
+        if (ret < 0)
+                gf_msg_debug (this->name, 0, "failed to set error "
+                              "msg");
+
+        ret = -1;
+out:
+        if (dict)
+                dict_unref (dict);
+
+        inode_unref (loc.inode);
+
+        if (tmp)
+                GF_FREE (tmp);
+
+        return ret;
+}
 
 int
 server_setvolume (rpcsvc_request_t *req)
 {
         gf_setvolume_req     args          = {{0,},};
-        gf_setvolume_rsp     rsp           = {0,};
+        gf_setvolume_rsp    *rsp           = NULL;
         client_t            *client        = NULL;
         server_ctx_t        *serv_ctx      = NULL;
         server_conf_t       *conf          = NULL;
@@ -351,11 +465,16 @@ server_setvolume (rpcsvc_request_t *req)
         int32_t              ret           = -1;
         int32_t              op_ret        = -1;
         int32_t              op_errno      = EINVAL;
-        int32_t              fop_version   = 0;
-        int32_t              mgmt_version  = 0;
         uint32_t             lk_version    = 0;
         char                *buf           = NULL;
         gf_boolean_t        cancelled      = _gf_false;
+        uint32_t            opversion      = 0;
+        rpc_transport_t     *xprt          = NULL;
+        int32_t              fop_version   = 0;
+        int32_t              mgmt_version  = 0;
+        glusterfs_ctx_t     *ctx           = NULL;
+        struct  _child_status *tmp         = NULL;
+        char                *subdir_mount  = NULL;
 
         params = dict_new ();
         reply  = dict_new ();
@@ -366,28 +485,13 @@ server_setvolume (rpcsvc_request_t *req)
                 req->rpc_err = GARBAGE_ARGS;
                 goto fail;
         }
+        ctx = THIS->ctx;
 
         this = req->svc->xl;
-
+        /* this is to ensure config_params is populated with the first brick
+         * details at first place if brick multiplexing is enabled
+         */
         config_params = dict_copy_with_ref (this->options, NULL);
-        conf          = this->private;
-
-        if (conf->parent_up == _gf_false) {
-                /* PARENT_UP indicates that all xlators in graph are inited
-                 * successfully
-                 */
-                op_ret = -1;
-                op_errno = EAGAIN;
-
-                ret = dict_set_str (reply, "ERROR",
-                                    "xlator graph in server is not initialised "
-                                    "yet. Try again later");
-                if (ret < 0)
-                        gf_msg_debug (this->name, 0, "failed to set error: "
-                                      "xlator graph in server is not "
-                                      "initialised yet. Try again later");
-                goto fail;
-        }
 
         buf = memdup (args.dict.dict_val, args.dict.dict_len);
         if (buf == NULL) {
@@ -414,6 +518,80 @@ server_setvolume (rpcsvc_request_t *req)
         params->extra_free = buf;
         buf = NULL;
 
+        ret = dict_get_str (params, "remote-subvolume", &name);
+        if (ret < 0) {
+                ret = dict_set_str (reply, "ERROR",
+                                    "No remote-subvolume option specified");
+                if (ret < 0)
+                        gf_msg_debug (this->name, 0, "failed to set error "
+                                      "msg");
+
+                op_ret = -1;
+                op_errno = EINVAL;
+                goto fail;
+        }
+
+        LOCK (&ctx->volfile_lock);
+        {
+                xl = get_xlator_by_name (this, name);
+        }
+        UNLOCK (&ctx->volfile_lock);
+        if (xl == NULL) {
+                ret = gf_asprintf (&msg, "remote-subvolume \"%s\" is not found",
+                                   name);
+                if (-1 == ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                PS_MSG_ASPRINTF_FAILED,
+                                "asprintf failed while setting error msg");
+                        goto fail;
+                }
+                ret = dict_set_dynstr (reply, "ERROR", msg);
+                if (ret < 0)
+                        gf_msg_debug (this->name, 0, "failed to set error "
+                                      "msg");
+
+                op_ret = -1;
+                op_errno = ENOENT;
+                goto fail;
+        }
+
+        config_params = dict_copy_with_ref (xl->options, config_params);
+        conf          = this->private;
+
+        if (conf->parent_up == _gf_false) {
+                /* PARENT_UP indicates that all xlators in graph are inited
+                 * successfully
+                 */
+                op_ret = -1;
+                op_errno = EAGAIN;
+
+                ret = dict_set_str (reply, "ERROR",
+                                    "xlator graph in server is not initialised "
+                                    "yet. Try again later");
+                if (ret < 0)
+                        gf_msg_debug (this->name, 0, "failed to set error: "
+                                      "xlator graph in server is not "
+                                      "initialised yet. Try again later");
+                goto fail;
+        }
+        list_for_each_entry (tmp, &conf->child_status->status_list,
+                                                                  status_list) {
+                if (strcmp (tmp->name, name) == 0)
+                        break;
+        }
+        if (!tmp->name) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        PS_MSG_CHILD_STATUS_FAILED,
+                        "No xlator %s is found in "
+                        "child status list", name);
+        } else {
+                ret = dict_set_int32 (reply, "child_up", tmp->child_up);
+                if (ret < 0)
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                PS_MSG_DICT_GET_FAILED,
+                                "Failed to set 'child_up' for xlator %s "
+                                "in the reply dict", tmp->name);
+        }
         ret = dict_get_str (params, "process-uuid", &client_uid);
         if (ret < 0) {
                 ret = dict_set_str (reply, "ERROR",
@@ -425,6 +603,11 @@ server_setvolume (rpcsvc_request_t *req)
                 op_ret = -1;
                 op_errno = EINVAL;
                 goto fail;
+        }
+
+        ret = dict_get_str (params, "subdir-mount", &subdir_mount);
+        if (ret < 0) {
+                /* Not a problem at all as the key is optional */
         }
 
         /*lk_verion :: [1..2^31-1]*/
@@ -441,7 +624,7 @@ server_setvolume (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        client = gf_client_get (this, &req->cred, client_uid);
+        client = gf_client_get (this, &req->cred, client_uid, subdir_mount);
         if (client == NULL) {
                 op_ret = -1;
                 op_errno = ENOMEM;
@@ -450,8 +633,23 @@ server_setvolume (rpcsvc_request_t *req)
 
         gf_msg_debug (this->name, 0, "Connected to %s", client->client_uid);
         cancelled = server_cancel_grace_timer (this, client);
-        if (cancelled)//Do gf_client_put on behalf of grace-timer-handler.
+        if (cancelled) {
+                /* If timer has been successfully cancelled then it means
+                 * that the client has reconnected within grace period.
+                 * Since we've bumped up the bind count with a gf_client_get()
+                 * for this connect attempt, we need to drop the bind count
+                 * for earlier connect, since grace timer handler couldn't
+                 * drop it since the timer was cancelled.
+                 */
                 gf_client_put (client, NULL);
+
+                /* We need to drop the ref count for this reconnected client
+                 * since one ref was taken before delegating to the grace
+                 * timer handler. Since grace timer handler was cancelled,
+                 * it couldn't run and drop the ref either.
+                 */
+                gf_client_unref (client);
+        }
 
         serv_ctx = server_ctx_get (client, client->this);
         if (serv_ctx == NULL) {
@@ -520,39 +718,6 @@ server_setvolume (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        ret = dict_get_str (params, "remote-subvolume", &name);
-        if (ret < 0) {
-                ret = dict_set_str (reply, "ERROR",
-                                    "No remote-subvolume option specified");
-                if (ret < 0)
-                        gf_msg_debug (this->name, 0, "failed to set error "
-                                      "msg");
-
-                op_ret = -1;
-                op_errno = EINVAL;
-                goto fail;
-        }
-
-        xl = get_xlator_by_name (this, name);
-        if (xl == NULL) {
-                ret = gf_asprintf (&msg, "remote-subvolume \"%s\" is not found",
-                                   name);
-                if (-1 == ret) {
-                        gf_msg (this->name, GF_LOG_ERROR, 0,
-                                PS_MSG_ASPRINTF_FAILED,
-                                "asprintf failed while setting error msg");
-                        goto fail;
-                }
-                ret = dict_set_dynstr (reply, "ERROR", msg);
-                if (ret < 0)
-                        gf_msg_debug (this->name, 0, "failed to set error "
-                                      "msg");
-
-                op_ret = -1;
-                op_errno = ENOENT;
-                goto fail;
-        }
-
         if (conf->verify_volfile) {
                 ret = dict_get_uint32 (params, "volfile-checksum", &checksum);
                 if (ret == 0) {
@@ -588,6 +753,22 @@ server_setvolume (rpcsvc_request_t *req)
                         gf_msg_debug (this->name, 0, "failed to set "
                                       "peer-info");
         }
+
+        ret = dict_get_uint32 (params, "opversion", &opversion);
+        if (ret)
+                gf_msg (this->name, GF_LOG_INFO, 0,
+                        PS_MSG_CLIENT_OPVERSION_GET_FAILED,
+                        "Failed to get client opversion");
+
+        /* Assign op-version value to the client */
+        pthread_mutex_lock (&conf->mutex);
+        list_for_each_entry (xprt, &conf->xprt_list, list) {
+                if (strcmp (peerinfo->identifier, xprt->peerinfo.identifier))
+                        continue;
+                xprt->peerinfo.max_op_version = opversion;
+        }
+        pthread_mutex_unlock (&conf->mutex);
+
         if (conf->auth_modules == NULL) {
                 gf_msg (this->name, GF_LOG_ERROR, 0, PS_MSG_AUTH_INIT_FAILED,
                         "Authentication module not initialized");
@@ -610,13 +791,33 @@ server_setvolume (rpcsvc_request_t *req)
                         "accepted client from %s (version: %s)",
                         client->client_uid,
                         (clnt_version) ? clnt_version : "old");
+
+                gf_event (EVENT_CLIENT_CONNECT, "client_uid=%s;"
+                          "client_identifier=%s;server_identifier=%s;"
+                          "brick_path=%s;subdir_mount=%s",
+                          client->client_uid,
+                          req->trans->peerinfo.identifier,
+                          req->trans->myinfo.identifier,
+                          name, subdir_mount);
+
                 op_ret = 0;
                 client->bound_xl = xl;
+
+                /* Don't be confused by the below line (like how ERROR can
+                   be Success), key checked on client is 'ERROR' and hence
+                   we send 'Success' in this key */
                 ret = dict_set_str (reply, "ERROR", "Success");
                 if (ret < 0)
                         gf_msg_debug (this->name, 0, "failed to set error "
                                       "msg");
         } else {
+                gf_event (EVENT_CLIENT_AUTH_REJECT, "client_uid=%s;"
+                          "client_identifier=%s;server_identifier=%s;"
+                          "brick_path=%s",
+                          client->client_uid,
+                          req->trans->peerinfo.identifier,
+                          req->trans->myinfo.identifier,
+                          name);
                 gf_msg (this->name, GF_LOG_ERROR, EACCES,
                         PS_MSG_AUTHENTICATE_ERROR, "Cannot authenticate client"
                         " from %s %s", client->client_uid,
@@ -644,21 +845,24 @@ server_setvolume (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        if ((client->bound_xl != NULL) &&
-            (ret >= 0)                   &&
-            (client->bound_xl->itable == NULL)) {
-                /* create inode table for this bound_xl, if one doesn't
-                   already exist */
+        LOCK (&conf->itable_lock);
+        {
+                if (client->bound_xl->itable == NULL) {
+                        /* create inode table for this bound_xl, if one doesn't
+                           already exist */
 
-                gf_msg_trace (this->name, 0, "creating inode table with "
-                              "lru_limit=%"PRId32", xlator=%s",
-                              conf->inode_lru_limit, client->bound_xl->name);
+                        gf_msg_trace (this->name, 0, "creating inode table with"
+                                      " lru_limit=%"PRId32", xlator=%s",
+                                      conf->inode_lru_limit,
+                                      client->bound_xl->name);
 
-                /* TODO: what is this ? */
-                client->bound_xl->itable =
-                        inode_table_new (conf->inode_lru_limit,
-                                         client->bound_xl);
+                        /* TODO: what is this ? */
+                        client->bound_xl->itable =
+                                inode_table_new (conf->inode_lru_limit,
+                                                 client->bound_xl);
+                }
         }
+        UNLOCK (&conf->itable_lock);
 
         ret = dict_set_str (reply, "process-uuid",
                             this->ctx->process_uuid);
@@ -677,20 +881,35 @@ server_setvolume (rpcsvc_request_t *req)
                 gf_msg_debug (this->name, 0, "failed to set 'transport-ptr'");
 
 fail:
-        rsp.dict.dict_len = dict_serialized_length (reply);
-        if (rsp.dict.dict_len > UINT_MAX) {
+        /* It is important to validate the lookup on '/' as part of handshake,
+           because if lookup itself can't succeed, we should communicate this
+           to client. Very important in case of subdirectory mounts, where if
+           client is trying to mount a non-existing directory */
+        if (op_ret >= 0 && client->bound_xl->itable) {
+                op_ret = server_first_lookup (this, client, reply);
+                if (op_ret == -1)
+                        op_errno = ENOENT;
+        }
+
+        rsp = GF_CALLOC (1, sizeof (gf_setvolume_rsp),
+                         gf_server_mt_setvolume_rsp_t);
+        GF_ASSERT (rsp);
+
+        rsp->op_ret = 0;
+        rsp->dict.dict_len = dict_serialized_length (reply);
+        if (rsp->dict.dict_len > UINT_MAX) {
                 gf_msg_debug ("server-handshake", 0, "failed to get serialized"
                                " length of reply dict");
                 op_ret   = -1;
                 op_errno = EINVAL;
-                rsp.dict.dict_len = 0;
+                rsp->dict.dict_len = 0;
         }
 
-        if (rsp.dict.dict_len) {
-                rsp.dict.dict_val = GF_CALLOC (1, rsp.dict.dict_len,
-                                               gf_server_mt_rsp_buf_t);
-                if (rsp.dict.dict_val) {
-                        ret = dict_serialize (reply, rsp.dict.dict_val);
+        if (rsp->dict.dict_len) {
+                rsp->dict.dict_val = GF_CALLOC (1, rsp->dict.dict_len,
+                                                gf_server_mt_rsp_buf_t);
+                if (rsp->dict.dict_val) {
+                        ret = dict_serialize (reply, rsp->dict.dict_val);
                         if (ret < 0) {
                                 gf_msg_debug ("server-handshake", 0, "failed "
                                               "to serialize reply dict");
@@ -699,8 +918,8 @@ fail:
                         }
                 }
         }
-        rsp.op_ret   = op_ret;
-        rsp.op_errno = gf_errno_to_error (op_errno);
+        rsp->op_ret   = op_ret;
+        rsp->op_errno = gf_errno_to_error (op_errno);
 
         /* if bound_xl is NULL or something fails, then put the connection
          * back. Otherwise the connection would have been added to the
@@ -717,17 +936,21 @@ fail:
                 gf_client_put (client, NULL);
                 req->trans->xl_private = NULL;
         }
-        server_submit_reply (NULL, req, &rsp, NULL, 0, NULL,
-                             (xdrproc_t)xdr_gf_setvolume_rsp);
 
+        /* Send the response properly */
+        server_first_lookup_done (req, rsp);
 
         free (args.dict.dict_val);
 
-        GF_FREE (rsp.dict.dict_val);
-
         dict_unref (params);
         dict_unref (reply);
-        dict_unref (config_params);
+        if (config_params) {
+                /*
+                 * This might be null if we couldn't even find the translator
+                 * (brick) to copy it from.
+                 */
+                dict_unref (config_params);
+        }
 
         GF_FREE (buf);
 
@@ -774,7 +997,7 @@ server_set_lk_version (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        client = gf_client_get (this, &req->cred, args.uid);
+        client = gf_client_get (this, &req->cred, args.uid, NULL);
         serv_ctx = server_ctx_get (client, client->this);
         if (serv_ctx == NULL) {
                 gf_msg (this->name, GF_LOG_INFO, 0,

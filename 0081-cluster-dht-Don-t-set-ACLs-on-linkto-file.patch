@@ -1,0 +1,59 @@
+From 98bd66d16730964b2c6d14d5430e23dd16138193 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Wed, 22 Nov 2017 08:47:47 +0530
+Subject: [PATCH 081/128] cluster/dht: Don't set ACLs on linkto file
+
+The trusted.SGI_ACL_FILE appears to set posix
+ACLs on the linkto file that is a target of
+file migration. This can mess up file permissions
+and cause linkto identification to fail.
+Now we remove all ACL xattrs from the results of
+the listxattr call on the source before setting them
+on the target.
+
+> BUG: 1515042
+> https://review.gluster.org/#/c/18807/
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I56802dbaed783a16e3fb90f59f4ce849f8a4a9b4
+BUG: 1515051
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/123870
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 941e982..ae367d7 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -163,6 +163,14 @@ dht_send_rebalance_event (xlator_t *this, int cmd, gf_defrag_status_t status)
+ }
+ 
+ 
++static void
++dht_strip_out_acls (dict_t *dict)
++{
++        if (dict) {
++                dict_del (dict, "trusted.SGI_ACL_FILE");
++                dict_del (dict, "POSIX_ACL_ACCESS_XATTR");
++        }
++}
+ 
+ 
+ 
+@@ -1624,6 +1632,9 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+                         loc->path, from->name);
+         }
+ 
++        /* Copying posix acls to the linkto file messes up the permissions*/
++        dht_strip_out_acls (xattr);
++
+         /* create the destination, with required modes/xattr */
+         ret = __dht_rebalance_create_dst_file (this, to, from, loc, &stbuf,
+                                                &dst_fd, xattr, fop_errno);
+-- 
+1.8.3.1
+

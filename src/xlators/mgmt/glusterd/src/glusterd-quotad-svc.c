@@ -30,8 +30,6 @@ glusterd_quotadsvc_build (glusterd_svc_t *svc)
 int glusterd_quotadsvc_init (glusterd_svc_t *svc)
 {
         int              ret                = -1;
-        char             volfile[PATH_MAX]  = {0,};
-        glusterd_conf_t *conf               = THIS->private;
 
         ret = glusterd_svc_init (svc, quotad_svc_name);
         if (ret)
@@ -108,6 +106,9 @@ glusterd_quotadsvc_manager (glusterd_svc_t *svc, void *data, int flags)
                 }
         }
 out:
+        if (ret)
+                gf_event (EVENT_SVC_MANAGER_FAILED, "svc_name=%s", svc->name);
+
         gf_msg_debug (THIS->name, 0, "Returning %d", ret);
 
         return ret;

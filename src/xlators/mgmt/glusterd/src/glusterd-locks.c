@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "common-utils.h"
 #include "cli1-xdr.h"
 #include "xdr-generic.h"
@@ -595,8 +590,7 @@ glusterd_mgmt_v3_lock (const char *name, uuid_t uuid, uint32_t *op_errno,
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_DICT_SET_FAILED,
                         "Unable to set lock owner in mgmt_v3 lock");
-                if (lock_obj)
-                        GF_FREE (lock_obj);
+                GF_FREE (lock_obj);
                 goto out;
         }
 

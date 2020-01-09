@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "io-cache.h"
 #include "ioc-mem-types.h"
 
@@ -88,47 +83,45 @@ ioc_inode_wakeup (call_frame_t *frame, ioc_inode_t *ioc_inode,
                 goto out;
         }
 
-        ioc_inode_lock (ioc_inode);
-        {
-                waiter = ioc_inode->waitq;
-                ioc_inode->waitq = NULL;
-        }
-        ioc_inode_unlock (ioc_inode);
-
         if (stbuf)
                 cache_still_valid = ioc_cache_still_valid (ioc_inode, stbuf);
         else
                 cache_still_valid = 0;
 
-        if (!waiter) {
-                gf_msg (frame->this->name, GF_LOG_WARNING, 0,
-                        IO_CACHE_MSG_PAGE_WAIT_VALIDATE,
-                        "cache validate called without any "
-                        "page waiting to be validated");
-        }
+        ioc_inode_lock (ioc_inode);
+        {
 
-        while (waiter) {
-                waiter_page = waiter->data;
-                page_waitq = NULL;
+                waiter = ioc_inode->waitq;
+                if (!waiter) {
+                        gf_msg (frame->this->name, GF_LOG_WARNING, 0,
+                                IO_CACHE_MSG_PAGE_WAIT_VALIDATE,
+                                "cache validate called without any "
+                                "page waiting to be validated");
 
-                if (waiter_page) {
-                        if (cache_still_valid) {
-                                /* cache valid, wake up page */
-                                ioc_inode_lock (ioc_inode);
-                                {
+                        ioc_inode_unlock (ioc_inode);
+                        goto out;
+                }
+
+                while (waiter) {
+                        waiter_page = waiter->data;
+                        ioc_inode->waitq = waiter->next;
+                        page_waitq = NULL;
+
+                        if (waiter_page) {
+                                if (cache_still_valid) {
+                                        /* cache valid, wake up page */
                                         page_waitq =
                                                 __ioc_page_wakeup (waiter_page,
-                                                                   waiter_page->op_errno);
-                                }
-                                ioc_inode_unlock (ioc_inode);
-                                if (page_waitq)
-                                        ioc_waitq_return (page_waitq);
-                        } else {
+                                                         waiter_page->op_errno);
+                                       if (page_waitq) {
+                                                ioc_inode_unlock (ioc_inode);
+                                                ioc_waitq_return (page_waitq);
+                                                ioc_inode_lock (ioc_inode);
+                                        }
+                                } else {
                                 /* cache invalid, generate page fault and set
                                  * page->ready = 0, to avoid double faults
                                  */
-                                ioc_inode_lock (ioc_inode);
-                                {
                                         if (waiter_page->ready) {
                                                 waiter_page->ready = 0;
                                                 need_fault = 1;
@@ -143,24 +136,28 @@ ioc_inode_wakeup (call_frame_t *frame, ioc_inode_t *ioc_inode,
                                                               frame,
                                                               waiter_page);
                                         }
-                                }
-                                ioc_inode_unlock (ioc_inode);
 
-                                if (need_fault) {
-                                        need_fault = 0;
-                                        ioc_page_fault (ioc_inode, frame,
-                                                        local->fd,
-                                                        waiter_page->offset);
+
+                                        if (need_fault) {
+                                                need_fault = 0;
+                                                ioc_inode_unlock (ioc_inode);
+                                                ioc_page_fault (ioc_inode,
+                                                                frame,
+                                                                local->fd,
+                                                                waiter_page->offset);
+                                                ioc_inode_lock (ioc_inode);
+                                        }
                                 }
                         }
-                }
 
                 waited = waiter;
-                waiter = waiter->next;
+                waiter = ioc_inode->waitq;
 
                 waited->data = NULL;
                 GF_FREE (waited);
+                }
         }
+        ioc_inode_unlock (ioc_inode);
 
 out:
         return;
@@ -168,7 +165,7 @@ out:
 
 
 /*
- * ioc_inode_update - create a new ioc_inode_t structure and add it to
+ * ioc_inode_create - create a new ioc_inode_t structure and add it to
  *                    the table table. fill in the fields which are derived
  *                    from inode_t corresponding to the file
  *
@@ -178,7 +175,7 @@ out:
  * not for external reference
  */
 ioc_inode_t *
-ioc_inode_update (ioc_table_t *table, inode_t *inode, uint32_t weight)
+ioc_inode_create (ioc_table_t *table, inode_t *inode, uint32_t weight)
 {
         ioc_inode_t     *ioc_inode   = NULL;
 

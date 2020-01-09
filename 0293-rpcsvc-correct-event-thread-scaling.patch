@@ -1,0 +1,53 @@
+From 3bf557cd74a50f7fadaba59c86653de8887d4ffd Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Fri, 1 Jun 2018 12:56:20 +0530
+Subject: [PATCH 293/305] rpcsvc: correct event-thread scaling
+
+Problem:
+Auto thread count derived from the number of attachs and detachs
+was reset to 1 when server_reconfigure() was called.
+
+Solution:
+Avoid auto-thread-count reset to 1.
+
+mainline:
+> BUG: 1547888
+> Reviewed-on: https://review.gluster.org/19689
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+> Signed-off-by: Milind Changire <mchangir@redhat.com>
+(cherry picked from commit 0c3d984287d91d3fe1ffeef297252d912c08a410)
+
+BUG: 1554255
+Change-Id: I53217bd0634ec5dcc164338867d9d468687598b0
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140454
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/server/src/server.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index bc87a80..69ad184 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -1042,10 +1042,11 @@ do_rpc:
+         }
+ 
+         /*
+-         * Let the event subsystem know that we're auto-scaling, with an
+-         * initial count of one.
++         * Update:
++         * We don't need to reset auto_thread_count since it has been derived
++         * out of the total bricks attached. We can reconfigure event threads
++         * but not auto threads.
+          */
+-        ((struct event_pool *)(this->ctx->event_pool))->auto_thread_count = 1;
+ 
+         GF_OPTION_RECONF ("event-threads", new_nthread, options, int32, out);
+         ret = server_check_event_threads (this, conf, new_nthread);
+-- 
+1.8.3.1
+

@@ -11,11 +11,6 @@
 #ifndef _AFR_MESSAGES_H_
 #define _AFR_MESSAGES_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glfs-message-id.h"
 
 /*! \file afr-messages.h
@@ -45,7 +40,7 @@
  */
 
 #define GLFS_COMP_BASE_AFR      GLFS_MSGID_COMP_AFR
-#define GLFS_NUM_MESSAGES       39
+#define GLFS_NUM_MESSAGES       42
 #define GLFS_MSGID_END          (GLFS_COMP_BASE_AFR + GLFS_NUM_MESSAGES + 1)
 
 #define glfs_msg_start_x GLFS_COMP_BASE_AFR, "Invalid: Start of messages"
@@ -98,11 +93,11 @@
 
 /*!
  * @messageid 108006
- * @diagnosis All bricks of a replica set are down. Data residing in that
+ * @diagnosis bricks of a replica set are down. Data residing in that
  * replica cannot be accessed until one of the bricks come back up.
  * @recommendedaction Ensure that the bricks are up.
  */
-#define AFR_MSG_ALL_SUBVOLS_DOWN        (GLFS_COMP_BASE_AFR + 6)
+#define AFR_MSG_SUBVOLS_DOWN            (GLFS_COMP_BASE_AFR + 6)
 
 
 /*!
@@ -135,11 +130,11 @@
 
 /*!
  * @messageid 108010
- * @diagnosis Inode unlocks failed on a brick.
+ * @diagnosis unlocks failed on a brick.
  * @recommendedaction Error number in the log should give the reason why it
  * failed. Also observe brick logs for more information.
 */
-#define AFR_MSG_INODE_UNLOCK_FAIL       (GLFS_COMP_BASE_AFR + 10)
+#define AFR_MSG_UNLOCK_FAIL       (GLFS_COMP_BASE_AFR + 10)
 
 /*!
  * @messageid 108011
@@ -341,11 +336,38 @@
 
 /*!
  * @messageid 108039
- * @diagnosis
+ * @diagnosis Setting of pending xattrs succeeded/failed during add-brick
+ * operation.
+ * @recommendedaction In case of failure, error number in the log should give
+ * the reason why it failed. Also observe brick logs for more information.
+*/
+#define AFR_MSG_ADD_BRICK_STATUS        (GLFS_COMP_BASE_AFR + 39)
+
+
+/*!
+ * @messageid 108040
+ * @diagnosis AFR was unable to be loaded because the pending-changelog xattrs
+ * were not found in the volfile.
+ * @recommendedaction Please ensure cluster op-version is atleast 30707 and the
+ * volfiles are regenerated.
+*/
+#define AFR_MSG_NO_CHANGELOG  (GLFS_COMP_BASE_AFR + 40)
+
+/*!
+ * @messageid 108041
+ * @diagnosis Unable to create timer thread for delayed initialization.
+ * @recommendedaction Possibly check process's log file for messages from
+ * timer infra.
+*/
+#define AFR_MSG_TIMER_CREATE_FAIL               (GLFS_COMP_BASE_AFR + 41)
+
+/*!
+ * @messageid 108042
+ * @diagnosis Log messages relating to automated resolution of split-brain files
+ * based on favorite child policies.
  * @recommendedaction
 */
-#define AFR_MSG_REPLACE_BRICK_FAILED                (GLFS_COMP_BASE_AFR + 39)
-
+#define AFR_MSG_SBRAIN_FAV_CHILD_POLICY  (GLFS_COMP_BASE_AFR + 42)
 
 #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
 #endif /* !_AFR_MESSAGES_H_ */

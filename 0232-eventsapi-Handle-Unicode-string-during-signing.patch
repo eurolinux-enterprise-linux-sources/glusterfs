@@ -1,0 +1,42 @@
+From 10fa7c3ad785c0da0d1981b40470149e23cb4acc Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Wed, 18 Apr 2018 15:08:55 +0530
+Subject: [PATCH 232/236] eventsapi: Handle Unicode string during signing
+
+Python 2.7 HMAC does not support Unicode strings. Secret is read
+from file so it is possible that glustereventsd reads the content
+as Unicode. This patch converts the secret to `str` type before
+generating HMAC signature.
+
+>Fixes: bz#1568820
+>Change-Id: I7daa64499ac4ca02544405af26ac8af4b6b0bd95
+>Signed-off-by: Aravinda VK <avishwan@redhat.com>
+
+Upstream Patch: https://review.gluster.org/#/c/19900/
+
+BUG: 1466129
+Change-Id: I7daa64499ac4ca02544405af26ac8af4b6b0bd95
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136327
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ events/src/utils.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/events/src/utils.py b/events/src/utils.py
+index f405e44..7d9b7b5 100644
+--- a/events/src/utils.py
++++ b/events/src/utils.py
+@@ -206,7 +206,7 @@ def get_jwt_token(secret, event_type, event_ts, jwt_expiry_time_seconds=60):
+     msg = base64_urlencode(header) + "." + base64_urlencode(payload)
+     return "%s.%s" % (
+         msg,
+-        base64_urlencode(hmac.HMAC(secret, msg, sha256).digest())
++        base64_urlencode(hmac.HMAC(str(secret), msg, sha256).digest())
+     )
+ 
+ 
+-- 
+1.8.3.1
+

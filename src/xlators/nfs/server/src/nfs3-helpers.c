@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <inttypes.h>
 
 #include "xlator.h"
@@ -230,6 +225,7 @@ nfs3_errno_to_nfsstat3 (int errnum)
                 stat = NFS3ERR_SERVERFAULT;
                 break;
 
+        case ENOTSUP:
         case ENOSYS:
                 stat = NFS3ERR_NOTSUPP;
                 break;
@@ -377,7 +373,7 @@ nfs3_stat_to_post_op_attr (struct iatt *buf)
          * returning these zeroed out attrs.
          */
         attr.attributes_follow = FALSE;
-        if (nfs_zero_filled_stat (buf))
+        if (gf_is_zero_filled_stat (buf))
                 goto out;
 
         nfs3_stat_to_fattr3 (buf, &(attr.post_op_attr_u.attributes));
@@ -398,7 +394,7 @@ nfs3_stat_to_pre_op_attr (struct iatt *pre)
          * returning these zeroed out attrs.
          */
         poa.attributes_follow = FALSE;
-        if (nfs_zero_filled_stat (pre))
+        if (gf_is_zero_filled_stat (pre))
                 goto out;
 
         poa.attributes_follow = TRUE;
@@ -3761,8 +3757,9 @@ out:
 int
 nfs3_fh_resolve_entry_hard (nfs3_call_state_t *cs)
 {
-        int             ret = -EFAULT;
-        nfs_user_t      nfu = {0, };
+        int                     ret             = -EFAULT;
+        nfs_user_t              nfu             = {0, };
+        gf_boolean_t            freshlookup     = _gf_false;
 
         if (!cs)
                 return ret;
@@ -3775,7 +3772,7 @@ nfs3_fh_resolve_entry_hard (nfs3_call_state_t *cs)
 
         ret = nfs_entry_loc_fill (cs->nfsx, cs->vol->itable, cs->resolvefh.gfid,
                                   cs->resolventry, &cs->resolvedloc,
-                                  NFS_RESOLVE_CREATE);
+                                  NFS_RESOLVE_CREATE, &freshlookup);
 
         if (ret == -2) {
                 gf_msg_trace (GF_NFS3, 0, "Entry needs lookup: %s",
@@ -3786,10 +3783,11 @@ nfs3_fh_resolve_entry_hard (nfs3_call_state_t *cs)
 		 * go ahead in the resume callback so that an EEXIST gets
 		 * handled at posix without an extra fop at this point.
 		 */
-                if (nfs3_lookup_op (cs) ||
-		    (nfs3_create_op (cs) && !nfs3_create_exclusive_op (cs))) {
+                if (freshlookup && (nfs3_lookup_op (cs) ||
+		    (nfs3_create_op (cs) && !nfs3_create_exclusive_op (cs)))) {
                         cs->lookuptype = GF_NFS3_FRESH;
                         cs->resolve_ret = 0;
+                        cs->hardresolved = 0;
                         nfs3_call_resume (cs);
                 } else {
 			cs->hardresolved = 1;

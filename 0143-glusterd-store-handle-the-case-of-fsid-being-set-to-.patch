@@ -1,0 +1,58 @@
+From 7dd1fe266d8c908e8196c93fc371cf205a3d57cb Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Sun, 4 Feb 2018 10:04:29 +0530
+Subject: [PATCH 143/148] glusterd/store: handle the case of fsid being set to
+ 0
+
+Generally this would happen when a system gets upgraded from an
+version which doesn't have fsid details, to a version with fsid
+values. Without this change, after upgrade, people would see reduced
+'df ' output, causing lot of confusions.
+
+Debugging Credits: Nithya B <nbalacha@redhat.com>
+
+>upstream mainline patch : https://review.gluster.org/#/c/19484/
+
+Change-Id: Id718127ddfb69553b32770b25021290bd0e7c49a
+BUG: 1541830
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129739
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-store.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index e35fcde..6bb7372 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -2632,6 +2632,25 @@ glusterd_store_retrieve_bricks (glusterd_volinfo_t *volinfo)
+                                          strlen(abspath));
+                         }
+                 }
++
++                /* Handle upgrade case of shared_brick_count 'fsid' */
++                /* Ideally statfs_fsid should never be 0 if done right */
++                if (!gf_uuid_compare(brickinfo->uuid, MY_UUID) &&
++                    brickinfo->statfs_fsid == 0) {
++                        struct statvfs brickstat = {0,};
++                        ret = sys_statvfs (brickinfo->path, &brickstat);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_WARNING,
++                                        errno,
++                                        GD_MSG_BRICKINFO_CREATE_FAIL,
++                                        "failed to get statfs() call on brick %s",
++                                        brickinfo->path);
++                                /* No need for treating it as an error, lets continue
++                                   with just a message */
++                        }
++                        brickinfo->statfs_fsid = brickstat.f_fsid;
++                }
++
+                 cds_list_add_tail (&brickinfo->brick_list, &volinfo->bricks);
+                 brick_count++;
+         }
+-- 
+1.8.3.1
+

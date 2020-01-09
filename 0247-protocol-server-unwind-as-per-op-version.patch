@@ -1,0 +1,74 @@
+From 3c8ff0fceb008dca51cebfc9e808f6268548661a Mon Sep 17 00:00:00 2001
+From: Ashish Pandey <aspandey@redhat.com>
+Date: Wed, 25 Apr 2018 16:48:56 +0530
+Subject: [PATCH 247/260] protocol/server : unwind as per op version
+
+>Change-Id: Id6717640ac14881b490e512c4682e45ffffa7f5b
+upstream patch -
+https://review.gluster.org/#/c/19938/
+
+Change-Id: I43034c2974108c434bd3e4c553ff416339ece870
+BUG: 1558948
+Signed-off-by: Ashish Pandey <aspandey@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/137625
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ libglusterfs/src/client_t.h                    | 1 +
+ xlators/features/locks/src/posix.c             | 8 +++++++-
+ xlators/protocol/server/src/server-handshake.c | 5 +++--
+ 3 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/libglusterfs/src/client_t.h b/libglusterfs/src/client_t.h
+index 530c0a3..088508e 100644
+--- a/libglusterfs/src/client_t.h
++++ b/libglusterfs/src/client_t.h
+@@ -45,6 +45,7 @@ typedef struct _client {
+         char    *subdir_mount;
+         inode_t *subdir_inode;
+         uuid_t   subdir_gfid;
++        int32_t  opversion;
+ } client_t;
+ 
+ #define GF_CLIENTCTX_INITIAL_SIZE 8
+diff --git a/xlators/features/locks/src/posix.c b/xlators/features/locks/src/posix.c
+index a158227..ef4bebf 100644
+--- a/xlators/features/locks/src/posix.c
++++ b/xlators/features/locks/src/posix.c
+@@ -1563,7 +1563,13 @@ int
+ pl_flush_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+               int32_t op_ret, int32_t op_errno, dict_t *xdata)
+ {
+-        PL_STACK_UNWIND (flush, xdata, frame, op_ret, op_errno, xdata);
++
++        if (frame->root->client &&
++            (frame->root->client->opversion < GD_OP_VERSION_3_12_0)) {
++                STACK_UNWIND_STRICT (flush, frame, op_ret, op_errno, xdata);
++        } else {
++                PL_STACK_UNWIND (flush, xdata, frame, op_ret, op_errno, xdata);
++        }
+ 
+         return 0;
+ }
+diff --git a/xlators/protocol/server/src/server-handshake.c b/xlators/protocol/server/src/server-handshake.c
+index fc63f2c..a59bcda 100644
+--- a/xlators/protocol/server/src/server-handshake.c
++++ b/xlators/protocol/server/src/server-handshake.c
+@@ -778,11 +778,12 @@ server_setvolume (rpcsvc_request_t *req)
+         }
+ 
+         ret = dict_get_uint32 (params, "opversion", &opversion);
+-        if (ret)
++        if (ret) {
+                 gf_msg (this->name, GF_LOG_INFO, 0,
+                         PS_MSG_CLIENT_OPVERSION_GET_FAILED,
+                         "Failed to get client opversion");
+-
++        }
++        client->opversion = opversion;
+         /* Assign op-version value to the client */
+         pthread_mutex_lock (&conf->mutex);
+         list_for_each_entry (xprt, &conf->xprt_list, list) {
+-- 
+1.8.3.1
+

@@ -1,0 +1,83 @@
+From 5b32d4317968581f217c82e893822852d63eeae8 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 19 Mar 2018 15:26:40 +0530
+Subject: [PATCH 196/201] cluster/afr: Switch to active-fd-count for open-fd
+ checks
+
+ >BUG: 1557932
+
+Upstream-patch: https://review.gluster.org/19741
+BUG: 1491785
+Change-Id: I3783e41b3812267bc10c0d05d062a31396ce135b
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/133660
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ tests/basic/afr/afr-no-fsync.t            | 20 ++++++++++++++++++++
+ xlators/cluster/afr/src/afr-inode-write.c | 16 ++++++++--------
+ 2 files changed, 28 insertions(+), 8 deletions(-)
+ create mode 100644 tests/basic/afr/afr-no-fsync.t
+
+diff --git a/tests/basic/afr/afr-no-fsync.t b/tests/basic/afr/afr-no-fsync.t
+new file mode 100644
+index 0000000..0966d9b
+--- /dev/null
++++ b/tests/basic/afr/afr-no-fsync.t
+@@ -0,0 +1,20 @@
++#!/bin/bash
++#Tests that sequential write workload doesn't lead to FSYNCs
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup;
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 replica 3 $H0:$B0/brick{0,1,3}
++TEST $CLI volume set $V0 features.shard on
++TEST $CLI volume set $V0 performance.flush-behind off
++TEST $CLI volume start $V0
++TEST $CLI volume profile $V0 start
++TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0;
++TEST dd if=/dev/zero of=$M0/a bs=1M count=500
++TEST ! "$CLI volume profile $V0 info incremental | grep FSYNC"
++
++cleanup;
+diff --git a/xlators/cluster/afr/src/afr-inode-write.c b/xlators/cluster/afr/src/afr-inode-write.c
+index b52b6ca..9e6ba35 100644
+--- a/xlators/cluster/afr/src/afr-inode-write.c
++++ b/xlators/cluster/afr/src/afr-inode-write.c
+@@ -314,10 +314,10 @@ afr_inode_write_fill (call_frame_t *frame, xlator_t *this, int child_index,
+ 		if (ret || !write_is_append)
+ 			local->append_write = _gf_false;
+ 
+-		ret = dict_get_uint32 (xdata, GLUSTERFS_OPEN_FD_COUNT,
+-				       &open_fd_count);
+-		if (ret == -1)
+-			goto unlock;
++                ret = dict_get_uint32 (xdata, GLUSTERFS_ACTIVE_FD_COUNT,
++                                       &open_fd_count);
++                if (ret < 0)
++                        goto unlock;
+ 		if (open_fd_count > local->open_fd_count) {
+                         local->open_fd_count = open_fd_count;
+                         local->update_open_fd_count = _gf_true;
+@@ -529,10 +529,10 @@ afr_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
+         if (ret)
+                 goto out;
+ 
+-	if (dict_set_uint32 (local->xdata_req, GLUSTERFS_OPEN_FD_COUNT, 4)) {
+-		op_errno = ENOMEM;
+-		goto out;
+-	}
++        if (dict_set_uint32 (local->xdata_req, GLUSTERFS_ACTIVE_FD_COUNT, 4)) {
++                op_errno = ENOMEM;
++                goto out;
++        }
+ 
+ 	if (dict_set_uint32 (local->xdata_req, GLUSTERFS_WRITE_IS_APPEND, 4)) {
+ 		op_errno = ENOMEM;
+-- 
+1.8.3.1
+

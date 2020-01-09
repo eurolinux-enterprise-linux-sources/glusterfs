@@ -152,8 +152,6 @@ gd_brick_op_req_free (gd1_mgmt_brick_op_req *req)
         if (!req)
                 return;
 
-        if (strcmp (req->name, "") != 0)
-                GF_FREE (req->name);
         GF_FREE (req->input.input_val);
         GF_FREE (req);
 }
@@ -238,6 +236,7 @@ glusterd_syncop_aggr_rsp_dict (glusterd_op_t op, dict_t *aggr, dict_t *rsp)
         case GD_OP_CREATE_VOLUME:
         case GD_OP_ADD_BRICK:
         case GD_OP_START_VOLUME:
+        case GD_OP_ADD_TIER_BRICK:
                 ret = glusterd_aggr_brick_mount_dirs (aggr, rsp);
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -248,6 +247,7 @@ glusterd_syncop_aggr_rsp_dict (glusterd_op_t op, dict_t *aggr, dict_t *rsp)
         break;
 
         case GD_OP_REPLACE_BRICK:
+        case GD_OP_RESET_BRICK:
                 ret = glusterd_rb_use_rsp_dict (aggr, rsp);
                 if (ret)
                         goto out;
@@ -309,6 +309,19 @@ glusterd_syncop_aggr_rsp_dict (glusterd_op_t op, dict_t *aggr, dict_t *rsp)
         case GD_OP_SCRUB_STATUS:
                 ret = glusterd_volume_bitrot_scrub_use_rsp_dict (aggr, rsp);
         break;
+
+        case GD_OP_SCRUB_ONDEMAND:
+        break;
+
+        case GD_OP_MAX_OPVERSION:
+                ret = glusterd_max_opversion_use_rsp_dict (aggr, rsp);
+        break;
+
+        case GD_OP_TIER_STATUS:
+        case GD_OP_DETACH_TIER_STATUS:
+        case GD_OP_REMOVE_TIER_BRICK:
+                ret = glusterd_volume_tier_use_rsp_dict (aggr, rsp);
+        /* FALLTHROUGH */
         default:
         break;
         }
@@ -322,7 +335,6 @@ gd_syncop_mgmt_v3_lock_cbk_fn (struct rpc_req *req, struct iovec *iov,
 {
         int                         ret           = -1;
         struct syncargs            *args          = NULL;
-        glusterd_peerinfo_t        *peerinfo      = NULL;
         gd1_mgmt_v3_lock_rsp        rsp           = {{0},};
         call_frame_t               *frame         = NULL;
         int                         op_ret        = -1;
@@ -363,8 +375,11 @@ out:
                                    GLUSTERD_MGMT_V3_LOCK, *peerid, rsp.uuid);
 
         GF_FREE (peerid);
-
-        STACK_DESTROY (frame->root);
+        /* req->rpc_status set to -1 means, STACK_DESTROY will be called from
+         * the caller function.
+         */
+        if (req->rpc_status != -1)
+                STACK_DESTROY (frame->root);
         synctask_barrier_wake(args);
         return 0;
 }
@@ -385,7 +400,6 @@ gd_syncop_mgmt_v3_lock (glusterd_op_t op, dict_t *op_ctx,
 {
         int                      ret  = -1;
         gd1_mgmt_v3_lock_req     req  = {{0},};
-        glusterd_conf_t         *conf = THIS->private;
         uuid_t                  *peerid = NULL;
 
         GF_ASSERT(op_ctx);
@@ -424,7 +438,6 @@ gd_syncop_mgmt_v3_unlock_cbk_fn (struct rpc_req *req, struct iovec *iov,
 {
         int                          ret           = -1;
         struct syncargs             *args          = NULL;
-        glusterd_peerinfo_t         *peerinfo      = NULL;
         gd1_mgmt_v3_unlock_rsp       rsp           = {{0},};
         call_frame_t                *frame         = NULL;
         int                          op_ret        = -1;
@@ -465,8 +478,11 @@ out:
                                    GLUSTERD_MGMT_V3_UNLOCK, *peerid, rsp.uuid);
 
         GF_FREE (peerid);
-
-        STACK_DESTROY (frame->root);
+        /* req->rpc_status set to -1 means, STACK_DESTROY will be called from
+         * the caller function.
+         */
+        if (req->rpc_status != -1)
+                STACK_DESTROY (frame->root);
         synctask_barrier_wake(args);
         return 0;
 }
@@ -486,7 +502,6 @@ gd_syncop_mgmt_v3_unlock (dict_t *op_ctx, glusterd_peerinfo_t *peerinfo,
 {
         int                          ret  = -1;
         gd1_mgmt_v3_unlock_req       req  = {{0},};
-        glusterd_conf_t             *conf = THIS->private;
         uuid_t                      *peerid = NULL;
 
         GF_ASSERT(op_ctx);
@@ -578,8 +593,11 @@ out:
                            GLUSTERD_MGMT_CLUSTER_LOCK, *peerid, rsp.uuid);
 
         GF_FREE (peerid);
-
-        STACK_DESTROY (frame->root);
+        /* req->rpc_status set to -1 means, STACK_DESTROY will be called from
+         * the caller function.
+         */
+        if (req->rpc_status != -1)
+                STACK_DESTROY (frame->root);
         synctask_barrier_wake(args);
         return 0;
 }
@@ -598,7 +616,6 @@ gd_syncop_mgmt_lock (glusterd_peerinfo_t *peerinfo, struct syncargs *args,
 {
         int                       ret = -1;
         gd1_mgmt_cluster_lock_req req  = {{0},};
-        glusterd_conf_t           *conf = THIS->private;
         uuid_t                    *peerid = NULL;
 
         gf_uuid_copy (req.uuid, my_uuid);
@@ -672,8 +689,11 @@ out:
                            GLUSTERD_MGMT_CLUSTER_UNLOCK, *peerid, rsp.uuid);
 
         GF_FREE (peerid);
-
-        STACK_DESTROY (frame->root);
+        /* req->rpc_status set to -1 means, STACK_DESTROY will be called from
+         * the caller function.
+         */
+        if (req->rpc_status != -1)
+                STACK_DESTROY (frame->root);
         synctask_barrier_wake(args);
         return 0;
 }
@@ -693,7 +713,6 @@ gd_syncop_mgmt_unlock (glusterd_peerinfo_t *peerinfo, struct syncargs *args,
 {
         int                         ret     = -1;
         gd1_mgmt_cluster_unlock_req req     = {{0},};
-        glusterd_conf_t             *conf   = THIS->private;
         uuid_t                      *peerid = NULL;
 
         gf_uuid_copy (req.uuid, my_uuid);
@@ -801,8 +820,11 @@ out:
         if (rsp_dict)
                 dict_unref (rsp_dict);
         GF_FREE (peerid);
-
-        STACK_DESTROY (frame->root);
+        /* req->rpc_status set to -1 means, STACK_DESTROY will be called from
+         * the caller function.
+         */
+        if (req->rpc_status != -1)
+                STACK_DESTROY (frame->root);
         synctask_barrier_wake(args);
         return 0;
 }
@@ -822,7 +844,6 @@ gd_syncop_mgmt_stage_op (glusterd_peerinfo_t *peerinfo, struct syncargs *args,
                          dict_t *dict_out, dict_t *op_ctx)
 {
         gd1_mgmt_stage_op_req *req  = NULL;
-        glusterd_conf_t       *conf = THIS->private;
         int                   ret   = -1;
         uuid_t                *peerid = NULL;
 
@@ -910,7 +931,11 @@ out:
                 free (rsp.op_errstr);
         free (rsp.output.output_val);
 
-        STACK_DESTROY (frame->root);
+        /* req->rpc_status set to -1 means, STACK_DESTROY will be called from
+         * the caller function.
+         */
+        if (req->rpc_status != -1)
+                STACK_DESTROY (frame->root);
         __wake (args);
 
         return 0;
@@ -933,6 +958,7 @@ gd_syncop_mgmt_brick_op (struct rpc_clnt *rpc, glusterd_pending_node_t *pnode,
         gd1_mgmt_brick_op_req  *req  = NULL;
         int                    ret  = 0;
         xlator_t               *this = NULL;
+        glusterd_brickinfo_t   *brickinfo = NULL;
 
         this = THIS;
         args.op_ret = -1;
@@ -962,6 +988,23 @@ gd_syncop_mgmt_brick_op (struct rpc_clnt *rpc, glusterd_pending_node_t *pnode,
                         GF_FREE (args.errstr);
         }
 
+        if (op == GD_OP_STOP_VOLUME || op == GD_OP_REMOVE_BRICK) {
+                if (args.op_ret == 0) {
+                        brickinfo = pnode->node;
+                        ret = glusterd_brick_process_remove_brick (brickinfo);
+                        if (ret) {
+                                gf_msg ("glusterd", GF_LOG_ERROR, 0,
+                                        GD_MSG_BRICKPROC_REM_BRICK_FAILED,
+                                        "Removing brick %s:%s from brick"
+                                        " process failed",
+                                        brickinfo->hostname,
+                                        brickinfo->path);
+                                args.op_ret = ret;
+                                goto out;
+                        }
+                }
+        }
+
         if (GD_OP_STATUS_VOLUME == op) {
                 ret = dict_set_int32 (args.dict, "index", pnode->index);
                 if (ret) {
@@ -973,6 +1016,21 @@ gd_syncop_mgmt_brick_op (struct rpc_clnt *rpc, glusterd_pending_node_t *pnode,
                         goto out;
                 }
         }
+
+        if (req->op == GLUSTERD_BRICK_TERMINATE) {
+                if (args.op_ret && (args.op_errno == ENOTCONN)) {
+                        /*
+                         * This is actually OK.  It happens when the target
+                         * brick process exits and we saw the closed connection
+                         * before we read the response.  If we didn't read the
+                         * response quickly enough that's kind of our own
+                         * fault, and the fact that the process exited means
+                         * that our goal of terminating the brick was achieved.
+                         */
+                        args.op_ret = 0;
+                }
+        }
+
         if (args.op_ret == 0)
                 glusterd_handle_node_rsp (dict_out, pnode->node, op,
                                           args.dict, op_ctx, errstr,
@@ -982,9 +1040,21 @@ out:
         errno = args.op_errno;
         if (args.dict)
                 dict_unref (args.dict);
+        if (args.op_ret && (*errstr == NULL)) {
+                if (op == GD_OP_HEAL_VOLUME) {
+                        gf_asprintf (errstr,
+                                     "Glusterd Syncop Mgmt brick op '%s' failed."
+                                     " Please check glustershd log file for details.",
+                                     gd_op_list[op]);
+                } else {
+                        gf_asprintf (errstr,
+                                     "Glusterd Syncop Mgmt brick op '%s' failed."
+                                     " Please check brick log file for details.",
+                                     gd_op_list[op]);
+                }
+        }
         gd_brick_op_req_free (req);
         return args.op_ret;
-
 }
 
 int32_t
@@ -1087,8 +1157,11 @@ out:
         if (rsp_dict)
                 dict_unref (rsp_dict);
         GF_FREE (peerid);
-
-        STACK_DESTROY (frame->root);
+        /* req->rpc_status set to -1 means, STACK_DESTROY will be called from
+         * the caller function.
+         */
+        if (req->rpc_status != -1)
+                STACK_DESTROY (frame->root);
         synctask_barrier_wake(args);
 
         return 0;
@@ -1108,7 +1181,6 @@ gd_syncop_mgmt_commit_op (glusterd_peerinfo_t *peerinfo, struct syncargs *args,
                           uuid_t my_uuid, uuid_t recv_uuid,
                           int op, dict_t *dict_out, dict_t *op_ctx)
 {
-        glusterd_conf_t        *conf = THIS->private;
         gd1_mgmt_commit_op_req *req  = NULL;
         int                    ret  = -1;
         uuid_t                 *peerid = NULL;
@@ -1632,11 +1704,9 @@ gd_brick_op_phase (glusterd_op_t op, dict_t *op_ctx, dict_t *req_dict,
         int                     ret = -1;
         rpc_clnt_t              *rpc = NULL;
         dict_t                  *rsp_dict = NULL;
-        glusterd_conf_t         *conf = NULL;
         int32_t                 cmd = GF_OP_CMD_NONE;
 
         this = THIS;
-        conf = this->private;
         rsp_dict = dict_new ();
         if (!rsp_dict) {
                 ret = -1;
@@ -1684,17 +1754,28 @@ gd_brick_op_phase (glusterd_op_t op, dict_t *op_ctx, dict_t *req_dict,
                 ret = dict_get_int32 (req_dict, "command", &cmd);
                 if (!ret) {
                         if (cmd == GF_OP_CMD_DETACH_START) {
+                                /* this change is left to support backward
+                                 * compatibility. */
                                 op = GD_OP_REBALANCE;
-                                ret = dict_set_int32 (req_dict, "rebalance-command",
+                                ret = dict_set_int32 (req_dict,
+                                                      "rebalance-command",
                                                       GF_DEFRAG_CMD_START_DETACH_TIER);
-                                if (ret)
-                                        goto out;
+                        } else if (cmd == GF_DEFRAG_CMD_DETACH_START) {
+                                op = GD_OP_REMOVE_TIER_BRICK;
+                                ret = dict_set_int32 (req_dict,
+                                                      "rebalance-command",
+                                                      GF_DEFRAG_CMD_DETACH_START);
                         }
+                        if (ret)
+                                goto out;
                 }
                 ret = gd_syncop_mgmt_brick_op (rpc, pending_node, op, req_dict,
                                                op_ctx, op_errstr);
                 if (cmd == GF_OP_CMD_DETACH_START) {
                         op = GD_OP_REMOVE_BRICK;
+                        dict_del (req_dict, "rebalance-command");
+                } else if (cmd == GF_DEFRAG_CMD_DETACH_START) {
+                        op = GD_OP_REMOVE_TIER_BRICK;
                         dict_del (req_dict, "rebalance-command");
                 }
                 if (ret)
@@ -1724,7 +1805,7 @@ gd_sync_task_begin (dict_t *op_ctx, rpcsvc_request_t * req)
         int                         op_ret           = -1;
         dict_t                      *req_dict        = NULL;
         glusterd_conf_t             *conf            = NULL;
-        glusterd_op_t               op               = 0;
+        glusterd_op_t               op               = GD_OP_NONE;
         int32_t                     tmp_op           = 0;
         char                        *op_errstr       = NULL;
         char                        *tmp             = NULL;

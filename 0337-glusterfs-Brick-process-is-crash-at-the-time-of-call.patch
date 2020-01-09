@@ -1,0 +1,64 @@
+From d339013984f117159217f48908c517ba32ed278c Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Sat, 30 Jun 2018 19:51:34 +0530
+Subject: [PATCH 337/351] glusterfs: Brick process is crash at the time of call
+ server_first_lookup
+
+Problem: Brick process is getting crash while executing test case
+         tests/bugs/core/bug-1432542-mpx-restart-crash.t
+
+Solution: At the time of initiating connection with brick process by
+          client brick process call server_setvolume.If cleanup thread
+          has set cleanup_starting flag after check flag by server_setvolume
+          then a brick process can crash at the time of calling lookup
+          on brick root.To avoid crash check cleanup_starting
+          flag before just call server_first_lookup
+
+> BUG: 1597627
+> Change-Id: I12542c124c76429184df34a04c1eae1a30052ca7
+> fixes: bz#1597627
+> Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+> Note: To test the patch executing test case
+>       tests/bugs/core/bug-1432542-mpx-restart-crash.t in a loop
+>      around 100 times
+> (Cherry picked from commit dab12ce093628860bf43c3e0c7eaf9099cf7a78f)
+> (Reviewed on upstream link https://review.gluster.org/#/c/20427/)
+
+Change-Id: I490d8152e82e254163a2938f75ab0d2f64bc58b4
+BUG: 1609724
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146227
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/server/src/server-handshake.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/protocol/server/src/server-handshake.c b/xlators/protocol/server/src/server-handshake.c
+index a59bcda..12f620c 100644
+--- a/xlators/protocol/server/src/server-handshake.c
++++ b/xlators/protocol/server/src/server-handshake.c
+@@ -910,9 +910,17 @@ fail:
+            to client. Very important in case of subdirectory mounts, where if
+            client is trying to mount a non-existing directory */
+         if (op_ret >= 0 && client->bound_xl->itable) {
+-                op_ret = server_first_lookup (this, client, reply);
+-                if (op_ret == -1)
+-                        op_errno = ENOENT;
++                if (client->bound_xl->cleanup_starting) {
++                        op_ret = -1;
++                        op_errno = EAGAIN;
++                        ret = dict_set_str (reply, "ERROR",
++                                            "cleanup flag is set for xlator "
++                                            "before call first_lookup Try again later");
++                } else {
++                        op_ret = server_first_lookup (this, client, reply);
++                        if (op_ret == -1)
++                                op_errno = ENOENT;
++                }
+         }
+ 
+         rsp = GF_CALLOC (1, sizeof (gf_setvolume_rsp),
+-- 
+1.8.3.1
+

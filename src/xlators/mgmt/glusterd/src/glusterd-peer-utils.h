@@ -43,6 +43,9 @@ char*
 gd_peer_uuid_str (glusterd_peerinfo_t *peerinfo);
 
 gf_boolean_t
+glusterd_are_all_peers_up ();
+
+gf_boolean_t
 glusterd_are_vol_all_peers_up (glusterd_volinfo_t *volinfo,
                                struct cds_list_head *peers,
                                char **down_peerstr);
@@ -84,4 +87,7 @@ gd_add_peer_detail_to_dict (glusterd_peerinfo_t *peerinfo, dict_t *friends,
                             int count);
 glusterd_peerinfo_t *
 glusterd_peerinfo_find_by_generation (uint32_t generation);
+
+int
+glusterd_get_peers_count ();
 #endif /* _GLUSTERD_PEER_UTILS_H */

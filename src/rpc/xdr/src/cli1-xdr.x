@@ -1,5 +1,21 @@
+/*
+ * Copyright (c) 2012 Red Hat, Inc. <http://www.redhat.com>
+ * This file is part of GlusterFS.
+ *
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 3 or any later version (LGPLv3 or
+ * later), or the GNU General Public License, version 2 (GPLv2), in all
+ * cases as published by the Free Software Foundation.
+ */
+
+#ifdef RPC_XDR
+%#include "rpc-pragmas.h"
+#endif
+%#include "compat.h"
+
  enum gf_cli_defrag_type {
-        GF_DEFRAG_CMD_START = 1,
+	GF_DEFRAG_CMD_NONE = 0,
+        GF_DEFRAG_CMD_START,
         GF_DEFRAG_CMD_STOP,
         GF_DEFRAG_CMD_STATUS,
         GF_DEFRAG_CMD_START_LAYOUT_FIX,
@@ -10,7 +26,13 @@
         GF_DEFRAG_CMD_STOP_DETACH_TIER,
         GF_DEFRAG_CMD_PAUSE_TIER,
         GF_DEFRAG_CMD_RESUME_TIER,
-        GF_DEFRAG_CMD_DETACH_STATUS
+        GF_DEFRAG_CMD_DETACH_STATUS,
+        GF_DEFRAG_CMD_STOP_TIER,
+        GF_DEFRAG_CMD_DETACH_START,
+        GF_DEFRAG_CMD_DETACH_COMMIT,
+        GF_DEFRAG_CMD_DETACH_COMMIT_FORCE,
+        GF_DEFRAG_CMD_DETACH_STOP,
+        GF_DEFRAG_CMD_TYPE_MAX
 };
 
  enum gf_defrag_status_t {
@@ -26,7 +48,7 @@
         GF_DEFRAG_STATUS_MAX
 };
 
- enum gf1_cluster_type {
+enum gf1_cluster_type {
         GF_CLUSTER_TYPE_NONE = 0,
         GF_CLUSTER_TYPE_STRIPE,
         GF_CLUSTER_TYPE_REPLICATE,
@@ -45,6 +67,7 @@ enum gf_bitrot_type {
         GF_BITROT_OPTION_TYPE_SCRUB,
         GF_BITROT_OPTION_TYPE_EXPIRY_TIME,
         GF_BITROT_CMD_SCRUB_STATUS,
+        GF_BITROT_CMD_SCRUB_ONDEMAND,
         GF_BITROT_OPTION_TYPE_MAX
 };
 
@@ -78,6 +101,7 @@ enum gf_quota_type {
         GF_QUOTA_OPTION_TYPE_LIST_OBJECTS,
         GF_QUOTA_OPTION_TYPE_REMOVE_OBJECTS,
         GF_QUOTA_OPTION_TYPE_ENABLE_OBJECTS,
+        GF_QUOTA_OPTION_TYPE_UPGRADE,
         GF_QUOTA_OPTION_TYPE_MAX
 };
 
@@ -129,6 +153,11 @@ enum gf1_cli_info_op {
         GF_CLI_INFO_CLEAR = 4
 };
 
+enum gf_cli_get_state_op {
+        GF_CLI_GET_STATE_DETAIL = 1,
+        GF_CLI_GET_STATE_VOLOPTS = 2
+};
+
 enum gf1_cli_top_op {
         GF_CLI_TOP_NONE = 0,
         GF_CLI_TOP_OPEN,
@@ -160,7 +189,8 @@ enum gf_cli_status_type {
         GF_CLI_STATUS_QUOTAD       = 0x002000,    /*00010000000000000*/
         GF_CLI_STATUS_SNAPD        = 0x004000,    /*00100000000000000*/
         GF_CLI_STATUS_BITD         = 0x008000,    /*01000000000000000*/
-        GF_CLI_STATUS_SCRUB        = 0x010000     /*10000000000000000*/
+        GF_CLI_STATUS_SCRUB        = 0x010000,    /*10000000000000000*/
+        GF_CLI_STATUS_TIERD        = 0x020000     /*100000000000000000*/
 };
 
 /* Identifiers for snapshot clis */
@@ -197,10 +227,15 @@ enum  gf1_cli_snapshot_status {
         GF_SNAP_STATUS_TYPE_ITER
 };
 
+/* Changing order of GF_SNAP_DELETE_TYPE_VOL           *
+ * and GF_SNAP_DELETE_TYPE_SNAP so that they don't     *
+ * overlap with the enums of GF_SNAP_STATUS_TYPE_SNAP, *
+ * and GF_SNAP_STATUS_TYPE_VOL                         *
+ */
 enum gf1_cli_snapshot_delete {
         GF_SNAP_DELETE_TYPE_ALL  = 0,
-        GF_SNAP_DELETE_TYPE_SNAP = 1,
-        GF_SNAP_DELETE_TYPE_VOL  = 2,
+        GF_SNAP_DELETE_TYPE_VOL  = 1,
+        GF_SNAP_DELETE_TYPE_SNAP = 2,
         GF_SNAP_DELETE_TYPE_ITER = 3
 };
 

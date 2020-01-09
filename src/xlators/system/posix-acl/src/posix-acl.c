@@ -16,7 +16,7 @@
 #include "posix-acl.h"
 #include "posix-acl-xattr.h"
 #include "posix-acl-mem-types.h"
-
+#include "posix-acl-messages.h"
 
 #define UINT64(ptr) ((uint64_t)((long)(ptr)))
 #define PTR(num) ((void *)((long)(num)))
@@ -61,6 +61,10 @@ whitelisted_xattr (const char *key)
         if (strcmp (POSIX_ACL_ACCESS_XATTR, key) == 0)
                 return 1;
         if (strcmp (POSIX_ACL_DEFAULT_XATTR, key) == 0)
+                return 1;
+        if (strcmp (GF_POSIX_ACL_ACCESS, key) == 0)
+                return 1;
+        if (strcmp (GF_POSIX_ACL_DEFAULT, key) == 0)
                 return 1;
         return 0;
 }
@@ -158,11 +162,16 @@ sticky_permits (call_frame_t *frame, inode_t *parent, inode_t *inode)
         struct posix_acl_ctx  *par = NULL;
         struct posix_acl_ctx  *ctx = NULL;
 
-        par = posix_acl_ctx_get (parent, frame->this);
-        ctx = posix_acl_ctx_get (inode, frame->this);
-
-        if (frame_is_super_user (frame))
+        if ((0 > frame->root->pid) || frame_is_super_user (frame))
                 return 1;
+
+        par = posix_acl_ctx_get (parent, frame->this);
+        if (par == NULL)
+                return 0;
+
+        ctx = posix_acl_ctx_get (inode, frame->this);
+        if (ctx == NULL)
+                return 0;
 
         if (!(par->perm & S_ISVTX))
                 return 1;
@@ -176,6 +185,92 @@ sticky_permits (call_frame_t *frame, inode_t *parent, inode_t *inode)
         return 0;
 }
 
+static gf_boolean_t
+_does_acl_exist (struct posix_acl *acl)
+{
+        if (acl && (acl->count > POSIX_ACL_MINIMAL_ACE_COUNT))
+                return _gf_true;
+        return _gf_false;
+}
+
+static void
+posix_acl_get_acl_string (call_frame_t *frame, struct posix_acl *acl,
+                          char **acl_str)
+{
+        int                   i        = 0;
+        size_t                size_acl = 0;
+        size_t                offset   = 0;
+        struct posix_ace      *ace     = NULL;
+        char                  tmp_str[1024] = {0};
+#define NON_GRP_FMT "(tag:%"PRIu16",perm:%"PRIu16",id:%"PRIu32")"
+#define GRP_FMT "(tag:%"PRIu16",perm:%"PRIu16",id:%"PRIu32",in-groups:%d)"
+
+        if (!_does_acl_exist (acl))
+                goto out;
+
+        ace = acl->entries;
+        for (i = 0; i < acl->count; i++) {
+                if (ace->tag != POSIX_ACL_GROUP) {
+                        size_acl += snprintf (tmp_str, sizeof tmp_str,
+                                     NON_GRP_FMT, ace->tag, ace->perm, ace->id);
+                } else {
+                        size_acl += snprintf (tmp_str, sizeof tmp_str,
+                                        GRP_FMT, ace->tag,
+                                       ace->perm, ace->id,
+                                       frame_in_group (frame, ace->id));
+                }
+
+                ace++;
+        }
+
+        *acl_str = GF_CALLOC (1, size_acl + 1, gf_posix_acl_mt_char);
+        if (!*acl_str)
+                goto out;
+
+        ace = acl->entries;
+        for (i = 0; i < acl->count; i++) {
+                if (ace->tag != POSIX_ACL_GROUP) {
+                        offset += snprintf (*acl_str + offset,
+                                            size_acl - offset,
+                                     NON_GRP_FMT, ace->tag, ace->perm, ace->id);
+                } else {
+                        offset += snprintf (*acl_str + offset,
+                                       size_acl - offset,
+                                       GRP_FMT, ace->tag, ace->perm, ace->id,
+                                       frame_in_group (frame, ace->id));
+                }
+
+                ace++;
+        }
+out:
+        return;
+}
+
+static void
+posix_acl_log_permit_denied (call_frame_t *frame, inode_t *inode, int want,
+                             struct posix_acl_ctx *ctx, struct posix_acl *acl)
+{
+        char     *acl_str = NULL;
+        client_t *client  = frame->root->client;
+
+        if (!frame || !inode || !ctx)
+                goto out;
+
+        posix_acl_get_acl_string (frame, acl, &acl_str);
+
+        gf_msg (frame->this->name, GF_LOG_INFO, EACCES, POSIX_ACL_MSG_EACCES,
+                "client: %s, gfid: %s, req(uid:%d,gid:%d,perm:%d,"
+                "ngrps:%"PRIu16"), ctx(uid:%d,gid:%d,in-groups:%d,perm:%d%d%d,"
+                "updated-fop:%s, acl:%s)", client ? client->client_uid : "-",
+                uuid_utoa (inode->gfid), frame->root->uid, frame->root->gid,
+                want, frame->root->ngrps, ctx->uid, ctx->gid,
+                frame_in_group (frame, ctx->gid), (ctx->perm & S_IRWXU) >> 6,
+                (ctx->perm & S_IRWXG) >> 3, ctx->perm & S_IRWXO,
+                gf_fop_string (ctx->fop), acl_str ? acl_str : "-");
+out:
+        GF_FREE (acl_str);
+        return;
+}
 
 static int
 acl_permits (call_frame_t *frame, inode_t *inode, int want)
@@ -192,12 +287,12 @@ acl_permits (call_frame_t *frame, inode_t *inode, int want)
 
         conf = frame->this->private;
 
+        if ((0 > frame->root->pid) || frame_is_super_user (frame))
+                goto green;
+
         ctx = posix_acl_ctx_get (inode, frame->this);
         if (!ctx)
                 goto red;
-
-        if (frame_is_super_user (frame))
-                goto green;
 
         posix_acl_get (inode, frame->this, &acl, NULL);
         if (!acl) {
@@ -206,7 +301,7 @@ acl_permits (call_frame_t *frame, inode_t *inode, int want)
 
         ace = acl->entries;
 
-        if (acl->count > POSIX_ACL_MINIMAL_ACE_COUNT)
+        if (_does_acl_exist (acl))
                 acl_present = 1;
 
         for (i = 0; i < acl->count; i++) {
@@ -278,6 +373,7 @@ green:
         goto out;
 red:
         verdict = 0;
+        posix_acl_log_permit_denied (frame, inode, want, ctx, acl);
 out:
         if (acl)
                 posix_acl_unref (frame->this, acl);
@@ -287,22 +383,73 @@ out:
 
 
 struct posix_acl_ctx *
-posix_acl_ctx_get (inode_t *inode, xlator_t *this)
+__posix_acl_ctx_get (inode_t *inode, xlator_t *this, gf_boolean_t create)
 {
         struct posix_acl_ctx *ctx = NULL;
         uint64_t              int_ctx = 0;
         int                   ret = 0;
 
-        ret = inode_ctx_get (inode, this, &int_ctx);
+        ret = __inode_ctx_get (inode, this, &int_ctx);
         if ((ret == 0) && (int_ctx))
                 return PTR(int_ctx);
+
+        if (create == _gf_false)
+                return NULL;
 
         ctx = GF_CALLOC (1, sizeof (*ctx), gf_posix_acl_mt_ctx_t);
         if (!ctx)
                 return NULL;
 
-        ret = inode_ctx_put (inode, this, UINT64 (ctx));
+        ret = __inode_ctx_put (inode, this, UINT64 (ctx));
+        if (ret) {
+                GF_FREE (ctx);
+                ctx = NULL;
+        }
 
+        return ctx;
+}
+
+struct posix_acl_ctx *
+posix_acl_ctx_new (inode_t *inode, xlator_t *this)
+{
+        struct posix_acl_ctx *ctx = NULL;
+
+        if (inode == NULL) {
+                gf_log_callingfn (this->name, GF_LOG_WARNING, "inode is NULL");
+                return NULL;
+        }
+
+        LOCK (&inode->lock);
+        {
+                ctx = __posix_acl_ctx_get (inode, this, _gf_true);
+        }
+        UNLOCK (&inode->lock);
+
+        if (ctx == NULL)
+                gf_log_callingfn (this->name, GF_LOG_ERROR, "creating inode ctx"
+                                  "failed for %s", uuid_utoa (inode->gfid));
+        return ctx;
+}
+
+struct posix_acl_ctx *
+posix_acl_ctx_get (inode_t *inode, xlator_t *this)
+{
+        struct posix_acl_ctx *ctx = NULL;
+
+        if (inode == NULL) {
+                gf_log_callingfn (this->name, GF_LOG_WARNING, "inode is NULL");
+                return NULL;
+        }
+
+        LOCK (&inode->lock);
+        {
+                ctx = __posix_acl_ctx_get (inode, this, _gf_false);
+        }
+        UNLOCK (&inode->lock);
+
+        if (ctx == NULL)
+                gf_log_callingfn (this->name, GF_LOG_ERROR, "inode ctx is NULL "
+                                  "for %s", uuid_utoa (inode->gfid));
         return ctx;
 }
 
@@ -636,7 +783,7 @@ posix_acl_inherit (xlator_t *this, loc_t *loc, dict_t *params, mode_t mode,
         if (!par_default)
                 goto out;
 
-        ctx = posix_acl_ctx_get (loc->inode, this);
+        ctx = posix_acl_ctx_new (loc->inode, this);
 
         acl_access = posix_acl_dup (this, par_default);
         if (!acl_access)
@@ -659,6 +806,7 @@ posix_acl_inherit (xlator_t *this, loc_t *loc, dict_t *params, mode_t mode,
                             size_access);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "out of memory");
+                GF_FREE (xattr_access);
                 ret = -1;
                 goto out;
         }
@@ -682,6 +830,7 @@ posix_acl_inherit (xlator_t *this, loc_t *loc, dict_t *params, mode_t mode,
                             size_default);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "out of memory");
+                GF_FREE (xattr_default);
                 ret = -1;
                 goto out;
         }
@@ -728,9 +877,9 @@ posix_acl_inherit_file (xlator_t *this, loc_t *loc, dict_t *params, mode_t mode,
         return retmode;
 }
 
-
 int
-posix_acl_ctx_update (inode_t *inode, xlator_t *this, struct iatt *buf)
+posix_acl_ctx_update (inode_t *inode, xlator_t *this, struct iatt *buf,
+                      glusterfs_fop_t fop)
 {
         struct posix_acl_ctx *ctx = NULL;
 	struct posix_acl     *acl = NULL;
@@ -740,20 +889,21 @@ posix_acl_ctx_update (inode_t *inode, xlator_t *this, struct iatt *buf)
         int                   ret = 0;
 	int                   i = 0;
 
-        ctx = posix_acl_ctx_get (inode, this);
-        if (!ctx) {
-                ret = -1;
-                goto out;
-        }
-
         LOCK(&inode->lock);
         {
+                ctx = __posix_acl_ctx_get (inode, this, _gf_true);
+                if (!ctx) {
+                        ret = -1;
+                        goto unlock;
+                }
+
                 ctx->uid   = buf->ia_uid;
                 ctx->gid   = buf->ia_gid;
                 ctx->perm  = st_mode_from_ia (buf->ia_prot, buf->ia_type);
+                ctx->fop   = fop;
 
 		acl = ctx->acl_access;
-		if (!acl || !(acl->count > POSIX_ACL_MINIMAL_ACE_COUNT))
+                if (!_does_acl_exist (acl))
 			goto unlock;
 
 		/* This is an extended ACL (not minimal acl). In case we
@@ -792,28 +942,37 @@ posix_acl_ctx_update (inode_t *inode, xlator_t *this, struct iatt *buf)
         }
 unlock:
         UNLOCK(&inode->lock);
-out:
         return ret;
 }
-
 
 int
 posix_acl_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                       int op_ret, int op_errno, inode_t *inode,
                       struct iatt *buf, dict_t *xattr, struct iatt *postparent)
 {
-        struct posix_acl     *acl_access = NULL;
+        struct posix_acl     *acl_access  = NULL;
         struct posix_acl     *acl_default = NULL;
-        struct posix_acl     *old_access = NULL;
+        struct posix_acl     *old_access  = NULL;
         struct posix_acl     *old_default = NULL;
-        data_t               *data = NULL;
-        int                   ret = 0;
-        dict_t               *my_xattr = NULL;
+        struct posix_acl_ctx *ctx         = NULL;
+        data_t               *data        = NULL;
+        int                   ret         = 0;
+        dict_t               *my_xattr    = NULL;
 
         if (op_ret != 0)
                 goto unwind;
 
+        ctx = posix_acl_ctx_new (inode, this);
+        if (!ctx) {
+                op_ret = -1;
+                op_errno = ENOMEM;
+                goto unwind;
+        }
+
         ret = posix_acl_get (inode, this, &old_access, &old_default);
+
+        if (xattr == NULL)
+                goto acl_set;
 
         data = dict_get (xattr, POSIX_ACL_ACCESS_XATTR);
         if (!data)
@@ -843,7 +1002,7 @@ acl_default:
         }
 
 acl_set:
-        posix_acl_ctx_update (inode, this, buf);
+        posix_acl_ctx_update (inode, this, buf, GF_FOP_LOOKUP);
 
         ret = posix_acl_set (inode, this, acl_access, acl_default);
         if (ret)
@@ -1048,14 +1207,15 @@ posix_acl_open (call_frame_t *frame, xlator_t *this, loc_t *loc, int flags,
 
                 break;
         case O_WRONLY:
-        case O_APPEND:
-        case O_TRUNC:
                 perm = POSIX_ACL_WRITE;
                 break;
         case O_RDWR:
                 perm = POSIX_ACL_READ|POSIX_ACL_WRITE;
                 break;
         }
+
+        if (flags & (O_TRUNC | O_APPEND))
+                perm |= POSIX_ACL_WRITE;
 
         if (acl_permits (frame, loc->inode, perm))
                 goto green;
@@ -1067,7 +1227,7 @@ green:
                     loc, flags, fd, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (open, frame, -1, EACCES, NULL, xdata);
+        STACK_UNWIND_STRICT (open, frame, -1, EACCES, NULL, NULL);
         return 0;
 }
 
@@ -1102,7 +1262,8 @@ green:
                     fd, size, offset, flags, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (readv, frame, -1, EACCES, NULL, 0, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (readv, frame, -1, EACCES, NULL, 0, NULL, NULL,
+                             NULL);
         return 0;
 }
 
@@ -1137,7 +1298,7 @@ green:
                     fd, vector, count, offset, flags, iobref, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (writev, frame, -1, EACCES, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (writev, frame, -1, EACCES, NULL, NULL, NULL);
         return 0;
 }
 
@@ -1172,7 +1333,7 @@ green:
                     fd, offset, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (ftruncate, frame, -1, EACCES, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (ftruncate, frame, -1, EACCES, NULL, NULL, NULL);
         return 0;
 }
 
@@ -1200,7 +1361,7 @@ green:
                     loc, fd, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (opendir, frame, -1, EACCES, NULL, xdata);
+        STACK_UNWIND_STRICT (opendir, frame, -1, EACCES, NULL, NULL);
         return 0;
 }
 
@@ -1214,7 +1375,7 @@ posix_acl_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret != 0)
                 goto unwind;
 
-        posix_acl_ctx_update (inode, this, buf);
+        posix_acl_ctx_update (inode, this, buf, GF_FOP_MKDIR);
 
 unwind:
         STACK_UNWIND_STRICT (mkdir, frame, op_ret, op_errno, inode, buf,
@@ -1257,7 +1418,7 @@ posix_acl_mknod_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret != 0)
                 goto unwind;
 
-        posix_acl_ctx_update (inode, this, buf);
+        posix_acl_ctx_update (inode, this, buf, GF_FOP_MKNOD);
 
 unwind:
         STACK_UNWIND_STRICT (mknod, frame, op_ret, op_errno, inode, buf,
@@ -1300,7 +1461,7 @@ posix_acl_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret != 0)
                 goto unwind;
 
-        posix_acl_ctx_update (inode, this, buf);
+        posix_acl_ctx_update (inode, this, buf, GF_FOP_CREATE);
 
 unwind:
         STACK_UNWIND_STRICT (create, frame, op_ret, op_errno, fd, inode, buf,
@@ -1343,7 +1504,7 @@ posix_acl_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret != 0)
                 goto unwind;
 
-        posix_acl_ctx_update (inode, this, buf);
+        posix_acl_ctx_update (inode, this, buf, GF_FOP_SYMLINK);
 
 unwind:
         STACK_UNWIND_STRICT (symlink, frame, op_ret, op_errno, inode, buf,
@@ -1367,7 +1528,7 @@ green:
         return 0;
 red:
         STACK_UNWIND_STRICT (symlink, frame, -1, EACCES, NULL, NULL, NULL,
-                             NULL, xdata);
+                             NULL, NULL);
         return 0;
 }
 
@@ -1377,9 +1538,6 @@ posix_acl_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                       int op_ret, int op_errno, struct iatt *preparent,
                       struct iatt *postparent, dict_t *xdata)
 {
-        if (op_ret != 0)
-                goto unwind;
-unwind:
         STACK_UNWIND_STRICT (unlink, frame, op_ret, op_errno,
                              preparent, postparent, xdata);
         return 0;
@@ -1403,7 +1561,7 @@ green:
                     loc, xflag, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (unlink, frame, -1, EACCES, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (unlink, frame, -1, EACCES, NULL, NULL, NULL);
         return 0;
 }
 
@@ -1413,9 +1571,6 @@ posix_acl_rmdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                      int op_ret, int op_errno,
                      struct iatt *preparent, struct iatt *postparent, dict_t *xdata)
 {
-        if (op_ret != 0)
-                goto unwind;
-unwind:
         STACK_UNWIND_STRICT (rmdir, frame, op_ret, op_errno,
                              preparent, postparent, xdata);
         return 0;
@@ -1438,7 +1593,7 @@ green:
                     loc, flags, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (rmdir, frame, -1, EACCES, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (rmdir, frame, -1, EACCES, NULL, NULL, NULL);
         return 0;
 }
 
@@ -1450,9 +1605,6 @@ posix_acl_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                       struct iatt *prenewparent, struct iatt *postnewparent,
                       dict_t *xdata)
 {
-        if (op_ret != 0)
-                goto unwind;
-unwind:
         STACK_UNWIND_STRICT (rename, frame, op_ret, op_errno, buf,
                              preoldparent, postoldparent,
                              prenewparent, postnewparent, xdata);
@@ -1493,9 +1645,6 @@ posix_acl_link_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                     int op_ret, int op_errno, inode_t *inode, struct iatt *buf,
                     struct iatt *preparent, struct iatt *postparent, dict_t *xdata)
 {
-        if (op_ret != 0)
-                goto unwind;
-unwind:
         STACK_UNWIND_STRICT (link, frame, op_ret, op_errno, inode, buf,
                              preparent, postparent, xdata);
         return 0;
@@ -1529,7 +1678,8 @@ posix_acl_link (call_frame_t *frame, xlator_t *this, loc_t *old, loc_t *new, dic
                     old, new, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (link, frame, -1, op_errno, NULL, NULL, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (link, frame, -1, op_errno, NULL, NULL, NULL, NULL,
+                             NULL);
 
         return 0;
 }
@@ -1540,9 +1690,6 @@ posix_acl_readdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                        int op_ret, int op_errno, gf_dirent_t *entries,
                        dict_t *xdata)
 {
-        if (op_ret != 0)
-                goto unwind;
-unwind:
         STACK_UNWIND_STRICT (readdir, frame, op_ret, op_errno, entries, xdata);
         return 0;
 }
@@ -1562,7 +1709,7 @@ green:
                     fd, size, offset, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (readdir, frame, -1, EACCES, NULL, xdata);
+        STACK_UNWIND_STRICT (readdir, frame, -1, EACCES, NULL, NULL);
 
         return 0;
 }
@@ -1573,11 +1720,12 @@ posix_acl_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         int op_ret, int op_errno, gf_dirent_t *entries,
                         dict_t *xdata)
 {
-        gf_dirent_t      *entry       = NULL;
-        struct posix_acl *acl_access  = NULL;
-        struct posix_acl *acl_default = NULL;
-        data_t           *data        = NULL;
-        int               ret         = 0;
+        gf_dirent_t          *entry       = NULL;
+        struct posix_acl     *acl_access  = NULL;
+        struct posix_acl     *acl_default = NULL;
+        struct posix_acl_ctx *ctx         = NULL;
+        data_t               *data        = NULL;
+        int                   ret         = 0;
 
         if (op_ret <= 0)
                 goto unwind;
@@ -1586,6 +1734,13 @@ posix_acl_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 /* Update the inode ctx */
                 if (!entry->dict || !entry->inode)
                         continue;
+
+                ctx = posix_acl_ctx_new (entry->inode, this);
+                if (!ctx) {
+                        op_ret = -1;
+                        op_errno = ENOMEM;
+                        goto unwind;
+                }
 
                 ret = posix_acl_get (entry->inode, this,
                                      &acl_access, &acl_default);
@@ -1622,7 +1777,8 @@ posix_acl_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                                     data->len);
 
         acl_set:
-                posix_acl_ctx_update (entry->inode, this, &entry->d_stat);
+                posix_acl_ctx_update (entry->inode, this, &entry->d_stat,
+                                      GF_FOP_READDIRP);
 
                 ret = posix_acl_set (entry->inode, this,
                                      acl_access, acl_default);
@@ -1759,7 +1915,7 @@ posix_acl_setattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret != 0)
                 goto unwind;
 
-        posix_acl_ctx_update (inode, this, postbuf);
+        posix_acl_ctx_update (inode, this, postbuf, GF_FOP_SETATTR);
 
 unwind:
         STACK_UNWIND_STRICT (setattr, frame, op_ret, op_errno, prebuf,
@@ -1786,7 +1942,7 @@ posix_acl_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
                     loc, buf, valid, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (setattr, frame, -1, op_errno, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (setattr, frame, -1, op_errno, NULL, NULL, NULL);
 
         return 0;
 }
@@ -1805,7 +1961,7 @@ posix_acl_fsetattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret != 0)
                 goto unwind;
 
-        posix_acl_ctx_update (inode, this, postbuf);
+        posix_acl_ctx_update (inode, this, postbuf, GF_FOP_FSETATTR);
 
 unwind:
         STACK_UNWIND_STRICT (fsetattr, frame, op_ret, op_errno, prebuf,
@@ -1832,7 +1988,7 @@ posix_acl_fsetattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
                     fd, buf, valid, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (fsetattr, frame, -1, EACCES, NULL, NULL, xdata);
+        STACK_UNWIND_STRICT (fsetattr, frame, -1, EACCES, NULL, NULL, NULL);
 
         return 0;
 }
@@ -2028,7 +2184,7 @@ posix_acl_setxattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
                            loc, xattr, flags, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (setxattr, frame, -1, op_errno, xdata);
+        STACK_UNWIND_STRICT (setxattr, frame, -1, op_errno, NULL);
 
         return 0;
 }
@@ -2062,7 +2218,7 @@ posix_acl_fsetxattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
                     fd, xattr, flags, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (fsetxattr, frame, -1, op_errno, xdata);
+        STACK_UNWIND_STRICT (fsetxattr, frame, -1, op_errno, NULL);
 
         return 0;
 }
@@ -2097,7 +2253,7 @@ green:
         return 0;
 
 red:
-        STACK_UNWIND_STRICT (getxattr, frame, -1, EACCES, NULL, xdata);
+        STACK_UNWIND_STRICT (getxattr, frame, -1, EACCES, NULL, NULL);
 
         return 0;
 }
@@ -2130,7 +2286,7 @@ green:
                     fd, name, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (fgetxattr, frame, -1, EACCES, NULL, xdata);
+        STACK_UNWIND_STRICT (fgetxattr, frame, -1, EACCES, NULL, NULL);
 
         return 0;
 }
@@ -2179,7 +2335,7 @@ green:
                     loc, name, xdata);
         return 0;
 red:
-        STACK_UNWIND_STRICT (removexattr, frame, -1, op_errno, xdata);
+        STACK_UNWIND_STRICT (removexattr, frame, -1, op_errno, NULL);
 
         return 0;
 }

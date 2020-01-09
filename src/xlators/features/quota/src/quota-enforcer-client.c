@@ -28,11 +28,6 @@
 #include <semaphore.h>
 #include <errno.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #ifdef HAVE_MALLOC_H
 #include <malloc.h>
 #endif
@@ -204,7 +199,7 @@ out:
 
                 if (priv->quotad_conn_status == 0) {
                         /* retry connecting after 5secs for 12 retries
-                         * (upto 60sec).
+                         * (up to 60sec).
                          */
                         gf_log (this->name, GF_LOG_DEBUG, "retry connecting to "
                                 "quotad (retry count %d)",

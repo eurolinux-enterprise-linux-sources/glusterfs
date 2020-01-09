@@ -1,0 +1,45 @@
+From 4ff96e11ea80d9a0d9dec2031c9cdd99d2afdc61 Mon Sep 17 00:00:00 2001
+From: Sanju Rakonde <srakonde@redhat.com>
+Date: Mon, 30 Apr 2018 11:12:34 +0530
+Subject: [PATCH 246/260] glusterd: Fix for memory leak in get-state detail
+
+>Fixes: bz#1573066
+>Change-Id: I76fe3bdde7351736b32eb3d6c4cc5f8f276257ed
+>Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/19948/
+
+BUG: 1567899
+Change-Id: I76fe3bdde7351736b32eb3d6c4cc5f8f276257ed
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/137469
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handler.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index 30adb99..962c87e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -5409,8 +5409,15 @@ out:
+         if (pending_node)
+                 GF_FREE (pending_node);
+ 
+-        if (brick_req)
++        if (brick_req) {
++                if (brick_req->input.input_val)
++                        GF_FREE (brick_req->input.input_val);
+                 GF_FREE (brick_req);
++        }
++        if (args.dict)
++                dict_unref (args.dict);
++        if (args.errstr)
++                GF_FREE (args.errstr);
+ 
+         return ret;
+ }
+-- 
+1.8.3.1
+

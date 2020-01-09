@@ -56,6 +56,9 @@ typedef struct {
 
         eh_t                    *split_brain;
         eh_t                    **statistics;
+        uint32_t                max_threads;
+        uint32_t                wait_qlength;
+        uint32_t                halo_max_latency_msec;
 } afr_self_heald_t;
 
 
@@ -73,5 +76,6 @@ afr_shd_gfid_to_path (xlator_t *this, xlator_t *subvol, uuid_t gfid,
                       char **path_p);
 
 int
-afr_shd_index_purge (xlator_t *subvol, inode_t *inode, char *name);
+afr_shd_index_purge (xlator_t *subvol, inode_t *inode, char *name,
+                     ia_type_t type);
 #endif /* !_AFR_SELF_HEALD_H */

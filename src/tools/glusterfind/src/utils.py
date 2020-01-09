@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2015 Red Hat, Inc. <http://www.redhat.com/>
@@ -16,10 +15,12 @@ import xml.etree.cElementTree as etree
 import logging
 import os
 from datetime import datetime
-import urllib
 
 ROOT_GFID = "00000000-0000-0000-0000-000000000001"
 DEFAULT_CHANGELOG_INTERVAL = 15
+SPACE_ESCAPE_CHAR = "%20"
+NEWLINE_ESCAPE_CHAR = "%0A"
+PERCENTAGE_ESCAPE_CHAR = "%25"
 
 ParseError = etree.ParseError if hasattr(etree, 'ParseError') else SyntaxError
 cache_data = {}
@@ -75,7 +76,8 @@ def find(path, callback_func=lambda x: True, filter_func=lambda x: True,
                 callback_func(full_path, filter_result)
 
 
-def output_write(f, path, prefix=".", encode=False):
+def output_write(f, path, prefix=".", encode=False, tag="",
+                 field_separator=" "):
     if path == "":
         return
 
@@ -83,9 +85,12 @@ def output_write(f, path, prefix=".", encode=False):
         path = os.path.join(prefix, path)
 
     if encode:
-        path = urllib.quote_plus(path)
+        path = quote_plus_space_newline(path)
 
-    f.write("%s\n" % path)
+    # set the field separator
+    FS = "" if tag == "" else field_separator
+
+    f.write("%s%s%s\n" % (tag.strip(), FS, path))
 
 
 def human_time(ts):
@@ -224,7 +229,7 @@ def get_changelog_rollover_time(volumename):
 
     try:
         tree = etree.fromstring(out)
-        return int(tree.find('volGetopts/Value').text)
+        return int(tree.find('volGetopts/Opt/Value').text)
     except ParseError:
         return DEFAULT_CHANGELOG_INTERVAL
 
@@ -242,4 +247,16 @@ def output_path_prepare(path, args):
     if args.no_encode:
         return path
     else:
-        return urllib.quote_plus(path)
+        return quote_plus_space_newline(path)
+
+
+def unquote_plus_space_newline(s):
+    return s.replace(SPACE_ESCAPE_CHAR, " ")\
+            .replace(NEWLINE_ESCAPE_CHAR, "\n")\
+            .replace(PERCENTAGE_ESCAPE_CHAR, "%")
+
+
+def quote_plus_space_newline(s):
+    return s.replace("%", PERCENTAGE_ESCAPE_CHAR)\
+            .replace(" ", SPACE_ESCAPE_CHAR)\
+            .replace("\n", NEWLINE_ESCAPE_CHAR)

@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpcsvc.h"
 #include "dict.h"
 #include "xlator.h"
@@ -78,27 +73,37 @@ nfs_xlator_to_xlid (xlator_list_t *cl, xlator_t *xl)
 xlator_t *
 nfs_mntpath_to_xlator (xlator_list_t *cl, char *path)
 {
-        char            *volname = NULL;
-        char            *volptr = NULL;
-        size_t           pathlen;
+        char            *volname  = NULL; /* volume name only */
+        char            *volptr   = NULL; /* ptr to original volname */
+        size_t           pathlen  = -1;
         xlator_t        *targetxl = NULL;
+        int              i        = 0;
 
         if ((!cl) || (!path))
                 return NULL;
 
-        volname = strdupa (path);
-        pathlen = strlen (volname);
         gf_msg_trace (GF_NFS, 0, "Subvolume search: %s", path);
-        if (volname[0] == '/')
-                volptr = &volname[1];
-        else
-                volptr = &volname[0];
 
-        if (pathlen && volname[pathlen - 1] == '/')
-                volname[pathlen - 1] = '\0';
+        volname = volptr = gf_strdup (path);
+        if (!volname)
+                return NULL;
+
+        if (volname[0] == '/')
+                volname++;
+
+        pathlen = strlen (volname);
+        for (i = 0; i < pathlen; i++) {
+                if (volname[i] == '/') {
+                        volname[i] = '\0';
+                        break;
+                }
+        }
 
         while (cl) {
-                if (strcmp (volptr, cl->xlator->name) == 0) {
+                gf_msg_trace (GF_NFS, 0, "Volname: %s and cl->xlator->name: %s",
+                              volname, cl->xlator->name);
+
+                if (strcmp (volname, cl->xlator->name) == 0) {
                         targetxl = cl->xlator;
                         break;
                 }
@@ -106,27 +111,9 @@ nfs_mntpath_to_xlator (xlator_list_t *cl, char *path)
                 cl = cl->next;
         }
 
+        GF_FREE (volptr);
+
         return targetxl;
-
-}
-
-
-/* Returns 1 if the stat seems to be filled with zeroes. */
-int
-nfs_zero_filled_stat (struct iatt *buf)
-{
-        if (!buf)
-                return 1;
-
-        /* Do not use st_dev because it is transformed to store the xlator id
-         * in place of the device number. Do not use st_ino because by this time
-         * we've already mapped the root ino to 1 so it is not guaranteed to be
-         * 0.
-         */
-        if ((buf->ia_nlink == 0) && (buf->ia_ctime == 0))
-                return 1;
-
-        return 0;
 }
 
 
@@ -332,7 +319,7 @@ err:
  */
 int
 nfs_entry_loc_fill (xlator_t *this, inode_table_t *itable, uuid_t pargfid,
-                    char *entry, loc_t *loc, int how)
+                    char *entry, loc_t *loc, int how, gf_boolean_t *freshlookup)
 {
         inode_t         *parent = NULL;
         inode_t         *entryinode = NULL;
@@ -361,8 +348,11 @@ nfs_entry_loc_fill (xlator_t *this, inode_table_t *itable, uuid_t pargfid,
                          * that the caller can use the filled loc to call
                          * lookup.
                          */
-                        if (!entryinode)
+                        if (!entryinode) {
                                 entryinode = inode_new (itable);
+                                if (freshlookup)
+                                        *freshlookup = _gf_true;
+                        }
                         /* Cannot change ret because that must
                          * continue to have -2.
                          */

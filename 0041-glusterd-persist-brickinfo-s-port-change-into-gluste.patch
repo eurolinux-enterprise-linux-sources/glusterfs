@@ -1,0 +1,193 @@
+From 548895f0333a0706ec9475efc3b28456d591f093 Mon Sep 17 00:00:00 2001
+From: Gaurav Yadav <gyadav@redhat.com>
+Date: Fri, 27 Oct 2017 16:04:46 +0530
+Subject: [PATCH 41/74] glusterd: persist brickinfo's port change into
+ glusterd's store
+
+Problem:
+Consider a case where node reboot is performed and prior to reboot
+brick was listening to 49153. Post reboot glusterd assigned 49152
+to brick and started the brick process but the new port was never
+persisted. Now when glusterd restarts glusterd always read the port
+from its persisted store i.e 49153 however pmap signin happens with
+the correct port i.e 49152.
+
+Fix:
+Make sure when glusterd_brick_start is called, glusterd_store_volinfo is
+eventually invoked.
+
+>upstream mainline patch : https://review.gluster.org/#/c/18579/
+
+Change-Id: Ic0efbd48c51d39729ed951a42922d0e59f7115a1
+Signed-off-by: Gaurav Yadav <gyadav@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/121878
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handshake.c      | 18 +++++++++---------
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c          |  9 ++++++++-
+ xlators/mgmt/glusterd/src/glusterd-server-quorum.c  | 16 ++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c | 10 ++++++++++
+ xlators/mgmt/glusterd/src/glusterd-utils.c          | 19 +++++++++++++++++++
+ 5 files changed, 62 insertions(+), 10 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handshake.c b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+index c7e419c..8dfb528 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handshake.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+@@ -658,6 +658,15 @@ glusterd_create_missed_snap (glusterd_missed_snap_info *missed_snapinfo,
+         }
+ 
+         brickinfo->snap_status = 0;
++        ret = glusterd_brick_start (snap_vol, brickinfo, _gf_false);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_WARNING, 0,
++                        GD_MSG_BRICK_DISCONNECTED, "starting the "
++                        "brick %s:%s for the snap %s failed",
++                        brickinfo->hostname, brickinfo->path,
++                        snap->snapname);
++                goto out;
++        }
+         ret = glusterd_store_volinfo (snap_vol,
+                                       GLUSTERD_VOLINFO_VER_AC_NONE);
+         if (ret) {
+@@ -668,15 +677,6 @@ glusterd_create_missed_snap (glusterd_missed_snap_info *missed_snapinfo,
+                 goto out;
+         }
+ 
+-        ret = glusterd_brick_start (snap_vol, brickinfo, _gf_false);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_WARNING, 0,
+-                        GD_MSG_BRICK_DISCONNECTED, "starting the "
+-                        "brick %s:%s for the snap %s failed",
+-                        brickinfo->hostname, brickinfo->path,
+-                        snap->snapname);
+-                goto out;
+-        }
+ out:
+         if (device)
+                 GF_FREE (device);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 96e0860..9641b4f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -2415,8 +2415,15 @@ glusterd_start_bricks (glusterd_volinfo_t *volinfo)
+                                   brickinfo->path);
+                         goto out;
+                 }
+-        }
+ 
++        }
++        ret = glusterd_store_volinfo (volinfo, GLUSTERD_VOLINFO_VER_AC_NONE);
++        if (ret) {
++                gf_msg (THIS->name, GF_LOG_ERROR, 0, GD_MSG_VOLINFO_STORE_FAIL,
++                        "Failed to write volinfo for volume %s",
++                        volinfo->volname);
++                goto out;
++        }
+         ret = 0;
+ out:
+         return ret;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-server-quorum.c b/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
+index a4637f8..659ff9d 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
++++ b/xlators/mgmt/glusterd/src/glusterd-server-quorum.c
+@@ -12,6 +12,7 @@
+ #include "glusterd-utils.h"
+ #include "glusterd-messages.h"
+ #include "glusterd-server-quorum.h"
++#include "glusterd-store.h"
+ #include "glusterd-syncop.h"
+ #include "glusterd-op-sm.h"
+ 
+@@ -309,6 +310,7 @@ void
+ glusterd_do_volume_quorum_action (xlator_t *this, glusterd_volinfo_t *volinfo,
+                                   gf_boolean_t meets_quorum)
+ {
++        int                   ret           = -1;
+         glusterd_brickinfo_t *brickinfo     = NULL;
+         gd_quorum_status_t   quorum_status  = NOT_APPLICABLE_QUORUM;
+         gf_boolean_t         follows_quorum = _gf_false;
+@@ -365,6 +367,20 @@ glusterd_do_volume_quorum_action (xlator_t *this, glusterd_volinfo_t *volinfo,
+                         glusterd_brick_start (volinfo, brickinfo, _gf_false);
+         }
+         volinfo->quorum_status = quorum_status;
++        if (quorum_status == MEETS_QUORUM) {
++                /* bricks might have been restarted and so as the port change
++                 * might have happened
++                 */
++                ret = glusterd_store_volinfo (volinfo,
++                                              GLUSTERD_VOLINFO_VER_AC_NONE);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_VOLINFO_STORE_FAIL,
++                                "Failed to write volinfo for volume %s",
++                                volinfo->volname);
++                        goto out;
++                }
++        }
+ out:
+         return;
+ }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+index 6fb49c3..4cbade1 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+@@ -1680,6 +1680,16 @@ glusterd_import_friend_snap (dict_t *peer_data, int32_t snap_count,
+                 }
+                 if (glusterd_is_volume_started (snap_vol)) {
+                         (void) glusterd_start_bricks (snap_vol);
++                        ret = glusterd_store_volinfo
++                                               (snap_vol,
++                                                GLUSTERD_VOLINFO_VER_AC_NONE);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_VOLINFO_STORE_FAIL, "Failed to "
++                                        "write volinfo for volume %s",
++                                        snap_vol->volname);
++                                goto out;
++                        }
+                 } else {
+                         (void) glusterd_stop_bricks(snap_vol);
+                 }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index f34e218..bb236df 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -6003,6 +6003,15 @@ glusterd_restart_bricks (glusterd_conf_t *conf)
+                                 glusterd_brick_start (volinfo, brickinfo,
+                                                      _gf_false);
+                         }
++                        ret = glusterd_store_volinfo
++                                (volinfo, GLUSTERD_VOLINFO_VER_AC_NONE);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_VOLINFO_STORE_FAIL, "Failed to "
++                                        "write volinfo for volume %s",
++                                        volinfo->volname);
++                                goto out;
++                        }
+                 }
+         }
+ 
+@@ -6034,6 +6043,16 @@ glusterd_restart_bricks (glusterd_conf_t *conf)
+                                 glusterd_brick_start (volinfo, brickinfo,
+                                                       _gf_false);
+                         }
++                        ret = glusterd_store_volinfo
++                                (volinfo, GLUSTERD_VOLINFO_VER_AC_NONE);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_VOLINFO_STORE_FAIL, "Failed to "
++                                        "write volinfo for volume %s",
++                                        volinfo->volname);
++                                goto out;
++                        }
++
+                 }
+         }
+         ret = 0;
+-- 
+1.8.3.1
+

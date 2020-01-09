@@ -16,15 +16,14 @@ gluster - Gluster Console Manager (command line utility)
 .PP
 To run the program and display gluster prompt:
 .PP
-.B gluster
+.B gluster [--remote-host=<gluster_node>] [--mode=script] [--xml]
 .PP
 (or)
 .PP
 To specify a command directly:
 .PP
 .B gluster
-.I [commands] [options]
-
+.I  [commands] [options] [--remote-host=<gluster_node>] [--mode=script] [--xml]
 .SH DESCRIPTION
 The Gluster Console Manager is a command line utility for elastic volume management. You can run the gluster command on any export server. The command enables administrators to perform cloud operations, such as creating, expanding, shrinking, rebalancing, and migrating volumes without needing to schedule server downtime.
 .SH COMMANDS
@@ -71,8 +70,8 @@ If you remove the brick, the data stored in that brick will not be available. Yo
 .B replace-brick
 option.
 .TP
-\fB\ volume replace-brick <VOLNAME> (<BRICK> <NEW-BRICK>) start|pause|abort|status|commit \fR
-Replace the specified brick.
+\fB\ volume replace-brick <VOLNAME> <SOURCE-BRICK> <NEW-BRICK> commit force \fR
+Replace the specified source brick with a new brick.
 .TP
 \fB\ volume rebalance <VOLNAME> start \fR
 Start rebalancing the specified volume.
@@ -144,8 +143,9 @@ Query status of the geo-replication session from <MASTER_VOL> to <SLAVE_HOST> ho
 \fB\ volume geo-replication <MASTER_VOL> <SLAVE_HOST>::<SLAVE_VOL> {pause|resume} [force] \fR
 Pause/resume the geo-replication session from <MASTER_VOL> to <SLAVE_HOST> host machine having <SLAVE_VOL>.
 .TP
-\fB\ volume geo-replication <MASTER_VOL> <SLAVE_HOST>::<SLAVE_VOL> delete \fR
+\fB\ volume geo-replication <MASTER_VOL> <SLAVE_HOST>::<SLAVE_VOL> delete [reset-sync-time]\fR
 Delete the geo-replication session from <MASTER_VOL> to <SLAVE_HOST> host machine having <SLAVE_VOL>.
+Optionally you can also reset the sync time in case you need to resync the entire volume on session recreate.
 .TP
 \fB\ volume geo-replication <MASTER_VOL> <SLAVE_HOST>::<SLAVE_VOL> config [[!]<options> [<value>]] \fR
 View (when no option provided) or set configuration for this geo-replication session.
@@ -161,8 +161,9 @@ Scrub-throttle value is a measure of how fast or slow the scrubber scrubs the fi
 \fB\ volume bitrot <VOLNAME> scrub-frequency {daily|weekly|biweekly|monthly} \fR
 Scrub frequency for volume <VOLNAME>
 .TP
-\fB\ volume bitrot <VOLNAME> scrub {pause|resume} \fR
-Pause/Resume scrub. Upon resume, scrubber continues where it left off.
+\fB\ volume bitrot <VOLNAME> scrub {pause|resume|status|ondemand} \fR
+Pause/Resume scrub. Upon resume, scrubber continues where it left off. status option shows the statistics of scrubber. ondemand option starts the scrubbing immediately if the scrubber is not paused or already running.
+.TP
 .SS "Snapshot Commands"
 .PP
 .TP
@@ -266,6 +267,9 @@ Selects <HOSTNAME:BRICKNAME> as the source for all the files that are in split-b
 \fB\ volume heal <VOLNAME> split-brain source-brick <HOSTNAME:BRICKNAME> <FILE> \fR
 Selects the split-brained <FILE> present in <HOSTNAME:BRICKNAME> as source and completes heal.
 .SS "Other Commands"
+.TP
+\fB\ get-state [<daemon>] [[odir </path/to/output/dir/>] [file <filename>]] [detail|volumeoptions] \fR
+Get local state representation of mentioned daemon and store data in provided path information
 .TP
 \fB\ help \fR
 Display the command options.

@@ -1,0 +1,56 @@
+From 01b371af8dc6f95c00facd5215ab4c939a86f1db Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Mon, 23 Apr 2018 13:16:30 +0530
+Subject: [PATCH 245/260] build: make RHGS version available for server
+
+Make /usr/share/glusterfs/release available for gluserfs-server package.
+This file contains the RHGS release number for the release.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I7485f77cfb8ca7f0f8363a20124900ae9ae8a528
+BUG: 1570514
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/137139
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ glusterfs.spec.in | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 64e7e29..36b465a 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -865,6 +865,10 @@ find ./tests ./run-tests.sh -type f | cpio -pd %{buildroot}%{_prefix}/share/glus
+ install -p -m 0744 -D extras/command-completion/gluster.bash \
+     %{buildroot}%{_sysconfdir}/bash_completion.d/gluster
+ 
++%if ( 0%{?_build_server} )
++echo "RHGS 3.4.0" > %{buildroot}%{_datadir}/glusterfs/release
++%endif
++
+ %clean
+ rm -rf %{buildroot}
+ 
+@@ -1566,6 +1570,7 @@ exit 0
+ 
+ # Extra utility script
+ %dir %{_libexecdir}/glusterfs
++     %{_datadir}/glusterfs/release
+ %dir %{_datadir}/glusterfs/scripts
+      %{_datadir}/glusterfs/scripts/stop-all-gluster-processes.sh
+ %if ( 0%{?_with_systemd:1} )
+@@ -2155,6 +2160,9 @@ fi
+ %endif
+ 
+ %changelog
++* Mon Apr 23 2018 Milind Changire <mchangir@redhat.com>
++- make RHGS release number available in /usr/share/glusterfs/release (#1570514)
++
+ * Wed Apr 18 2018 Atin Mukherjee  <amukherj@redhat.com>
+ - Revert SELinux hooks (#1565962)
+ 
+-- 
+1.8.3.1
+

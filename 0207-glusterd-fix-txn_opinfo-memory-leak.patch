@@ -1,0 +1,113 @@
+From 47678bde5c2f8e674289d2b0893865ab3fa43940 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Sun, 1 Apr 2018 10:10:41 +0530
+Subject: [PATCH 207/212] glusterd: fix txn_opinfo memory leak
+
+For transactions where there's no volname involved (eg : gluster v
+status), the originator node initiates with staging phase and what that
+means in op-sm there's no unlock event triggered which resulted into a
+txn_opinfo dictionary leak.
+
+Credits : cynthia.zhou@nokia-sbell.com
+
+> upstream patch : https://review.gluster.org/#/c/19801/
+
+>Change-Id: I92fffbc2e8e1b010f489060f461be78aa2b86615
+>Fixes: bz#1550339
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I92fffbc2e8e1b010f489060f461be78aa2b86615
+BUG: 1529451
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134448
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handler.c |  1 +
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c   | 32 ++++++++++++++++++++--------
+ xlators/mgmt/glusterd/src/glusterd-op-sm.h   |  1 +
+ 3 files changed, 25 insertions(+), 9 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index ddab159..dbf80a1 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -1073,6 +1073,7 @@ __glusterd_handle_stage_op (rpcsvc_request_t *req)
+                 glusterd_txn_opinfo_init (&txn_op_info, &state, &op_req.op,
+                                           req_ctx->dict, req);
+ 
++                txn_op_info.skip_locking = _gf_true;
+                 ret = glusterd_set_txn_opinfo (txn_id, &txn_op_info);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index a02a0b3..72d349b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -5919,14 +5919,15 @@ glusterd_op_init_commit_rsp_dict (glusterd_op_t op)
+ static int
+ glusterd_op_ac_commit_op (glusterd_op_sm_event_t *event, void *ctx)
+ {
+-        int                       ret        = 0;
+-        glusterd_req_ctx_t       *req_ctx    = NULL;
+-        int32_t                   status     = 0;
+-        char                     *op_errstr  = NULL;
+-        dict_t                   *dict       = NULL;
+-        dict_t                   *rsp_dict   = NULL;
+-        xlator_t                 *this       = NULL;
+-        uuid_t                   *txn_id     = NULL;
++        int                       ret         = 0;
++        glusterd_req_ctx_t       *req_ctx     = NULL;
++        int32_t                   status      = 0;
++        char                     *op_errstr   = NULL;
++        dict_t                   *dict        = NULL;
++        dict_t                   *rsp_dict    = NULL;
++        xlator_t                 *this        = NULL;
++        uuid_t                   *txn_id      = NULL;
++        glusterd_op_info_t        txn_op_info = {{0},};
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -5965,6 +5966,15 @@ glusterd_op_ac_commit_op (glusterd_op_sm_event_t *event, void *ctx)
+                 ret = -1;
+                 goto out;
+         }
++        ret = glusterd_get_txn_opinfo (&event->txn_id, &txn_op_info);
++        if (ret) {
++                gf_msg_callingfn (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_TRANS_OPINFO_GET_FAIL,
++                        "Unable to get transaction opinfo "
++                        "for transaction ID : %s",
++                        uuid_utoa (event->txn_id));
++                goto out;
++        }
+ 
+         ret = dict_set_bin (rsp_dict, "transaction_id",
+                             txn_id, sizeof(*txn_id));
+@@ -5985,7 +5995,11 @@ out:
+ 
+         if (rsp_dict)
+                 dict_unref (rsp_dict);
+-
++        /* for no volname transactions, the txn_opinfo needs to be cleaned up
++         * as there's no unlock event triggered
++         */
++        if (txn_op_info.skip_locking)
++                ret = glusterd_clear_txn_opinfo (txn_id);
+         gf_msg_debug (this->name, 0, "Returning with %d", ret);
+ 
+         return ret;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.h b/xlators/mgmt/glusterd/src/glusterd-op-sm.h
+index 24b1944..f2aee9c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.h
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.h
+@@ -101,6 +101,7 @@ struct glusterd_op_info_ {
+         char                            *op_errstr;
+         struct  cds_list_head           pending_bricks;
+         uint32_t                        txn_generation;
++        gf_boolean_t                    skip_locking;
+ };
+ 
+ typedef struct glusterd_op_info_ glusterd_op_info_t;
+-- 
+1.8.3.1
+

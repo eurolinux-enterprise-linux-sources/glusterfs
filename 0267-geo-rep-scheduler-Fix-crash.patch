@@ -1,0 +1,127 @@
+From daab3274ba03f4df0160374fa9fb5993847f3153 Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Wed, 9 May 2018 01:10:29 -0400
+Subject: [PATCH 267/271] geo-rep/scheduler: Fix crash
+
+Fix crash where session_name is referenced
+before assignment. Well, this is a corner
+case where the geo-rep session exists and
+the status output doesn't show any rows.
+This might happen when glusterd is down
+or when the system is in inconsistent state
+w.r.t glusterd.
+
+Upstream reference:
+ > fixes: bz#1576179
+ > Change-Id: Iec1557e01b35068041b4b3c1aacee2bfa0e05873
+ > Patch: https://review.gluster.org/19991
+
+BUG: 1575877
+Change-Id: Iec1557e01b35068041b4b3c1aacee2bfa0e05873
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138668
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ extras/geo-rep/schedule_georep.py.in | 70 ++++++++++++++++++------------------
+ 1 file changed, 35 insertions(+), 35 deletions(-)
+
+diff --git a/extras/geo-rep/schedule_georep.py.in b/extras/geo-rep/schedule_georep.py.in
+index 1887fe7..4e1a071 100644
+--- a/extras/geo-rep/schedule_georep.py.in
++++ b/extras/geo-rep/schedule_georep.py.in
+@@ -297,6 +297,7 @@ def get_summary(mastervol, slave_url):
+     status_data = get(mastervol, slave_url)
+ 
+     for session in status_data:
++        session_name = ""
+         summary = {
+             "active": 0,
+             "passive": 0,
+@@ -339,7 +340,8 @@ def get_summary(mastervol, slave_url):
+         if summary["faulty"] == 0 and summary["offline"] == 0:
+             summary["ok"] = True
+ 
+-        out.append([session_name, summary, faulty_rows, down_rows])
++        if session_name != "":
++                out.append([session_name, summary, faulty_rows, down_rows])
+ 
+     return out
+ 
+@@ -397,41 +399,39 @@ def main(args):
+             # or any other error. Gluster cmd still produces XML output
+             # with different message
+             output_warning("Unable to get Geo-replication Status")
+-            time.sleep(1)
+-            continue
+-
+-        session_name, summary, faulty_rows, down_rows = session_summary[0]
+-        chkpt_status = "COMPLETE" if summary["checkpoints_ok"] else \
+-                       "NOT COMPLETE"
+-        ok_status = "OK" if summary["ok"] else "NOT OK"
+-
+-        if summary["ok"]:
+-            output_ok("All Checkpoints {1}, "
+-                      "All status {2} (Turns {0:>3})".format(
+-                          turns, chkpt_status, ok_status))
+         else:
+-            output_warning("All Checkpoints {1}, "
+-                           "All status {2} (Turns {0:>3})".format(
+-                               turns, chkpt_status, ok_status))
+-
+-            output_warning("Geo-rep workers Faulty/Offline, "
+-                           "Faulty: {0} Offline: {1}".format(
+-                               repr(faulty_rows),
+-                               repr(down_rows)))
+-
+-        if summary["checkpoints_ok"]:
+-            output_ok("Stopping Geo-replication session now")
+-            cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication",
+-                   args.mastervol,
+-                   "%s::%s" % (args.slave, args.slavevol), "stop"]
+-            execute(cmd)
+-            break
+-        else:
+-            # If Checkpoint is not complete after a iteration means brick
+-            # was down and came online now. SETATTR on mount is not
+-            # recorded, So again issue touch on mount root So that
+-            # Stime will increase and Checkpoint will complete.
+-            touch_mount_root(args.mastervol)
++            session_name, summary, faulty_rows, down_rows = session_summary[0]
++            chkpt_status = "COMPLETE" if summary["checkpoints_ok"] else \
++                           "NOT COMPLETE"
++            ok_status = "OK" if summary["ok"] else "NOT OK"
++
++            if summary["ok"]:
++                output_ok("All Checkpoints {1}, "
++                          "All status {2} (Turns {0:>3})".format(
++                              turns, chkpt_status, ok_status))
++            else:
++                output_warning("All Checkpoints {1}, "
++                               "All status {2} (Turns {0:>3})".format(
++                                   turns, chkpt_status, ok_status))
++
++                output_warning("Geo-rep workers Faulty/Offline, "
++                               "Faulty: {0} Offline: {1}".format(
++                                   repr(faulty_rows),
++                                   repr(down_rows)))
++
++            if summary["checkpoints_ok"]:
++                output_ok("Stopping Geo-replication session now")
++                cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication",
++                       args.mastervol,
++                       "%s::%s" % (args.slave, args.slavevol), "stop"]
++                execute(cmd)
++                break
++            else:
++                # If Checkpoint is not complete after a iteration means brick
++                # was down and came online now. SETATTR on mount is not
++                # recorded, So again issue touch on mount root So that
++                # Stime will increase and Checkpoint will complete.
++                touch_mount_root(args.mastervol)
+ 
+         # Increment the turns and Sleep for 10 sec
+         turns += 1
+-- 
+1.8.3.1
+

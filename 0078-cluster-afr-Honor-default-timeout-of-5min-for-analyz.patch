@@ -1,0 +1,76 @@
+From 1bcb5bbd42a4187ed385853f0364a3941bea9846 Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Fri, 17 Nov 2017 17:29:36 +0530
+Subject: [PATCH 078/128] cluster/afr: Honor default timeout of 5min for
+ analyzing split-brain files
+
+Problem:
+After setting split-brain-choice option to analyze the file to resolve
+the split brain using the command
+"setfattr -n replica.split-brain-choice -v "choiceX" <path-to-file>"
+should allow to access the file from mount for default timeout of 5mins.
+But the timeout was not honored and was able to access the file even after
+the timeout.
+
+Fix:
+Call the inode_invalidate() in afr_set_split_brain_choice_cbk() so that
+it will triger the cache invalidate after resetting the timer and the
+split brain choice. So the next calls to access the file will fail with EIO.
+
+Upstream patch: https://review.gluster.org/#/c/18546/
+
+> Change-Id: I698cb833676b22ff3e4c6daf8b883a0958f51a64
+> BUG: 1503519
+> Signed-off-by: karthik-us <ksubrahm@redhat.com>
+
+Change-Id: I698cb833676b22ff3e4c6daf8b883a0958f51a64
+BUG: 1360331
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/123560
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 2925a1d..9c96056 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -730,6 +730,7 @@ afr_set_split_brain_choice_cbk (void *data)
+         xlator_t     *this      = THIS;
+ 
+         afr_spb_choice_timeout_cancel (this, inode);
++        inode_invalidate (inode);
+         inode_unref (inode);
+         return;
+ }
+@@ -749,6 +750,7 @@ afr_set_split_brain_choice (int ret, call_frame_t *frame, void *opaque)
+         gf_boolean_t        timer_set        = _gf_false;
+         gf_boolean_t        timer_cancelled  = _gf_false;
+         gf_boolean_t        timer_reset      = _gf_false;
++        gf_boolean_t        need_invalidate  = _gf_true;
+         int                 old_spb_choice   = -1;
+ 
+         frame = data->frame;
+@@ -861,6 +863,7 @@ set_timer:
+                         timer_set = _gf_true;
+                 if (timer_reset && !ctx->timer)
+                         timer_cancelled = _gf_true;
++                need_invalidate = _gf_false;
+         }
+ unlock:
+         UNLOCK(&inode->lock);
+@@ -873,7 +876,8 @@ unlock:
+          * reads from an older cached value despite a change in spb_choice to
+          * a new value.
+          */
+-        inode_invalidate (inode);
++        if (need_invalidate)
++                inode_invalidate (inode);
+ out:
+         if (data)
+                 GF_FREE (data);
+-- 
+1.8.3.1
+

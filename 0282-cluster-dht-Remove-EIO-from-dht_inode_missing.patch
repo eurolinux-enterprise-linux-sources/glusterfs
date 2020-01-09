@@ -1,0 +1,57 @@
+From 5d649e42f6566f6f2f3425298cfee48d170ab4ea Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Wed, 16 May 2018 18:15:02 +0530
+Subject: [PATCH 282/282] cluster/dht: Remove EIO from dht_inode_missing
+
+Removed EIO from the list of errnos that triggered
+a migrate check task.
+
+upstream patch: https://review.gluster.org/#/c/20028/
+
+> Change-Id: I7f89c7a16056421588f1af2377cebe6affddcb47
+> fixes: bz#1578823
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I1962f0db916af71d2903814dc01f0c0809e57ce7
+BUG: 1580344
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139188
+Tested-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.h     | 4 +---
+ xlators/cluster/dht/src/dht-inode-read.c | 2 +-
+ 2 files changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.h b/xlators/cluster/dht/src/dht-common.h
+index 10b7c7e..a70342f 100644
+--- a/xlators/cluster/dht/src/dht-common.h
++++ b/xlators/cluster/dht/src/dht-common.h
+@@ -795,9 +795,7 @@ typedef struct dht_fd_ctx {
+                 }                                               \
+         } while (0)
+ 
+-#define dht_inode_missing(op_errno) (op_errno == ENOENT || op_errno == ESTALE \
+-                                     || op_errno == EIO) \
+-/*Bad fix. Please revert the commit after fixing the bug 1329505*/
++#define dht_inode_missing(op_errno) (op_errno == ENOENT || op_errno == ESTALE)
+ 
+ #define check_is_dir(i,s,x) (IA_ISDIR(s->ia_type))
+ 
+diff --git a/xlators/cluster/dht/src/dht-inode-read.c b/xlators/cluster/dht/src/dht-inode-read.c
+index d1895eb..7e4aef4 100644
+--- a/xlators/cluster/dht/src/dht-inode-read.c
++++ b/xlators/cluster/dht/src/dht-inode-read.c
+@@ -78,7 +78,7 @@ dht_open2 (xlator_t *this, xlator_t *subvol, call_frame_t *frame, int ret)
+                 goto out;
+ 
+         local = frame->local;
+-        op_errno = ENOENT;
++        op_errno = local->op_errno;
+ 
+         if (we_are_not_migrating (ret)) {
+                 /* This DHT layer is not migrating the file */
+-- 
+1.8.3.1
+

@@ -23,11 +23,40 @@
 #include "timer.h"
 #include "client_t.h"
 #include "gidcache.h"
+#include "defaults.h"
 
 #define DEFAULT_BLOCK_SIZE         4194304   /* 4MB */
 #define DEFAULT_VOLUME_FILE_PATH   CONFDIR "/glusterfs.vol"
 #define GF_MAX_SOCKET_WINDOW_SIZE  (1 * GF_UNIT_MB)
 #define GF_MIN_SOCKET_WINDOW_SIZE  (0)
+
+#define CPD_REQ_FIELD(v, f)  ((v)->compound_req_u.compound_##f##_req)
+#define CPD_RSP_FIELD(v, f)  ((v)->compound_rsp_u.compound_##f##_rsp)
+
+#define SERVER_COMMON_RSP_CLEANUP(rsp, fop, i)                                \
+        do {                                                                  \
+                compound_rsp            *this_rsp       = NULL;               \
+                this_rsp = &rsp->compound_rsp_array.compound_rsp_array_val[i];\
+                gf_common_rsp  *_this_rsp = &CPD_RSP_FIELD(this_rsp, fop);    \
+                                                                              \
+                GF_FREE (_this_rsp->xdata.xdata_val);                         \
+        } while (0)
+
+#define SERVER_FOP_RSP_CLEANUP(rsp, fop, i)                                   \
+        do {                                                                  \
+                compound_rsp            *this_rsp       = NULL;               \
+                this_rsp = &rsp->compound_rsp_array.compound_rsp_array_val[i];\
+                gfs3_##fop##_rsp  *_this_rsp = &CPD_RSP_FIELD(this_rsp, fop); \
+                                                                              \
+                GF_FREE (_this_rsp->xdata.xdata_val);                         \
+        } while (0)
+
+#define SERVER_COMPOUND_FOP_CLEANUP(curr_req, fop)                            \
+        do {                                                                  \
+                gfs3_##fop##_req *_req = &CPD_REQ_FIELD(curr_req, fop);       \
+                                                                              \
+                free (_req->xdata.xdata_val);                                 \
+        } while (0)
 
 typedef enum {
         INTERNAL_LOCKS = 1,
@@ -44,6 +73,12 @@ struct _volfile_ctx {
         uint32_t             checksum;
 };
 
+struct _child_status {
+        struct list_head status_list;
+        char *name;
+        gf_boolean_t child_up;
+
+};
 struct server_conf {
         rpcsvc_t               *rpc;
         struct rpcsvc_config    rpc_conf;
@@ -54,7 +89,7 @@ struct server_conf {
                                             heal is on else off. */
         char                   *conf_dir;
         struct _volfile_ctx    *volfile;
-        struct timespec         grace_ts;
+        uint32_t                grace_timeout;
         dict_t                 *auth_modules;
         pthread_mutex_t         mutex;
         struct list_head        xprt_list;
@@ -72,6 +107,8 @@ struct server_conf {
                                             * in case if volume set options
                                             * (say *.allow | *.reject) are
                                             * tweeked */
+        struct _child_status    *child_status;
+        gf_lock_t               itable_lock;
 };
 typedef struct server_conf server_conf_t;
 
@@ -151,9 +188,25 @@ struct _server_state {
         struct gf_flock   flock;
         const char       *volume;
         dir_entry_t      *entry;
+        gf_seek_what_t    what;
 
         dict_t           *xdata;
         mode_t            umask;
+        struct gf_lease   lease;
+        lock_migration_info_t locklist;
+        /* required for compound fops */
+        gfs3_compound_req  req;
+        /* last length till which iovec for compound
+         * writes was processed */
+        int               write_length;
+        struct iovec      rsp_vector[MAX_IOVEC];
+        int               rsp_count;
+        struct iobuf     *rsp_iobuf;
+        struct iobref    *rsp_iobref;
+        compound_args_t  *args;
+
+        /* subdir mount */
+        client_t         *client;
 };
 
 
@@ -179,4 +232,16 @@ int gf_server_check_getxattr_cmd (call_frame_t *frame, const char *name);
 void
 forget_inode_if_no_dentry (inode_t *inode);
 
+int
+unserialize_req_locklist (gfs3_setactivelk_req *req,
+                          lock_migration_info_t *lmi);
+
+int
+serialize_rsp_dirent (gf_dirent_t *entries, gfs3_readdir_rsp *rsp);
+
+int
+serialize_rsp_direntp (gf_dirent_t *entries, gfs3_readdirp_rsp *rsp);
+
+server_ctx_t*
+server_ctx_get (client_t *client, xlator_t *xlator);
 #endif /* !_SERVER_H */

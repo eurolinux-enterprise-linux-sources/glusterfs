@@ -38,19 +38,19 @@ trace_stat_to_str(struct iatt *buf, char *str, size_t len)
         gf_time_fmt (ctime_buf, sizeof ctime_buf, buf->ia_ctime,
                      gf_timefmt_dirent);
 
-        snprintf (str, len,
-                  "gfid=%s ino=%"PRIu64", mode=%o, "
-                  "nlink=%"GF_PRI_NLINK", uid=%u, "
-                  "gid=%u, size=%"PRIu64", "
-                  "blocks=%"PRIu64", atime=%s, "
-                  "mtime=%s, ctime=%s",
-                  uuid_utoa (buf->ia_gfid),
-                  buf->ia_ino,
-                  st_mode_from_ia (buf->ia_prot, buf->ia_type),
-                  buf->ia_nlink, buf->ia_uid,
-                  buf->ia_gid, buf->ia_size,
-                  buf->ia_blocks, atime_buf,
-                  mtime_buf, ctime_buf);
+        snprintf (str, len, "gfid=%s ino=%"PRIu64", mode=%o, "
+                  "nlink=%"GF_PRI_NLINK", uid=%u, gid=%u, size=%"PRIu64", "
+                  "blocks=%"PRIu64", atime=%s mtime=%s ctime=%s "
+                  "atime_sec=%"PRIu32", atime_nsec=%"PRIu32","
+                  " mtime_sec=%"PRIu32", mtime_nsec=%"PRIu32", "
+                  "ctime_sec=%"PRIu32", ctime_nsec=%"PRIu32"",
+                  uuid_utoa (buf->ia_gfid), buf->ia_ino,
+                  st_mode_from_ia (buf->ia_prot, buf->ia_type), buf->ia_nlink,
+                  buf->ia_uid, buf->ia_gid, buf->ia_size, buf->ia_blocks,
+                  atime_buf, mtime_buf, ctime_buf,
+                  buf->ia_atime, buf->ia_atime_nsec,
+                  buf->ia_mtime, buf->ia_mtime_nsec,
+                  buf->ia_ctime, buf->ia_ctime_nsec);
 }
 
 
@@ -294,19 +294,33 @@ trace_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                     int32_t op_ret, int32_t op_errno, gf_dirent_t *buf,
                     dict_t *xdata)
 {
-        trace_conf_t   *conf = NULL;
+        int             count         = 0;
+        char            statstr[4096] = {0,};
+        char            string[4096]  = {0,};
+        trace_conf_t   *conf          = NULL;
+        gf_dirent_t    *entry         = NULL;
 
         conf = this->private;
 
         if (!conf->log_file && !conf->log_history)
 		goto out;
         if (trace_fop_names[GF_FOP_READDIRP].enabled) {
-                char        string[4096] = {0,};
                 snprintf (string, sizeof (string),
                           "%"PRId64" : gfid=%s op_ret=%d, op_errno=%d",
                           frame->root->unique, uuid_utoa (frame->local),
                           op_ret, op_errno);
 
+                LOG_ELEMENT (conf, string);
+        }
+        if (op_ret < 0)
+                goto out;
+
+        list_for_each_entry (entry, &buf->list, list) {
+                count++;
+                TRACE_STAT_TO_STR (&entry->d_stat, statstr);
+                snprintf (string, sizeof (string), "entry no. %d, pargfid=%s, "
+                          "bname=%s *buf {%s}", count, uuid_utoa (frame->local),
+                          entry->d_name, statstr);
                 LOG_ELEMENT (conf, string);
         }
 
@@ -2154,6 +2168,51 @@ out:
         return 0;
 }
 
+static int
+trace_seek_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                int32_t op_ret, int32_t op_errno, off_t offset, dict_t *xdata)
+{
+        trace_conf_t  *conf = this->private;
+
+        if (!conf->log_file && !conf->log_history)
+                goto out;
+        if (trace_fop_names[GF_FOP_SEEK].enabled) {
+                char  string[4096] = {0,};
+                snprintf (string, sizeof (string),
+                          "%"PRId64": gfid=%s op_ret=%d op_errno=%d, "
+                          "offset=%"PRId64"", frame->root->unique,
+                          uuid_utoa (frame->local), op_ret, op_errno, offset);
+                LOG_ELEMENT (conf, string);
+        }
+out:
+        TRACE_STACK_UNWIND (seek, frame, op_ret, op_errno, offset, xdata);
+        return 0;
+}
+
+static int
+trace_seek (call_frame_t *frame, xlator_t *this, fd_t *fd,
+            off_t offset, gf_seek_what_t what, dict_t *xdata)
+{
+        trace_conf_t   *conf = this->private;
+
+        if (!conf->log_file && !conf->log_history)
+                goto out;
+        if (trace_fop_names[GF_FOP_SEEK].enabled) {
+                char     string[4096]  =  {0,};
+                snprintf (string, sizeof (string), "%"PRId64": gfid=%s fd=%p "
+                          "offset=%"PRId64" what=%d", frame->root->unique,
+                          uuid_utoa (fd->inode->gfid), fd, offset, what);
+
+                frame->local = fd->inode->gfid;
+                LOG_ELEMENT (conf, string);
+        }
+out:
+        STACK_WIND (frame, trace_seek_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->seek, fd, offset, what, xdata);
+
+        return 0;
+}
+
 int
 trace_truncate (call_frame_t *frame, xlator_t *this, loc_t *loc,
                 off_t offset, dict_t *xdata)
@@ -2300,7 +2359,7 @@ trace_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
                 snprintf (string, sizeof (string),
                           "%"PRId64": gfid=%s fd=%p, count=%d, "
-                          " offset=%"PRId64" flags=0%x write_size=%lu",
+                          " offset=%"PRId64" flags=0%x write_size=%zu",
                           frame->root->unique,
                           uuid_utoa (fd->inode->gfid), fd, count,
                           offset, flags, total_size);
@@ -3266,6 +3325,7 @@ struct xlator_fops fops = {
         .fxattrop    = trace_fxattrop,
         .setattr     = trace_setattr,
         .fsetattr    = trace_fsetattr,
+        .seek        = trace_seek,
 };
 
 struct xlator_cbks cbks = {

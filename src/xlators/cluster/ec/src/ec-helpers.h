@@ -11,19 +11,28 @@
 #ifndef __EC_HELPERS_H__
 #define __EC_HELPERS_H__
 
-#include "ec-data.h"
+#include "ec-types.h"
+
+#define EC_ERR(_x) ((void *)-(intptr_t)(_x))
+#define EC_IS_ERR(_x) (((uintptr_t)(_x) & ~0xfffULL) == ~0xfffULL)
+#define EC_GET_ERR(_x) ((int32_t)(intptr_t)(_x))
+
+#define EC_ALIGN_CHECK(_ptr, _align) \
+    ((((uintptr_t)(_ptr)) & ((_align) - 1)) == 0)
 
 const char * ec_bin(char * str, size_t size, uint64_t value, int32_t digits);
 const char * ec_fop_name(int32_t id);
 void ec_trace(const char * event, ec_fop_data_t * fop, const char * fmt, ...);
-int32_t ec_bits_count(uint64_t n);
-int32_t ec_bits_index(uint64_t n);
 int32_t ec_bits_consume(uint64_t * n);
 size_t ec_iov_copy_to(void * dst, struct iovec * vector, int32_t count,
                       off_t offset, size_t size);
-
+int32_t ec_buffer_alloc(xlator_t *xl, size_t size, struct iobref **piobref,
+                        void **ptr);
 int32_t ec_dict_set_array(dict_t *dict, char *key,
                           uint64_t *value, int32_t size);
+int32_t ec_dict_get_array (dict_t *dict, char *key, uint64_t value[],
+                           int32_t size);
+
 int32_t ec_dict_del_array(dict_t *dict, char *key,
                           uint64_t *value, int32_t size);
 int32_t ec_dict_set_number(dict_t * dict, char * key, uint64_t value);

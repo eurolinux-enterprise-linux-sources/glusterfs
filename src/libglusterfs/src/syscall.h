@@ -11,6 +11,12 @@
 #ifndef __SYSCALL_H__
 #define __SYSCALL_H__
 
+#include <dirent.h>
+#include <sys/uio.h>
+#include <sys/statvfs.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+
 /* GF follows the Linux XATTR definition, which differs in Darwin. */
 #define GF_XATTR_CREATE  0x1 /* set value, fail if attr already exists */
 #define GF_XATTR_REPLACE 0x2 /* set value, fail if attr does not exist */
@@ -58,13 +64,17 @@ sys_fstat (int fd, struct stat *buf);
 int
 sys_fstatat (int dirfd, const char *pathname, struct stat *buf,
              int flags);
+
 int
-sys_openat (int dirfd, const char *pathname, int flags, ...);
+sys_open (const char *pathname, int flags, int mode);
+
+int
+sys_openat (int dirfd, const char *pathname, int flags, int mode);
 
 DIR *sys_opendir (const char *name);
 
 struct dirent *
-sys_readdir (DIR *dir);
+sys_readdir (DIR *dir, struct dirent *de);
 
 ssize_t
 sys_readlink (const char *path, char *buf, size_t bufsiz);
@@ -120,6 +130,12 @@ sys_ftruncate (int fd, off_t length);
 int
 sys_utimes (const char *filename, const struct timeval times[2]);
 
+#if defined(HAVE_UTIMENSAT)
+int
+sys_utimensat (int dirfd, const char *filename, const struct timespec times[2],
+               int flags);
+#endif
+
 int
 sys_creat (const char *pathname, mode_t mode);
 
@@ -140,6 +156,9 @@ sys_lseek (int fd, off_t offset, int whence);
 
 int
 sys_statvfs (const char *path, struct statvfs *buf);
+
+int
+sys_fstatvfs (int fd, struct statvfs *buf);
 
 int
 sys_close (int fd);
@@ -186,8 +205,18 @@ int
 sys_access (const char *pathname, int mode);
 
 int
-sys_ftruncate (int fd, off_t length);
+sys_fallocate(int fd, int mode, off_t offset, off_t len);
 
-int sys_fallocate(int fd, int mode, off_t offset, off_t len);
+ssize_t
+sys_preadv (int fd, const struct iovec *iov, int iovcnt, off_t offset);
+
+ssize_t
+sys_pwritev (int fd, const struct iovec *iov, int iovcnt, off_t offset);
+
+ssize_t
+sys_pread(int fd, void *buf, size_t count, off_t offset);
+
+ssize_t
+sys_pwrite(int fd, const void *buf, size_t count, off_t offset);
 
 #endif /* __SYSCALL_H__ */

@@ -1,0 +1,50 @@
+From b5f16e56bd1a9e64fa461f22f24790992fd2c008 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Thu, 12 Oct 2017 14:31:14 +0530
+Subject: [PATCH 36/74] mount/fuse : Fix parsing of vol_id for snapshot volume
+
+For supporting sub-dir mount, we changed the volid. Which means anything
+after a '/' in volume_id will be considered as sub-dir path.
+
+But snapshot volume has vol_id stracture of /snaps/<volname>/<snapname>
+which has to be considered as during the parsing.
+
+Note 1: sub-dir mount is not supported on snapshot volume
+Note 2: With sub-dir mount changes brick based mount for quota cannot be
+        executed via mount command. It has to be a direct call via glusterfs
+
+Backport of>
+>Change-Id: I0d824de0236b803db8a918f683dabb0cb523cb04
+>BUG: 1501235
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Upstream patch : https://review.gluster.org/18506
+
+Change-Id: I82903bdd0bfcf8454faef958b38f13d4d95a2346
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/120524
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mount/fuse/utils/mount.glusterfs.in | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mount/fuse/utils/mount.glusterfs.in b/xlators/mount/fuse/utils/mount.glusterfs.in
+index bd6503a..36b60ff 100755
+--- a/xlators/mount/fuse/utils/mount.glusterfs.in
++++ b/xlators/mount/fuse/utils/mount.glusterfs.in
+@@ -675,8 +675,10 @@ main ()
+             [ ${first_char} = '/' ] && {
+                 volume_str_temp=$(echo "$volume_str" | cut -c 2-)
+             }
+-            [ $(echo $volume_str_temp | grep -c "/") -eq 1 ] && {
+-                volume_id=$(echo "$volume_str_temp" | cut -f1 -d '/');
++            volume_id_temp=$(echo "$volume_str_temp" | cut -f1 -d '/');
++            [ $(echo $volume_str_temp | grep -c "/") -eq 1 ] &&
++                    [ "$volume_id_temp" != "snaps" ]  && {
++                volume_id=$volume_id_temp;
+                 subdir_mount=$(echo "$volume_str_temp" | cut -f2- -d '/');
+             }
+         }
+-- 
+1.8.3.1
+

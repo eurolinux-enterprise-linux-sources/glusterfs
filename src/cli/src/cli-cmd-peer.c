@@ -13,16 +13,12 @@
 #include <stdint.h>
 #include <pthread.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "cli.h"
 #include "cli-cmd.h"
 #include "cli-mem-types.h"
 #include "cli1-xdr.h"
 #include "protocol-common.h"
+#include "events.h"
 
 extern struct rpc_clnt *global_rpc;
 
@@ -95,6 +91,10 @@ out:
 
         CLI_STACK_DESTROY (frame);
 
+        if (ret == 0) {
+                gf_event (EVENT_PEER_ATTACH, "host=%s", (char *)words[2]);
+        }
+
         return ret;
 }
 
@@ -164,6 +164,10 @@ out:
         }
 
         CLI_STACK_DESTROY (frame);
+
+        if (ret == 0) {
+                gf_event (EVENT_PEER_DETACH, "host=%s", (char *)words[2]);
+        }
 
         return ret;
 }

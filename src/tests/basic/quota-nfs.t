@@ -15,6 +15,7 @@ TEST $CLI volume info;
 
 TEST $CLI volume create $V0 $H0:$B0/brick1;
 EXPECT 'Created' volinfo_field $V0 'Status';
+TEST $CLI volume set $V0 nfs.disable false
 
 TEST $CLI volume set $V0 network.inode-lru-limit 1
 TEST $CLI volume set $V0 performance.nfs.write-behind off
@@ -57,7 +58,7 @@ TEST rm -f $N0/$deep/newfile_2
 EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" umount_nfs $N0
 
 TEST $CLI volume stop $V0
-EXPECT "1" get_aux
 
 rm -f $QDD
 cleanup;
+#G_TESTDEF_TEST_STATUS_NETBSD7=BAD_TEST,BUG=000000

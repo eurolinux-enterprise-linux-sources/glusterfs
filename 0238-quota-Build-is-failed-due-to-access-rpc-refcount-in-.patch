@@ -1,0 +1,39 @@
+From 0b61a3b9c948a55da0df51a64483dcb8bc3954ba Mon Sep 17 00:00:00 2001
+From: moagrawa <moagrawa@redhat.com>
+Date: Mon, 23 Apr 2018 15:12:19 +0530
+Subject: [PATCH 238/260] quota: Build is failed due to access rpc->refcount in
+ wrong way
+
+Problem: Build is failed on centos due to access rpc-refcount
+         in wrong way in quota.c
+
+Solution: Update quota.c to access rpc->refcount
+
+BUG: 1570582
+Change-Id: I881617259f73a7b1430e0ea80adf11168356d41e
+Signed-off-by: moagrawa <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136505
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/features/quota/src/quota.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/features/quota/src/quota.c b/xlators/features/quota/src/quota.c
+index c4817bc..3d68ffa 100644
+--- a/xlators/features/quota/src/quota.c
++++ b/xlators/features/quota/src/quota.c
+@@ -5259,7 +5259,9 @@ fini (xlator_t *this)
+         priv->rpc_clnt = NULL;
+         this->private = NULL;
+         if (rpc) {
+-                cnt = GF_ATOMIC_GET (rpc->refcount);
++                pthread_mutex_lock (&rpc->lock);
++                cnt = rpc->refcount;
++                pthread_mutex_unlock (&rpc->lock);
+                 for (i = 0; i < cnt; i++)
+                         rpc_clnt_unref (rpc);
+         }
+-- 
+1.8.3.1
+

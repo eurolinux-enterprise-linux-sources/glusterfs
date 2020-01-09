@@ -42,26 +42,32 @@ static int32_t
 af_inet_bind_to_port_lt_ceiling (int fd, struct sockaddr *sockaddr,
                                  socklen_t sockaddr_len, uint32_t ceiling)
 {
-        int32_t        ret        = -1;
-        uint16_t      port        = ceiling - 1;
-        // by default assume none of the ports are blocked and all are available
-        gf_boolean_t  ports[GF_PORT_MAX] = {_gf_false,};
-        int           i           = 0;
+#if GF_DISABLE_PRIVPORT_TRACKING
+        _assign_port (sockaddr, 0);
+        return bind (fd, sockaddr, sockaddr_len);
+#else
+        int32_t         ret                             = -1;
+        uint16_t        port                            = ceiling - 1;
+        unsigned char   ports[GF_PORT_ARRAY_SIZE]       = {0,};
+        int             i                               = 0;
 
+loop:
         ret = gf_process_reserved_ports (ports, ceiling);
-        if (ret != 0) {
-                for (i = 0; i < GF_PORT_MAX; i++)
-                        ports[i] = _gf_false;
-        }
 
-        while (port)
-        {
-                _assign_port (sockaddr, port);
-                // ignore the reserved ports
-                if (ports[port] == _gf_true) {
+        while (port) {
+                if (port == GF_CLIENT_PORT_CEILING) {
+                        ret = -1;
+                        break;
+                }
+
+                /* ignore the reserved ports */
+                if (BIT_VALUE (ports, port)) {
                         port--;
                         continue;
                 }
+
+                _assign_port (sockaddr, port);
+
                 ret = bind (fd, sockaddr, sockaddr_len);
 
                 if (ret == 0)
@@ -73,7 +79,20 @@ af_inet_bind_to_port_lt_ceiling (int fd, struct sockaddr *sockaddr,
                 port--;
         }
 
+        /* Incase if all the secure ports are exhausted, we are no more
+         * binding to secure ports, hence instead of getting a random
+         * port, lets define the range to restrict it from getting from
+         * ports reserved for bricks i.e from range of 49152 - 65535
+         * which further may lead to port clash */
+        if (!port) {
+                ceiling = port = GF_CLNT_INSECURE_PORT_CEILING;
+                for (i = 0; i <= ceiling; i++)
+                        BIT_CLEAR (ports, i);
+                goto loop;
+        }
+
         return ret;
+#endif /* GF_DISABLE_PRIVPORT_TRACKING */
 }
 
 static int32_t
@@ -149,9 +168,10 @@ client_fill_address_family (rpc_transport_t *this, sa_family_t *sa_family)
 
                 if (remote_host_data) {
                         gf_log (this->name, GF_LOG_DEBUG,
-                                "address-family not specified, guessing it "
-                                "to be inet from (remote-host: %s)", data_to_str (remote_host_data));
-                        *sa_family = AF_INET;
+                                "address-family not specified, marking it as unspec "
+                                "for getaddrinfo to resolve from (remote-host: %s)",
+                                data_to_str(remote_host_data));
+                        *sa_family = AF_UNSPEC;
                 } else {
                         gf_log (this->name, GF_LOG_DEBUG,
                                 "address-family not specified, guessing it "
@@ -395,7 +415,7 @@ af_inet_server_get_local_sockaddr (rpc_transport_t *this,
         memset (&hints, 0, sizeof (hints));
         hints.ai_family = addr->sa_family;
         hints.ai_socktype = SOCK_STREAM;
-        hints.ai_flags    = AI_PASSIVE | AI_ADDRCONFIG;
+        hints.ai_flags    = AI_PASSIVE;
 
         ret = getaddrinfo(listen_host, service, &hints, &res);
         if (ret != 0) {
@@ -444,20 +464,25 @@ client_bind (rpc_transport_t *this,
         case AF_INET6:
                 if (!this->bind_insecure) {
                         ret = af_inet_bind_to_port_lt_ceiling (sock, sockaddr,
-                                                       *sockaddr_len, GF_CLIENT_PORT_CEILING);
+                                                               *sockaddr_len,
+                                                               GF_CLIENT_PORT_CEILING);
                         if (ret == -1) {
                                 gf_log (this->name, GF_LOG_DEBUG,
-                                        "cannot bind inet socket (%d) to port less than %d (%s)",
-                                        sock, GF_CLIENT_PORT_CEILING, strerror (errno));
+                                        "cannot bind inet socket (%d) "
+                                        "to port less than %d (%s)",
+                                        sock, GF_CLIENT_PORT_CEILING,
+                                        strerror (errno));
                                 ret = 0;
                         }
                 } else {
                         ret = af_inet_bind_to_port_lt_ceiling (sock, sockaddr,
-                                                       *sockaddr_len, GF_PORT_MAX);
+                                                               *sockaddr_len,
+                                                               GF_IANA_PRIV_PORTS_START);
                         if (ret == -1) {
                                 gf_log (this->name, GF_LOG_DEBUG,
-                                        "failed while binding to less than %d (%s)",
-                                        GF_PORT_MAX, strerror (errno));
+                                        "failed while binding to less than "
+                                        "%d (%s)", GF_IANA_PRIV_PORTS_START,
+                                        strerror (errno));
                                 ret = 0;
                         }
                 }
@@ -536,6 +561,8 @@ server_fill_address_family (rpc_transport_t *this, sa_family_t *sa_family)
 {
         data_t  *address_family_data = NULL;
         int32_t  ret                 = -1;
+        char *addr_family            = "inet";
+        sa_family_t default_family   = AF_INET;
 
         GF_VALIDATE_OR_GOTO ("socket", sa_family, out);
 
@@ -561,8 +588,9 @@ server_fill_address_family (rpc_transport_t *this, sa_family_t *sa_family)
                 }
         } else {
                 gf_log (this->name, GF_LOG_DEBUG,
-                        "option address-family not specified, defaulting to inet");
-                *sa_family = AF_INET;
+                        "option address-family not specified, "
+                        "defaulting to %s", addr_family);
+                *sa_family = default_family;
         }
 
         ret = 0;

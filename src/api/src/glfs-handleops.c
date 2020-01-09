@@ -481,6 +481,7 @@ pub_glfs_h_setxattrs (struct glfs *fs, struct glfs_object *object,
         inode_t         *inode = NULL;
         loc_t            loc = {0, };
         dict_t          *xattr = NULL;
+        void            *value_cp = NULL;
 
         /* validate in args */
         if ((fs == NULL) || (object == NULL) ||
@@ -517,8 +518,13 @@ pub_glfs_h_setxattrs (struct glfs *fs, struct glfs_object *object,
                 goto out;
         }
 
-        xattr = dict_for_key_value (name, value, size);
+        value_cp = gf_memdup (value, size);
+        GF_CHECK_ALLOC_AND_LOG (subvol->name, value_cp, ret, "Failed to"
+                                " duplicate setxattr value", out);
+
+        xattr = dict_for_key_value (name, value_cp, size, _gf_false);
         if (!xattr) {
+                GF_FREE (value_cp);
                 ret = -1;
                 errno = ENOMEM;
                 goto out;
@@ -686,8 +692,10 @@ out:
                 inode_unref (inode);
 
         if (ret && glfd) {
-                glfs_fd_destroy (glfd);
+                GF_REF_PUT (glfd);
                 glfd = NULL;
+        } else if (glfd) {
+                glfd->state = GLFD_OPEN;
         }
 
         glfs_subvol_done (fs, subvol);
@@ -706,7 +714,7 @@ pub_glfs_h_creat (struct glfs *fs, struct glfs_object *parent, const char *path,
                   int flags, mode_t mode, struct stat *stat)
 {
         int                 ret = -1;
-        struct glfs_fd     *glfd = NULL;
+        fd_t               *fd = NULL;
         xlator_t           *subvol = NULL;
         inode_t            *inode = NULL;
         loc_t               loc = {0, };
@@ -735,6 +743,7 @@ pub_glfs_h_creat (struct glfs *fs, struct glfs_object *parent, const char *path,
         /* get/refresh the in arg objects inode in correlation to the xlator */
         inode = glfs_resolve_inode (fs, subvol, parent);
         if (!inode) {
+                ret = -1;
                 errno = ESTALE;
                 goto out;
         }
@@ -756,24 +765,17 @@ pub_glfs_h_creat (struct glfs *fs, struct glfs_object *parent, const char *path,
 
         GLFS_LOC_FILL_PINODE (inode, loc, ret, errno, out, path);
 
-        glfd = glfs_fd_new (fs);
-        if (!glfd) {
-                 ret = -1;
-                 errno = ENOMEM;
-                 goto out;
-        }
-
-        glfd->fd = fd_create (loc.inode, getpid());
-        if (!glfd->fd) {
+        fd = fd_create (loc.inode, getpid());
+        if (!fd) {
                 ret = -1;
                 errno = ENOMEM;
                 goto out;
         }
-        glfd->fd->flags = flags;
+        fd->flags = flags;
 
         /* fop/op */
-        ret = syncop_create (subvol, &loc, flags, mode, glfd->fd,
-                             &iatt, xattr_req, NULL);
+        ret = syncop_create (subvol, &loc, flags, mode, fd, &iatt,
+                             xattr_req, NULL);
         DECODE_SYNCOP_ERR (ret);
 
         /* populate out args */
@@ -788,10 +790,6 @@ pub_glfs_h_creat (struct glfs *fs, struct glfs_object *parent, const char *path,
 
                 ret = glfs_create_object (&loc, &object);
         }
-
-        glfd->fd->flags = flags;
-        fd_bind (glfd->fd);
-        glfs_fd_bind (glfd);
 
 out:
         if (ret && object != NULL) {
@@ -808,10 +806,8 @@ out:
         if (xattr_req)
                 dict_unref (xattr_req);
 
-        if (glfd) {
-                glfs_fd_destroy (glfd);
-                glfd = NULL;
-        }
+        if (fd)
+                fd_unref(fd);
 
         glfs_subvol_done (fs, subvol);
 
@@ -1151,9 +1147,10 @@ out:
                 inode_unref (inode);
 
         if (ret && glfd) {
-                glfs_fd_destroy (glfd);
+                GF_REF_PUT (glfd);
                 glfd = NULL;
-        } else {
+        } else if (glfd) {
+                glfd->state = GLFD_OPEN;
                 fd_bind (glfd->fd);
                 glfs_fd_bind (glfd);
         }
@@ -1327,11 +1324,9 @@ pub_glfs_h_create_from_handle (struct glfs *fs, unsigned char *handle, int len,
                 }
                 inode_lookup (newinode);
         } else {
-                gf_msg (subvol->name, GF_LOG_WARNING, EINVAL,
-                        API_MSG_INVALID_ENTRY,
-                        "inode linking of %s failed: %s",
-                        uuid_utoa (loc.gfid), strerror (errno));
-                errno = EINVAL;
+                gf_msg (subvol->name, GF_LOG_WARNING, errno,
+                        API_MSG_INODE_LINK_FAILED,
+                        "inode linking of %s failed", uuid_utoa (loc.gfid));
                 goto out;
         }
 
@@ -1800,9 +1795,92 @@ invalid_fs:
 
 GFAPI_SYMVER_PUBLIC_DEFAULT(glfs_h_rename, 3.4.2);
 
+/*
+ * Given a handle/gfid, find if the corresponding inode is present in
+ * the inode table. If yes create and return the corresponding glfs_object.
+ */
+struct glfs_object *
+glfs_h_find_handle (struct glfs *fs, unsigned char *handle, int len)
+{
+        inode_t            *newinode = NULL;
+        xlator_t           *subvol = NULL;
+        struct glfs_object *object = NULL;
+        uuid_t gfid;
+
+        /* validate in args */
+        if ((fs == NULL) || (handle == NULL) || (len != GFAPI_HANDLE_LENGTH)) {
+                errno = EINVAL;
+                return NULL;
+        }
+
+        DECLARE_OLD_THIS;
+        __GLFS_ENTRY_VALIDATE_FS (fs, invalid_fs);
+
+        /* get the active volume */
+        subvol = glfs_active_subvol (fs);
+        if (!subvol) {
+                errno = EIO;
+                goto out;
+        }
+
+        memcpy (gfid, handle, GFAPI_HANDLE_LENGTH);
+
+        /* make sure the gfid received is valid */
+        GF_VALIDATE_OR_GOTO ("glfs_h_find_handle",
+                             !(gf_uuid_is_null (gfid)), out);
+
+        newinode = inode_find (subvol->itable, gfid);
+        if (!newinode) {
+                goto out;
+        }
+
+        object = GF_CALLOC (1, sizeof(struct glfs_object),
+                            glfs_mt_glfs_object_t);
+        if (object == NULL) {
+                errno = ENOMEM;
+                goto out;
+        }
+
+        /* populate the return object. The ref taken here
+         * is un'refed when the application does glfs_h_close() */
+        object->inode = inode_ref(newinode);
+        gf_uuid_copy (object->gfid, object->inode->gfid);
+
+out:
+        /* inode_find takes a reference. Unref it. */
+        if (newinode)
+                inode_unref (newinode);
+
+        glfs_subvol_done (fs, subvol);
+
+        __GLFS_EXIT_FS;
+
+invalid_fs:
+        return object;
+
+}
+
+static void
+glfs_free_upcall_inode (void *to_free)
+{
+        struct glfs_upcall_inode *arg = to_free;
+
+        if (!arg)
+                return;
+
+        if (arg->object)
+                glfs_h_close (arg->object);
+        if (arg->p_object)
+                glfs_h_close (arg->p_object);
+        if (arg->oldp_object)
+                glfs_h_close (arg->oldp_object);
+
+        GF_FREE (arg);
+}
+
 int
 glfs_h_poll_cache_invalidation (struct glfs *fs,
-                                struct callback_arg *up_arg,
+                                struct glfs_upcall *up_arg,
                                 struct gf_upcall *upcall_data)
 {
         int                                 ret           = -1;
@@ -1810,23 +1888,35 @@ glfs_h_poll_cache_invalidation (struct glfs *fs,
         struct glfs_object                  *oldp_object  = NULL;
         struct glfs_object                  *object       = NULL;
         struct gf_upcall_cache_invalidation *ca_data      = NULL;
-        struct callback_inode_arg           *up_inode_arg = NULL;
+        struct glfs_upcall_inode            *up_inode_arg = NULL;
 
         ca_data = upcall_data->data;
         GF_VALIDATE_OR_GOTO ("glfs_h_poll_cache_invalidation",
                              ca_data, out);
 
-        object = glfs_h_create_from_handle (fs, upcall_data->gfid,
-                                            GFAPI_HANDLE_LENGTH,
-                                            NULL);
-        GF_VALIDATE_OR_GOTO ("glfs_h_poll_cache_invalidation",
-                             object, out);
+        object = glfs_h_find_handle (fs, upcall_data->gfid,
+                                     GFAPI_HANDLE_LENGTH);
+        if (!object) {
+                /* The reason handle creation will fail is because we
+                 * couldn't find the inode in the gfapi inode table.
+                 *
+                 * But since application would have taken inode_ref, the
+                 * only case when this can happen is when it has closed
+                 * the handle and hence will no more be interested in
+                 * the upcall for this particular gfid.
+                 */
+                gf_msg (THIS->name, GF_LOG_DEBUG, errno,
+                        API_MSG_CREATE_HANDLE_FAILED,
+                        "handle creation of %s failed",
+                         uuid_utoa (upcall_data->gfid));
+                errno = ESTALE;
+                goto out;
+        }
 
-        up_inode_arg = calloc (1, sizeof (struct callback_inode_arg));
+        up_inode_arg = GF_CALLOC (1, sizeof (struct glfs_upcall_inode),
+                                  glfs_mt_upcall_inode_t);
         GF_VALIDATE_OR_GOTO ("glfs_h_poll_cache_invalidation",
                              up_inode_arg, out);
-
-        up_arg->event_arg = up_inode_arg;
 
         up_inode_arg->object = object;
         up_inode_arg->flags = ca_data->flags;
@@ -1839,12 +1929,17 @@ glfs_h_poll_cache_invalidation (struct glfs *fs,
         }
 
         if (ca_data->flags & GFAPI_UP_PARENT_TIMES) {
-                p_object = glfs_h_create_from_handle (fs,
-                                                      ca_data->p_stat.ia_gfid,
-                                                      GFAPI_HANDLE_LENGTH,
-                                                      NULL);
-                GF_VALIDATE_OR_GOTO ("glfs_h_poll_cache_invalidation",
-                                       p_object, out);
+                p_object = glfs_h_find_handle (fs,
+                                               ca_data->p_stat.ia_gfid,
+                                               GFAPI_HANDLE_LENGTH);
+                if (!p_object) {
+                        gf_msg (THIS->name, GF_LOG_DEBUG, errno,
+                                API_MSG_CREATE_HANDLE_FAILED,
+                                "handle creation of %s failed",
+                                 uuid_utoa (ca_data->p_stat.ia_gfid));
+                        errno = ESTALE;
+                        goto out;
+                }
 
                 glfs_iatt_to_stat (fs, &ca_data->p_stat, &up_inode_arg->p_buf);
         }
@@ -1852,58 +1947,75 @@ glfs_h_poll_cache_invalidation (struct glfs *fs,
 
         /* In case of RENAME, update old parent as well */
         if (ca_data->flags & GFAPI_UP_RENAME) {
-                oldp_object = glfs_h_create_from_handle (fs,
-                                                     ca_data->oldp_stat.ia_gfid,
-                                                     GFAPI_HANDLE_LENGTH,
-                                                     NULL);
-                GF_VALIDATE_OR_GOTO ("glfs_h_poll_cache_invalidation",
-                                       oldp_object, out);
+                oldp_object = glfs_h_find_handle (fs,
+                                                  ca_data->oldp_stat.ia_gfid,
+                                                  GFAPI_HANDLE_LENGTH);
+                if (!oldp_object) {
+                        gf_msg (THIS->name, GF_LOG_DEBUG, errno,
+                                API_MSG_CREATE_HANDLE_FAILED,
+                                "handle creation of %s failed",
+                                 uuid_utoa (ca_data->oldp_stat.ia_gfid));
+                        errno = ESTALE;
+                        /* By the time we receive upcall old parent_dir may
+                         * have got removed. We still need to send upcall
+                         * for the file/dir and current parent handles. */
+                        up_inode_arg->oldp_object = NULL;
+                        ret = 0;
+                }
 
                 glfs_iatt_to_stat (fs, &ca_data->oldp_stat,
                                    &up_inode_arg->oldp_buf);
         }
         up_inode_arg->oldp_object = oldp_object;
 
+        up_arg->reason = GLFS_UPCALL_INODE_INVALIDATE;
+        up_arg->event = up_inode_arg;
+        up_arg->free_event = glfs_free_upcall_inode;
+
         ret = 0;
 
 out:
+        if (ret) {
+                /* Close p_object and oldp_object as well if being referenced.*/
+                if (object)
+                        glfs_h_close (object);
+
+                /* Set reason to prevent applications from using ->event */
+                up_arg->reason = GLFS_UPCALL_EVENT_NULL;
+                GF_FREE (up_inode_arg);
+        }
         return ret;
 }
 
 /*
- * This API is used to poll for upcall events stored in the
- * upcall list. Current users of this API is NFS-Ganesha.
- * Incase of any event received, it will be mapped appropriately
- * into 'callback_arg' along with the handle object  to be passed
- * to NFS-Ganesha.
+ * This API is used to poll for upcall events stored in the upcall list.
+ * Current users of this API is NFS-Ganesha. Incase of any event received, it
+ * will be mapped appropriately into 'glfs_upcall' along with the handle object
+ * to be passed to NFS-Ganesha.
  *
- * On success, applications need to check for 'reason' to decide
- * if any upcall event is received.
+ * On success, applications need to check if up_arg is not-NULL or errno is not
+ * ENOENT. glfs_upcall_get_reason() can be used to decide what kind of event
+ * has been received.
  *
- * Current supported upcall_events -
- *      GFAPI_INODE_INVALIDATE -
- *              'arg - callback_inode_arg
+ * Current supported upcall_events:
+ *      GLFS_UPCALL_INODE_INVALIDATE
  *
- * After processing the event, applications need to free 'event_arg'.
+ * After processing the event, applications need to free 'up_arg' by calling
+ * glfs_free().
  *
- * Incase of INODE_INVALIDATE, applications need to free "object",
- * "p_object" and "oldp_object" using glfs_h_close(..).
- *
- * Also similar to I/Os, the application should ideally stop polling
- * before calling glfs_fini(..). Hence making an assumption that
- * 'fs' & ctx structures cannot be freed while in this routine.
+ * Also similar to I/Os, the application should ideally stop polling before
+ * calling glfs_fini(..). Hence making an assumption that 'fs' & ctx structures
+ * cannot be freed while in this routine.
  */
 int
-pub_glfs_h_poll_upcall (struct glfs *fs, struct callback_arg *up_arg)
+pub_glfs_h_poll_upcall (struct glfs *fs, struct glfs_upcall **up_arg)
 {
-        upcall_entry                        *u_list         = NULL;
-        upcall_entry                        *tmp            = NULL;
-        xlator_t                            *subvol         = NULL;
-        int                                 found           = 0;
-        int                                 reason          = 0;
-        glusterfs_ctx_t                     *ctx            = NULL;
-        int                                 ret             = -1;
-        struct gf_upcall                    *upcall_data    = NULL;
+        upcall_entry       *u_list         = NULL;
+        upcall_entry       *tmp            = NULL;
+        xlator_t           *subvol         = NULL;
+        glusterfs_ctx_t    *ctx            = NULL;
+        int                 ret            = -1;
+        struct gf_upcall   *upcall_data    = NULL;
 
         DECLARE_OLD_THIS;
 
@@ -1916,15 +2028,13 @@ pub_glfs_h_poll_upcall (struct glfs *fs, struct callback_arg *up_arg)
 
         /* get the active volume */
         subvol = glfs_active_subvol (fs);
-
         if (!subvol) {
                 errno = EIO;
                 goto restore;
         }
 
         /* Ideally applications should stop polling before calling
-         * 'glfs_fini'. Yet cross check if cleanup has started
-         */
+         * 'glfs_fini'. Yet cross check if cleanup has started. */
         pthread_mutex_lock (&fs->mutex);
         {
                 ctx = fs->ctx;
@@ -1935,6 +2045,10 @@ pub_glfs_h_poll_upcall (struct glfs *fs, struct callback_arg *up_arg)
                 }
 
                 fs->pin_refcnt++;
+
+                /* once we call this function, the applications seems to be
+                 * interested in events, enable caching them */
+                fs->cache_upcalls = _gf_true;
         }
         pthread_mutex_unlock (&fs->mutex);
 
@@ -1943,51 +2057,56 @@ pub_glfs_h_poll_upcall (struct glfs *fs, struct callback_arg *up_arg)
                 list_for_each_entry_safe (u_list, tmp,
                                           &fs->upcall_list,
                                           upcall_list) {
-                        found = 1;
+                        list_del_init (&u_list->upcall_list);
+                        upcall_data = &u_list->upcall_data;
                         break;
                 }
         }
         /* No other thread can delete this entry. So unlock it */
         pthread_mutex_unlock (&fs->upcall_list_mutex);
 
-        if (found) {
-                upcall_data = &u_list->upcall_data;
-
+        if (upcall_data) {
                 switch (upcall_data->event_type) {
                 case GF_UPCALL_CACHE_INVALIDATION:
-                        /* XXX: Need to revisit this to support
-                         * GFAPI_INODE_UPDATE if required.
-                         */
-                        reason = GFAPI_INODE_INVALIDATE;
-                        ret = glfs_h_poll_cache_invalidation (fs,
-                                                              up_arg,
-                                                              upcall_data);
-                        if (!ret) {
-                                break;
+                        *up_arg = GF_CALLOC (1, sizeof (struct gf_upcall),
+                                             glfs_mt_upcall_entry_t);
+                        if (!*up_arg) {
+                                errno = ENOMEM;
+                                break; /* goto free u_list */
                         }
-                        /* It could so happen that the file which got
-                         * upcall notification may have got deleted
-                         * by other thread. Irrespective of the error,
-                         * log it and return with CBK_NULL reason.
-                         *
-                         * Applications will ignore this notification
-                         * as up_arg->object will be NULL */
-                        gf_msg (subvol->name, GF_LOG_WARNING, errno,
-                                API_MSG_CREATE_HANDLE_FAILED,
-                                "handle creation of %s failed",
-                                uuid_utoa (upcall_data->gfid));
 
-                        reason = GFAPI_CBK_EVENT_NULL;
+                        /* XXX: Need to revisit this to support
+                         * GLFS_UPCALL_INODE_UPDATE if required. */
+                        ret = glfs_h_poll_cache_invalidation (fs, *up_arg,
+                                                              upcall_data);
+                        if (ret
+                            || (*up_arg)->reason == GLFS_UPCALL_EVENT_NULL) {
+                                /* It could so happen that the file which got
+                                 * upcall notification may have got deleted by
+                                 * the same client. Irrespective of the error,
+                                 * return with an error or success+ENOENT. */
+                                if ((*up_arg)->reason == GLFS_UPCALL_EVENT_NULL)
+                                        errno = ENOENT;
+
+                                GF_FREE (*up_arg);
+                                *up_arg = NULL;
+                        }
                         break;
-                default:
+                case GF_UPCALL_RECALL_LEASE:
+                        gf_log ("glfs_h_poll_upcall", GF_LOG_DEBUG,
+                                "UPCALL_RECALL_LEASE is not implemented yet");
+                /* fallthrough till we support leases */
+                case GF_UPCALL_EVENT_NULL:
+                /* no 'default:' label, to force handling all upcall events */
+                        errno = ENOENT;
                         break;
                 }
 
-                up_arg->reason = reason;
-
-                list_del_init (&u_list->upcall_list);
                 GF_FREE (u_list->upcall_data.data);
                 GF_FREE (u_list);
+        } else {
+                /* fs->upcall_list was empty, no upcall events cached */
+                errno = ENOENT;
         }
 
         ret = 0;
@@ -2007,7 +2126,91 @@ err:
         return ret;
 }
 
-GFAPI_SYMVER_PUBLIC_DEFAULT(glfs_h_poll_upcall, 3.7.0);
+GFAPI_SYMVER_PUBLIC_DEFAULT(glfs_h_poll_upcall, 3.7.16);
+
+static gf_boolean_t log_upcall370 = _gf_true; /* log once */
+
+/* The old glfs_h_poll_upcall interface requires intimite knowledge of the
+ * structures that are returned to the calling application. This is not
+ * recommended, as the returned structures need to returned correctly (handles
+ * closed, memory free'd with the unavailable GF_FREE(), and possibly more.)
+ *
+ * To the best of our knowledge, only NFS-Ganesha uses the upcall events
+ * through gfapi. We keep this backwards compatability function around so that
+ * applications using the existing implementation do not break.
+ *
+ * WARNING: this function will be removed in the future.
+ */
+int
+pub_glfs_h_poll_upcall370 (struct glfs *fs, struct glfs_callback_arg *up_arg)
+{
+        struct glfs_upcall    *upcall        = NULL;
+        int                    ret           = -1;
+
+        if (log_upcall370) {
+                log_upcall370 = _gf_false;
+                gf_log (THIS->name, GF_LOG_WARNING, "this application is "
+                        "compiled against an old version of libgfapi, it "
+                        "should use glfs_free() to release the structure "
+                        "returned by glfs_h_poll_upcall() - for more details, "
+                        "see http://review.gluster.org/14701");
+        }
+
+        ret = pub_glfs_h_poll_upcall (fs, &upcall);
+        if (ret == 0) {
+                up_arg->fs = fs;
+                if (errno == ENOENT || upcall->event == NULL) {
+                        up_arg->reason = GLFS_UPCALL_EVENT_NULL;
+                        goto out;
+                }
+
+                up_arg->reason = upcall->reason;
+
+                if (upcall->reason == GLFS_UPCALL_INODE_INVALIDATE) {
+                        struct glfs_callback_inode_arg *cb_inode = NULL;
+                        struct glfs_upcall_inode       *up_inode = NULL;
+
+                        cb_inode = GF_CALLOC (1,
+                                              sizeof (struct glfs_callback_inode_arg),
+                                              glfs_mt_upcall_inode_t);
+                        if (!cb_inode) {
+                                errno = ENOMEM;
+                                ret = -1;
+                                goto out;
+                        }
+
+                        up_inode = upcall->event;
+
+                        /* copy attributes one by one, the memory layout might
+                         * be different between the old glfs_callback_inode_arg
+                         * and new glfs_upcall_inode */
+                        cb_inode->object = up_inode->object;
+                        cb_inode->flags = up_inode->flags;
+                        memcpy (&cb_inode->buf, &up_inode->buf,
+                                sizeof (struct stat));
+                        cb_inode->expire_time_attr = up_inode->expire_time_attr;
+                        cb_inode->p_object = up_inode->p_object;
+                        memcpy (&cb_inode->p_buf, &up_inode->p_buf,
+                                sizeof (struct stat));
+                        cb_inode->oldp_object = up_inode->oldp_object;
+                        memcpy (&cb_inode->oldp_buf, &up_inode->oldp_buf,
+                                sizeof (struct stat));
+
+                        up_arg->event_arg = cb_inode;
+                }
+        }
+
+out:
+        if (upcall) {
+                /* we can not use glfs_free() here, objects need to stay */
+                GF_FREE (upcall->event);
+                GF_FREE (upcall);
+        }
+
+        return ret;
+}
+
+GFAPI_SYMVER_PUBLIC(glfs_h_poll_upcall370, glfs_h_poll_upcall, 3.7.0);
 
 #ifdef HAVE_ACL_LIBACL_H
 #include "glusterfs-acl.h"
@@ -2099,13 +2302,15 @@ pub_glfs_h_acl_get (struct glfs *fs, struct glfs_object *object,
                 goto out;
 
         ret = dict_get_str (xattr, (char *)acl_key, &acl_s);
-        if (ret == -1)
+        if (ret)
                 goto out;
 
         acl = acl_from_text (acl_s);
 
 out:
-        GF_FREE (acl_s);
+        if (xattr)
+                dict_unref(xattr);
+
         if (IA_ISLNK (object->inode->ia_type) && new_object)
                 glfs_h_close (new_object);
 
@@ -2181,3 +2386,48 @@ pub_glfs_h_anonymous_write (struct glfs *fs, struct glfs_object *object,
 }
 
 GFAPI_SYMVER_PUBLIC_DEFAULT(glfs_h_anonymous_write, 3.7.0);
+
+struct glfs_object*
+pub_glfs_object_copy (struct glfs_object *src)
+{
+        struct glfs_object *object = NULL;
+
+        GF_VALIDATE_OR_GOTO ("glfs_dup_object", src, out);
+
+        object = GF_CALLOC (1, sizeof(struct glfs_object),
+                            glfs_mt_glfs_object_t);
+        if (object == NULL) {
+                errno = ENOMEM;
+                gf_msg (THIS->name, GF_LOG_WARNING, errno,
+                         API_MSG_CREATE_HANDLE_FAILED,
+                        "glfs_dup_object for gfid-%s failed",
+                        uuid_utoa (src->inode->gfid));
+                return NULL;
+        }
+
+        object->inode = inode_ref (src->inode);
+        gf_uuid_copy (object->gfid, src->inode->gfid);
+
+out:
+        return object;
+}
+GFAPI_SYMVER_PUBLIC_DEFAULT(glfs_object_copy, 3.11.0);
+
+struct glfs_object*
+pub_glfs_xreaddirplus_get_object (struct glfs_xreaddirp_stat *xstat)
+{
+        GF_VALIDATE_OR_GOTO ("glfs_xreaddirplus_get_object", xstat, out);
+
+        if (!(xstat->flags_handled & GFAPI_XREADDIRP_HANDLE))
+                gf_msg (THIS->name, GF_LOG_ERROR, errno,
+                        LG_MSG_INVALID_ARG,
+                        "GFAPI_XREADDIRP_HANDLE is not set. Flags"
+                        "handled for xstat(%p) are (%x)",
+                        xstat, xstat->flags_handled);
+
+        return xstat->object;
+
+out:
+        return NULL;
+}
+GFAPI_SYMVER_PUBLIC_DEFAULT(glfs_xreaddirplus_get_object, 3.11.0);

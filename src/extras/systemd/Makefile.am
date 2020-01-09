@@ -1,11 +1,11 @@
+CLEANFILES = glusterd.service glustereventsd.service glusterfssharedstorage.service
+EXTRA_DIST = glusterd.service.in glustereventsd.service.in glusterfssharedstorage.service.in
 
-CLEANFILES =
+if USE_SYSTEMD
+# systemddir is already defined through configure.ac
+systemd_DATA = glusterd.service glusterfssharedstorage.service
 
-SYSTEMD_DIR = @systemddir@
-
-install-exec-local:
-	@if [ -d $(SYSTEMD_DIR) ]; then \
-		$(MKDIR_P) $(DESTDIR)$(SYSTEMD_DIR); \
-		$(INSTALL_PROGRAM) glusterd.service $(DESTDIR)$(SYSTEMD_DIR)/; \
-	fi
-
+if BUILD_EVENTS
+systemd_DATA += glustereventsd.service
+endif
+endif

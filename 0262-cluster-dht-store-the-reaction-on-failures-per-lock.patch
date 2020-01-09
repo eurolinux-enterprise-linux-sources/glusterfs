@@ -1,0 +1,346 @@
+From 2802d400934b247436edf4d9f85839ad455307ca Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Thu, 8 Feb 2018 13:44:38 +0530
+Subject: [PATCH 262/271] cluster/dht: store the 'reaction' on failures per
+ lock
+
+Currently its passed in dht_blocking_inode(entry)lk, which would be a
+global value for all the locks passed in the argument. This would
+be a limitation for cases where we want to ignore failures on only few
+locks and fail for others.
+
+>Change-Id: I02cfbcaafb593ad8140c0e5af725c866b630fb6b
+>BUG: 1543279
+>Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+
+upstream patch: https://review.gluster.org/19546/
+BUG: 1488120
+Change-Id: I2d575530d14c89f90a0ffb790810748d4e296972
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138153
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c   | 11 ++++++-----
+ xlators/cluster/dht/src/dht-common.h   | 16 +++++++++-------
+ xlators/cluster/dht/src/dht-lock.c     | 27 ++++++++++++++-------------
+ xlators/cluster/dht/src/dht-lock.h     |  9 ++++-----
+ xlators/cluster/dht/src/dht-rename.c   |  8 +++++---
+ xlators/cluster/dht/src/dht-selfheal.c | 13 ++++++++-----
+ 6 files changed, 46 insertions(+), 38 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index a985481..5b2c897 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -7248,7 +7248,8 @@ dht_mknod_lock (call_frame_t *frame, xlator_t *subvol)
+                 goto err;
+ 
+         lk_array[0] = dht_lock_new (frame->this, subvol, &local->loc, F_RDLCK,
+-                                    DHT_LAYOUT_HEAL_DOMAIN, NULL);
++                                    DHT_LAYOUT_HEAL_DOMAIN, NULL,
++                                    IGNORE_ENOENT_ESTALE);
+ 
+         if (lk_array[0] == NULL)
+                 goto err;
+@@ -7256,8 +7257,7 @@ dht_mknod_lock (call_frame_t *frame, xlator_t *subvol)
+         local->lock[0].layout.parent_layout.locks = lk_array;
+         local->lock[0].layout.parent_layout.lk_count = count;
+ 
+-        ret = dht_blocking_inodelk (frame, lk_array, count,
+-                                    IGNORE_ENOENT_ESTALE, dht_mknod_lock_cbk);
++        ret = dht_blocking_inodelk (frame, lk_array, count, dht_mknod_lock_cbk);
+ 
+         if (ret < 0) {
+                 local->lock[0].layout.parent_layout.locks = NULL;
+@@ -8392,7 +8392,8 @@ dht_create_lock (call_frame_t *frame, xlator_t *subvol)
+                 goto err;
+ 
+         lk_array[0] = dht_lock_new (frame->this, subvol, &local->loc, F_RDLCK,
+-                                    DHT_LAYOUT_HEAL_DOMAIN, NULL);
++                                    DHT_LAYOUT_HEAL_DOMAIN, NULL,
++                                    IGNORE_ENOENT_ESTALE);
+ 
+         if (lk_array[0] == NULL)
+                 goto err;
+@@ -8401,7 +8402,7 @@ dht_create_lock (call_frame_t *frame, xlator_t *subvol)
+         local->lock[0].layout.parent_layout.lk_count = count;
+ 
+         ret = dht_blocking_inodelk (frame, lk_array, count,
+-                                    IGNORE_ENOENT_ESTALE, dht_create_lock_cbk);
++                                    dht_create_lock_cbk);
+ 
+         if (ret < 0) {
+                 local->lock[0].layout.parent_layout.locks = NULL;
+diff --git a/xlators/cluster/dht/src/dht-common.h b/xlators/cluster/dht/src/dht-common.h
+index 9d429af..fbc1e29 100644
+--- a/xlators/cluster/dht/src/dht-common.h
++++ b/xlators/cluster/dht/src/dht-common.h
+@@ -173,6 +173,7 @@ typedef enum {
+ } qdstatfs_action_t;
+ 
+ typedef enum {
++        REACTION_INVALID,
+         FAIL_ON_ANY_ERROR,
+         IGNORE_ENOENT_ESTALE
+ } dht_reaction_type_t;
+@@ -187,15 +188,16 @@ struct dht_skip_linkto_unlink {
+ };
+ 
+ typedef struct {
+-        xlator_t     *xl;
+-        loc_t         loc;     /* contains/points to inode to lock on. */
+-        short         type;    /* read/write lock.                     */
+-        char         *domain;  /* Only locks within a single domain
++        xlator_t            *xl;
++        loc_t                loc; /* contains/points to inode to lock on. */
++        short                type; /* read/write lock.                     */
++        char                *domain;  /* Only locks within a single domain
+                                 * contend with each other
+                                 */
+-        char         *basename; /* Required for entrylk */
+-        gf_lkowner_t  lk_owner;
+-        gf_boolean_t  locked;
++        char                *basename; /* Required for entrylk */
++        gf_lkowner_t         lk_owner;
++        gf_boolean_t         locked;
++        dht_reaction_type_t  do_on_failure;
+ } dht_lock_t;
+ 
+ /* The lock structure represents inodelk. */
+diff --git a/xlators/cluster/dht/src/dht-lock.c b/xlators/cluster/dht/src/dht-lock.c
+index 45ebeec..3e82c98 100644
+--- a/xlators/cluster/dht/src/dht-lock.c
++++ b/xlators/cluster/dht/src/dht-lock.c
+@@ -191,7 +191,8 @@ out:
+ 
+ dht_lock_t *
+ dht_lock_new (xlator_t *this, xlator_t *xl, loc_t *loc, short type,
+-              const char *domain, const char *basename)
++              const char *domain, const char *basename,
++              dht_reaction_type_t do_on_failure)
+ {
+         dht_conf_t *conf = NULL;
+         dht_lock_t *lock = NULL;
+@@ -204,6 +205,7 @@ dht_lock_new (xlator_t *this, xlator_t *xl, loc_t *loc, short type,
+ 
+         lock->xl = xl;
+         lock->type = type;
++        lock->do_on_failure = do_on_failure;
+ 
+         lock->domain = gf_strdup (domain);
+         if (lock->domain == NULL) {
+@@ -540,7 +542,7 @@ dht_blocking_entrylk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 switch (op_errno) {
+                 case ESTALE:
+                 case ENOENT:
+-                        if (local->lock[0].ns.directory_ns.reaction != IGNORE_ENOENT_ESTALE) {
++                        if (local->lock[0].ns.directory_ns.locks[lk_index]->do_on_failure != IGNORE_ENOENT_ESTALE) {
+                                 local->lock[0].ns.directory_ns.op_ret = -1;
+                                 local->lock[0].ns.directory_ns.op_errno = op_errno;
+                                 goto cleanup;
+@@ -597,8 +599,7 @@ dht_blocking_entrylk_rec (call_frame_t *frame, int i)
+ 
+ int
+ dht_blocking_entrylk (call_frame_t *frame, dht_lock_t **lk_array,
+-                      int lk_count, dht_reaction_type_t reaction,
+-                      fop_entrylk_cbk_t entrylk_cbk)
++                      int lk_count, fop_entrylk_cbk_t entrylk_cbk)
+ {
+         int           ret        = -1;
+         call_frame_t *lock_frame = NULL;
+@@ -621,7 +622,6 @@ dht_blocking_entrylk (call_frame_t *frame, dht_lock_t **lk_array,
+         dht_set_lkowner (lk_array, lk_count, &lock_frame->root->lk_owner);
+ 
+         local = lock_frame->local;
+-        local->lock[0].ns.directory_ns.reaction = reaction;
+         local->main_frame = frame;
+ 
+         dht_blocking_entrylk_rec (lock_frame, 0);
+@@ -1029,7 +1029,8 @@ dht_blocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 switch (op_errno) {
+                 case ESTALE:
+                 case ENOENT:
+-                        if (local->lock[0].layout.my_layout.reaction != IGNORE_ENOENT_ESTALE) {
++                        if (local->lock[0].layout.my_layout.locks[lk_index]->do_on_failure
++                            != IGNORE_ENOENT_ESTALE) {
+                                 gf_uuid_unparse (local->lock[0].layout.my_layout.locks[lk_index]->loc.gfid, gfid);
+                                 local->lock[0].layout.my_layout.op_ret = -1;
+                                 local->lock[0].layout.my_layout.op_errno = op_errno;
+@@ -1100,8 +1101,7 @@ dht_blocking_inodelk_rec (call_frame_t *frame, int i)
+ 
+ int
+ dht_blocking_inodelk (call_frame_t *frame, dht_lock_t **lk_array,
+-                      int lk_count, dht_reaction_type_t reaction,
+-                      fop_inodelk_cbk_t inodelk_cbk)
++                      int lk_count, fop_inodelk_cbk_t inodelk_cbk)
+ {
+         int           ret                       = -1;
+         call_frame_t *lock_frame                = NULL;
+@@ -1139,7 +1139,6 @@ dht_blocking_inodelk (call_frame_t *frame, dht_lock_t **lk_array,
+         dht_set_lkowner (lk_array, lk_count, &lock_frame->root->lk_owner);
+ 
+         local = lock_frame->local;
+-        local->lock[0].layout.my_layout.reaction = reaction;
+         local->main_frame = frame;
+ 
+         dht_blocking_inodelk_rec (lock_frame, 0);
+@@ -1210,7 +1209,7 @@ dht_blocking_entrylk_after_inodelk (call_frame_t *frame, void *cookie,
+         lk_array = entrylk->locks;
+         count = entrylk->lk_count;
+ 
+-        ret = dht_blocking_entrylk (frame, lk_array, count, FAIL_ON_ANY_ERROR,
++        ret = dht_blocking_entrylk (frame, lk_array, count,
+                                     dht_protect_namespace_cbk);
+ 
+         if (ret < 0) {
+@@ -1303,7 +1302,8 @@ dht_protect_namespace (call_frame_t *frame, loc_t *loc,
+         }
+ 
+         inodelk->locks[0] = dht_lock_new (this, subvol, &parent, F_RDLCK,
+-                                        DHT_LAYOUT_HEAL_DOMAIN, NULL);
++                                          DHT_LAYOUT_HEAL_DOMAIN, NULL,
++                                          FAIL_ON_ANY_ERROR);
+         if (inodelk->locks[0] == NULL) {
+                 local->op_errno = ENOMEM;
+                 gf_msg (this->name, GF_LOG_WARNING, local->op_errno,
+@@ -1330,7 +1330,8 @@ dht_protect_namespace (call_frame_t *frame, loc_t *loc,
+         }
+ 
+         entrylk->locks[0] = dht_lock_new (this, subvol, &parent, F_WRLCK,
+-                                          DHT_ENTRY_SYNC_DOMAIN, loc->name);
++                                          DHT_ENTRY_SYNC_DOMAIN, loc->name,
++                                          FAIL_ON_ANY_ERROR);
+         if (entrylk->locks[0] == NULL) {
+                 local->op_errno = ENOMEM;
+                 gf_msg (this->name, GF_LOG_WARNING, local->op_errno,
+@@ -1347,7 +1348,7 @@ dht_protect_namespace (call_frame_t *frame, loc_t *loc,
+          * on name in cbk.
+          */
+         lk_array = inodelk->locks;
+-        ret = dht_blocking_inodelk (frame, lk_array, count, FAIL_ON_ANY_ERROR,
++        ret = dht_blocking_inodelk (frame, lk_array, count,
+                                     dht_blocking_entrylk_after_inodelk);
+         if (ret < 0) {
+                 local->op_errno = EIO;
+diff --git a/xlators/cluster/dht/src/dht-lock.h b/xlators/cluster/dht/src/dht-lock.h
+index 0557858..f36bf3f 100644
+--- a/xlators/cluster/dht/src/dht-lock.h
++++ b/xlators/cluster/dht/src/dht-lock.h
+@@ -22,7 +22,8 @@ dht_lock_count (dht_lock_t **lk_array, int lk_count);
+ 
+ dht_lock_t *
+ dht_lock_new (xlator_t *this, xlator_t *xl, loc_t *loc, short type,
+-              const char *domain, const char *basename);
++              const char *domain, const char *basename,
++              dht_reaction_type_t do_on_failure);
+ 
+ int32_t
+ dht_unlock_entrylk_wrapper (call_frame_t *, dht_elock_wrap_t *);
+@@ -32,8 +33,7 @@ dht_blocking_entrylk_rec (call_frame_t *frame, int i);
+ 
+ int
+ dht_blocking_entrylk (call_frame_t *frame, dht_lock_t **lk_array,
+-                      int lk_count, dht_reaction_type_t reaction,
+-                      fop_inodelk_cbk_t entrylk_cbk);
++                      int lk_count, fop_inodelk_cbk_t entrylk_cbk);
+ 
+ int32_t
+ dht_unlock_inodelk (call_frame_t *frame, dht_lock_t **lk_array, int lk_count,
+@@ -70,8 +70,7 @@ dht_blocking_inodelk_rec (call_frame_t *frame, int i);
+ 
+ int
+ dht_blocking_inodelk (call_frame_t *frame, dht_lock_t **lk_array,
+-                      int lk_count, dht_reaction_type_t reaction,
+-                      fop_inodelk_cbk_t inodelk_cbk);
++                      int lk_count, fop_inodelk_cbk_t inodelk_cbk);
+ 
+ int32_t
+ dht_blocking_entrylk_after_inodelk (call_frame_t *frame, void *cookie,
+diff --git a/xlators/cluster/dht/src/dht-rename.c b/xlators/cluster/dht/src/dht-rename.c
+index 5a72c1f..3dc042e 100644
+--- a/xlators/cluster/dht/src/dht-rename.c
++++ b/xlators/cluster/dht/src/dht-rename.c
+@@ -1649,14 +1649,16 @@ dht_rename_lock (call_frame_t *frame)
+                 goto err;
+ 
+         lk_array[0] = dht_lock_new (frame->this, local->src_cached, &local->loc,
+-                                    F_WRLCK, DHT_FILE_MIGRATE_DOMAIN, NULL);
++                                    F_WRLCK, DHT_FILE_MIGRATE_DOMAIN, NULL,
++                                    FAIL_ON_ANY_ERROR);
+         if (lk_array[0] == NULL)
+                 goto err;
+ 
+         if (local->dst_cached) {
+                 lk_array[1] = dht_lock_new (frame->this, local->dst_cached,
+                                             &local->loc2, F_WRLCK,
+-                                            DHT_FILE_MIGRATE_DOMAIN, NULL);
++                                            DHT_FILE_MIGRATE_DOMAIN, NULL,
++                                            FAIL_ON_ANY_ERROR);
+                 if (lk_array[1] == NULL)
+                         goto err;
+         }
+@@ -1665,7 +1667,7 @@ dht_rename_lock (call_frame_t *frame)
+         local->lock[0].layout.parent_layout.lk_count = count;
+ 
+         ret = dht_blocking_inodelk (frame, lk_array, count,
+-                                    FAIL_ON_ANY_ERROR, dht_rename_lock_cbk);
++                                    dht_rename_lock_cbk);
+         if (ret < 0) {
+                 local->lock[0].layout.parent_layout.locks = NULL;
+                 local->lock[0].layout.parent_layout.lk_count = 0;
+diff --git a/xlators/cluster/dht/src/dht-selfheal.c b/xlators/cluster/dht/src/dht-selfheal.c
+index 5812f12..e9b1db9 100644
+--- a/xlators/cluster/dht/src/dht-selfheal.c
++++ b/xlators/cluster/dht/src/dht-selfheal.c
+@@ -588,7 +588,8 @@ dht_selfheal_layout_lock (call_frame_t *frame, dht_layout_t *layout,
+                                                     conf->subvolumes[i],
+                                                     &local->loc, F_WRLCK,
+                                                     DHT_LAYOUT_HEAL_DOMAIN,
+-                                                    NULL);
++                                                    NULL,
++                                                    FAIL_ON_ANY_ERROR);
+                         if (lk_array[i] == NULL) {
+                                 gf_uuid_unparse (local->stbuf.ia_gfid, gfid);
+                                 gf_msg (THIS->name, GF_LOG_ERROR, ENOMEM,
+@@ -613,7 +614,8 @@ dht_selfheal_layout_lock (call_frame_t *frame, dht_layout_t *layout,
+ 
+                 lk_array[0] = dht_lock_new (frame->this, local->hashed_subvol,
+                                             &local->loc, F_WRLCK,
+-                                            DHT_LAYOUT_HEAL_DOMAIN, NULL);
++                                            DHT_LAYOUT_HEAL_DOMAIN, NULL,
++                                            FAIL_ON_ANY_ERROR);
+                 if (lk_array[0] == NULL) {
+                         gf_uuid_unparse (local->stbuf.ia_gfid, gfid);
+                         gf_msg (THIS->name, GF_LOG_ERROR, ENOMEM,
+@@ -627,7 +629,7 @@ dht_selfheal_layout_lock (call_frame_t *frame, dht_layout_t *layout,
+         local->lock[0].layout.my_layout.locks = lk_array;
+         local->lock[0].layout.my_layout.lk_count = count;
+ 
+-        ret = dht_blocking_inodelk (frame, lk_array, count, FAIL_ON_ANY_ERROR,
++        ret = dht_blocking_inodelk (frame, lk_array, count,
+                                     dht_selfheal_layout_lock_cbk);
+         if (ret < 0) {
+                 local->lock[0].layout.my_layout.locks = NULL;
+@@ -2783,7 +2785,8 @@ dht_update_commit_hash_for_layout (call_frame_t *frame)
+                 lk_array[i] = dht_lock_new (frame->this,
+                                             conf->local_subvols[i],
+                                             &local->loc, F_WRLCK,
+-                                            DHT_LAYOUT_HEAL_DOMAIN, NULL);
++                                            DHT_LAYOUT_HEAL_DOMAIN, NULL,
++                                            FAIL_ON_ANY_ERROR);
+                 if (lk_array[i] == NULL)
+                         goto err;
+         }
+@@ -2791,7 +2794,7 @@ dht_update_commit_hash_for_layout (call_frame_t *frame)
+         local->lock[0].layout.my_layout.locks = lk_array;
+         local->lock[0].layout.my_layout.lk_count = count;
+ 
+-        ret = dht_blocking_inodelk (frame, lk_array, count, FAIL_ON_ANY_ERROR,
++        ret = dht_blocking_inodelk (frame, lk_array, count,
+                                     dht_update_commit_hash_for_layout_resume);
+         if (ret < 0) {
+                 local->lock[0].layout.my_layout.locks = NULL;
+-- 
+1.8.3.1
+

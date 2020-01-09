@@ -18,6 +18,10 @@ import xml.etree.cElementTree as etree
 from argparse import ArgumentParser, RawDescriptionHelpFormatter, Action
 import logging
 import shutil
+import tempfile
+import signal
+from datetime import datetime
+import codecs
 
 from utils import execute, is_host_local, mkdirp, fail
 from utils import setup_logger, human_time, handle_rm_error
@@ -33,6 +37,7 @@ ParseError = etree.ParseError if hasattr(etree, 'ParseError') else SyntaxError
 logger = logging.getLogger()
 node_outfiles = []
 vol_statusStr = ""
+gtmpfilename = None
 
 
 class StoreAbsPath(Action):
@@ -68,13 +73,19 @@ def node_cmd(host, host_uuid, task, cmd, args, opts):
         if not localdir:
             # prefix with ssh command if not local node
             cmd = ["ssh",
+                   "-oNumberOfPasswordPrompts=0",
+                   "-oStrictHostKeyChecking=no",
+                   "-t",
+                   "-t",
                    "-i", pem_key_path,
                    "root@%s" % host] + cmd
 
         execute(cmd, exit_msg="%s - %s failed" % (host, task), logger=logger)
 
-        if opts.get("copy_outfile", False):
+        if opts.get("copy_outfile", False) and not localdir:
             cmd_copy = ["scp",
+                        "-oNumberOfPasswordPrompts=0",
+                        "-oStrictHostKeyChecking=no",
                         "-i", pem_key_path,
                         "root@%s:/%s" % (host, opts.get("node_outfile")),
                         os.path.dirname(opts.get("node_outfile"))]
@@ -93,8 +104,13 @@ def run_cmd_nodes(task, args, **kwargs):
         host_uuid = node[0]
         cmd = []
         opts = {}
+
+        # tmpfilename is valid only for tasks: pre, query and cleanup
+        tmpfilename = kwargs.get("tmpfilename", "BADNAME")
+
         node_outfile = os.path.join(conf.get_opt("working_dir"),
                                     args.session, args.volume,
+                                    tmpfilename,
                                     "tmp_output_%s" % num)
 
         if task == "pre":
@@ -104,49 +120,82 @@ def run_cmd_nodes(task, args, **kwargs):
 
             # If Full backup is requested or start time is zero, use brickfind
             change_detector = conf.get_change_detector("changelog")
+            tag = None
             if args.full:
                 change_detector = conf.get_change_detector("brickfind")
+                tag = args.tag_for_full_find.strip()
+                if tag == "":
+                    tag = '""' if not is_host_local(host_uuid) else ""
 
             node_outfiles.append(node_outfile)
+            # remote file will be copied into this directory
+            mkdirp(os.path.dirname(node_outfile),
+                   exit_on_err=True, logger=logger)
+
+            FS = args.field_separator
+            if not is_host_local(host_uuid):
+                FS = "'" + FS + "'"
 
             cmd = [change_detector,
                    args.session,
                    args.volume,
+                   host,
                    brick,
-                   node_outfile,
-                   str(kwargs.get("start")),
-                   "--output-prefix",
-                   args.output_prefix] + \
+                   node_outfile] + \
+                ([str(kwargs.get("start")), str(kwargs.get("end"))]
+                    if not args.full else []) + \
+                ([tag] if tag is not None else []) + \
+                ["--output-prefix", args.output_prefix] + \
                 (["--debug"] if args.debug else []) + \
                 (["--no-encode"] if args.no_encode else []) + \
                 (["--only-namespace-changes"] if args.only_namespace_changes
-                 else [])
+                 else []) + \
+                (["--field-separator", FS] if args.full else [])
 
             opts["node_outfile"] = node_outfile
             opts["copy_outfile"] = True
         elif task == "query":
             # If Full backup is requested or start time is zero, use brickfind
+            tag = None
             change_detector = conf.get_change_detector("changelog")
+            if args.full:
+                change_detector = conf.get_change_detector("brickfind")
+                tag = args.tag_for_full_find.strip()
+                if tag == "":
+                    tag = '""' if not is_host_local(host_uuid) else ""
+
             node_outfiles.append(node_outfile)
+            # remote file will be copied into this directory
+            mkdirp(os.path.dirname(node_outfile),
+                   exit_on_err=True, logger=logger)
+
+            FS = args.field_separator
+            if not is_host_local(host_uuid):
+                FS = "'" + FS + "'"
 
             cmd = [change_detector,
                    args.session,
                    args.volume,
+                   host,
                    brick,
-                   node_outfile,
-                   str(kwargs.get("start"))] + \
+                   node_outfile] + \
+                ([str(kwargs.get("start")), str(kwargs.get("end"))]
+                    if not args.full else []) + \
+                ([tag] if tag is not None else []) + \
                 ["--only-query"] + \
                 ["--output-prefix", args.output_prefix] + \
                 (["--debug"] if args.debug else []) + \
                 (["--no-encode"] if args.no_encode else []) + \
                 (["--only-namespace-changes"]
-                    if args.only_namespace_changes else [])
+                    if args.only_namespace_changes else []) + \
+                (["--field-separator", FS] if args.full else [])
 
             opts["node_outfile"] = node_outfile
             opts["copy_outfile"] = True
         elif task == "cleanup":
-            # After pre run, cleanup the working directory and other temp files
-            # Remove the copied node_outfile in main node
+            # After pre/query run, cleanup the working directory and other
+            # temp files. Remove the directory to which node_outfile has
+            # been copied in main node
             try:
                 os.remove(node_outfile)
             except (OSError, IOError):
@@ -157,7 +206,9 @@ def run_cmd_nodes(task, args, **kwargs):
             cmd = [conf.get_opt("nodeagent"),
                    "cleanup",
                    args.session,
-                   args.volume] + (["--debug"] if args.debug else [])
+                   args.volume,
+                   os.path.dirname(node_outfile)] + \
+                (["--debug"] if args.debug else [])
         elif task == "create":
             if vol_statusStr != "Started":
                 fail("Volume %s is not online" % args.volume,
@@ -228,13 +279,22 @@ def get_nodes(volume):
 
     # this status is used in caller: run_cmd_nodes
     vol_statusStr = tree.find('volInfo/volumes/volume/statusStr').text
+    vol_typeStr = tree.find('volInfo/volumes/volume/typeStr').text
 
     nodes = []
     volume_el = tree.find('volInfo/volumes/volume')
     try:
-        for b in volume_el.findall('bricks/brick'):
-            nodes.append((b.find('hostUuid').text,
-                          b.find('name').text))
+        brick_elems = []
+        if vol_typeStr == "Tier":
+            brick_elems.append('bricks/hotBricks/brick')
+            brick_elems.append('bricks/coldBricks/brick')
+        else:
+            brick_elems.append('bricks/brick')
+
+        for elem in brick_elems:
+            for b in volume_el.findall(elem):
+                nodes.append((b.find('hostUuid').text,
+                              b.find('name').text))
     except (ParseError, AttributeError, ValueError) as e:
         fail("Failed to parse Volume Info: %s" % e, logger=logger)
 
@@ -291,23 +351,42 @@ def _get_args():
     parser_pre.add_argument("-N", "--only-namespace-changes",
                             help="List only namespace changes",
                             action="store_true")
+    parser_pre.add_argument("--tag-for-full-find",
+                            help="Tag prefix for file names emitted during"
+                            " a full find operation; default: \"NEW\"",
+                            default="NEW")
+    parser_pre.add_argument("--field-separator", help="Field separator string",
+                            default=" ")
 
     # query <VOLUME> <OUTFILE> --since-time <SINCE_TIME>
     #       [--output-prefix <OUTPUT_PREFIX>] [--full]
-    parser_pre = subparsers.add_parser('query')
-    parser_pre.add_argument("volume", help="Volume Name")
-    parser_pre.add_argument("outfile", help="Output File",
-                            action=StoreAbsPath)
-    parser_pre.add_argument("--since-time", help="UNIX epoch time since which "
-                            "listing is required", type=int)
-    parser_pre.add_argument("--debug", help="Debug", action="store_true")
-    parser_pre.add_argument("--disable-partial", help="Disable Partial find, "
-                            "Fail when one node fails", action="store_true")
-    parser_pre.add_argument("--output-prefix", help="File prefix in output",
-                            default=".")
-    parser_pre.add_argument("-N", "--only-namespace-changes",
-                            help="List only namespace changes",
-                            action="store_true")
+    parser_query = subparsers.add_parser('query')
+    parser_query.add_argument("volume", help="Volume Name")
+    parser_query.add_argument("outfile", help="Output File",
+                              action=StoreAbsPath)
+    parser_query.add_argument("--since-time", help="UNIX epoch time since "
+                              "which listing is required", type=int)
+    parser_query.add_argument("--end-time", help="UNIX epoch time upto "
+                              "which listing is required", type=int)
+    parser_query.add_argument("--no-encode",
+                              help="Do not encode path in output file",
+                              action="store_true")
+    parser_query.add_argument("--full", help="Full find", action="store_true")
+    parser_query.add_argument("--debug", help="Debug", action="store_true")
+    parser_query.add_argument("--disable-partial", help="Disable Partial find,"
+                              " Fail when one node fails", action="store_true")
+    parser_query.add_argument("--output-prefix", help="File prefix in output",
+                              default=".")
+    parser_query.add_argument("-N", "--only-namespace-changes",
+                              help="List only namespace changes",
+                              action="store_true")
+    parser_query.add_argument("--tag-for-full-find",
+                              help="Tag prefix for file names emitted during"
+                              " a full find operation; default: \"NEW\"",
+                              default="NEW")
+    parser_query.add_argument("--field-separator",
+                              help="Field separator string",
+                              default=" ")
 
     # post <SESSION> <VOLUME>
     parser_post = subparsers.add_parser('post')
@@ -393,8 +472,8 @@ def enable_volume_options(args):
                 % args.volume)
 
 
-def write_output(args, outfilemerger):
-    with open(args.outfile, "a") as f:
+def write_output(outfile, outfilemerger, field_separator):
+    with codecs.open(outfile, "a", encoding="utf-8") as f:
         for row in outfilemerger.get():
             # Multiple paths in case of Hardlinks
             paths = row[1].split(",")
@@ -402,19 +481,22 @@ def write_output(args, outfilemerger):
             for p in paths:
                 if p == "":
                     continue
-                p_rep = p.replace("%2F%2F", "%2F").replace("//", "/")
+                p_rep = p.replace("//", "/")
                 if not row_2_rep:
-                    row_2_rep = row[2].replace("%2F%2F", "%2F").replace("//",
-                                                                        "/")
+                    row_2_rep = row[2].replace("//", "/")
                 if p_rep == row_2_rep:
                     continue
 
-                p_rep = p_rep.encode('utf8', 'replace')
-                row_2_rep = row_2_rep.encode('utf8', 'replace')
-
-                f.write("{0} {1} {2}\n".format(row[0],
-                                               p_rep,
-                                               row_2_rep))
+                if row_2_rep and row_2_rep != "":
+                    f.write(u"{0}{1}{2}{3}{4}\n".format(row[0],
+                                                        field_separator,
+                                                        p_rep,
+                                                        field_separator,
+                                                        row_2_rep))
+                else:
+                    f.write(u"{0}{1}{2}\n".format(row[0],
+                                                  field_separator,
+                                                  p_rep))
 
 
 def mode_create(session_dir, args):
@@ -464,6 +546,8 @@ def mode_create(session_dir, args):
 
 
 def mode_query(session_dir, args):
+    global gtmpfilename
+
     # Verify volume status
     cmd = ["gluster", 'volume', 'info', args.volume, "--xml"]
     _, data, _ = execute(cmd,
@@ -489,34 +573,64 @@ def mode_query(session_dir, args):
     # Enable volume options for changelog capture
     enable_volume_options(args)
 
+    # Test options
+    if not args.since_time and not args.end_time and not args.full:
+        fail("Please specify either {--since-time and optionally --end-time} "
+             "or --full", logger=logger)
+
+    if args.since_time and args.end_time and args.full:
+        fail("Please specify either {--since-time and optionally --end-time} "
+             "or --full, but not both",
+             logger=logger)
+
+    if args.end_time and not args.since_time:
+        fail("Please specify --since-time as well", logger=logger)
+
     # Start query command processing
+    start = -1
+    end = -1
     if args.since_time:
         start = args.since_time
-        logger.debug("Query is called - Session: %s, Volume: %s, "
-                     "Start time: %s"
-                     % ("default", args.volume, start))
+        if args.end_time:
+            end = args.end_time
+    else:
+        start = 0  # --full option is handled separately
 
-        run_cmd_nodes("query", args, start=start)
+    logger.debug("Query is called - Session: %s, Volume: %s, "
+                 "Start time: %s, End time: %s"
+                 % ("default", args.volume, start, end))
 
-        # Merger
+    prefix = datetime.now().strftime("%Y%m%d-%H%M%S-%f-")
+    gtmpfilename = prefix + next(tempfile._get_candidate_names())
+
+    run_cmd_nodes("query", args, start=start, end=end,
+                  tmpfilename=gtmpfilename)
+
+    # Merger
+    if args.full:
+        cmd = ["sort", "-u"] + node_outfiles + ["-o", args.outfile]
+        execute(cmd,
+                exit_msg="Failed to merge output files "
+                "collected from nodes", logger=logger)
+    else:
         # Read each Changelogs db and generate finaldb
         create_file(args.outfile, exit_on_err=True, logger=logger)
         outfilemerger = OutputMerger(args.outfile + ".db", node_outfiles)
-        write_output(args, outfilemerger)
+        write_output(args.outfile, outfilemerger, args.field_separator)
 
-        try:
-            os.remove(args.outfile + ".db")
-        except (IOError, OSError):
-            pass
+    try:
+        os.remove(args.outfile + ".db")
+    except (IOError, OSError):
+        pass
 
-        run_cmd_nodes("cleanup", args)
+    run_cmd_nodes("cleanup", args, tmpfilename=gtmpfilename)
 
-        sys.stdout.write("Generated output file %s\n" % args.outfile)
-    else:
-        fail("Please specify --since-time option")
+    sys.stdout.write("Generated output file %s\n" % args.outfile)
 
 
 def mode_pre(session_dir, args):
+    global gtmpfilename
+
     """
     Read from Session file and write to session.pre file
     """
@@ -546,7 +660,10 @@ def mode_pre(session_dir, args):
                  "Start time: %s, End time: %s"
                  % (args.session, args.volume, start, endtime_to_update))
 
-    run_cmd_nodes("pre", args, start=start)
+    prefix = datetime.now().strftime("%Y%m%d-%H%M%S-%f-")
+    gtmpfilename = prefix + next(tempfile._get_candidate_names())
+
+    run_cmd_nodes("pre", args, start=start, end=-1, tmpfilename=gtmpfilename)
 
     # Merger
     if args.full:
@@ -558,15 +675,14 @@ def mode_pre(session_dir, args):
         # Read each Changelogs db and generate finaldb
         create_file(args.outfile, exit_on_err=True, logger=logger)
         outfilemerger = OutputMerger(args.outfile + ".db", node_outfiles)
-
-        write_output(args, outfilemerger)
+        write_output(args.outfile, outfilemerger, args.field_separator)
 
     try:
         os.remove(args.outfile + ".db")
     except (IOError, OSError):
         pass
 
-    run_cmd_nodes("cleanup", args)
+    run_cmd_nodes("cleanup", args, tmpfilename=gtmpfilename)
 
     with open(status_file_pre, "w", buffering=0) as f:
         f.write(str(endtime_to_update))
@@ -668,10 +784,14 @@ def mode_list(session_dir, args):
         if args.session or args.volume:
             fail("Invalid Session", logger=logger)
         else:
-            sys.stdout.write("No sessions found\n")
+            sys.stdout.write("No sessions found.\n")
 
 
 def main():
+    global gtmpfilename
+
+    args = None
+
     try:
         args = _get_args()
         mkdirp(conf.get_opt("session_dir"), exit_on_err=True)
@@ -715,5 +835,13 @@ def main():
         # mode_<args.mode> will be the function name to be called
         globals()["mode_" + args.mode](session_dir, args)
     except KeyboardInterrupt:
+        if args is not None:
+            if args.mode == "pre" or args.mode == "query":
+                # cleanup session
+                if gtmpfilename is not None:
+                    # no more interrupts until we clean up
+                    signal.signal(signal.SIGINT, signal.SIG_IGN)
+                    run_cmd_nodes("cleanup", args, tmpfilename=gtmpfilename)
+
         # Interrupted, exit with non zero error code
         sys.exit(2)

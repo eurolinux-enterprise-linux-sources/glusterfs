@@ -1,0 +1,42 @@
+From b13aa33a408b8ca85b306be9c8dbadaff4ed7c64 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 8 Jan 2018 11:53:17 +0530
+Subject: [PATCH 122/128] tests: Use /dev/urandom instead of /dev/random for dd
+
+If there's not enough entropy in the system then reading /dev/random would take
+a significant time since it would take a long time for the /dev/random buffers
+to get full as is desired in this dd run.
+Milind found that this test file takes almost a 1000 seconds or more to pass
+instead of just a minute because of this.
+
+>BUG: 1431955
+>Change-Id: I9145b17f77f09d0ab71816ae249c69b8fe14c1a5
+>Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Upstream Patch: https://review.gluster.org/#/c/19160/
+
+BUG: 1509810
+Change-Id: I9145b17f77f09d0ab71816ae249c69b8fe14c1a5
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/127405
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/basic/ec/ec-fix-openfd.t | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tests/basic/ec/ec-fix-openfd.t b/tests/basic/ec/ec-fix-openfd.t
+index b62fbf4..c32f933 100644
+--- a/tests/basic/ec/ec-fix-openfd.t
++++ b/tests/basic/ec/ec-fix-openfd.t
+@@ -43,7 +43,7 @@ EXPECT "1" get_fd_count $V0 $H0 $B0/${V0}1 test_file
+ EXPECT "1" get_fd_count $V0 $H0 $B0/${V0}2 test_file
+ 
+ #Write to file
+-dd iflag=fullblock if=/dev/random bs=1024 count=2 >&$fd 2>/dev/null
++dd iflag=fullblock if=/dev/urandom bs=1024 count=2 >&$fd 2>/dev/null
+ 
+ #Test the fd count
+ EXPECT "1" get_fd_count $V0 $H0 $B0/${V0}0 test_file
+-- 
+1.8.3.1
+

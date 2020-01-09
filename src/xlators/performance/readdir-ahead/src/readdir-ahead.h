@@ -29,18 +29,22 @@ struct rda_fd_ctx {
 	call_frame_t *fill_frame;
 	call_stub_t *stub;
 	int op_errno;
+        dict_t *xattrs;      /* md-cache keys to be sent in readdirp() */
 };
 
 struct rda_local {
 	struct rda_fd_ctx *ctx;
 	fd_t *fd;
 	off_t offset;
+        dict_t *xattrs;      /* xattrs to be sent in readdirp() */
 };
 
 struct rda_priv {
-	uint32_t rda_req_size;
+	uint64_t rda_req_size;
 	uint64_t rda_low_wmark;
 	uint64_t rda_high_wmark;
+        uint64_t rda_cache_limit;
+        uint64_t rda_cache_size;
 };
 
 #endif /* __READDIR_AHEAD_H */

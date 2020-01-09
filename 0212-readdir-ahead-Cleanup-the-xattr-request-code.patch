@@ -1,0 +1,94 @@
+From a81170eca4848c6bd2d0fa9e8a2c9fc9803b868e Mon Sep 17 00:00:00 2001
+From: Poornima G <pgurusid@redhat.com>
+Date: Thu, 4 Jan 2018 19:39:05 +0530
+Subject: [PATCH 212/212] readdir-ahead: Cleanup the xattr request code
+
+upstream master: https://review.gluster.org/#/c/19172/
+
+> Change-Id: Ia0c697583751290a455da3cd1894e0c5685d1bd8
+> updates: #297
+> Signed-off-by: Poornima G <pgurusid@redhat.com>
+
+BUG: 1559884
+Change-Id: Ia0c697583751290a455da3cd1894e0c5685d1bd8
+Signed-off-by: Poornima G <pgurusid@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134500
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ .../performance/readdir-ahead/src/readdir-ahead.c  | 42 ++--------------------
+ 1 file changed, 2 insertions(+), 40 deletions(-)
+
+diff --git a/xlators/performance/readdir-ahead/src/readdir-ahead.c b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+index c2ceda4..0d3bdbd 100644
+--- a/xlators/performance/readdir-ahead/src/readdir-ahead.c
++++ b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+@@ -474,31 +474,6 @@ err:
+ 	return -1;
+ }
+ 
+-
+-static int
+-rda_unpack_mdc_loaded_keys_to_dict(char *payload, dict_t *dict)
+-{
+-        int      ret = -1;
+-        char    *mdc_key = NULL;
+-
+-        if (!payload || !dict) {
+-                goto out;
+-        }
+-
+-        mdc_key = strtok(payload, " ");
+-        while (mdc_key != NULL) {
+-                ret = dict_set_int8 (dict, mdc_key, 0);
+-                if (ret) {
+-                        goto out;
+-                }
+-                mdc_key = strtok(NULL, " ");
+-        }
+-
+-out:
+-        return ret;
+-}
+-
+-
+ static int32_t
+ rda_opendir_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+ 		    int32_t op_ret, int32_t op_errno, fd_t *fd, dict_t *xdata)
+@@ -528,9 +503,7 @@ static int32_t
+ rda_opendir(call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+ 		dict_t *xdata)
+ {
+-        int                  ret = -1;
+         int                  op_errno = 0;
+-        char                *payload = NULL;
+         struct rda_local    *local = NULL;
+         dict_t              *xdata_from_req = NULL;
+ 
+@@ -552,21 +525,10 @@ rda_opendir(call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+                  * Retrieve list of keys set by md-cache xlator and store it
+                  * in local to be consumed in rda_opendir_cbk
+                  */
+-                ret = dict_get_str (xdata, GF_MDC_LOADED_KEY_NAMES, &payload);
+-                if (ret)
+-                        goto wind;
+-                ret = rda_unpack_mdc_loaded_keys_to_dict((char *) payload,
+-                                                         xdata_from_req);
+-                if (ret)
+-                        goto wind;
+-
+-                dict_copy (xdata, xdata_from_req);
+-                dict_del (xdata_from_req, GF_MDC_LOADED_KEY_NAMES);
+-
+-                local->xattrs = xdata_from_req;
++                local->xattrs = dict_ref (xdata);
+                 frame->local = local;
+         }
+-wind:
++
+         STACK_WIND(frame, rda_opendir_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->opendir, loc, fd, xdata);
+         return 0;
+-- 
+1.8.3.1
+

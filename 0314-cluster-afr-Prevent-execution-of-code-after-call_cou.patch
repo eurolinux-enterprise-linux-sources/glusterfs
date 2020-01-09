@@ -1,0 +1,63 @@
+From d08f81216085cda58a64f51872b4d2497958a7ea Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Fri, 6 Jul 2018 12:28:53 +0530
+Subject: [PATCH 314/325] cluster/afr: Prevent execution of code after
+ call_count decrementing
+
+      Upstream-patch: https://review.gluster.org/20470
+
+Problem:
+When call_count is decremented by one thread, another thread can
+go ahead with the operation leading to undefined behavior for the
+thread executing statements after decrementing call count.
+
+Fix:
+Do the operations necessary before decrementing call count.
+
+ >fixes bz#1598663
+BUG: 1598105
+Change-Id: Icc90cd92ac16e5fbdfe534d9f0a61312943393fe
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143624
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/afr/src/afr-lk-common.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-lk-common.c b/xlators/cluster/afr/src/afr-lk-common.c
+index be3de01..dff6644 100644
+--- a/xlators/cluster/afr/src/afr-lk-common.c
++++ b/xlators/cluster/afr/src/afr-lk-common.c
+@@ -970,6 +970,14 @@ afr_nonblocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         local    = frame->local;
+         int_lock = &local->internal_lock;
+ 
++        if (op_ret == 0 && local->transaction.type == AFR_DATA_TRANSACTION) {
++                LOCK (&local->inode->lock);
++                {
++                        local->inode_ctx->lock_count++;
++                }
++                UNLOCK (&local->inode->lock);
++        }
++
+         LOCK (&frame->lock);
+         {
+ 		if (op_ret < 0) {
+@@ -994,13 +1002,6 @@ afr_nonblocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         }
+         UNLOCK (&frame->lock);
+ 
+-        if (op_ret == 0 && local->transaction.type == AFR_DATA_TRANSACTION) {
+-                LOCK (&local->inode->lock);
+-                {
+-                        local->inode_ctx->lock_count++;
+-                }
+-                UNLOCK (&local->inode->lock);
+-        }
+         if (call_count == 0) {
+                 gf_msg_trace (this->name, 0,
+                               "Last inode locking reply received");
+-- 
+1.8.3.1
+

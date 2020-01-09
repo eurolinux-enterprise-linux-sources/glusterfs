@@ -1,0 +1,66 @@
+From 9b0122cbe61047c9591de447bb19a6028b69861c Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Tue, 30 Jan 2018 20:59:23 +0530
+Subject: [PATCH 154/180] afr: capture the correct errno in post-op quorum
+ check
+
+Backport of https://review.gluster.org/#/c/19366/
+
+If the post-op phase of txn did not meet quorm checks, use that errno to
+unwind the FOP rather than blindly setting ENOTCONN.
+
+Change-Id: I0cb0c8771ec75a45f9a25ad4cd8601103deddf0c
+BUG: 1384983
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129221
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/cluster/afr/src/afr-transaction.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 18d2ded..19740e1 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -534,8 +534,8 @@ afr_lock_server_count (afr_private_t *priv, afr_transaction_type type)
+ /* {{{ pending */
+ 
+ 
+-gf_boolean_t
+-afr_post_op_has_quorum (afr_local_t *local, xlator_t *this)
++void
++afr_handle_post_op_quorum (afr_local_t *local, xlator_t *this)
+ {
+         afr_private_t *priv = NULL;
+         int i = 0;
+@@ -551,10 +551,13 @@ afr_post_op_has_quorum (afr_local_t *local, xlator_t *this)
+         }
+ 
+         if (afr_has_quorum (post_op_children, this)) {
+-                return _gf_true;
++                return;
+         }
+ 
+-        return _gf_false;
++        local->op_ret = -1;
++        /*local->op_errno is already captured in post-op callback.*/
++
++        return;
+ }
+ 
+ int
+@@ -569,10 +572,7 @@ afr_changelog_post_op_done (call_frame_t *frame, xlator_t *this)
+         int_lock = &local->internal_lock;
+ 
+         /* Fail the FOP if post-op did not succeed on quorum no. of bricks. */
+-        if (!afr_post_op_has_quorum (local, this)) {
+-                local->op_ret = -1;
+-                local->op_errno = ENOTCONN;
+-        }
++        afr_handle_post_op_quorum (local, this);
+ 
+ 	if (local->transaction.resume_stub) {
+ 		call_resume (local->transaction.resume_stub);
+-- 
+1.8.3.1
+

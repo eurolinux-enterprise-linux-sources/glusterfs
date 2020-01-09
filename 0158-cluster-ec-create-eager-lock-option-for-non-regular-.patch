@@ -1,0 +1,207 @@
+From 76b5366d4f346d5010bd153d20668f8860262c4e Mon Sep 17 00:00:00 2001
+From: Xavier Hernandez <jahernan@redhat.com>
+Date: Mon, 16 Oct 2017 13:57:59 +0200
+Subject: [PATCH 158/180] cluster/ec: create eager-lock option for non-regular
+ files
+
+A new option is added to allow independent configuration of eager
+locking for regular files and non-regular files.
+
+> Upstream patch: https://review.gluster.org/18530
+
+Change-Id: I8f80e46d36d8551011132b15c0fac549b7fb1c60
+BUG: 1530519
+Signed-off-by: Xavier Hernandez <jahernan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130432
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ libglusterfs/src/globals.h                      |  2 ++
+ tests/basic/ec/ec-background-heals.t            |  1 +
+ tests/basic/ec/ec-optimistic-changelog.t        |  1 +
+ tests/bugs/cli/bug-1320388.t                    |  1 +
+ xlators/cluster/ec/src/ec-common.c              | 22 +++++++++++++++-
+ xlators/cluster/ec/src/ec-types.h               |  1 +
+ xlators/cluster/ec/src/ec.c                     | 34 ++++++++++++++++---------
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |  5 ++++
+ 8 files changed, 54 insertions(+), 13 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index 692d49d..6bbe3e6 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -101,6 +101,8 @@
+ 
+ #define GD_OP_VERSION_3_12_2   31202 /* Op-version for GlusterFS 3.12.2 */
+ 
++#define GD_OP_VERSION_3_12_3   31203 /* Op-version for GlusterFS 3.12.3 */
++
+ #define GD_OP_VERSION_3_13_0   31300 /* Op-version for GlusterFS 3.13.0 */
+ 
+ #define GD_OP_VERSION_3_13_1   31301 /* Op-version for GlusterFS 3.13.1 */
+diff --git a/tests/basic/ec/ec-background-heals.t b/tests/basic/ec/ec-background-heals.t
+index b9291bc..29778a4 100644
+--- a/tests/basic/ec/ec-background-heals.t
++++ b/tests/basic/ec/ec-background-heals.t
+@@ -17,6 +17,7 @@ TEST $CLI volume set $V0 performance.read-ahead off
+ TEST $CLI volume set $V0 performance.io-cache off
+ TEST $CLI volume set $V0 disperse.background-heals 0
+ TEST $CLI volume set $V0 disperse.eager-lock off
++TEST $CLI volume set $V0 disperse.other-eager-lock off
+ TEST $CLI volume start $V0
+ 
+ TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
+diff --git a/tests/basic/ec/ec-optimistic-changelog.t b/tests/basic/ec/ec-optimistic-changelog.t
+index 1277da6..a372cd3 100644
+--- a/tests/basic/ec/ec-optimistic-changelog.t
++++ b/tests/basic/ec/ec-optimistic-changelog.t
+@@ -19,6 +19,7 @@ TEST $CLI volume set $V0 performance.io-cache off
+ TEST $CLI volume set $V0 disperse.background-heals 0
+ TEST $CLI volume set $V0 disperse.optimistic-change-log off
+ TEST $CLI volume set $V0 disperse.eager-lock off
++TEST $CLI volume set $V0 disperse.other-eager-lock off
+ TEST $CLI volume start $V0
+ 
+ TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
+diff --git a/tests/bugs/cli/bug-1320388.t b/tests/bugs/cli/bug-1320388.t
+index ca23ab8..bed1392 100755
+--- a/tests/bugs/cli/bug-1320388.t
++++ b/tests/bugs/cli/bug-1320388.t
+@@ -29,6 +29,7 @@ TEST glusterd
+ TEST pidof glusterd
+ TEST $CLI volume create $V0 disperse 6 redundancy 2 $H0:$B0/${V0}{0..5}
+ TEST $CLI volume set $V0 disperse.eager-lock off
++TEST $CLI volume set $V0 disperse.other-eager-lock off
+ TEST $CLI volume start $V0
+ TEST glusterfs --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id $V0 $M0
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "^6$" ec_child_up_count $V0 0
+diff --git a/xlators/cluster/ec/src/ec-common.c b/xlators/cluster/ec/src/ec-common.c
+index 18ed274..051fff6 100644
+--- a/xlators/cluster/ec/src/ec-common.c
++++ b/xlators/cluster/ec/src/ec-common.c
+@@ -2553,6 +2553,26 @@ void ec_flush_size_version(ec_fop_data_t * fop)
+     ec_update_info(&fop->locks[0]);
+ }
+ 
++static gf_boolean_t
++ec_use_eager_lock(ec_t *ec, ec_fop_data_t *fop)
++{
++        /* Fops with no locks at this point mean that they are sent as sub-fops
++         * of other higher level fops. In this case we simply assume that the
++         * parent fop will take correct care of the eager lock. */
++        if (fop->lock_count == 0) {
++                return _gf_true;
++        }
++
++        /* We may have more than one lock, but this only happens in the rename
++         * fop, and both locks will reference an inode of the same type (a
++         * directory in this case), so we only need to check the first lock. */
++        if (fop->locks[0].lock->loc.inode->ia_type == IA_IFREG) {
++                return ec->eager_lock;
++        }
++
++        return ec->other_eager_lock;
++}
++
+ void ec_lock_reuse(ec_fop_data_t *fop)
+ {
+     ec_cbk_data_t *cbk;
+@@ -2562,7 +2582,7 @@ void ec_lock_reuse(ec_fop_data_t *fop)
+     ec = fop->xl->private;
+     cbk = fop->answer;
+ 
+-    if (ec->eager_lock && cbk != NULL) {
++    if (ec_use_eager_lock(ec, fop) && cbk != NULL) {
+         if (cbk->xdata != NULL) {
+             if ((dict_get_int32(cbk->xdata, GLUSTERFS_INODELK_COUNT,
+                                 &count) == 0) && (count > 1)) {
+diff --git a/xlators/cluster/ec/src/ec-types.h b/xlators/cluster/ec/src/ec-types.h
+index 3129586..f6e2cd9 100644
+--- a/xlators/cluster/ec/src/ec-types.h
++++ b/xlators/cluster/ec/src/ec-types.h
+@@ -594,6 +594,7 @@ struct _ec {
+     gf_timer_t        *timer;
+     gf_boolean_t       shutdown;
+     gf_boolean_t       eager_lock;
++    gf_boolean_t       other_eager_lock;
+     gf_boolean_t       optimistic_changelog;
+     gf_boolean_t       parallel_writes;
+     uint32_t           background_heals;
+diff --git a/xlators/cluster/ec/src/ec.c b/xlators/cluster/ec/src/ec.c
+index 09c5fa8..13ce7fb 100644
+--- a/xlators/cluster/ec/src/ec.c
++++ b/xlators/cluster/ec/src/ec.c
+@@ -276,6 +276,8 @@ reconfigure (xlator_t *this, dict_t *options)
+                           bool, failed);
+         GF_OPTION_RECONF ("eager-lock", ec->eager_lock, options,
+                           bool, failed);
++        GF_OPTION_RECONF ("other-eager-lock", ec->other_eager_lock, options,
++                          bool, failed);
+         GF_OPTION_RECONF ("background-heals", background_heals, options,
+                           uint32, failed);
+         GF_OPTION_RECONF ("heal-wait-qlength", heal_wait_qlen, options,
+@@ -654,6 +656,7 @@ init (xlator_t *this)
+     GF_OPTION_INIT ("self-heal-daemon", ec->shd.enabled, bool, failed);
+     GF_OPTION_INIT ("iam-self-heal-daemon", ec->shd.iamshd, bool, failed);
+     GF_OPTION_INIT ("eager-lock", ec->eager_lock, bool, failed);
++    GF_OPTION_INIT ("other-eager-lock", ec->other_eager_lock, bool, failed);
+     GF_OPTION_INIT ("background-heals", ec->background_heals, uint32, failed);
+     GF_OPTION_INIT ("heal-wait-qlength", ec->heal_wait_qlen, uint32, failed);
+     GF_OPTION_INIT ("self-heal-window-size", ec->self_heal_window_size, uint32,
+@@ -1397,18 +1400,25 @@ struct volume_options options[] =
+     { .key = {"eager-lock"},
+       .type = GF_OPTION_TYPE_BOOL,
+       .default_value = "on",
+-      .description = "Enable/Disable eager lock for disperse volume. "
+-                     "If a fop takes a lock and completes its operation, "
+-                     "it waits for next 1 second before releasing the lock, "
+-                     "to see if the lock can be reused for next fop from "
+-                     "the same client. If ec finds any lock contention within "
+-                     "1 second it releases the lock immediately before time "
+-                     "expires. This improves the performance of file operations."
+-                     "However, as it takes lock on first brick, for few operations "
+-                     "like read, discovery of lock contention might take long time "
+-                     "and can actually degrade the performance. "
+-                     "If eager lock is disabled, lock will be released as soon as fop "
+-                     "completes. "
++      .description = "Enable/Disable eager lock for regular files on a "
++                     "disperse volume. If a fop takes a lock and completes "
++                     "its operation, it waits for next 1 second before "
++                     "releasing the lock, to see if the lock can be reused "
++                     "for next fop from the same client. If ec finds any lock "
++                     "contention within 1 second it releases the lock "
++                     "immediately before time expires. This improves the "
++                     "performance of file operations. However, as it takes "
++                     "lock on first brick, for few operations like read, "
++                     "discovery of lock contention might take long time and "
++                     "can actually degrade the performance. If eager lock is "
++                     "disabled, lock will be released as soon as fop "
++                     "completes."
++    },
++    { .key = {"other-eager-lock"},
++      .type = GF_OPTION_TYPE_BOOL,
++      .default_value = "on",
++      .description = "It's equivalent to the eager-lock option but for non "
++                     "regular files."
+     },
+     { .key = {"background-heals"},
+       .type = GF_OPTION_TYPE_INT,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 693c917..af0a982 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -1445,6 +1445,11 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version = GD_OP_VERSION_3_7_10,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
++        { .key        = "disperse.other-eager-lock",
++          .voltype    = "cluster/disperse",
++          .op_version = GD_OP_VERSION_3_12_2,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
+         { .key        = "cluster.quorum-type",
+           .voltype    = "cluster/replicate",
+           .option     = "quorum-type",
+-- 
+1.8.3.1
+

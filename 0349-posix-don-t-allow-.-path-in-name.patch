@@ -1,0 +1,65 @@
+From 11ae607a1c958f166e689bacf00acbae989c4d8e Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Thu, 9 Aug 2018 13:00:01 +0530
+Subject: [PATCH 349/351] posix: don't allow '../' path in 'name'
+
+This will prevent any arbitrary file creation through glusterfs
+by modifying the client bits.
+
+BUG: 1613686
+BUG: 1613685
+BUG: 1613684
+
+Change-Id: I6def64956d9e5541e7f70a8910a4d6ce4bde61e9
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146548
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/protocol/server/src/server-resolve.c | 12 ++++++++++++
+ xlators/storage/posix/src/posix-handle.h     |  5 +++++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/xlators/protocol/server/src/server-resolve.c b/xlators/protocol/server/src/server-resolve.c
+index 6ffb909..b3eda0e 100644
+--- a/xlators/protocol/server/src/server-resolve.c
++++ b/xlators/protocol/server/src/server-resolve.c
+@@ -311,6 +311,18 @@ resolve_entry_simple (call_frame_t *frame)
+         /* expected @parent was found from the inode cache */
+         gf_uuid_copy (state->loc_now->pargfid, resolve->pargfid);
+         state->loc_now->parent = inode_ref (parent);
++
++        if (strstr (resolve->bname, "../")) {
++                /* Resolving outside the parent's tree is not allowed */
++                gf_msg (this->name, GF_LOG_ERROR, EPERM,
++                        PS_MSG_GFID_RESOLVE_FAILED,
++                        "%s: path sent by client not allowed",
++                        resolve->bname);
++                resolve->op_ret   = -1;
++                resolve->op_errno = EPERM;
++                ret = 1;
++                goto out;
++        }
+         state->loc_now->name = resolve->bname;
+ 
+         inode = inode_grep (state->itable, parent, resolve->bname);
+diff --git a/xlators/storage/posix/src/posix-handle.h b/xlators/storage/posix/src/posix-handle.h
+index cb1f84e..a0f82ec 100644
+--- a/xlators/storage/posix/src/posix-handle.h
++++ b/xlators/storage/posix/src/posix-handle.h
+@@ -223,6 +223,11 @@
+                 break;                                                  \
+         }                                                               \
+                                                                         \
++        if (strstr (loc->name, "../")) {                                \
++                gf_msg (this->name, GF_LOG_ERROR, 0, P_MSG_ENTRY_HANDLE_CREATE, \
++                        "'../' in name not allowed: (%s)", loc->name); \
++                break;                                                  \
++        }                                                               \
+         if (LOC_HAS_ABSPATH (loc)) {                                    \
+                 MAKE_REAL_PATH (entp, this, loc->path);                 \
+                 __parp = strdupa (entp);                                \
+-- 
+1.8.3.1
+

@@ -17,10 +17,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 #include <lvm2app.h>
 #include <openssl/md5.h>
 #include <time.h>
@@ -124,7 +120,7 @@ bd_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret,
         int           ret    = -1;
         bd_attr_t    *bdatt  = NULL;
         uint64_t      size   = 0;
-        char         *type   = BD_TYPE_NONE;
+        char         *type   = NULL;
 
         /* only regular files are part of BD object */
         if (op_ret < 0 || buf->ia_type != IA_IFREG)
@@ -489,7 +485,7 @@ bd_readv (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
                 goto out;
         }
         _fd = bd_fd->fd;
-        op_ret = pread (_fd, iobuf->ptr, size, offset);
+        op_ret = sys_pread (_fd, iobuf->ptr, size, offset);
         if (op_ret == -1) {
                 op_errno = errno;
                 gf_log (this->name, GF_LOG_ERROR,
@@ -618,7 +614,7 @@ bd_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         "bd_fd is NULL from fd=%p", fd);
                 goto out;
         }
-        close (bd_fd->fd);
+        sys_close (bd_fd->fd);
         GF_FREE (bd_fd);
 
 out:
@@ -694,7 +690,7 @@ out:
         GF_FREE (devpath);
         if (ret) {
                 if (_fd >= 0)
-                        close (_fd);
+                        sys_close (_fd);
                 GF_FREE (bd_fd);
         }
 
@@ -756,7 +752,6 @@ bd_fsync (call_frame_t *frame, xlator_t *this,
         int32_t     op_ret   = -1;
         int32_t     op_errno = 0;
         bd_fd_t    *bd_fd    = NULL;
-        bd_priv_t  *priv     = NULL;
         bd_attr_t  *bdatt    = NULL;
         bd_local_t *local    = NULL;
         int         valid    = GF_SET_ATTR_ATIME | GF_SET_ATTR_MTIME;
@@ -766,8 +761,6 @@ bd_fsync (call_frame_t *frame, xlator_t *this,
         VALIDATE_OR_GOTO (this, out);
         VALIDATE_OR_GOTO (fd, out);
         VALIDATE_OR_GOTO (this->private, out);
-
-        priv = this->private;
 
         ret = bd_inode_ctx_get (fd->inode, this, &bdatt);
         ret = bd_fd_ctx_get (this, fd, &bd_fd);
@@ -824,19 +817,15 @@ bd_flush (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *xdata)
 {
         int          ret    = -1;
         bd_fd_t     *bd_fd  = NULL;
-        bd_priv_t   *priv   = NULL;
         bd_attr_t   *bdatt  = NULL;
         int          valid    = GF_SET_ATTR_ATIME | GF_SET_ATTR_MTIME;
         bd_local_t  *local    = NULL;
-        int          op_errno = EINVAL;
         loc_t        loc      = {0, };
 
         VALIDATE_OR_GOTO (frame, out);
         VALIDATE_OR_GOTO (this, out);
         VALIDATE_OR_GOTO (fd, out);
         VALIDATE_OR_GOTO (this->private, out);
-
-        priv = this->private;
 
         ret = bd_inode_ctx_get (fd->inode, this, &bdatt);
         if (!bdatt)
@@ -850,7 +839,10 @@ bd_flush (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *xdata)
         }
 
         local = bd_local_init (frame, this);
-        BD_VALIDATE_MEM_ALLOC (local, op_errno, out);
+        if (!local) {
+                gf_log (this->name, GF_LOG_ERROR, "out of memory");
+                goto out;
+        }
 
         local->fd = fd_ref (fd);
         gf_uuid_copy (loc.gfid, bdatt->iatt.ia_gfid);
@@ -896,7 +888,7 @@ bd_release (xlator_t *this, fd_t *fd)
         }
         bd_fd = (bd_fd_t *)(long)tmp_bfd;
 
-        close (bd_fd->fd);
+        sys_close (bd_fd->fd);
         GF_FREE (bd_fd);
 out:
         return 0;
@@ -1187,8 +1179,8 @@ bd_offload_dest_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         bd_local_t *local  = frame->local;
         char       *bd     = NULL;
-        int         ret    = -1;
         char       *linkto = NULL;
+        int         ret    = -1;
 
         if (op_ret < 0 && op_errno != ENODATA) {
                 op_errno = EINVAL;
@@ -1230,7 +1222,7 @@ out:
         else
                 BD_STACK_UNWIND (setxattr, frame, -1, op_errno, NULL);
 
-        return 0;
+        return (ret == 0) ? 0 : ret;
 }
 
 int
@@ -1786,12 +1778,11 @@ __bd_pwritev (int fd, struct iovec *vector, int count, off_t offset,
 {
         int        index           = 0;
         int        retval          = 0;
-        off_t      internal_offset = 0;
 
         if (!vector)
                 return -EFAULT;
 
-        retval = pwritev (fd, vector, count, offset);
+        retval = sys_pwritev (fd, vector, count, offset);
         if (retval == -1) {
                 int64_t off = offset;
                 gf_log (THIS->name, GF_LOG_WARNING,
@@ -1814,8 +1805,8 @@ __bd_pwritev (int fd, struct iovec *vector, int count, off_t offset,
                         vector[index].iov_len = bd_size - internal_offset;
                         no_space = 1;
                 }
-                retval = pwritev (fd, vector[index].iov_base,
-                                vector[index].iov_len, internal_offset);
+                retval = sys_pwritev (fd, vector[index].iov_base,
+                                      vector[index].iov_len, internal_offset);
                 if (retval == -1) {
                         gf_log (THIS->name, GF_LOG_WARNING,
                                 "base %p, length %ld, offset %ld, message %s",
@@ -1940,7 +1931,6 @@ bd_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc, struct iatt *stbuf,
         bd_local_t *local     = NULL;
         bd_attr_t  *bdatt     = NULL;
         int        *ck_valid  = NULL;
-        int         op_errno  = 0;
 
         if (bd_inode_ctx_get (loc->inode, this, &bdatt)) {
                 STACK_WIND(frame, default_setattr_cbk, FIRST_CHILD(this),
@@ -1950,10 +1940,16 @@ bd_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc, struct iatt *stbuf,
         }
 
         local = bd_local_init (frame, this);
-        BD_VALIDATE_MEM_ALLOC (local, op_errno, out);
+        if (!local) {
+                gf_log (this->name, GF_LOG_ERROR, "out of memory");
+                goto out;
+        }
 
         ck_valid = GF_CALLOC (1, sizeof (valid), gf_bd_int32_t);
-        BD_VALIDATE_MEM_ALLOC (ck_valid, op_errno, out);
+        if (!ck_valid) {
+                gf_log (this->name, GF_LOG_ERROR, "out of memory");
+                goto out;
+        }
 
         local->inode = inode_ref (loc->inode);
         *ck_valid = valid;
@@ -2178,7 +2174,7 @@ bd_rchecksum (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
 
         LOCK (&fd->lock);
         {
-                ret = pread (_fd, buf, len, offset);
+                ret = sys_pread (_fd, buf, len, offset);
                 if (ret < 0) {
                         gf_log (this->name, GF_LOG_WARNING,
                                 "pread of %d bytes returned %d (%s)",
@@ -2301,7 +2297,6 @@ out:
 int
 init (xlator_t *this)
 {
-        int         ret         = 0;
         char       *vg_data     = NULL;
         char       *device      = NULL;
         bd_priv_t  *_private    = NULL;
@@ -2334,7 +2329,6 @@ init (xlator_t *this)
                 return -1;
         }
 
-        ret = 0;
         _private = GF_CALLOC (1, sizeof (*_private), gf_bd_private);
         if (!_private)
                 goto error;
@@ -2361,7 +2355,6 @@ init (xlator_t *this)
                 if (bd_aio_on (this)) {
                         gf_log (this->name, GF_LOG_ERROR,
                                 "BD AIO init failed");
-                        ret = -1;
                         goto error;
                 }
         }

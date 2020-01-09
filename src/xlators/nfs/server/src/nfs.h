@@ -11,11 +11,6 @@
 #ifndef __NFS_H__
 #define __NFS_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpcsvc.h"
 #include "dict.h"
 #include "xlator.h"
@@ -104,6 +99,7 @@ struct nfs_state {
         gf_boolean_t            register_portmap;
         char                    *rpc_statd;
         char                    *rpc_statd_pid_file;
+        gf_boolean_t            rdirplus;
 };
 
 struct nfs_inode_ctx {
@@ -130,14 +126,15 @@ typedef struct nfs_user_info {
         gid_t   gids[NFS_NGROUPS];
         int     ngrps;
         gf_lkowner_t lk_owner;
+        char    identifier[UNIX_PATH_MAX];  /* ip of user */
 } nfs_user_t;
 
 extern int
 nfs_user_root_create (nfs_user_t *newnfu);
 
 extern int
-nfs_user_create (nfs_user_t *newnfu, uid_t uid, gid_t gid, gid_t *auxgids,
-                 int auxcount);
+nfs_user_create (nfs_user_t *newnfu, uid_t uid, gid_t gid,
+                 rpc_transport_t *trans, gid_t *auxgids, int auxcount);
 
 extern void
 nfs_request_user_init (nfs_user_t *nfu, rpcsvc_request_t *req);

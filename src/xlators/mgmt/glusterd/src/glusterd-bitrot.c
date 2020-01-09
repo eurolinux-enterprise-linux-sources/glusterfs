@@ -8,11 +8,6 @@
    cases as published by the Free Software Foundation.
  */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "common-utils.h"
 #include "cli1-xdr.h"
 #include "xdr-generic.h"
@@ -138,6 +133,34 @@ __glusterd_handle_bitrot (rpcsvc_request_t *req)
                 if (!strncmp (scrub, "status", strlen ("status"))) {
                         ret = glusterd_op_begin_synctask (req,
                                                           GD_OP_SCRUB_STATUS,
+                                                          dict);
+                        goto out;
+                }
+        }
+
+        if (type == GF_BITROT_CMD_SCRUB_ONDEMAND) {
+                /* Backward compatibility handling for scrub status command*/
+                if (conf->op_version < GD_OP_VERSION_3_9_0) {
+                        snprintf (msg, sizeof (msg), "Cannot execute command. "
+                                  "The cluster is operating at version %d. "
+                                  "Bitrot scrub ondemand command unavailable in "
+                                  "this version", conf->op_version);
+                        ret = -1;
+                        goto out;
+                }
+
+                ret = dict_get_str (dict, "scrub-value", &scrub);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_DICT_GET_FAILED,
+                                "Failed to get scrub value.");
+                        ret = -1;
+                        goto out;
+                }
+
+                if (!strncmp (scrub, "ondemand", strlen ("ondemand"))) {
+                        ret = glusterd_op_begin_synctask (req,
+                                                          GD_OP_SCRUB_ONDEMAND,
                                                           dict);
                         goto out;
                 }
@@ -577,6 +600,7 @@ glusterd_op_bitrot (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                 if (ret)
                         goto out;
         case GF_BITROT_CMD_SCRUB_STATUS:
+        case GF_BITROT_CMD_SCRUB_ONDEMAND:
                 break;
 
         default:

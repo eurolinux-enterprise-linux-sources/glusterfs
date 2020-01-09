@@ -11,12 +11,13 @@
 #include "xlator.h"
 #include "defaults.h"
 
+#include "ec.h"
+#include "ec-messages.h"
 #include "ec-helpers.h"
 #include "ec-common.h"
 #include "ec-combine.h"
 #include "ec-method.h"
 #include "ec-fops.h"
-#include "ec-messages.h"
 
 /* FOP: opendir */
 
@@ -138,6 +139,13 @@ int32_t ec_manager_opendir(ec_fop_data_t * fop, int32_t state)
             UNLOCK(&fop->fd->lock);
 
             /* Fall through */
+
+        case EC_STATE_LOCK:
+            ec_lock_prepare_inode(fop, &fop->loc[0], EC_QUERY_INFO);
+            ec_lock(fop);
+
+            return EC_STATE_DISPATCH;
+
         case EC_STATE_DISPATCH:
             ec_dispatch_all(fop);
 
@@ -173,9 +181,10 @@ int32_t ec_manager_opendir(ec_fop_data_t * fop, int32_t state)
                                   cbk->op_errno, cbk->fd, cbk->xdata);
             }
 
-            return EC_STATE_END;
+            return EC_STATE_LOCK_REUSE;
 
         case -EC_STATE_INIT:
+        case -EC_STATE_LOCK:
         case -EC_STATE_DISPATCH:
         case -EC_STATE_PREPARE_ANSWER:
         case -EC_STATE_REPORT:
@@ -186,6 +195,18 @@ int32_t ec_manager_opendir(ec_fop_data_t * fop, int32_t state)
                 fop->cbks.opendir(fop->req_frame, fop, fop->xl, -1, fop->error,
                                   NULL, NULL);
             }
+
+            return EC_STATE_LOCK_REUSE;
+
+        case -EC_STATE_LOCK_REUSE:
+        case EC_STATE_LOCK_REUSE:
+            ec_lock_reuse(fop);
+
+            return EC_STATE_UNLOCK;
+
+        case -EC_STATE_UNLOCK:
+        case EC_STATE_UNLOCK:
+            ec_unlock(fop);
 
             return EC_STATE_END;
 

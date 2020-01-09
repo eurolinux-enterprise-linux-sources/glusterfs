@@ -1,0 +1,164 @@
+From ca93504c637b922cd633f0f2422b18b828982332 Mon Sep 17 00:00:00 2001
+From: Anoop C S <anoopcs@redhat.com>
+Date: Thu, 19 Oct 2017 13:40:35 +0530
+Subject: [PATCH 097/128] extras/hooks: Fix getopt usage
+
+`getopt` does not have an optional argument as '-name'. It should
+be either '-n' or '--name'(see man getopt(1)). This wrong usage
+resulted in setting the script name as 'ame' instead of $PROGNAME
+in most of the hook-scripts.
+
+Additionally the following line from DESCRIPTION given for `getopt`
+shell command expects short options for almost every kind of usage
+mentioned in SYNOPSIS:
+
+. . .
+If  no  '-o'  or '--options' option is found in the first part, the
+first parameter of the second part is used as the short options string.
+. . .
+
+Refer http://man7.org/linux/man-pages/man1/getopt.1.html for more
+clarity on its usage.
+
+> Change-Id: I95baf5fa8c99025e66b2d83656dd838d4f6048ce
+> BUG: 1503983
+> Upstream: https://review.gluster.org/#/c/18548/
+
+Change-Id: I95baf5fa8c99025e66b2d83656dd838d4f6048ce
+BUG: 1444820
+Signed-off-by: Anoop C S <anoopcs@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124641
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh | 2 +-
+ extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh | 2 +-
+ extras/hook-scripts/create/post/S10selinux-label-brick.sh            | 2 +-
+ extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh            | 2 +-
+ extras/hook-scripts/set/post/S30samba-set.sh                         | 2 +-
+ extras/hook-scripts/start/post/S29CTDBsetup.sh                       | 2 +-
+ extras/hook-scripts/start/post/S30samba-start.sh                     | 2 +-
+ extras/hook-scripts/stop/pre/S29CTDB-teardown.sh                     | 2 +-
+ extras/hook-scripts/stop/pre/S30samba-stop.sh                        | 2 +-
+ 9 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh b/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
+index ce81816..49ab0a6 100755
+--- a/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
++++ b/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
+@@ -71,7 +71,7 @@ get_and_set_xattr ()
+ ##------------------------------------------
+ ## Parse the arguments
+ ##------------------------------------------
+-ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+ eval set -- "$ARGS"
+ 
+ while true;
+diff --git a/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh b/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
+index 38af73f..17ae4b4 100755
+--- a/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
++++ b/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
+@@ -37,7 +37,7 @@ activate ()
+ ##------------------------------------------
+ ## Parse the arguments
+ ##------------------------------------------
+-ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+ eval set -- "$ARGS"
+ 
+ while true;
+diff --git a/extras/hook-scripts/create/post/S10selinux-label-brick.sh b/extras/hook-scripts/create/post/S10selinux-label-brick.sh
+index 94c624d..6be4072 100755
+--- a/extras/hook-scripts/create/post/S10selinux-label-brick.sh
++++ b/extras/hook-scripts/create/post/S10selinux-label-brick.sh
+@@ -14,7 +14,7 @@ OPTSPEC="volname:"
+ VOL=
+ 
+ parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++        ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+diff --git a/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh b/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh
+index 7851e70..6eba66f 100755
+--- a/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh
++++ b/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh
+@@ -15,7 +15,7 @@ OPTSPEC="volname:"
+ VOL=
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++        ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+diff --git a/extras/hook-scripts/set/post/S30samba-set.sh b/extras/hook-scripts/set/post/S30samba-set.sh
+index c21cfb5..b93415b 100755
+--- a/extras/hook-scripts/set/post/S30samba-set.sh
++++ b/extras/hook-scripts/set/post/S30samba-set.sh
+@@ -28,7 +28,7 @@ USERSMB_SET=""
+ USERCIFS_SET=""
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  --name $PROGNAME -o "o:" -- "$@")
++        ARGS=$(getopt -o 'o:' -l $OPTSPEC -n $PROGNAME -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+diff --git a/extras/hook-scripts/start/post/S29CTDBsetup.sh b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+index 54a4c0c..69a0d89 100755
+--- a/extras/hook-scripts/start/post/S29CTDBsetup.sh
++++ b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+@@ -25,7 +25,7 @@ FIRST=
+ META="all"
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++        ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+diff --git a/extras/hook-scripts/start/post/S30samba-start.sh b/extras/hook-scripts/start/post/S30samba-start.sh
+index a448dbd..92ddaf4 100755
+--- a/extras/hook-scripts/start/post/S30samba-start.sh
++++ b/extras/hook-scripts/start/post/S30samba-start.sh
+@@ -32,7 +32,7 @@ VOLUME_OP=
+ FIRST=
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++        ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+diff --git a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+index 12f49da..0975a00 100755
+--- a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
++++ b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+@@ -13,7 +13,7 @@ LAST=
+ META="all"
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++        ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+diff --git a/extras/hook-scripts/stop/pre/S30samba-stop.sh b/extras/hook-scripts/stop/pre/S30samba-stop.sh
+index a5c8dd5..5e87845 100755
+--- a/extras/hook-scripts/stop/pre/S30samba-stop.sh
++++ b/extras/hook-scripts/stop/pre/S30samba-stop.sh
+@@ -23,7 +23,7 @@ PIDDIR=
+ LAST=
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
++        ARGS=$(getopt -o '' -l $OPTSPEC -n $PROGNAME -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+-- 
+1.8.3.1
+

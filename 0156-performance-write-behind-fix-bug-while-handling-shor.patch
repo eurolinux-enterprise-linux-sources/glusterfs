@@ -1,0 +1,72 @@
+From 430ff66f69074063dd824b0cde8808ee3d2c7ca8 Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Fri, 22 Dec 2017 12:02:09 +0530
+Subject: [PATCH 156/180] performance/write-behind: fix bug while handling
+ short writes
+
+The variabled "fulfilled" in wb_fulfill_short_write is not reset to 0
+while handling every member of the list.
+
+This has some interesting consequences:
+
+* If we break from the loop while processing last member of the list
+  head->winds, req is reset to head as the list is a circular
+  one. However, head is already fulfilled and can potentially be
+  freed. So, we end up adding a freed request to wb_inode->todo
+  list. This is the RCA for the crash tracked by the bug associated
+  with this patch (Note that we saw "holder" which is freed in todo
+  list).
+
+* If we break from the loop while processing any of the last but one
+  member of the list head->winds, req is set to next member in the
+  list, skipping the current request, even though it is not entirely
+  synced. This can lead to data corruption.
+
+The fix is very simple and we've to change the code to make sure
+"fulfilled" reflects whether the current request is fulfilled or not
+and it doesn't carry history of previous requests in the list.
+
+Change-Id: Ia3d6988175a51c9e08efdb521a7b7938b01f93c8
+BUG: 1516638
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+upstream patch: https://review.gluster.org/19064
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126512
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/performance/write-behind/src/write-behind.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/performance/write-behind/src/write-behind.c b/xlators/performance/write-behind/src/write-behind.c
+index d1a95c9..7104eb9 100644
+--- a/xlators/performance/write-behind/src/write-behind.c
++++ b/xlators/performance/write-behind/src/write-behind.c
+@@ -964,6 +964,7 @@ __wb_fulfill_short_write (wb_request_t *req, int size, gf_boolean_t *fulfilled)
+         } else {
+                 accounted_size = size;
+                 __wb_modify_write_request (req, size);
++                *fulfilled = 0;
+         }
+ 
+ out:
+@@ -1005,7 +1006,7 @@ wb_fulfill_short_write (wb_request_t *head, int size)
+                 size -= accounted_size;
+ 
+                 if (size == 0) {
+-                        if (fulfilled)
++                        if (fulfilled && (next != head))
+                                 req = next;
+ 
+                         goto done;
+@@ -1017,7 +1018,7 @@ wb_fulfill_short_write (wb_request_t *head, int size)
+                         size -= accounted_size;
+ 
+                         if (size == 0) {
+-                                if (fulfilled)
++                                if (fulfilled && (next != head))
+                                         req = next;
+                                 break;
+                         }
+-- 
+1.8.3.1
+

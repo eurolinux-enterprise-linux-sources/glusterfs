@@ -1,0 +1,41 @@
+From b777482ac36960537be213c54490aec9e1077a1f Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Fri, 13 Oct 2017 20:00:47 +0530
+Subject: [PATCH 109/128] mount/fuse: never fail open(dir) with ENOENT
+
+open(dir) being an operation on inode should never fail with
+ENOENT. If gfid is not present, the appropriate error is ESTALE. This
+will enable kernel to retry open after a revalidate lookup.
+
+Change-Id: I8d07d2ebb5a0da6c3ea478317442cb42f1797a4b
+BUG: 1492591
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+upstream patch: https://review.gluster.org/#/c/18521/
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126510
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mount/fuse/src/fuse-bridge.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 74b59b8..a6dfd66 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -1069,6 +1069,13 @@ fuse_fd_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 fd_bind (fd);
+         } else {
+         err:
++                /* OPEN(DIR) being an operation on inode should never fail with
++                 * ENOENT. If gfid is not present, the appropriate error is
++                 * ESTALE.
++                 */
++                if (op_errno == ENOENT)
++                        op_errno = ESTALE;
++
+                 gf_log ("glusterfs-fuse", GF_LOG_WARNING,
+                         "%"PRIu64": %s() %s => -1 (%s)", frame->root->unique,
+                         gf_fop_list[frame->root->op], state->loc.path,
+-- 
+1.8.3.1
+

@@ -1,0 +1,329 @@
+From b6aa09f8718c5ab91ae4e99abb6567fb1601cdbb Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Mon, 2 Jul 2018 20:48:22 +0530
+Subject: [PATCH 307/325] glusterd: Introduce daemon-log-level cluster wide
+ option
+
+This option, applicable to the node level daemons can be very helpful in
+controlling the log level of these services. Please note any daemon
+which is started prior to setting the specific value of this option (if
+not INFO) will need to go through a restart to have this change into
+effect.
+
+> upstream patch : https://review.gluster.org/#/c/20442/
+
+Please note there's a difference in deownstream delta. The op-version
+against this option is already tageed as 3_11_2 in RHGS 3.3.1 and hence
+the same is retained. Marking this DOWNSTREAM_ONLY label because of
+
+Label: DOWNSTREAM ONLY
+
+>Change-Id: I7f6d2620bab2b094c737f5cc816bc093e9c9c4c9
+>fixes: bz#1597473
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I7f6d2620bab2b094c737f5cc816bc093e9c9c4c9
+BUG: 1597511
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143137
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sanju Rakonde <srakonde@redhat.com>
+---
+ libglusterfs/src/globals.h                      |  3 +
+ tests/bugs/glusterd/daemon-log-level-option.t   | 93 +++++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-handler.c    |  1 +
+ xlators/mgmt/glusterd/src/glusterd-messages.h   | 10 ++-
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c      | 51 ++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c   |  8 +++
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |  6 ++
+ xlators/mgmt/glusterd/src/glusterd.h            |  1 +
+ 8 files changed, 172 insertions(+), 1 deletion(-)
+ create mode 100644 tests/bugs/glusterd/daemon-log-level-option.t
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index 8fd3318..39d9716 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -109,6 +109,9 @@
+ 
+ #define GD_OP_VERSION_3_13_2   31302 /* Op-version for GlusterFS 3.13.2 */
+ 
++/* Downstream only change */
++#define GD_OP_VERSION_3_11_2   31102 /* Op-version for RHGS 3.3.1-async */
++
+ #include "xlator.h"
+ 
+ /* THIS */
+diff --git a/tests/bugs/glusterd/daemon-log-level-option.t b/tests/bugs/glusterd/daemon-log-level-option.t
+new file mode 100644
+index 0000000..66e55e3
+--- /dev/null
++++ b/tests/bugs/glusterd/daemon-log-level-option.t
+@@ -0,0 +1,93 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++
++function Info_messages_count() {
++        local shd_log=$1
++        cat $shd_log | grep " I " | wc -l
++}
++
++function Warning_messages_count() {
++        local shd_log=$1
++        cat $shd_log | grep " W " | wc -l
++}
++
++function Debug_messages_count() {
++        local shd_log=$1
++        cat $shd_log | grep " D " | wc -l
++}
++
++function Trace_messages_count() {
++        local shd_log=$1
++        cat $shd_log | grep " T " | wc -l
++}
++
++cleanup;
++
++# Basic checks
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume info
++
++# set cluster.daemon-log-level option to DEBUG
++TEST $CLI volume set all cluster.daemon-log-level DEBUG
++
++#Create a 3X2 distributed-replicate volume
++TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{1..6};
++TEST $CLI volume start $V0
++
++# log should not have any trace messages
++EXPECT 0 Trace_messages_count "/var/log/glusterfs/glustershd.log"
++
++# stop the volume and remove glustershd log
++TEST $CLI volume stop $V0
++rm -f /var/log/glusterfs/glustershd.log
++
++# set cluster.daemon-log-level option to INFO and start the volume
++TEST $CLI volume set all cluster.daemon-log-level INFO
++TEST $CLI volume start $V0
++
++# log should not have any debug messages
++EXPECT 0 Debug_messages_count "/var/log/glusterfs/glustershd.log"
++
++# log should not have any trace messages
++EXPECT 0 Trace_messages_count "/var/log/glusterfs/glustershd.log"
++
++# stop the volume and remove glustershd log
++TEST $CLI volume stop $V0
++rm -f /var/log/glusterfs/glustershd.log
++
++# set cluster.daemon-log-level option to WARNING and start the volume
++TEST $CLI volume set all cluster.daemon-log-level WARNING
++TEST $CLI volume start $V0
++
++# log should not have any info messages
++EXPECT 0 Info_messages_count "/var/log/glusterfs/glustershd.log"
++
++# log should not have any debug messages
++EXPECT 0 Debug_messages_count "/var/log/glusterfs/glustershd.log"
++
++# log should not have any trace messages
++EXPECT 0 Trace_messages_count "/var/log/glusterfs/glustershd.log"
++
++# stop the volume and remove glustershd log
++TEST $CLI volume stop $V0
++rm -f /var/log/glusterfs/glustershd.log
++
++# set cluster.daemon-log-level option to ERROR and start the volume
++TEST $CLI volume set all cluster.daemon-log-level ERROR
++TEST $CLI volume start $V0
++
++# log should not have any info messages
++EXPECT 0 Info_messages_count "/var/log/glusterfs/glustershd.log"
++
++# log should not have any warning messages
++EXPECT 0 Warning_messages_count "/var/log/glusterfs/glustershd.log"
++
++# log should not have any debug messages
++EXPECT 0 Debug_messages_count "/var/log/glusterfs/glustershd.log"
++
++# log should not have any trace messages
++EXPECT 0 Trace_messages_count "/var/log/glusterfs/glustershd.log"
++
++cleanup
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index c072b05..c0c3e25 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -4677,6 +4677,7 @@ gd_is_global_option (char *opt_key)
+                 strcmp (opt_key, GLUSTERD_GLOBAL_OP_VERSION_KEY) == 0 ||
+                 strcmp (opt_key, GLUSTERD_BRICK_MULTIPLEX_KEY) == 0 ||
+                 strcmp (opt_key, GLUSTERD_LOCALTIME_LOGGING_KEY) == 0 ||
++                strcmp (opt_key, GLUSTERD_DAEMON_LOG_LEVEL_KEY) == 0 ||
+                 strcmp (opt_key, GLUSTERD_MAX_OP_VERSION_KEY) == 0);
+ 
+ out:
+diff --git a/xlators/mgmt/glusterd/src/glusterd-messages.h b/xlators/mgmt/glusterd/src/glusterd-messages.h
+index 4ccf299..64f7378 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-messages.h
++++ b/xlators/mgmt/glusterd/src/glusterd-messages.h
+@@ -41,7 +41,7 @@
+ 
+ #define GLUSTERD_COMP_BASE      GLFS_MSGID_GLUSTERD
+ 
+-#define GLFS_NUM_MESSAGES       614
++#define GLFS_NUM_MESSAGES       615
+ 
+ #define GLFS_MSGID_END          (GLUSTERD_COMP_BASE + GLFS_NUM_MESSAGES + 1)
+ /* Messaged with message IDs */
+@@ -4984,6 +4984,14 @@
+  */
+ #define GD_MSG_MANAGER_FUNCTION_FAILED  (GLUSTERD_COMP_BASE + 614)
+ 
++/*!
++ * @messageid
++ * @diagnosis
++ * @recommendedaction
++ *
++ */
++#define GD_MSG_DAEMON_LOG_LEVEL_VOL_OPT_VALIDATE_FAIL (GLUSTERD_COMP_BASE + 615)
++
+ /*------------*/
+ 
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 7e959a0..d022532 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -86,6 +86,7 @@ glusterd_all_vol_opts valid_all_vol_opts[] = {
+          * dynamic value depending on the memory specifications per node */
+         { GLUSTERD_BRICKMUX_LIMIT_KEY,          "0"},
+         /*{ GLUSTERD_LOCALTIME_LOGGING_KEY,       "disable"},*/
++        { GLUSTERD_DAEMON_LOG_LEVEL_KEY,        "INFO"},
+         { NULL },
+ };
+ 
+@@ -928,6 +929,47 @@ out:
+ }
+ 
+ static int
++glusterd_validate_daemon_log_level (char *key, char *value, char *errstr)
++{
++        int32_t            ret                      = -1;
++        xlator_t          *this                     = NULL;
++        glusterd_conf_t   *conf                     = NULL;
++
++        this = THIS;
++        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
++
++        conf = this->private;
++        GF_VALIDATE_OR_GOTO (this->name, conf, out);
++
++        GF_VALIDATE_OR_GOTO (this->name, key, out);
++        GF_VALIDATE_OR_GOTO (this->name, value, out);
++        GF_VALIDATE_OR_GOTO (this->name, errstr, out);
++
++        ret = 0;
++
++        if (strcmp (key, GLUSTERD_DAEMON_LOG_LEVEL_KEY)) {
++                goto out;
++        }
++
++        if ((strcmp (value, "INFO")) &&
++            (strcmp (value, "WARNING")) &&
++            (strcmp (value, "DEBUG")) &&
++            (strcmp (value, "TRACE")) &&
++            (strcmp (value, "ERROR"))) {
++                snprintf (errstr, PATH_MAX,
++                          "Invalid option(%s). Valid options "
++                          "are 'INFO' or 'WARNING' or 'ERROR' or 'DEBUG' or "
++                          " 'TRACE'", value);
++                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
++                        GD_MSG_INVALID_ENTRY, "%s", errstr);
++                ret = -1;
++        }
++
++out:
++        return ret;
++}
++
++static int
+ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
+ {
+         int                   ret                         = -1;
+@@ -1326,6 +1368,15 @@ glusterd_op_stage_set_volume (dict_t *dict, char **op_errstr)
+                         goto out;
+                 }
+ 
++                ret = glusterd_validate_daemon_log_level (key, value, errstr);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DAEMON_LOG_LEVEL_VOL_OPT_VALIDATE_FAIL,
++                                "Failed to validate daemon-log-level volume "
++                                "options");
++                        goto out;
++                }
++
+                 if (volinfo) {
+                         ret = glusterd_volinfo_get (volinfo,
+                                                 VKEY_FEATURES_TRASH, &val_dup);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c b/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c
+index ba948b4..ebb288c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c
++++ b/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.c
+@@ -151,6 +151,8 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
+         xlator_t            *this                       = NULL;
+         char                 valgrind_logfile[PATH_MAX] = {0};
+         char                *localtime_logging          = NULL;
++        char                *log_level                  = NULL;
++        char                 daemon_log_level[30]       = {0};
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -196,6 +198,12 @@ glusterd_svc_start (glusterd_svc_t *svc, int flags, dict_t *cmdline)
+                 if (strcmp (localtime_logging, "enable") == 0)
+                         runner_add_arg (&runner, "--localtime-logging");
+         }
++        if (dict_get_str (priv->opts, GLUSTERD_DAEMON_LOG_LEVEL_KEY,
++                          &log_level) == 0) {
++                snprintf (daemon_log_level, 30, "--log-level=%s", log_level);
++                runner_add_arg (&runner, daemon_log_level);
++        }
++
+         if (cmdline)
+                 dict_foreach (cmdline, svc_add_args, (void *) &runner);
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index b9da961..8cc756a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -3573,6 +3573,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version  = GD_OP_VERSION_3_12_0,
+           .validate_fn = validate_boolean
+         },*/
++        { .key         = GLUSTERD_DAEMON_LOG_LEVEL_KEY,
++          .voltype     = "mgmt/glusterd",
++          .type        = GLOBAL_NO_DOC,
++          .value       = "INFO",
++          .op_version  = GD_OP_VERSION_3_11_2
++        },
+         { .key        = "disperse.parallel-writes",
+           .voltype    = "cluster/disperse",
+           .type       = NO_DOC,
+diff --git a/xlators/mgmt/glusterd/src/glusterd.h b/xlators/mgmt/glusterd/src/glusterd.h
+index b0656e6..4ec609f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.h
++++ b/xlators/mgmt/glusterd/src/glusterd.h
+@@ -56,6 +56,7 @@
+ #define GLUSTERD_BRICK_MULTIPLEX_KEY    "cluster.brick-multiplex"
+ #define GLUSTERD_BRICKMUX_LIMIT_KEY     "cluster.max-bricks-per-process"
+ #define GLUSTERD_LOCALTIME_LOGGING_KEY  "cluster.localtime-logging"
++#define GLUSTERD_DAEMON_LOG_LEVEL_KEY   "cluster.daemon-log-level"
+ 
+ #define GANESHA_HA_CONF  CONFDIR "/ganesha-ha.conf"
+ #define GANESHA_EXPORT_DIRECTORY        CONFDIR"/exports"
+-- 
+1.8.3.1
+

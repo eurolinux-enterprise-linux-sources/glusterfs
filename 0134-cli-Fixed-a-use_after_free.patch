@@ -1,0 +1,46 @@
+From 8e353f6f4e919541f8830de835da13c805db66a0 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Fri, 5 Jan 2018 08:55:09 +0530
+Subject: [PATCH 134/139] cli: Fixed a use_after_free
+
+gf_event in cli_cmd_volume_create_cbk was accessing
+memory that had already been freed.
+
+>upstream mainline patch : https://review.gluster.org/#/c/19136/
+
+> Change-Id: I447c939fa9b31e18819a62c3b356c14cca390787
+> BUG: 1530910
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+(cherry picked from commit fa903173540df5b82c295a8f7b24848098e49a41)
+
+Change-Id: I1361b3bfecbd5771f5710b08466b913d807cb60c
+BUG: 1531041
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126957
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ cli/src/cli-cmd-volume.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/cli/src/cli-cmd-volume.c b/cli/src/cli-cmd-volume.c
+index 7110145..2639afa 100644
+--- a/cli/src/cli-cmd-volume.c
++++ b/cli/src/cli-cmd-volume.c
+@@ -253,11 +253,12 @@ out:
+                         cli_out ("Volume create failed");
+         }
+ 
+-        CLI_STACK_DESTROY (frame);
+         if (ret == 0) {
+                 gf_event (EVENT_VOLUME_CREATE, "name=%s;bricks=%s",
+                           (char *)words[2], bricks);
+         }
++
++        CLI_STACK_DESTROY (frame);
+         return ret;
+ }
+ 
+-- 
+1.8.3.1
+

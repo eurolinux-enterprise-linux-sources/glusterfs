@@ -186,7 +186,7 @@ stripe_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 callcnt = --local->call_count;
 
                 if (op_ret == -1) {
-                        if ((op_errno != ENOENT) || (op_errno != ESTALE))
+                        if ((op_errno != ENOENT) && (op_errno != ESTALE))
                                 gf_log (this->name, GF_LOG_DEBUG,
                                         "%s returned error %s",
                                         prev->this->name,
@@ -3674,9 +3674,7 @@ stripe_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         STRIPE_VALIDATE_FCTX (fctx, err);
 
         /* File has to be stripped across the child nodes */
-        for (idx = 0; idx< count; idx ++) {
-                total_size += vector[idx].iov_len;
-        }
+        total_size = iov_length (vector, count);
         remaining_size = total_size;
 
         local = mem_get0 (this->local_pool);
@@ -4272,6 +4270,17 @@ err:
                 STRIPE_STACK_DESTROY(fframe);
 
         STRIPE_STACK_UNWIND (zerofill, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int32_t
+stripe_seek (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+             gf_seek_what_t what, dict_t *xdata)
+{
+        /* TBD */
+        gf_log (this->name, GF_LOG_INFO, "seek called on %s.",
+                uuid_utoa (fd->inode->gfid));
+        STRIPE_STACK_UNWIND (seek, frame, -1, ENOTSUP, 0, NULL);
         return 0;
 }
 
@@ -4939,9 +4948,9 @@ out:
                 /* all entries are directories */
                 frame->local = NULL;
                 STRIPE_STACK_UNWIND (readdir, frame,
-                                     local ? local->op_ret : -1,
-                                     local ? local->op_errno : EINVAL,
-                                     local ? &local->entries : NULL,
+                                     (local ? local->op_ret : -1),
+                                     (local ? local->op_errno : EINVAL),
+                                     (local ? &local->entries : NULL),
                                      NULL);
                 gf_dirent_free (&local->entries);
                 stripe_local_wipe (local);
@@ -5729,6 +5738,7 @@ struct xlator_fops fops = {
 	.fallocate	= stripe_fallocate,
 	.discard	= stripe_discard,
         .zerofill       = stripe_zerofill,
+        .seek           = stripe_seek,
 };
 
 struct xlator_cbks cbks = {

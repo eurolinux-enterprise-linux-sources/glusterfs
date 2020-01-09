@@ -19,11 +19,6 @@
 #include <sys/time.h>
 #include <fnmatch.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif /* _CONFIG_H */
-
 #include "glusterfs.h"
 #include "logging.h"
 #include "xlator.h"
@@ -46,7 +41,7 @@
 #include "gidcache.h"
 
 #if defined(GF_LINUX_HOST_OS) || defined(__FreeBSD__) || defined(__NetBSD__)
-#define FUSE_OP_HIGH (FUSE_READDIRPLUS + 1)
+#define FUSE_OP_HIGH (FUSE_LSEEK + 1)
 #endif
 #ifdef GF_DARWIN_HOST_OS
 #define FUSE_OP_HIGH (FUSE_DESTROY + 1)
@@ -139,6 +134,12 @@ struct fuse_private {
 
         /* Enable or disable capability support */
         gf_boolean_t         capability;
+
+        /* Enable or disable event history */
+        gf_boolean_t         event_history;
+
+        /* whether to run the unmount daemon */
+        gf_boolean_t auto_unmount;
 };
 typedef struct fuse_private fuse_private_t;
 
@@ -262,7 +263,6 @@ typedef struct fuse_graph_switch_args fuse_graph_switch_args_t;
                                                 GF_LOG_WARNING,         \
                                                 "%s Failed adding umask"\
                                                 " to request", op);     \
-                                        dict_destroy (state->xdata);    \
                                         send_fuse_err (this, finh, ENOMEM); \
                                         free_fuse_state (state);        \
                                         return;                         \
@@ -274,7 +274,6 @@ typedef struct fuse_graph_switch_args fuse_graph_switch_args_t;
                                                 GF_LOG_WARNING,         \
                                                 "%s Failed adding mode " \
                                                 "to request", op);         \
-                                        dict_destroy (state->xdata);    \
                                         send_fuse_err (this, finh, ENOMEM); \
                                         free_fuse_state (state);        \
                                         return;                         \
@@ -284,7 +283,8 @@ typedef struct fuse_graph_switch_args fuse_graph_switch_args_t;
 
 #define fuse_log_eh_fop(this, state, frame, op_ret, op_errno)               \
         do {                                                            \
-                if (this->history) {                                    \
+                fuse_private_t *priv = this->private;                   \
+                if (this->history && priv->event_history) {             \
                         if (state->fd)                                  \
                                 gf_log_eh ("op_ret: %d, op_errno: %d, " \
                                            "%"PRIu64", %s () => %p, gfid: %s", \
@@ -304,10 +304,11 @@ typedef struct fuse_graph_switch_args fuse_graph_switch_args_t;
                 }                                                       \
         } while(0)
 
-#define fuse_log_eh(this, args...)              \
-        do {                                    \
-                if (this->history)              \
-                        gf_log_eh(args);        \
+#define fuse_log_eh(this, args...)                            \
+        do {                                                  \
+                fuse_private_t *priv = this->private;         \
+                if (this->history && priv->event_history)     \
+                        gf_log_eh(args);                      \
         } while (0)
 
 static inline xlator_t *
@@ -388,6 +389,8 @@ typedef struct {
         uuid_t         gfid;
         uint32_t       io_flags;
         int32_t        fd_no;
+
+        gf_seek_what_t whence;
 } fuse_state_t;
 
 typedef struct {

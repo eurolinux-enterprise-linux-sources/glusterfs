@@ -1,0 +1,134 @@
+From df02eac6436c86e75aed23f8ba61a061d8db9f35 Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Tue, 17 Oct 2017 11:28:43 -0400
+Subject: [PATCH 087/128] glusterd: Validate changelog on geo-rep volume
+
+If geo-rep is configured on volume, don't allow
+to disable changelog.
+
+Backport of:
+
+> Upstream Patch: https://review.gluster.org/18540
+> Change-Id: I7d1ba8b2939c8fe6ee6c59fb923d9aa1bdab553c
+> BUG: 1503227
+> Signed-off-by: Kotresh HR <khiremat@redhat.com>
+
+Change-Id: I7d1ba8b2939c8fe6ee6c59fb923d9aa1bdab553c
+BUG: 1498391
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124533
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-messages.h |  9 ++++-
+ xlators/mgmt/glusterd/src/glusterd-volgen.c   | 53 +++++++++++++++++++++++++++
+ 2 files changed, 61 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-messages.h b/xlators/mgmt/glusterd/src/glusterd-messages.h
+index fb2079f..225d59b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-messages.h
++++ b/xlators/mgmt/glusterd/src/glusterd-messages.h
+@@ -41,7 +41,7 @@
+ 
+ #define GLUSTERD_COMP_BASE      GLFS_MSGID_GLUSTERD
+ 
+-#define GLFS_NUM_MESSAGES       613
++#define GLFS_NUM_MESSAGES       614
+ 
+ #define GLFS_MSGID_END          (GLUSTERD_COMP_BASE + GLFS_NUM_MESSAGES + 1)
+ /* Messaged with message IDs */
+@@ -4961,6 +4961,12 @@
+  */
+ #define GD_MSG_PORTS_EXHAUSTED (GLUSTERD_COMP_BASE + 612)
+ 
++/*!
++ * @messageid
++ * @diagnosis
++ * @recommendedaction
++ *
++ */
+ #define GD_MSG_GANESHA_NOT_RUNNING                  (GLUSTERD_COMP_BASE + 613)
+ /*!
+  * @messageid
+@@ -4968,6 +4974,7 @@
+  * @recommendedaction
+  *
+  */
++#define GD_MSG_CHANGELOG_GET_FAIL (GLUSTERD_COMP_BASE + 614)
+ 
+ /*------------*/
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index 97049ac..8ff76d6 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -1209,6 +1209,56 @@ loglevel_option_handler (volgen_graph_t *graph,
+ }
+ 
+ static int
++server_check_changelog_off (volgen_graph_t *graph, struct volopt_map_entry *vme,
++                            glusterd_volinfo_t *volinfo)
++{
++        gf_boolean_t enabled = _gf_false;
++        int ret = 0;
++
++        GF_ASSERT (volinfo);
++        GF_ASSERT (vme);
++
++        if (strcmp (vme->option, "changelog") != 0)
++                return 0;
++
++        ret = gf_string2boolean (vme->value, &enabled);
++        if (ret || enabled)
++                goto out;
++
++        ret = glusterd_volinfo_get_boolean (volinfo, VKEY_CHANGELOG);
++        if (ret < 0) {
++                gf_msg ("glusterd", GF_LOG_WARNING, 0,
++                        GD_MSG_CHANGELOG_GET_FAIL,
++                        "failed to get the changelog status");
++                ret = -1;
++                goto out;
++        }
++
++        if (ret) {
++                enabled = _gf_false;
++                glusterd_check_geo_rep_configured (volinfo, &enabled);
++
++                if (enabled) {
++                        gf_msg ("glusterd", GF_LOG_WARNING, 0,
++                                GD_MSG_XLATOR_SET_OPT_FAIL,
++                                GEOREP" sessions active"
++                                "for the volume %s, cannot disable changelog ",
++                                volinfo->volname);
++                        set_graph_errstr (graph,
++                                          VKEY_CHANGELOG" cannot be disabled "
++                                          "while "GEOREP" sessions exist");
++                        ret = -1;
++                        goto out;
++                }
++        }
++
++        ret = 0;
++ out:
++        gf_msg_debug ("glusterd", 0, "Returning %d", ret);
++        return ret;
++}
++
++static int
+ server_check_marker_off (volgen_graph_t *graph, struct volopt_map_entry *vme,
+                          glusterd_volinfo_t *volinfo)
+ {
+@@ -1424,6 +1474,9 @@ server_spec_option_handler (volgen_graph_t *graph,
+                 ret = server_check_marker_off (graph, vme, volinfo);
+ 
+         if (!ret)
++                ret = server_check_changelog_off (graph, vme, volinfo);
++
++        if (!ret)
+                 ret = loglevel_option_handler (graph, vme, "brick");
+ 
+         if (!ret)
+-- 
+1.8.3.1
+

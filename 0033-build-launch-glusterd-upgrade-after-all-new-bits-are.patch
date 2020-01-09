@@ -1,0 +1,114 @@
+From 1ce0b65090c888b0e2b28cab03731674f4988aeb Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 10 Oct 2017 09:58:24 +0530
+Subject: [PATCH 33/74] build: launch glusterd upgrade after all new bits are
+ installed
+
+Problem:
+glusterd upgrade mode needs new bits from glusterfs-rdma which
+optional and causes the dependency graph to break since it is
+not tied into glusterfs-server requirements
+
+Solution:
+Run glusterd upgrade mode after all new bits are installed
+i.e. in %posttrans server section
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I356e02d0bf0eaaef43c20ce07b388262f63093a4
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/120094
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Raghavendra Talur <rtalur@redhat.com>
+---
+ glusterfs.spec.in | 56 ++++++++++++++++++++++++++++++++++---------------------
+ 1 file changed, 35 insertions(+), 21 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 600fa6e..f4386de 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -963,27 +963,6 @@ fi
+     %firewalld_reload
+ %endif
+ 
+-pidof -c -o %PPID -x glusterd &> /dev/null
+-if [ $? -eq 0 ]; then
+-    kill -9 `pgrep -f gsyncd.py` &> /dev/null
+-
+-    killall --wait glusterd &> /dev/null
+-    glusterd --xlator-option *.upgrade=on -N
+-
+-    #Cleaning leftover glusterd socket file which is created by glusterd in
+-    #rpm_script_t context.
+-    rm -f %{_rundir}/glusterd.socket
+-
+-    # glusterd _was_ running, we killed it, it exited after *.upgrade=on,
+-    # so start it again
+-    %_init_start glusterd
+-else
+-    glusterd --xlator-option *.upgrade=on -N
+-
+-    #Cleaning leftover glusterd socket file which is created by glusterd in
+-    #rpm_script_t context.
+-    rm -f %{_rundir}/glusterd.socket
+-fi
+ %endif
+ 
+ ##-----------------------------------------------------------------------------
+@@ -2166,6 +2145,35 @@ os.remove(tmpname)
+ if not (ok == 0) then
+    error("Detected running glusterfs processes", ok)
+ end
++
++%posttrans server
++pidof -c -o %PPID -x glusterd &> /dev/null
++if [ $? -eq 0 ]; then
++    kill -9 `pgrep -f gsyncd.py` &> /dev/null
++
++    killall --wait -SIGTERM glusterd &> /dev/null
++
++    if [ "$?" != "0" ]; then
++        echo "killall failed while killing glusterd"
++    fi
++
++    glusterd --xlator-option *.upgrade=on -N
++
++    #Cleaning leftover glusterd socket file which is created by glusterd in
++    #rpm_script_t context.
++    rm -rf /var/run/glusterd.socket
++
++    # glusterd _was_ running, we killed it, it exited after *.upgrade=on,
++    # so start it again
++    %_init_start glusterd
++else
++    glusterd --xlator-option *.upgrade=on -N
++
++    #Cleaning leftover glusterd socket file which is created by glusterd in
++    #rpm_script_t context.
++    rm -rf /var/run/glusterd.socket
++fi
++
+ %endif
+ 
+ # Events
+@@ -2190,9 +2198,15 @@ end
+ %endif
+ 
+ %changelog
++* Tue Oct 10 2017 Milind Changire <mchangir@redhat.com>
++- DOWNSTREAM ONLY patch - launch glusterd in upgrade mode after all new bits have been installed
++
+ * Tue Aug 22 2017 Kaleb S. KEITHLEY <kkeithle@redhat.com>
+ - libibverbs-devel, librdmacm-devel -> rdma-core-devel #1483996
+ 
++* Fri Aug 04 2017 Kaleb S. KEITHLEY <kkeithle@rehat.com>
++- /var/lib/glusterd/options made config(noreplace) to avoid losing shared state info
++
+ * Thu Jul 20 2017 Aravinda VK <avishwan@redhat.com>
+ - Added new tool/binary to set the gfid2path xattr on files
+ 
+-- 
+1.8.3.1
+

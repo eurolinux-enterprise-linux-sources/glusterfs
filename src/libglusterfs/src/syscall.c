@@ -8,18 +8,16 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
-#include "compat.h"
 #include "syscall.h"
+#include "compat.h"
+#include "mem-pool.h"
 
 #include <sys/types.h>
 #include <utime.h>
 #include <sys/time.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <stdarg.h>
 
 int
 sys_lstat (const char *path, struct stat *buf)
@@ -59,24 +57,43 @@ sys_fstatat(int dirfd, const char *pathname, struct stat *buf, int flags)
 
 
 int
-sys_openat(int dirfd, const char *pathname, int flags, ...)
+sys_openat(int dirfd, const char *pathname, int flags, int mode)
 {
-        mode_t mode = 0;
-        if (flags & O_CREAT) {
-                va_list ap;
-                va_start(ap, flags);
-                mode = va_arg(ap, int);
-                va_end(ap);
-        }
+        int fd;
 
 #ifdef GF_DARWIN_HOST_OS
         if (fchdir(dirfd) < 0)
                 return -1;
-        return open (pathname, flags, mode);
-#else
-        return openat (dirfd, pathname, flags, mode);
-#endif
+        fd = open (pathname, flags, mode);
+        /* TODO: Shouldn't we restore the old current directory */
+#else /* GF_DARWIN_HOST_OS */
+        fd = openat (dirfd, pathname, flags, mode);
+#ifdef __FreeBSD__
+        /* On FreeBSD S_ISVTX flag is ignored for an open() with O_CREAT set.
+         * We need to force the flag using fchmod(). */
+        if ((fd >= 0) &&
+            ((flags & O_CREAT) != 0) && ((mode & S_ISVTX) != 0)) {
+                sys_fchmod(fd, mode);
+                /* TODO: It's unlikely that fchmod could fail here. However,
+                         if it fails we cannot always restore the old state
+                         (if the file existed, we cannot recover it). We would
+                         need many more system calls to correctly handle all
+                         possible cases and it doesn't worth it. For now we
+                         simply ignore the error. */
+        }
+#endif /* __FreeBSD__ */
+#endif /* !GF_DARWIN_HOST_OS */
+
+        return fd;
 }
+
+
+int
+sys_open(const char *pathname, int flags, int mode)
+{
+        return sys_openat(AT_FDCWD, pathname, flags, mode);
+}
+
 
 DIR *
 sys_opendir (const char *name)
@@ -96,9 +113,26 @@ int sys_mkdirat(int dirfd, const char *pathname, mode_t mode)
 }
 
 struct dirent *
-sys_readdir (DIR *dir)
+sys_readdir (DIR *dir, struct dirent *de)
 {
+#if !defined(__GLIBC__)
+        /*
+         * World+Dog says glibc's readdir(3) is MT-SAFE as long as
+         * two threads are not accessing the same DIR; there's a
+         * potential buffer overflow in glibc's readdir_r(3); and
+         * glibc's readdir_r(3) is deprecated after version 2.22
+         * with presumed eventual removal.
+         * Given all that, World+Dog says everyone should just use
+         * readdir(3). But it's unknown, unclear whether the same
+         * is also true for *BSD, MacOS, and, etc.
+        */
+        struct dirent *entry = NULL;
+
+        (void) readdir_r (dir, de, &entry);
+        return entry;
+#else
         return readdir (dir);
+#endif
 }
 
 
@@ -238,10 +272,20 @@ sys_utimes (const char *filename, const struct timeval times[2])
 }
 
 
+#if defined(HAVE_UTIMENSAT)
+int
+sys_utimensat (int dirfd, const char *filename, const struct timespec times[2],
+               int flags)
+{
+        return utimensat (dirfd, filename, times, flags);
+}
+#endif
+
+
 int
 sys_creat (const char *pathname, mode_t mode)
 {
-        return creat (pathname, mode);
+        return sys_open(pathname, O_CREAT | O_TRUNC | O_WRONLY, mode);
 }
 
 
@@ -273,6 +317,34 @@ sys_write (int fd, const void *buf, size_t count)
 }
 
 
+ssize_t
+sys_preadv (int fd, const struct iovec *iov, int iovcnt, off_t offset)
+{
+        return preadv (fd, iov, iovcnt, offset);
+}
+
+
+ssize_t
+sys_pwritev (int fd, const struct iovec *iov, int iovcnt, off_t offset)
+{
+        return pwritev (fd, iov, iovcnt, offset);
+}
+
+
+ssize_t
+sys_pread (int fd, void *buf, size_t count, off_t offset)
+{
+        return pread (fd, buf, count, offset);
+}
+
+
+ssize_t
+sys_pwrite (int fd, const void *buf, size_t count, off_t offset)
+{
+        return pwrite (fd, buf, count, offset);
+}
+
+
 off_t
 sys_lseek (int fd, off_t offset, int whence)
 {
@@ -283,7 +355,40 @@ sys_lseek (int fd, off_t offset, int whence)
 int
 sys_statvfs (const char *path, struct statvfs *buf)
 {
-        return statvfs (path, buf);
+        int ret;
+
+        ret = statvfs (path, buf);
+#ifdef __FreeBSD__
+        /* FreeBSD doesn't return the expected vaule in buf->f_bsize. It
+         * contains the optimal I/O size instead of the file system block
+         * size. Gluster expects that this field contains the block size.
+         */
+        if (ret == 0) {
+                buf->f_bsize = buf->f_frsize;
+        }
+#endif /* __FreeBSD__ */
+
+        return ret;
+}
+
+
+int
+sys_fstatvfs (int fd, struct statvfs *buf)
+{
+        int ret;
+
+        ret = fstatvfs (fd, buf);
+#ifdef __FreeBSD__
+        /* FreeBSD doesn't return the expected vaule in buf->f_bsize. It
+         * contains the optimal I/O size instead of the file system block
+         * size. Gluster expects this field to contain the block size.
+         */
+        if (ret == 0) {
+                buf->f_bsize = buf->f_frsize;
+        }
+#endif /* __FreeBSD__ */
+
+        return ret;
 }
 
 
@@ -324,7 +429,7 @@ gf_add_prefix(const char *ns, const char *key, char **newkey)
         /* if we dont have any namespace, append USER NS */
         if (strncmp(key, XATTR_USER_PREFIX,     XATTR_USER_PREFIX_LEN) &&
             strncmp(key, XATTR_TRUSTED_PREFIX,  XATTR_TRUSTED_PREFIX_LEN) &&
-            strncmp(key, XATTR_SECURITY_PREFIX, XATTR_TRUSTED_PREFIX_LEN) &&
+            strncmp(key, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN) &&
             strncmp(key, XATTR_SYSTEM_PREFIX,   XATTR_SYSTEM_PREFIX_LEN)) {
                 int ns_length =  strlen(ns);
                 *newkey = GF_MALLOC(ns_length + strlen(key) + 10,
@@ -564,7 +669,7 @@ sys_fallocate(int fd, int mode, off_t offset, off_t len)
         return posix_fallocate(fd, offset, len);
 #endif
 
-#if defined(F_ALLOCATECONFIG) && defined(GF_DARWIN_HOST_OS)
+#if defined(F_ALLOCATECONTIG) && defined(GF_DARWIN_HOST_OS)
         /* C conversion from C++ implementation for OSX by Mozilla Foundation */
         if (mode) {
                 /* keep size not supported */

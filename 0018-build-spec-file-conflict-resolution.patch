@@ -1,0 +1,61 @@
+From 75d0e5c542c4d1a2df1a49a6f526ccb099f9f53f Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 22 Mar 2016 23:33:13 +0530
+Subject: [PATCH 18/74] build: spec file conflict resolution
+
+Missed conflict resolution for removing references to
+gluster.conf.example as mentioned in patch titled:
+packaging: gratuitous dependencies on rsyslog-mm{count,jsonparse}
+by Kaleb
+
+References to hook scripts S31ganesha-start.sh and
+S31ganesha-reset.sh got lost in the downstream only
+patch conflict resolution.
+
+Commented blanket reference to %{_sharedsstatedir}/glusterd/*
+in section %files server to avoid rpmbuild warning related to
+multiple references to hook scripts and other files under
+/var/lib/glusterd.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I9d409f1595ab985ed9f79d9d4f4298877609ba17
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/70535
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ glusterfs.spec.in | 17 -----------------
+ 1 file changed, 17 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 85f7f21..fe566e5 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -840,23 +840,6 @@ install -D -p -m 0644 extras/glusterfs-georep-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs-georep
+ %endif
+ 
+-%if ( 0%{!?_without_syslog:1} )
+-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
+-install -D -p -m 0644 extras/gluster-rsyslog-7.2.conf \
+-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
+-%endif
+-
+-%if ( 0%{?rhel} && 0%{?rhel} == 6 )
+-install -D -p -m 0644 extras/gluster-rsyslog-5.8.conf \
+-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
+-%endif
+-
+-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
+-install -D -p -m 0644 extras/logger.conf.example \
+-    %{buildroot}%{_sysconfdir}/glusterfs/logger.conf.example
+-%endif
+-%endif
+-
+ touch %{buildroot}%{_sharedstatedir}/glusterd/glusterd.info
+ touch %{buildroot}%{_sharedstatedir}/glusterd/options
+ subdirs=(add-brick create copy-file delete gsync-create remove-brick reset set start stop)
+-- 
+1.8.3.1
+

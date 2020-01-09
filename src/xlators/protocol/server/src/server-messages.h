@@ -9,12 +9,7 @@
 */
 
 #ifndef _PS_MESSAGES_H__
-#define _PS_MESSAGES_H_
-
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
+#define _PS_MESSAGES_H__
 
 #include "glfs-message-id.h"
 
@@ -45,7 +40,7 @@
  */
 
 #define GLFS_PS_BASE                GLFS_MSGID_COMP_PS
-#define GLFS_NUM_MESSAGES           88
+#define GLFS_NUM_MESSAGES           92
 #define GLFS_MSGID_END              (GLFS_PS_BASE + GLFS_NUM_MESSAGES + 1)
 /* Messages with message IDs */
 #define glfs_msg_start_x GLFS_PS_BASE, "Invalid: Start of messages"
@@ -835,8 +830,43 @@
  */
 
 #define PS_MSG_SERVER_IPC_INFO                  (GLFS_PS_BASE + 88)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define PS_MSG_SEEK_INFO                        (GLFS_PS_BASE + 89)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define PS_MSG_COMPOUND_INFO                    (GLFS_PS_BASE + 90)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define PS_MSG_CLIENT_OPVERSION_GET_FAILED      (GLFS_PS_BASE + 91)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+#define PS_MSG_CHILD_STATUS_FAILED               (GLFS_PS_BASE + 92)
 /*------------*/
 #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
 
-#endif /* !_PS_MESSAGES_H_ */
+#endif /* !_PS_MESSAGES_H__ */
 

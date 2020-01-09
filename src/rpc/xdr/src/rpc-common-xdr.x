@@ -1,5 +1,22 @@
+/*
+ * Copyright (c) 2012 Red Hat, Inc. <http://www.redhat.com>
+ * This file is part of GlusterFS.
+ *
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 3 or any later version (LGPLv3 or
+ * later), or the GNU General Public License, version 2 (GPLv2), in all
+ * cases as published by the Free Software Foundation.
+ */
+
+#ifdef RPC_XDR
+%#include "rpc-pragmas.h"
+#endif
+%#include "compat.h"
+
 /* This file has definition of few XDR structures which are
  * not captured in any section specific file */
+
+%#include "xdr-common.h"
 
 struct auth_glusterfs_parms_v2 {
         int pid;
@@ -22,6 +39,9 @@ struct gf_dump_req {
 	u_quad_t gfs_id;
 };
 
+struct gf_statedump {
+	unsigned int pid;
+};
 
 struct gf_prog_detail {
 	string progname<>;

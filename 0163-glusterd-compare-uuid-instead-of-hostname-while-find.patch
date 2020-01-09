@@ -1,0 +1,37 @@
+From 5138cf57c7a61eed4bb33c4fa2e21f6fb7bd56fd Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 20 Feb 2018 18:37:56 +0530
+Subject: [PATCH 163/180] glusterd: compare uuid instead of hostname while
+ finding compatible brick
+
+If the above is not done, bricks created with different IP/hostname will
+not be compatible with brick multiplexing.
+
+>upstream mainline patch : https://review.gluster.org/#/c/19601/
+
+Change-Id: I508eb59b0632df4b48466cca411c7ec6cc6bd577
+BUG: 1547012
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131110
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 5deacde..9ccd718 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -5656,7 +5656,7 @@ find_compat_brick_in_vol (glusterd_conf_t *conf,
+                 if (other_brick == brickinfo) {
+                         continue;
+                 }
+-                if (strcmp (brickinfo->hostname, other_brick->hostname) != 0) {
++                if (gf_uuid_compare (brickinfo->uuid, other_brick->uuid)) {
+                         continue;
+                 }
+                 if (other_brick->status != GF_BRICK_STARTED &&
+-- 
+1.8.3.1
+

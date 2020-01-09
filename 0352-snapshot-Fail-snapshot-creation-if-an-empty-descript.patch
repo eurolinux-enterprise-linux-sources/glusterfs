@@ -1,0 +1,70 @@
+From d463acc86f218abeba9a95b49702a5be491f3110 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Sat, 18 Aug 2018 01:25:34 +0530
+Subject: [PATCH 352/359] snapshot:Fail snapshot creation if an empty
+ description provided
+
+Snapshot description should have a valid string. Creating a
+snapshot with null value will cause reading from info file
+to fail with a null exception
+
+>Change-Id: I9f84154b8e3e7ffefa5438807b3bb9b4e0d964ca
+>updates: bz#1618004
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/glusterfs/+/20770/
+
+Change-Id: I9f84154b8e3e7ffefa5438807b3bb9b4e0d964ca
+BUG: 1615578
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147517
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/basic/uss.t                             |  1 +
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c | 10 ++++++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/tests/basic/uss.t b/tests/basic/uss.t
+index 6cfc030..40e556e 100644
+--- a/tests/basic/uss.t
++++ b/tests/basic/uss.t
+@@ -52,6 +52,7 @@ TEST ln $M0/f1 $M0/dir/f3
+ TEST $CLI snapshot config activate-on-create enable
+ TEST $CLI volume set $V0 features.uss enable;
+ 
++TEST ! $CLI snapshot create snap1 $V0 no-timestamp description "";
+ TEST $CLI snapshot create snap1 $V0 no-timestamp;
+ 
+ for i in {11..20} ; do echo "file" > $M0/file$i ; done
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index 09e10bf..fdd5012 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -2518,6 +2518,7 @@ glusterd_snapshot_create_prevalidate (dict_t *dict, char **op_errstr,
+         int64_t                effective_max_limit = 0;
+         int                    flags             = 0;
+         uint64_t               opt_hard_max      = GLUSTERD_SNAPS_MAX_HARD_LIMIT;
++        char                  *description       = NULL;
+ 
+         this = THIS;
+         GF_ASSERT (op_errstr);
+@@ -2544,6 +2545,15 @@ glusterd_snapshot_create_prevalidate (dict_t *dict, char **op_errstr,
+                 goto out;
+         }
+ 
++        ret = dict_get_str (dict, "description", &description);
++        if (description && !(*description)) {
++                /* description should have a non-null value */
++                ret = -1;
++                snprintf (err_str, sizeof (err_str), "Snapshot cannot be "
++                          "created with empty description");
++                goto out;
++        }
++
+         ret = dict_get_int32 (dict, "flags", &flags);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+-- 
+1.8.3.1
+

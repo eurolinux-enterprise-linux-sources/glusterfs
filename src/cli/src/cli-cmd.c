@@ -13,11 +13,6 @@
 #include <stdint.h>
 #include <pthread.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "cli.h"
 #include "cli-cmd.h"
 #include "cli-mem-types.h"
@@ -53,7 +48,7 @@ cli_cmd_needs_connection (struct cli_cmd_word *word)
         if (!strcasecmp ("exit", word->word))
                 return 0;
 
-        return CLI_DEFAULT_CONN_TIMEOUT;
+        return cli_default_conn_timeout;
 }
 
 int
@@ -374,11 +369,10 @@ cli_cmd_submit (struct rpc_clnt* rpc, void *req, call_frame_t *frame,
         unsigned        timeout = 0;
 
         if ((GLUSTER_CLI_PROFILE_VOLUME == procnum) ||
-            (GLUSTER_CLI_HEAL_VOLUME == procnum) ||
-            (GLUSTER_CLI_GANESHA == procnum))
-                timeout = CLI_TEN_MINUTES_TIMEOUT;
+            (GLUSTER_CLI_HEAL_VOLUME == procnum))
+                timeout = cli_ten_minutes_timeout;
         else
-                timeout = CLI_DEFAULT_CMD_TIMEOUT;
+                timeout = cli_default_conn_timeout;
 
         cli_cmd_lock ();
         cmd_sent = 0;

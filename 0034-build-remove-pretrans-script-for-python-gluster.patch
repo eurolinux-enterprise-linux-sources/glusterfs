@@ -1,0 +1,76 @@
+From 58e52a8862aff553a883ee8b554f38baa2bda9a6 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 7 Nov 2017 18:32:59 +0530
+Subject: [PATCH 34/74] build: remove pretrans script for python-gluster
+
+Remove pretrans scriptlet for python-gluster.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Iee006354c596aedbd70438a3bdd583de28837190
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/122556
+Reviewed-by: Prashanth Pai <ppai@redhat.com>
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ glusterfs.spec.in | 42 ------------------------------------------
+ 1 file changed, 42 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index f4386de..8c16477 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1976,48 +1976,6 @@ end
+ 
+ 
+ 
+-%pretrans -n python-gluster -p <lua>
+-if not posix.access("/bin/bash", "x") then
+-    -- initial installation, no shell, no running glusterfsd
+-    return 0
+-end
+-
+--- TODO: move this completely to a lua script
+--- For now, we write a temporary bash script and execute that.
+-
+-script = [[#!/bin/sh
+-pidof -c -o %PPID -x glusterfsd &>/dev/null
+-
+-if [ $? -eq 0 ]; then
+-   pushd . > /dev/null 2>&1
+-   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+-       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+-       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+-       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+-          exit 1;
+-       fi
+-   done
+-
+-   popd > /dev/null 2>&1
+-   exit 1;
+-fi
+-]]
+-
+--- Since we run pretrans scripts only for RPMs built for a server build,
+--- we can now use os.tmpname() since it is available on RHEL6 and later
+--- platforms which are server platforms.
+-tmpname = os.tmpname()
+-tmpfile = io.open(tmpname, "w")
+-tmpfile:write(script)
+-tmpfile:close()
+-ok, how, val = os.execute("/bin/bash " .. tmpname)
+-os.remove(tmpname)
+-if not (ok == 0) then
+-   error("Detected running glusterfs processes", ok)
+-end
+-
+-
+-
+ %if ( 0%{!?_without_rdma:1} )
+ %pretrans rdma -p <lua>
+ if not posix.access("/bin/bash", "x") then
+-- 
+1.8.3.1
+

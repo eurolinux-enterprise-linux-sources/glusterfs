@@ -15,22 +15,304 @@
 #include "glfs-handles.h"
 #include "glfs-internal.h"
 #include "protocol-common.h"
+#include "syscall.h"
 #include "syncop.h"
 #include "syncop-utils.h"
 #include <string.h>
 #include <time.h>
 #include "glusterfs.h"
+#include <libgen.h>
 
-#define DEFAULT_HEAL_LOG_FILE_DIRECTORY DATADIR "/log/glusterfs"
-#define USAGE_STR "Usage: %s <VOLNAME> [bigger-file <FILE> | "\
-                  "source-brick <HOSTNAME:BRICKNAME> [<FILE>] | "\
-                  "split-brain-info]\n"
+#if (HAVE_LIB_XML)
+#include <libxml/encoding.h>
+#include <libxml/xmlwriter.h>
 
-typedef void    (*print_status) (dict_t *, char *, uuid_t, uint64_t *,
+xmlTextWriterPtr glfsh_writer;
+xmlDocPtr        glfsh_doc = NULL;
+#endif
+
+#define XML_RET_CHECK_AND_GOTO(ret, label)      do {            \
+                if (ret < 0) {                                  \
+                        ret = -1;                               \
+                        goto label;                             \
+                }                                               \
+                else                                            \
+                        ret = 0;                                \
+        } while (0)                                             \
+
+typedef int    (*print_status) (dict_t *, char *, uuid_t, uint64_t *,
                  gf_boolean_t flag);
 
 int glfsh_heal_splitbrain_file (glfs_t *fs, xlator_t *top_subvol,
                                 loc_t *rootloc, char *file, dict_t *xattr_req);
+
+
+typedef struct glfs_info {
+        int (*init)(void);
+        int (*print_brick_from_xl)(xlator_t *xl, loc_t *rootloc);
+        int (*print_heal_op_status)(int ret, uint64_t num_entries,
+                        char *fmt_str);
+        void (*print_heal_status)(char *path, uuid_t gfid, char *status);
+        void (*print_spb_status)(char *path, uuid_t gfid, char *status);
+        int (*end) (int op_ret, char *op_errstr);
+} glfsh_info_t;
+
+glfsh_info_t *glfsh_output = NULL;
+int32_t is_xml;
+
+#define DEFAULT_HEAL_LOG_FILE_DIRECTORY DATADIR "/log/glusterfs"
+#define USAGE_STR "Usage: %s <VOLNAME> [bigger-file <FILE> | "\
+                  "latest-mtime <FILE> | "\
+                  "source-brick <HOSTNAME:BRICKNAME> [<FILE>] | "\
+                  "split-brain-info]\n"
+
+typedef enum {
+        GLFSH_MODE_CONTINUE_ON_ERROR = 1,
+        GLFSH_MODE_EXIT_ON_FIRST_FAILURE,
+} glfsh_fail_mode_t;
+
+int
+glfsh_init ()
+{
+        return 0;
+}
+
+int
+glfsh_end_op_granular_entry_heal (int op_ret, char *op_errstr)
+{
+        /* If error sting is available, give it higher precedence.*/
+
+        if (op_errstr) {
+                printf ("%s\n", op_errstr);
+        } else if (op_ret < 0) {
+                if (op_ret == -EAGAIN)
+                        printf ("One or more entries need heal. Please execute "
+                                "the command again after there are no entries "
+                                "to be healed\n");
+                else if (op_ret == -ENOTCONN)
+                        printf ("One or more bricks could be down. Please "
+                                "execute the command again after bringing all "
+                                "bricks online and finishing any pending "
+                                "heals\n");
+                else
+                        printf ("Command failed - %s. Please check the logs for"
+                                " more details\n", strerror (-op_ret));
+        }
+        return 0;
+}
+
+int
+glfsh_end (int op_ret, char *op_errstr)
+{
+        if (op_errstr)
+                printf ("%s\n", op_errstr);
+        return 0;
+}
+
+void
+glfsh_print_hr_spb_status (char *path, uuid_t gfid, char *status)
+{
+        printf ("%s\n", path);
+        return;
+}
+
+void
+glfsh_no_print_hr_heal_status (char *path, uuid_t gfid, char *status)
+{
+        return;
+}
+
+void
+glfsh_print_hr_heal_status (char *path, uuid_t gfid, char *status)
+{
+        printf ("%s%s\n", path, status);
+}
+
+#if (HAVE_LIB_XML)
+
+int
+glfsh_xml_init ()
+{
+        int     ret     = -1;
+        glfsh_writer = xmlNewTextWriterDoc (&glfsh_doc, 0);
+        if (glfsh_writer == NULL) {
+                return -1;
+        }
+
+        ret = xmlTextWriterStartDocument (glfsh_writer, "1.0", "UTF-8",
+                        "yes");
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+
+        /* <cliOutput> */
+        ret = xmlTextWriterStartElement (glfsh_writer,
+                        (xmlChar *)"cliOutput");
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+
+        /* <healInfo> */
+        xmlTextWriterStartElement (glfsh_writer,
+                        (xmlChar *)"healInfo");
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+        /* <bricks> */
+        xmlTextWriterStartElement (glfsh_writer,
+                        (xmlChar *)"bricks");
+        xmlTextWriterFlush (glfsh_writer);
+xml_out:
+        return ret;
+}
+
+int
+glfsh_xml_end (int op_ret, char *op_errstr)
+{
+        int                     ret             = -1;
+        int                     op_errno        = 0;
+        gf_boolean_t            alloc           = _gf_false;
+
+        if (op_ret < 0) {
+                op_errno = -op_ret;
+                op_ret = -1;
+                if (op_errstr == NULL) {
+                        op_errstr = gf_strdup (strerror (op_errno));
+                        alloc = _gf_true;
+                }
+        } else {
+                op_errstr = NULL;
+        }
+
+        /* </bricks> */
+        ret = xmlTextWriterEndElement (glfsh_writer);
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+
+        /* </healInfo> */
+        ret = xmlTextWriterEndElement (glfsh_writer);
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+
+        ret = xmlTextWriterWriteFormatElement (glfsh_writer,
+                        (xmlChar *)"opRet", "%d", op_ret);
+
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+
+        ret = xmlTextWriterWriteFormatElement (glfsh_writer,
+                        (xmlChar *)"opErrno",
+                        "%d", op_errno);
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+
+        if (op_errstr)
+                ret = xmlTextWriterWriteFormatElement (glfsh_writer,
+                                (xmlChar *)"opErrstr",
+                                "%s", op_errstr);
+        else
+                ret = xmlTextWriterWriteFormatElement (glfsh_writer,
+                                (xmlChar *)"opErrstr",
+                                "%s", "");
+        ret = xmlTextWriterEndDocument (glfsh_writer);
+        XML_RET_CHECK_AND_GOTO (ret, xml_out);
+
+
+        /* Dump xml document to stdout and pretty format it */
+        xmlSaveFormatFileEnc ("-", glfsh_doc, "UTF-8", 1);
+
+        xmlFreeTextWriter (glfsh_writer);
+        xmlFreeDoc (glfsh_doc);
+xml_out:
+        if (alloc)
+                GF_FREE (op_errstr);
+        return ret;
+}
+
+int
+glfsh_print_xml_heal_op_status (int ret, uint64_t num_entries, char *fmt_str)
+{
+        if (ret < 0 && num_entries == 0) {
+                xmlTextWriterWriteFormatElement (glfsh_writer,
+                                (xmlChar *)"status",
+                                "%s", strerror (-ret));
+                if (fmt_str) {
+                        xmlTextWriterWriteFormatElement (glfsh_writer,
+                                        (xmlChar *)"numberOfEntries",
+                                        "-");
+                }
+                goto out;
+        } else if (ret == 0) {
+                xmlTextWriterWriteFormatElement (glfsh_writer,
+                                                 (xmlChar *)"status",
+                                                 "%s", "Connected");
+        }
+
+        if (ret < 0) {
+                if (fmt_str) {
+                        xmlTextWriterWriteFormatElement (glfsh_writer,
+                                        (xmlChar *)"status",
+                                        "Failed to process entries completely. "
+                                        "(%s)%s %"PRIu64"", strerror (-ret),
+                                        fmt_str,
+                                        num_entries);
+                }
+        } else {
+                if (fmt_str)
+                        xmlTextWriterWriteFormatElement (glfsh_writer,
+                                        (xmlChar *)"numberOfEntries",
+                                        "%"PRIu64"", num_entries);
+        }
+out:
+        ret = xmlTextWriterEndElement (glfsh_writer);
+        xmlTextWriterFlush (glfsh_writer);
+        return ret;
+}
+
+void
+glfsh_print_xml_file_status (char *path, uuid_t gfid, char *status)
+{
+        xmlTextWriterStartElement (glfsh_writer, (xmlChar *)"file");
+        xmlTextWriterWriteFormatAttribute (glfsh_writer, (xmlChar *)"gfid",
+                                           "%s", uuid_utoa (gfid));
+        xmlTextWriterWriteFormatString (glfsh_writer, "%s", path);
+        xmlTextWriterEndElement (glfsh_writer);
+        xmlTextWriterFlush (glfsh_writer);
+        return;
+}
+
+int
+glfsh_print_xml_brick_from_xl (xlator_t *xl, loc_t *rootloc)
+{
+        char    *remote_host = NULL;
+        char    *remote_subvol = NULL;
+        char    *uuid = NULL;
+        int     ret = 0;
+        int     x_ret = 0;
+
+        ret = dict_get_str (xl->options, "remote-host", &remote_host);
+        if (ret < 0)
+                goto print;
+
+        ret = dict_get_str (xl->options, "remote-subvolume", &remote_subvol);
+        if (ret < 0)
+                goto print;
+        ret = syncop_getxattr (xl, rootloc, &xl->options,
+                        GF_XATTR_NODE_UUID_KEY, NULL, NULL);
+        if (ret < 0)
+                goto print;
+
+        ret = dict_get_str (xl->options, GF_XATTR_NODE_UUID_KEY, &uuid);
+        if (ret < 0)
+                goto print;
+print:
+
+        x_ret = xmlTextWriterStartElement (glfsh_writer, (xmlChar *)"brick");
+        XML_RET_CHECK_AND_GOTO (x_ret, xml_out);
+        x_ret = xmlTextWriterWriteFormatAttribute (glfsh_writer,
+                        (xmlChar *)"hostUuid", "%s", uuid?uuid:"-");
+        XML_RET_CHECK_AND_GOTO (x_ret, xml_out);
+
+        x_ret = xmlTextWriterWriteFormatElement (glfsh_writer,
+                        (xmlChar *)"name", "%s:%s",
+                        remote_host ? remote_host : "-",
+                        remote_subvol ? remote_subvol : "-");
+        XML_RET_CHECK_AND_GOTO (x_ret, xml_out);
+        xmlTextWriterFlush (glfsh_writer);
+xml_out:
+        return ret;
+}
+#endif
 
 int
 glfsh_link_inode_update_loc (loc_t *loc, struct iatt *iattr)
@@ -49,30 +331,52 @@ out:
         return ret;
 }
 
+int
+glfsh_no_print_hr_heal_op_status (int ret, uint64_t num_entries, char *fmt_str)
+{
+        return 0;
+}
 
-void
+int
+glfsh_print_hr_heal_op_status (int ret, uint64_t num_entries, char *fmt_str)
+{
+        if (ret < 0 && num_entries == 0) {
+                printf ("Status: %s\n", strerror (-ret));
+                if (fmt_str)
+                        printf ("%s -\n", fmt_str);
+                goto out;
+        } else if (ret == 0) {
+                printf ("Status: Connected\n");
+        }
+
+        if (ret < 0) {
+                if (fmt_str)
+                        printf ("Status: Failed to process entries completely. "
+                                "(%s)\n%s %"PRIu64"\n",
+                         strerror (-ret), fmt_str, num_entries);
+        } else {
+                if (fmt_str)
+                        printf ("%s %"PRIu64"\n", fmt_str, num_entries);
+        }
+out:
+        printf ("\n");
+        return 0;
+}
+
+int
 glfsh_print_heal_op_status (int ret, uint64_t num_entries,
                             gf_xl_afr_op_t heal_op)
 {
+        char *fmt_str = NULL;
 
-        if (ret == -ENOTCONN && num_entries == 0) {
-                printf ("Status: %s\n", strerror (-ret));
-                return;
-        }
-        if (ret < 0) {
-                printf ("Failed to process entries completely. "
-                         "Number of entries so far: %"PRIu64"\n", num_entries);
-        } else {
-                if (heal_op == GF_SHD_OP_INDEX_SUMMARY)
-                        printf ("Number of entries: %"PRIu64"\n", num_entries);
-                else if (heal_op == GF_SHD_OP_SPLIT_BRAIN_FILES)
-                        printf ("Number of entries in split-brain: %"PRIu64"\n"
-                                , num_entries);
-                else if (heal_op == GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK)
-                        printf ("Number of healed entries: %"PRIu64"\n",
-                                num_entries);
-        }
-        return;
+        if (heal_op == GF_SHD_OP_INDEX_SUMMARY)
+                fmt_str = "Number of entries:";
+        else if (heal_op == GF_SHD_OP_SPLIT_BRAIN_FILES)
+                fmt_str = "Number of entries in split-brain:";
+        else if (heal_op == GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK)
+                fmt_str = "Number of healed entries:";
+
+        return glfsh_output->print_heal_op_status (ret, num_entries, fmt_str);
 }
 
 int
@@ -160,7 +464,7 @@ glfsh_index_purge (xlator_t *subvol, inode_t *inode, char *name)
         return ret;
 }
 
-void
+int
 glfsh_print_spb_status (dict_t *dict, char *path, uuid_t gfid,
                         uint64_t *num_entries, gf_boolean_t flag)
 {
@@ -168,10 +472,11 @@ glfsh_print_spb_status (dict_t *dict, char *path, uuid_t gfid,
         gf_boolean_t    pending         = _gf_false;
         gf_boolean_t    split_b         = _gf_false;
         char            *value          = NULL;
+        char            gfid_str[64]    = {0};
 
         ret = dict_get_str (dict, "heal-info", &value);
         if (ret)
-                return;
+                return 0;
 
         if (!strcmp (value, "split-brain")) {
                 split_b = _gf_true;
@@ -188,14 +493,15 @@ glfsh_print_spb_status (dict_t *dict, char *path, uuid_t gfid,
         if (split_b) {
                 if (!flag || (flag && !pending)) {
                         (*num_entries)++;
-                        printf ("%s\n",
-                        path ? path : uuid_utoa (gfid));
+                        glfsh_output->print_spb_status (path ? path :
+                                                uuid_utoa_r (gfid, gfid_str),
+                                                gfid, NULL);
                 }
         }
-        return;
+        return 0;
 }
 
-void
+int
 glfsh_print_heal_status (dict_t *dict, char *path, uuid_t gfid,
                          uint64_t *num_entries, gf_boolean_t ignore_dirty)
 {
@@ -203,10 +509,11 @@ glfsh_print_heal_status (dict_t *dict, char *path, uuid_t gfid,
         gf_boolean_t    pending         = _gf_false;
         char            *status         = NULL;
         char            *value          = NULL;
+        char            gfid_str[64]    = {0};
 
         ret = dict_get_str (dict, "heal-info", &value);
         if (ret || (!strcmp (value, "no-heal")))
-                return;
+                return 0;
 
         if (!strcmp (value, "heal")) {
                 ret = gf_asprintf (&status, " ");
@@ -249,18 +556,34 @@ out:
                 if (pending) {
                         GF_FREE (status);
                         status = NULL;
-                        return;
+                        return 0;
                 }
         }
         if (ret == -1)
                 status = NULL;
 
         (*num_entries)++;
-        printf ("%s%s\n",
-                path ? path : uuid_utoa (gfid), status ? status : "");
+        glfsh_output->print_heal_status (path ? path :
+                                         uuid_utoa_r (gfid, gfid_str),
+                                         gfid,
+                                         status ? status : "");
 
         GF_FREE (status);
-        return;
+        return 0;
+}
+
+int
+glfsh_heal_status_boolean (dict_t *dict, char *path, uuid_t gfid,
+                           uint64_t *num_entries, gf_boolean_t ignore_dirty)
+{
+        int             ret             = 0;
+        char            *value          = NULL;
+
+        ret = dict_get_str (dict, "heal-info", &value);
+        if ((!ret) && (!strcmp (value, "no-heal")))
+                return 0;
+        else
+                return -1;
 }
 
 static int
@@ -294,11 +617,12 @@ static int
 glfsh_process_entries (xlator_t *xl, fd_t *fd, gf_dirent_t *entries,
                        uint64_t *offset, uint64_t *num_entries,
                        print_status glfsh_print_status,
-                       gf_boolean_t ignore_dirty)
+                       gf_boolean_t ignore_dirty, glfsh_fail_mode_t mode)
 {
         gf_dirent_t      *entry = NULL;
         gf_dirent_t      *tmp = NULL;
         int              ret = 0;
+        int              print_status = 0;
         char            *path = NULL;
         uuid_t          gfid = {0};
         xlator_t        *this = NULL;
@@ -324,8 +648,13 @@ glfsh_process_entries (xlator_t *xl, fd_t *fd, gf_dirent_t *entries,
                 gf_uuid_copy (loc.gfid, gfid);
                 ret = syncop_getxattr (this, &loc, &dict, GF_HEAL_INFO, NULL,
                                        NULL);
-                if (ret)
-                        continue;
+                if (ret) {
+                        if ((mode != GLFSH_MODE_CONTINUE_ON_ERROR) &&
+                            (ret == -ENOTCONN))
+                                goto out;
+                        else
+                                continue;
+                }
 
                 ret = syncop_gfid_to_path (this->itable, xl, gfid, &path);
 
@@ -334,11 +663,19 @@ glfsh_process_entries (xlator_t *xl, fd_t *fd, gf_dirent_t *entries,
                         ret = 0;
                         continue;
                 }
-                if (dict)
-                        glfsh_print_status (dict, path, gfid,
-                                            num_entries, ignore_dirty);
+                if (dict) {
+                        print_status = glfsh_print_status (dict, path, gfid,
+                                                           num_entries,
+                                                           ignore_dirty);
+                        if ((print_status) &&
+                            (mode != GLFSH_MODE_CONTINUE_ON_ERROR)) {
+                                ret = -EAGAIN;
+                                goto out;
+                        }
+                }
         }
         ret = 0;
+out:
         GF_FREE (path);
         if (dict) {
                 dict_unref (dict);
@@ -353,16 +690,20 @@ glfsh_crawl_directory (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
                        dict_t *xattr_req, uint64_t *num_entries,
                        gf_boolean_t ignore)
 {
-        uint64_t        offset = 0;
+        int             ret          = 0;
+        int             heal_op      = -1;
+        uint64_t        offset       = 0;
         gf_dirent_t     entries;
-        int             ret = 0;
         gf_boolean_t    free_entries = _gf_false;
-        int             heal_op = -1;
+        glfsh_fail_mode_t mode = GLFSH_MODE_CONTINUE_ON_ERROR;
 
         INIT_LIST_HEAD (&entries.list);
         ret = dict_get_int32 (xattr_req, "heal-op", &heal_op);
         if (ret)
                 return ret;
+
+        if (heal_op == GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE)
+                mode = GLFSH_MODE_EXIT_ON_FIRST_FAILURE;
 
         while (1) {
                 ret = syncop_readdir (readdir_xl, fd, 131072, offset, &entries,
@@ -380,7 +721,7 @@ glfsh_crawl_directory (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
                                                      &entries, &offset,
                                                      num_entries,
                                                      glfsh_print_heal_status,
-                                                     ignore);
+                                                     ignore, mode);
                         if (ret < 0)
                                 goto out;
                 } else if (heal_op == GF_SHD_OP_SPLIT_BRAIN_FILES) {
@@ -388,13 +729,20 @@ glfsh_crawl_directory (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
                                                      &entries, &offset,
                                                      num_entries,
                                                      glfsh_print_spb_status,
-                                                     ignore);
+                                                     ignore, mode);
                         if (ret < 0)
                                 goto out;
                 } else if (heal_op == GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK) {
                         ret = glfsh_heal_entries (fs, top_subvol, rootloc,
                                                   &entries, &offset,
                                                   num_entries, xattr_req);
+                } else if (heal_op == GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE) {
+                        ret = glfsh_process_entries (readdir_xl, fd, &entries,
+                                                     &offset, num_entries,
+                                                     glfsh_heal_status_boolean,
+                                                     ignore, mode);
+                        if (ret < 0)
+                                goto out;
                 }
                 gf_dirent_free (&entries);
                 free_entries = _gf_false;
@@ -407,7 +755,13 @@ out:
 }
 
 static int
-glfsh_print_brick_from_xl (xlator_t *xl)
+glfsh_no_print_brick_from_xl (xlator_t *xl, loc_t *rootloc)
+{
+        return 0;
+}
+
+static int
+glfsh_print_brick_from_xl (xlator_t *xl, loc_t *rootloc)
 {
         char    *remote_host = NULL;
         char    *remote_subvol = NULL;
@@ -446,7 +800,8 @@ glfsh_print_pending_heals_type (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc
         ret = glfsh_get_index_dir_loc (rootloc, xl, &dirloc, &op_errno,
                                        vgfid);
         if (ret < 0) {
-                if (op_errno == ESTALE || op_errno == ENOENT)
+                if (op_errno == ESTALE || op_errno == ENOENT ||
+                    op_errno == ENOTSUP)
                         ret = 0;
                 else
                         ret = -op_errno;
@@ -466,7 +821,7 @@ out:
         return ret;
 }
 
-void
+int
 glfsh_print_pending_heals (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
                            xlator_t *xl, gf_xl_afr_op_t heal_op, gf_boolean_t
                            is_parent_replicate)
@@ -479,18 +834,28 @@ glfsh_print_pending_heals (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
         xattr_req = dict_new();
         if (!xattr_req)
                 goto out;
-
         ret = dict_set_int32 (xattr_req, "heal-op", heal_op);
         if (ret)
                 goto out;
 
-        ret = glfsh_print_brick_from_xl (xl);
+        if ((!is_parent_replicate) &&
+            ((heal_op == GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE) ||
+             (heal_op == GF_SHD_OP_GRANULAR_ENTRY_HEAL_DISABLE))) {
+                ret = 0;
+                goto out;
+        }
+
+        ret = glfsh_output->print_brick_from_xl (xl, rootloc);
         if (ret < 0)
                 goto out;
 
         ret = glfsh_print_pending_heals_type (fs, top_subvol, rootloc, xl,
                                               heal_op, xattr_req,
                                               GF_XATTROP_INDEX_GFID, &count);
+
+        if (ret < 0 && heal_op == GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE)
+                goto out;
+
         total += count;
         count = 0;
         if (ret == -ENOTCONN)
@@ -508,7 +873,39 @@ out:
         if (xattr_req)
                 dict_unref (xattr_req);
         glfsh_print_heal_op_status (ret, total, heal_op);
-        return;
+        return ret;
+
+}
+
+static int
+glfsh_set_heal_options (glfs_t *fs, gf_xl_afr_op_t heal_op)
+{
+        int ret = 0;
+
+        ret = glfs_set_xlator_option (fs, "*-replicate-*",
+                                      "background-self-heal-count", "0");
+        if (ret)
+                goto out;
+
+        if ((heal_op != GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE) &&
+            (heal_op != GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK) &&
+            (heal_op != GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME))
+                return 0;
+        ret = glfs_set_xlator_option (fs, "*-replicate-*", "data-self-heal",
+                                      "on");
+        if (ret)
+                goto out;
+
+        ret = glfs_set_xlator_option (fs, "*-replicate-*", "metadata-self-heal",
+                                      "on");
+        if (ret)
+                goto out;
+
+        ret = glfs_set_xlator_option (fs, "*-replicate-*", "entry-self-heal",
+                                      "on");
+
+out:
+        return ret;
 }
 
 static int
@@ -570,14 +967,14 @@ out:
         return NULL;
 }
 
-
 int
 glfsh_gather_heal_info (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
                         gf_xl_afr_op_t heal_op)
 {
-        xlator_t  *xl       = NULL;
+        int        ret       = 0;
+        xlator_t  *xl        = NULL;
         xlator_t  *heal_xl   = NULL;
-        xlator_t  *old_THIS = NULL;
+        xlator_t  *old_THIS  = NULL;
 
         xl = top_subvol;
         while (xl->next)
@@ -588,21 +985,28 @@ glfsh_gather_heal_info (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
                         if (heal_xl) {
                                 old_THIS = THIS;
                                 THIS = heal_xl;
-                                glfsh_print_pending_heals (fs, top_subvol,
-                                                           rootloc, xl,
-                                                           heal_op,
-                                                           !strcmp
-                                                           (heal_xl->type,
-                                                           "cluster/replicate"));
+                                ret = glfsh_print_pending_heals (fs, top_subvol,
+                                                                 rootloc, xl,
+                                                                 heal_op,
+                                                                 !strcmp
+                                                                (heal_xl->type,
+                                                          "cluster/replicate"));
                                 THIS = old_THIS;
-                                printf ("\n");
+
+                                if ((ret < 0) &&
+                              (heal_op == GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE))
+                                        goto out;
                         }
                 }
 
                 xl = xl->prev;
         }
 
-        return 0;
+out:
+        if (heal_op != GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE)
+                ret = 0;
+
+        return ret;
 }
 
 int
@@ -628,26 +1032,43 @@ _validate_directory (dict_t *xattr_req, char *file)
 
 int
 glfsh_heal_splitbrain_file (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
-                           char *file, dict_t *xattr_req)
+                            char *file, dict_t *xattr_req)
 {
-        int          ret        = -1;
-        int          reval      = 0;
-        loc_t        loc        = {0, };
-        char        *path       = NULL;
-        char        *filename   = NULL;
-        struct iatt  iatt       = {0, };
-        xlator_t    *xl         = top_subvol;
-        dict_t      *xattr_rsp  = NULL;
-        char        *sh_fail_msg = NULL;
-        int32_t      op_errno   = 0;
+        int          ret           = -1;
+        int          reval         = 0;
+        loc_t        loc           = {0, };
+        char        *path          = NULL;
+        char        *path1         = NULL;
+        char        *path2         = NULL;
+        char        *filename      = NULL;
+        char        *filename1     = NULL;
+        struct iatt  iatt          = {0, };
+        xlator_t    *xl            = top_subvol;
+        dict_t      *xattr_rsp     = NULL;
+        char        *sh_fail_msg   = NULL;
+        char        *gfid_heal_msg = NULL;
+        int32_t      op_errno      = 0;
+        gf_boolean_t flag          = _gf_false;
 
         if (!strncmp (file, "gfid:", 5)) {
                 filename = gf_strdup(file);
+                if (!filename) {
+                        printf ("Error allocating memory to filename\n");
+                        goto out;
+                }
                 path = strtok (filename, ":");
                 path = strtok (NULL, ";");
                 gf_uuid_parse (path, loc.gfid);
                 loc.path = gf_strdup (uuid_utoa (loc.gfid));
+                if (!loc.path) {
+                        printf ("Error allocating memory to path\n");
+                        goto out;
+                }
                 loc.inode = inode_new (rootloc->inode->table);
+                if (!loc.inode) {
+                        printf ("Error getting inode\n");
+                        goto out;
+                }
                 ret = syncop_lookup (xl, &loc, &iatt, 0, xattr_req, &xattr_rsp);
                 if (ret) {
                         op_errno = -ret;
@@ -662,9 +1083,72 @@ glfsh_heal_splitbrain_file (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
                         ret = -1;
                         goto out;
                 }
-retry:
+                path1 = gf_strdup (file);
+                if (!path1) {
+                        printf ("Error allocating memory to path\n");
+                        ret = -1;
+                        goto out;
+                }
+                path2 = gf_strdup (file);
+                if (!path2) {
+                        printf ("Error allocating memory to path\n");
+                        ret = -1;
+                        goto out;
+                }
+                path = dirname (path1);
+                filename1 = basename (path2);
+retry1:
+                ret = glfs_resolve (fs, xl, path, &loc, &iatt, reval);
+                ESTALE_RETRY (ret, errno, reval, &loc, retry1);
+                if (ret) {
+                        printf("Lookup failed on %s:%s\n",
+                               path, strerror (errno));
+                        goto out;
+                }
+                GF_FREE ((char *)loc.path);
+                loc.path = gf_strdup (file);
+                if (!loc.path) {
+                        printf ("Error allocating memory for path\n");
+                        ret = -1;
+                        goto out;
+                }
+                loc.parent = inode_unref (loc.parent);
+                loc.parent = inode_ref (loc.inode);
+                loc.inode = inode_unref (loc.inode);
+                loc.inode = inode_new (rootloc->inode->table);
+                if (!loc.inode) {
+                        printf ("Error getting inode\n");
+                        ret = -1;
+                        goto out;
+                }
+                loc.name = filename1;
+                gf_uuid_copy (loc.pargfid, loc.gfid);
+                gf_uuid_clear (loc.gfid);
+
+                ret = syncop_lookup (xl, &loc, &iatt, 0, xattr_req, &xattr_rsp);
+                if (ret) {
+                        op_errno = -ret;
+                        printf ("Lookup failed on %s:%s.\n", file,
+                                strerror(op_errno));
+                        flag = _gf_true;
+                }
+
+                ret = dict_get_str (xattr_rsp, "gfid-heal-msg", &gfid_heal_msg);
+                if (!ret) {
+                        printf ("%s for file %s\n", gfid_heal_msg, file);
+                        loc_wipe (&loc);
+                        goto out;
+                }
+                if (flag)
+                        goto out;
+
+                reval = 0;
+                loc_wipe (&loc);
+                memset (&iatt, 0, sizeof(iatt));
+
+retry2:
                 ret = glfs_resolve (fs, xl, file, &loc, &iatt, reval);
-                ESTALE_RETRY (ret, errno, reval, &loc, retry);
+                ESTALE_RETRY (ret, errno, reval, &loc, retry2);
                 if (ret) {
                         printf("Lookup failed on %s:%s\n",
                                file, strerror (errno));
@@ -695,6 +1179,13 @@ retry:
 out:
         if (xattr_rsp)
                 dict_unref (xattr_rsp);
+        if (path1)
+                GF_FREE (path1);
+        if (path2)
+                GF_FREE (path2);
+        if (filename)
+                GF_FREE (filename);
+        loc_wipe (&loc);
         return ret;
 }
 
@@ -793,8 +1284,9 @@ out:
 }
 
 int
-glfsh_heal_from_bigger_file (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
-                            char *file)
+glfsh_heal_from_bigger_file_or_mtime (glfs_t *fs, xlator_t *top_subvol,
+                                      loc_t *rootloc, char *file,
+                                      gf_xl_afr_op_t heal_op)
 {
 
         int ret = -1;
@@ -803,8 +1295,7 @@ glfsh_heal_from_bigger_file (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
         xattr_req = dict_new();
         if (!xattr_req)
                 goto out;
-        ret = dict_set_int32 (xattr_req, "heal-op",
-                              GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE);
+        ret = dict_set_int32 (xattr_req, "heal-op", heal_op);
         if (ret)
                 goto out;
         ret = glfsh_heal_splitbrain_file (fs, top_subvol, rootloc, file,
@@ -830,6 +1321,36 @@ cleanup (glfs_t *fs)
 #endif
 }
 
+
+glfsh_info_t glfsh_human_readable = {
+        .init = glfsh_init,
+        .print_brick_from_xl = glfsh_print_brick_from_xl,
+        .print_heal_op_status = glfsh_print_hr_heal_op_status,
+        .print_heal_status = glfsh_print_hr_heal_status,
+        .print_spb_status = glfsh_print_hr_spb_status,
+        .end = glfsh_end
+};
+
+glfsh_info_t glfsh_no_print = {
+        .init = glfsh_init,
+        .print_brick_from_xl = glfsh_no_print_brick_from_xl,
+        .print_heal_op_status = glfsh_no_print_hr_heal_op_status,
+        .print_heal_status = glfsh_no_print_hr_heal_status,
+        .print_spb_status = glfsh_no_print_hr_heal_status,
+        .end = glfsh_end_op_granular_entry_heal
+};
+
+#if (HAVE_LIB_XML)
+glfsh_info_t glfsh_xml_output = {
+        .init = glfsh_xml_init,
+        .print_brick_from_xl = glfsh_print_xml_brick_from_xl,
+        .print_heal_op_status = glfsh_print_xml_heal_op_status,
+        .print_heal_status = glfsh_print_xml_file_status,
+        .print_spb_status = glfsh_print_xml_file_status,
+        .end = glfsh_xml_end
+};
+#endif
+
 int
 main (int argc, char **argv)
 {
@@ -842,6 +1363,7 @@ main (int argc, char **argv)
         char      *hostname = NULL;
         char      *path = NULL;
         char      *file = NULL;
+        char      *op_errstr = NULL;
         gf_xl_afr_op_t heal_op = -1;
 
         if (argc < 2) {
@@ -849,6 +1371,7 @@ main (int argc, char **argv)
                 ret = -1;
                 goto out;
         }
+
         volname = argv[1];
         switch (argc) {
         case 2:
@@ -857,6 +1380,11 @@ main (int argc, char **argv)
         case 3:
                 if (!strcmp (argv[2], "split-brain-info")) {
                         heal_op = GF_SHD_OP_SPLIT_BRAIN_FILES;
+                } else if (!strcmp (argv[2], "xml")) {
+                        heal_op = GF_SHD_OP_INDEX_SUMMARY;
+                        is_xml = 1;
+                } else if (!strcmp (argv[2], "granular-entry-heal-op")) {
+                        heal_op = GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE;
                 } else {
                         printf (USAGE_STR, argv[0]);
                         ret = -1;
@@ -864,8 +1392,15 @@ main (int argc, char **argv)
                 }
                 break;
         case 4:
-                if (!strcmp (argv[2], "bigger-file")) {
+                if ((!strcmp (argv[2], "split-brain-info"))
+                                && (!strcmp (argv[3], "xml"))) {
+                        heal_op = GF_SHD_OP_SPLIT_BRAIN_FILES;
+                        is_xml = 1;
+                } else if (!strcmp (argv[2], "bigger-file")) {
                         heal_op = GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE;
+                        file = argv[3];
+                } else if (!strcmp (argv[2], "latest-mtime")) {
+                        heal_op = GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME;
                         file = argv[3];
                 } else if (!strcmp (argv[2], "source-brick")) {
                         heal_op = GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK;
@@ -895,58 +1430,95 @@ main (int argc, char **argv)
                 goto out;
         }
 
+        glfsh_output = &glfsh_human_readable;
+        if (is_xml) {
+#if (HAVE_LIB_XML)
+                glfsh_output = &glfsh_xml_output;
+#else
+                /*No point doing anything, just fail the command*/
+                exit (EXIT_FAILURE);
+#endif
+
+        }
+
+        if (heal_op == GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE)
+                glfsh_output = &glfsh_no_print;
+
+        ret = glfsh_output->init ();
+        if (ret)
+                exit (EXIT_FAILURE);
+
         fs = glfs_new (volname);
         if (!fs) {
-                ret = -1;
-                printf ("Not able to initialize volume '%s'\n", volname);
+                ret = -errno;
+                gf_asprintf (&op_errstr, "Not able to initialize volume '%s'",
+                             volname);
                 goto out;
+        }
+
+        if (sys_access(SECURE_ACCESS_FILE, F_OK) == 0) {
+                fs->ctx->secure_mgmt = 1;
         }
 
         ret = glfs_set_volfile_server (fs, "unix", DEFAULT_GLUSTERD_SOCKFILE, 0);
         if (ret) {
-                printf("Setting the volfile server failed, %s\n", strerror (errno));
+                ret = -errno;
+                gf_asprintf (&op_errstr, "Setting the volfile server failed, "
+                             "%s", strerror (errno));
+                goto out;
+        }
+
+        ret = glfsh_set_heal_options (fs, heal_op);
+        if (ret) {
+                printf ("Setting xlator heal options failed, %s\n",
+                        strerror(errno));
                 goto out;
         }
         snprintf (logfilepath, sizeof (logfilepath),
                   DEFAULT_HEAL_LOG_FILE_DIRECTORY"/glfsheal-%s.log", volname);
         ret = glfs_set_logging(fs, logfilepath, GF_LOG_INFO);
         if (ret < 0) {
-                printf ("Failed to set the log file path, %s\n", strerror (errno));
+                ret = -errno;
+                gf_asprintf (&op_errstr, "Failed to set the log file path, "
+                             "%s", strerror (errno));
                 goto out;
         }
 
         ret = glfs_init (fs);
         if (ret < 0) {
-                ret = -1;
+                ret = -errno;
                 if (errno == ENOENT) {
-                        printf ("Volume %s does not exist\n", volname);
-                }
-                else {
-                        printf ("%s: Not able to fetch volfile from "
-                                 "glusterd\n", volname);
+                        gf_asprintf (&op_errstr, "Volume %s does not exist",
+                                     volname);
+                } else {
+                        gf_asprintf (&op_errstr, "%s: Not able to fetch "
+                                     "volfile from glusterd", volname);
                 }
                 goto out;
         }
 
         top_subvol = glfs_active_subvol (fs);
         if (!top_subvol) {
-                ret = -1;
+                ret = -errno;
                 if (errno == ENOTCONN) {
-                        printf ("Volume %s is not started (Or) All the bricks "
-                                 "are not running.\n", volname);
+                        gf_asprintf (&op_errstr, "Volume %s is not started "
+                                                 "(Or) All the bricks are not "
+                                                 "running.", volname);
                 }
                 else {
-                        printf ("%s: Not able to mount the volume, %s\n",
-                                 volname, strerror (errno));
+                        gf_asprintf (&op_errstr, "%s: Not able to mount the "
+                                             "volume, %s", volname,
+                                             strerror (errno));
                 }
                 goto out;
         }
 
         ret = glfsh_validate_volume (top_subvol, heal_op);
         if (ret < 0) {
-                printf ("Volume %s is not of type %s\n", volname,
-                        (heal_op == GF_SHD_OP_INDEX_SUMMARY) ?
-                        "replicate/disperse":"replicate");
+                ret = -EINVAL;
+                gf_asprintf (&op_errstr, "Volume %s is not of type %s", volname,
+                                     (heal_op == GF_SHD_OP_INDEX_SUMMARY) ?
+                                     "replicate/disperse":"replicate");
                 goto out;
         }
         rootloc.inode = inode_ref (top_subvol->itable->root);
@@ -955,22 +1527,27 @@ main (int argc, char **argv)
         switch (heal_op) {
         case GF_SHD_OP_INDEX_SUMMARY:
         case GF_SHD_OP_SPLIT_BRAIN_FILES:
+        case GF_SHD_OP_GRANULAR_ENTRY_HEAL_ENABLE:
                 ret = glfsh_gather_heal_info (fs, top_subvol, &rootloc,
                                               heal_op);
                 break;
         case GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE:
-                ret = glfsh_heal_from_bigger_file (fs, top_subvol,
-                                                   &rootloc, file);
+        case GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME:
+                ret = glfsh_heal_from_bigger_file_or_mtime (fs, top_subvol,
+                                                   &rootloc, file, heal_op);
                         break;
         case GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK:
                 ret = glfsh_heal_from_brick (fs, top_subvol, &rootloc,
                                              hostname, path, file);
                 break;
         default:
-                ret = -1;
+                ret = -EINVAL;
                 break;
         }
 
+        glfsh_output->end (ret, NULL);
+        if (ret < 0)
+                ret = -ret;
         loc_wipe (&rootloc);
         glfs_subvol_done (fs, top_subvol);
         cleanup (fs);
@@ -981,6 +1558,9 @@ out:
                 glfs_subvol_done (fs, top_subvol);
         loc_wipe (&rootloc);
         cleanup (fs);
-
+        if (glfsh_output)
+                glfsh_output->end (ret, op_errstr);
+        if (op_errstr)
+                GF_FREE (op_errstr);
         return ret;
 }

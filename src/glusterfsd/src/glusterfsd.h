@@ -10,10 +10,6 @@
 #ifndef __GLUSTERFSD_H__
 #define __GLUSTERFSD_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 #include "rpcsvc.h"
 #include "glusterd1-xdr.h"
 
@@ -97,9 +93,15 @@ enum argp_option_keys {
         ARGP_GLOBAL_TIMER_WHEEL           = 173,
         ARGP_RESOLVE_GIDS_KEY             = 174,
         ARGP_CAPABILITY_KEY               = 175,
+#ifdef GF_LINUX_HOST_OS
+        ARGP_OOM_SCORE_ADJ_KEY            = 176,
+#endif
+        ARGP_LOCALTIME_LOGGING_KEY        = 177,
+        ARGP_SUBDIR_MOUNT_KEY             = 178,
+        ARGP_FUSE_EVENT_HISTORY_KEY       = 179,
 };
 
-struct _gfd_vol_top_priv_t {
+struct _gfd_vol_top_priv {
         rpcsvc_request_t        *req;
         gd1_mgmt_brick_op_req   xlator_req;
         uint32_t                blk_count;
@@ -108,9 +110,9 @@ struct _gfd_vol_top_priv_t {
         double                  time;
         int32_t                 ret;
 };
-typedef struct _gfd_vol_top_priv_t gfd_vol_top_priv_t;
+typedef struct _gfd_vol_top_priv gfd_vol_top_priv_t;
 
-int glusterfs_mgmt_pmap_signout (glusterfs_ctx_t *ctx);
+int glusterfs_mgmt_pmap_signout (glusterfs_ctx_t *ctx, char *brick_name);
 int glusterfs_mgmt_pmap_signin (glusterfs_ctx_t *ctx);
 int glusterfs_volfile_fetch (glusterfs_ctx_t *ctx);
 void cleanup_and_exit (int signum);
@@ -121,6 +123,8 @@ int glusterfs_volume_top_write_perf (uint32_t blk_size, uint32_t blk_count,
 int glusterfs_volume_top_read_perf (uint32_t blk_size, uint32_t blk_count,
                                     char *brick_path, double *throughput,
                                     double *time);
+void
+glusterfs_autoscale_threads (glusterfs_ctx_t *ctx, int incr);
 
 extern glusterfs_ctx_t *glusterfsd_ctx;
 #endif /* __GLUSTERFSD_H__ */

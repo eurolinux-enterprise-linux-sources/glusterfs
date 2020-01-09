@@ -1,0 +1,38 @@
+From d62958f6a3e3a4ecd61f130ad399d56580392c90 Mon Sep 17 00:00:00 2001
+From: "Kaleb S. KEITHLEY" <kkeithle@redhat.com>
+Date: Wed, 7 Mar 2018 06:24:35 -0500
+Subject: [PATCH 179/180] packaging : adding missed part from 5eed664 while
+ backporting to downstream
+
+accidental inverse logic during review of previous patch
+
+Label : DOWNSTREAM ONLY
+
+BUG: 1472445
+Change-Id: Ie53d0dcb80c687fba6e7f9ddca591b621049cc22
+Signed-off-by: Kaleb S. KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/132045
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ glusterfs.spec.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 34a3aba..ee51ae8 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -826,7 +826,7 @@ install -D -p -m 0644 extras/glusterfs-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs
+ 
+ # ganesha ghosts
+-%if ( ! 0%{?_build_server} )
++%if ( 0%{?_build_server} )
+ mkdir -p %{buildroot}%{_sysconfdir}/ganesha
+ touch %{buildroot}%{_sysconfdir}/ganesha/ganesha-ha.conf
+ mkdir -p %{buildroot}%{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/exports
+-- 
+1.8.3.1
+

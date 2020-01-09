@@ -1,0 +1,101 @@
+From 8f1a849968242aa3c53a05fbf1b0647a905e9cdd Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Thu, 23 Aug 2018 12:12:36 +0530
+Subject: [PATCH 358/359] glusterd: glusterd_brick_start shouldn't try to bring
+ up brick if only_connect is true
+
+With the latest refactoring in glusterd_brick_start () function in case
+we run into a situation where is_gf_service_running () return a valid
+pid which is running but doesn't belong to a gluster process, even in
+case of only_connect flag passed as gf_true we'd end up trying to start
+a brick which would cause a deadlock in brick multiplexing as both
+glusterd_restart_bricks () and glusterd_do_volume_quorum_action () would
+cause context switching with each other for the same brick. The
+following bt shows the same:
+
+(gdb) t a a bt
+
+Thread 8 (Thread 0x7fcced48a700 (LWP 11959)):
+    srch_vol=srch_vol@entry=0xbe0410, comp_vol=comp_vol@entry=0xc03680,
+    brickinfo=brickinfo@entry=0xc14ef0) at glusterd-utils.c:5834
+    brickinfo=0xc14ef0, volinfo=0xc03680, conf=<optimized out>)
+    at glusterd-utils.c:5902
+    brickinfo=brickinfo@entry=0xc14ef0, wait=wait@entry=_gf_false,
+    only_connect=only_connect@entry=_gf_true) at glusterd-utils.c:6251
+    volinfo=0xc03680, meets_quorum=_gf_true) at glusterd-server-quorum.c:402
+    at glusterd-server-quorum.c:443
+    iov=iov@entry=0x7fcce0004040, count=count@entry=1,
+    myframe=myframe@entry=0x7fcce00023a0) at glusterd-rpc-ops.c:542
+    iov=0x7fcce0004040, count=1, myframe=0x7fcce00023a0,
+    fn=0x7fccf12403d0 <__glusterd_friend_add_cbk>) at glusterd-rpc-ops.c:223
+---Type <return> to continue, or q <return> to quit---
+    at rpc-transport.c:538
+
+Thread 7 (Thread 0x7fccedc8b700 (LWP 11958)):
+
+Thread 6 (Thread 0x7fccf1d67700 (LWP 11877)):
+    brickinfo=brickinfo@entry=0xc14ef0) at glusterd-utils.c:5834
+    at glusterd-utils.c:6251
+
+Thread 5 (Thread 0x7fccf2568700 (LWP 11876)):
+
+Thread 4 (Thread 0x7fccf2d69700 (LWP 11875)):
+
+Thread 3 (Thread 0x7fccf356a700 (LWP 11874)):
+
+Thread 2 (Thread 0x7fccf3d6b700 (LWP 11873)):
+---Type <return> to continue, or q <return> to quit---
+
+Thread 1 (Thread 0x7fccf68a8780 (LWP 11872)):
+
+Fix:
+
+The solution is to ensure we don't restart bricks if only_connect is
+true and just ensure that the brick is attempted to be connected.
+
+Test:
+
+Simulated a code change to ensure gf_is_service_running () always return
+to true to hit the scenario.
+
+>upstream patch : https://review.gluster.org/#/c/glusterfs/+/20935
+
+>Change-Id: Iec184e6c9e8aabef931d310f931f4d7a580f0f48
+>Fixes: bz#1620544
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: Iec184e6c9e8aabef931d310f931f4d7a580f0f48
+BUG: 1620469
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147888
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 136a032..b9e8d8d 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -6173,6 +6173,8 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                                 if (sys_access (pidfile , R_OK) == 0) {
+                                         sys_unlink (pidfile);
+                                 }
++                                if (only_connect)
++                                        return 0;
+                                 goto run;
+                         }
+                         GF_FREE (brickpath);
+@@ -6187,6 +6189,8 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                                 if (sys_access (pidfile , R_OK) == 0) {
+                                         sys_unlink (pidfile);
+                                 }
++                                if (only_connect)
++                                        return 0;
+                                 goto run;
+                         }
+                 }
+-- 
+1.8.3.1
+

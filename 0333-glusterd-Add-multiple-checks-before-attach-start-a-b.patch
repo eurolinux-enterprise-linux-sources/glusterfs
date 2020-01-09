@@ -1,0 +1,726 @@
+From 53ecd916d5ef56e164228ba123b078d4b30bfa81 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawal@redhat.com>
+Date: Thu, 12 Jul 2018 13:29:48 +0530
+Subject: [PATCH 333/333] glusterd: Add multiple checks before attach/start a
+ brick
+
+Problem: In brick mux scenario sometime glusterd is not able
+         to start/attach a brick and gluster v status shows
+         brick is already running
+
+Solution:
+          1) To make sure brick is running check brick_path in
+             /proc/<pid>/fd , if a brick is consumed by the brick
+             process it means brick stack is come up otherwise not
+          2) Before start/attach a brick check if a brick is mounted
+             or not
+          3) At the time of printing volume status check brick is
+             consumed by any brick process
+
+Test:  To test the same followed procedure
+       1) Setup brick mux environment on a vm
+       2) Put a breaking point in gdb in function posix_health_check_thread_proc
+          at the time of notify GF_EVENT_CHILD_DOWN event
+       3) unmount anyone brick path forcefully
+       4) check gluster v status it will show N/A for the brick
+       5) Try to start volume with force option, glusterd throw
+          message "No device available for mount brick"
+       6) Mount the brick_root path
+       7) Try to start volume with force option
+       8) down brick is started successfully
+
+> Change-Id: I91898dad21d082ebddd12aa0d1f7f0ed012bdf69
+> fixes: bz#1595320
+> (cherry picked from commit 9400b6f2c8aa219a493961e0ab9770b7f12e80d2)
+> (Reviewed on upstream link https://review.gluster.org/#/c/20202/)
+
+Change-Id: I62459910272754e4e062b2725fea2a1e68d743f1
+BUG: 1589279
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/145269
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ glusterfsd/src/glusterfsd-mgmt.c                |   3 +
+ tests/basic/bug-1595320.t                       |  92 +++++++++
+ tests/basic/posix/shared-statfs.t               |   2 +
+ tests/bitrot/bug-1373520.t                      |   1 +
+ tests/bugs/distribute/bug-1368012.t             |   2 +
+ tests/bugs/distribute/bug-853258.t              |   1 +
+ tests/bugs/quota/bug-1293601.t                  |   3 +-
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c   |   2 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c      | 261 ++++++++++++++++++++----
+ xlators/mgmt/glusterd/src/glusterd-utils.h      |   6 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c |   7 +-
+ 11 files changed, 329 insertions(+), 51 deletions(-)
+ create mode 100644 tests/basic/bug-1595320.t
+
+diff --git a/glusterfsd/src/glusterfsd-mgmt.c b/glusterfsd/src/glusterfsd-mgmt.c
+index 30a717f..cbd436a 100644
+--- a/glusterfsd/src/glusterfsd-mgmt.c
++++ b/glusterfsd/src/glusterfsd-mgmt.c
+@@ -1010,6 +1010,9 @@ glusterfs_handle_attach (rpcsvc_request_t *req)
+                                 "got attach for %s but no active graph",
+                                 xlator_req.name);
+                 }
++                if (ret) {
++                        ret = -1;
++                }
+ 
+                 glusterfs_translator_info_response_send (req, ret, NULL, NULL);
+ 
+diff --git a/tests/basic/bug-1595320.t b/tests/basic/bug-1595320.t
+new file mode 100644
+index 0000000..9d856ee
+--- /dev/null
++++ b/tests/basic/bug-1595320.t
+@@ -0,0 +1,92 @@
++#!/bin/bash
++
++. $(dirname $0)/../include.rc
++. $(dirname $0)/../volume.rc
++. $(dirname $0)/../snapshot.rc
++
++cleanup
++
++function count_up_bricks {
++        $CLI --xml volume status $V0 | grep '<status>1' | wc -l
++}
++
++function count_brick_processes {
++        pgrep glusterfsd | wc -l
++}
++
++# Setup 3 LVMS
++LVM_PREFIX="test"
++TEST init_n_bricks 3
++TEST setup_lvm 3
++
++# Start glusterd
++TEST glusterd
++TEST pidof glusterd
++
++# Create volume and enable brick multiplexing
++TEST $CLI volume create $V0 $H0:$L1 $H0:$L2 $H0:$L3
++gluster v set all cluster.brick-multiplex on
++
++# Start the volume
++TEST $CLI volume start $V0
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 3 count_up_bricks
++EXPECT 1 count_brick_processes
++
++# Kill volume ungracefully
++brick_pid=`pgrep glusterfsd`
++
++# Make sure every brick root should be consumed by a brick process
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L1 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L2 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L3 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++
++b1_pid_file=$(ls $GLUSTERD_PIDFILEDIR/vols/$V0/*d-backends-1*.pid)
++b2_pid_file=$(ls $GLUSTERD_PIDFILEDIR/vols/$V0/*d-backends-2*.pid)
++b3_pid_file=$(ls $GLUSTERD_PIDFILEDIR/vols/$V0/*d-backends-3*.pid)
++
++kill -9 $brick_pid
++EXPECT 0 count_brick_processes
++
++# Unmount 3rd brick root from node
++brick_root=$L3
++TEST umount -l $brick_root 2>/dev/null
++
++# Start the volume only 2 brick should be start
++TEST $CLI volume start $V0 force
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 2 count_up_bricks
++EXPECT 1 count_brick_processes
++
++brick_pid=`pgrep glusterfsd`
++
++# Make sure only two brick root should be consumed by a brick process
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L1 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L2 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L3 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 0 ]
++
++# Mount the brick root
++TEST mount -t xfs -o nouuid  /dev/test_vg_3/brick_lvm $brick_root
++
++# Replace brick_pid file to test brick_attach code
++TEST cp $b1_pid_file $b3_pid_file
++
++# Start the volume all brick should be up
++TEST $CLI volume start $V0 force
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 3 count_up_bricks
++EXPECT 1 count_brick_processes
++
++# Make sure every brick root should be consumed by a brick process
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L1 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L2 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++n=`ls -lrth /proc/$brick_pid/fd | grep -iw $L3 | grep -v ".glusterfs" | wc -l`
++TEST [ $n -eq 1 ]
++
++cleanup
+diff --git a/tests/basic/posix/shared-statfs.t b/tests/basic/posix/shared-statfs.t
+index 8caa9fa..3343956 100644
+--- a/tests/basic/posix/shared-statfs.t
++++ b/tests/basic/posix/shared-statfs.t
+@@ -23,6 +23,7 @@ TEST MOUNT_LOOP $LO2 $B0/${V0}2
+ # Create a subdir in mountpoint and use that for volume.
+ TEST $CLI volume create $V0 $H0:$B0/${V0}1/1 $H0:$B0/${V0}2/1;
+ TEST $CLI volume start $V0
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" online_brick_count
+ TEST $GFS --volfile-server=$H0 --volfile-id=$V0 $M0
+ total_space=$(df -P $M0 | tail -1 | awk '{ print $2}')
+ # Keeping the size less than 200M mainly because XFS will use
+@@ -38,6 +39,7 @@ EXPECT 'Stopped' volinfo_field $V0 'Status';
+ TEST $CLI volume add-brick $V0 $H0:$B0/${V0}1/2 $H0:$B0/${V0}2/2 $H0:$B0/${V0}1/3 $H0:$B0/${V0}2/3
+ 
+ TEST $CLI volume start $V0
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "6" online_brick_count
+ TEST $GFS --volfile-server=$H0 --volfile-id=$V0 $M0
+ total_space=$(df -P $M0 | tail -1 | awk '{ print $2}')
+ TEST [ $total_space -gt 194000 -a $total_space -lt 200000 ]
+diff --git a/tests/bitrot/bug-1373520.t b/tests/bitrot/bug-1373520.t
+index 225d3b1..c09d424 100644
+--- a/tests/bitrot/bug-1373520.t
++++ b/tests/bitrot/bug-1373520.t
+@@ -11,6 +11,7 @@ TEST pidof glusterd
+ #Create a disperse volume
+ TEST $CLI volume create $V0 disperse 6 redundancy 2 $H0:$B0/${V0}{0..5}
+ TEST $CLI volume start $V0
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "6" online_brick_count
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT 'Started' volinfo_field $V0 'Status'
+ 
+ #Disable md-cache
+diff --git a/tests/bugs/distribute/bug-1368012.t b/tests/bugs/distribute/bug-1368012.t
+index f89314b..b861554 100644
+--- a/tests/bugs/distribute/bug-1368012.t
++++ b/tests/bugs/distribute/bug-1368012.t
+@@ -22,6 +22,7 @@ EXPECT "$V0" volinfo_field $V0 'Volume Name';
+ EXPECT 'Created' volinfo_field $V0 'Status';
+ ## Start volume and verify
+ TEST $CLI volume start $V0;
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" online_brick_count
+ TEST $CLI volume set $V0 performance.stat-prefetch off
+ EXPECT 'Started' volinfo_field $V0 'Status';
+ TEST glusterfs -s $H0 --volfile-id=$V0 $M0
+@@ -36,6 +37,7 @@ TEST permission_root=`stat -c "%A" $M0`
+ TEST echo $permission_root
+ #Add-brick
+ TEST $CLI volume add-brick $V0 $H0:/${V0}3
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "3" online_brick_count
+ 
+ #Allow one lookup to happen
+ TEST pushd $M0
+diff --git a/tests/bugs/distribute/bug-853258.t b/tests/bugs/distribute/bug-853258.t
+index e39f507..6817d9e 100755
+--- a/tests/bugs/distribute/bug-853258.t
++++ b/tests/bugs/distribute/bug-853258.t
+@@ -31,6 +31,7 @@ done
+ 
+ # Expand the volume and force assignment of new ranges.
+ TEST $CLI volume add-brick $V0 $H0:$B0/${V0}3
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "4" online_brick_count
+ # Force assignment of initial ranges.
+ TEST $CLI volume rebalance $V0 fix-layout start
+ EXPECT_WITHIN $REBALANCE_TIMEOUT "fix-layout completed" fix-layout_status_field $V0
+diff --git a/tests/bugs/quota/bug-1293601.t b/tests/bugs/quota/bug-1293601.t
+index def4ef9..741758b 100644
+--- a/tests/bugs/quota/bug-1293601.t
++++ b/tests/bugs/quota/bug-1293601.t
+@@ -9,6 +9,7 @@ TEST glusterd
+ 
+ TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{1,2,3,4}
+ TEST $CLI volume start $V0
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "4" online_brick_count
+ TEST $CLI volume quota $V0 enable
+ 
+ TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0;
+@@ -27,6 +28,6 @@ EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT "1.0MB" quotausage "/"
+ TEST $CLI volume quota $V0 disable
+ TEST $CLI volume quota $V0 enable
+ 
+-EXPECT_WITHIN 40 "1.0MB" quotausage "/"
++EXPECT_WITHIN 60 "1.0MB" quotausage "/"
+ 
+ cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index 304cef6..09e10bf 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -2844,7 +2844,7 @@ glusterd_do_lvm_snapshot_remove (glusterd_volinfo_t *snap_vol,
+         GLUSTERD_GET_BRICK_PIDFILE (pidfile, snap_vol, brickinfo, priv);
+         if (gf_is_service_running (pidfile, &pid)) {
+                 (void) send_attach_req (this, brickinfo->rpc,
+-                                        brickinfo->path, NULL,
++                                        brickinfo->path, NULL, NULL,
+                                         GLUSTERD_BRICK_TERMINATE);
+                 brickinfo->status = GF_BRICK_STOPPED;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 95df889..fe9cc75 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -2186,7 +2186,7 @@ retry:
+                 goto out;
+         }
+ 
+-        ret = glusterd_brick_process_add_brick (brickinfo, volinfo);
++        ret = glusterd_brick_process_add_brick (brickinfo);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                         GD_MSG_BRICKPROC_ADD_BRICK_FAILED, "Adding brick %s:%s "
+@@ -2372,8 +2372,7 @@ out:
+ }
+ 
+ int
+-glusterd_brick_process_add_brick (glusterd_brickinfo_t *brickinfo,
+-                                  glusterd_volinfo_t *volinfo)
++glusterd_brick_process_add_brick (glusterd_brickinfo_t *brickinfo)
+ {
+         int                      ret = -1;
+         xlator_t                *this = NULL;
+@@ -2500,7 +2499,7 @@ glusterd_volume_stop_glusterfs (glusterd_volinfo_t *volinfo,
+                                       brickinfo->hostname, brickinfo->path);
+ 
+                         (void) send_attach_req (this, brickinfo->rpc,
+-                                                brickinfo->path, NULL,
++                                                brickinfo->path, NULL, NULL,
+                                                 GLUSTERD_BRICK_TERMINATE);
+                 } else {
+                         gf_msg_debug (this->name, 0, "About to stop glusterfsd"
+@@ -5426,23 +5425,92 @@ static int32_t
+ attach_brick_callback (struct rpc_req *req, struct iovec *iov, int count,
+                        void *v_frame)
+ {
+-        call_frame_t    *frame  = v_frame;
+-        glusterd_conf_t *conf   = frame->this->private;
+-        glusterd_brickinfo_t *brickinfo = frame->local;
++        call_frame_t                     *frame     = v_frame;
++        glusterd_conf_t                  *conf      = frame->this->private;
++        glusterd_brickinfo_t             *brickinfo = frame->local;
++        glusterd_brickinfo_t             *other_brick = frame->cookie;
++        glusterd_volinfo_t               *volinfo   =  NULL;
++        xlator_t                         *this      = THIS;
++        int                               ret       = -1;
++        char                              pidfile1[PATH_MAX]      = {0};
++        char                              pidfile2[PATH_MAX]      = {0};
++        gf_getspec_rsp                    rsp   = {0,};
+ 
+         frame->local = NULL;
+-        brickinfo->port_registered = _gf_true;
++        frame->cookie = NULL;
++
++        ret = xdr_to_generic (*iov, &rsp, (xdrproc_t)xdr_gf_getspec_rsp);
++        if (ret < 0) {
++                gf_log (frame->this->name, GF_LOG_ERROR, "XDR decoding error");
++                ret   = -1;
++                goto out;
++        }
++
++        ret =  glusterd_get_volinfo_from_brick (other_brick->path,
++                                                &volinfo);
++        if (ret) {
++                gf_msg (THIS->name, GF_LOG_ERROR, 0,
++                        GD_MSG_VOLINFO_GET_FAIL, "Failed to get volinfo"
++                        " from brick(%s) so  pidfile copying/unlink will fail",
++                        other_brick->path);
++                goto out;
++        }
++        GLUSTERD_GET_BRICK_PIDFILE (pidfile1, volinfo, other_brick, conf);
++        volinfo = NULL;
++
++        ret =  glusterd_get_volinfo_from_brick (brickinfo->path,
++                                                &volinfo);
++        if (ret) {
++                gf_msg (THIS->name, GF_LOG_ERROR, 0,
++                        GD_MSG_VOLINFO_GET_FAIL, "Failed to get volinfo"
++                        " from brick(%s) so  pidfile copying/unlink will fail",
++                        brickinfo->path);
++                goto out;
++        }
++        GLUSTERD_GET_BRICK_PIDFILE (pidfile2, volinfo, brickinfo, conf);
++
++        if (rsp.op_ret == 0) {
++                brickinfo->port_registered = _gf_true;
++
++                /* PID file is copied once brick has attached
++                   successfully
++                */
++                glusterd_copy_file (pidfile1, pidfile2);
++                brickinfo->status = GF_BRICK_STARTED;
++                brickinfo->rpc = rpc_clnt_ref (other_brick->rpc);
++                gf_log (THIS->name, GF_LOG_INFO, "brick %s is attached successfully",
++                        brickinfo->path);
++        } else {
++                gf_log (THIS->name, GF_LOG_INFO, "attach_brick failed pidfile"
++                        " is %s for brick_path %s", pidfile2, brickinfo->path);
++                brickinfo->port = 0;
++                brickinfo->status = GF_BRICK_STOPPED;
++                ret = glusterd_brick_process_remove_brick (brickinfo);
++                if (ret)
++                        gf_msg_debug (this->name, 0, "Couldn't remove brick from"
++                                      " brick process");
++                LOCK (&volinfo->lock);
++                ret = glusterd_store_volinfo (volinfo, GLUSTERD_VOLINFO_VER_AC_NONE);
++                UNLOCK (&volinfo->lock);
++                if (ret) {
++                       gf_msg (this->name, GF_LOG_ERROR, 0,
++                               GD_MSG_VOLINFO_SET_FAIL,
++                               "Failed to store volinfo of "
++                               "%s volume", volinfo->volname);
++                       goto out;
++                }
++        }
++out:
+         synclock_lock (&conf->big_lock);
+         --(conf->blockers);
+         synclock_unlock (&conf->big_lock);
+-
+         STACK_DESTROY (frame->root);
+         return 0;
+ }
+ 
+ int
+ send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path,
+-                 glusterd_brickinfo_t *brickinfo, int op)
++                 glusterd_brickinfo_t *brickinfo, glusterd_brickinfo_t *other_brick, int op)
+ {
+         int                             ret      = -1;
+         struct iobuf                    *iobuf    = NULL;
+@@ -5516,6 +5584,7 @@ send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path,
+ 
+         if (op == GLUSTERD_BRICK_ATTACH) {
+                 frame->local = brickinfo;
++                frame->cookie = other_brick;
+                 cbkfn = attach_brick_callback;
+         }
+         /* Send the msg */
+@@ -5582,27 +5651,19 @@ attach_brick (xlator_t *this,
+                 rpc = rpc_clnt_ref (other_brick->rpc);
+                 if (rpc) {
+                         ret = send_attach_req (this, rpc, path, brickinfo,
++                                               other_brick,
+                                                GLUSTERD_BRICK_ATTACH);
+                         rpc_clnt_unref (rpc);
+                         if (!ret) {
+                                 ret = pmap_registry_extend (this, other_brick->port,
+-                                                            brickinfo->path);
++                                            brickinfo->path);
+                                 if (ret != 0) {
+                                         gf_log (this->name, GF_LOG_ERROR,
+                                                 "adding brick to process failed");
+-                                        return ret;
++                                        goto out;
+                                 }
+-
+-                                /* PID file is copied once brick has attached
+-                                  successfully
+-                                */
+-                                glusterd_copy_file (pidfile1, pidfile2);
+                                 brickinfo->port = other_brick->port;
+-                                brickinfo->status = GF_BRICK_STARTED;
+-                                brickinfo->rpc =
+-                                        rpc_clnt_ref (other_brick->rpc);
+-                                ret = glusterd_brick_process_add_brick (brickinfo,
+-                                                                        volinfo);
++                                ret = glusterd_brick_process_add_brick (brickinfo);
+                                 if (ret) {
+                                         gf_msg (this->name, GF_LOG_ERROR, 0,
+                                                 GD_MSG_BRICKPROC_ADD_BRICK_FAILED,
+@@ -5611,29 +5672,23 @@ attach_brick (xlator_t *this,
+                                                 brickinfo->path);
+                                         return ret;
+                                 }
+-
+-                                if (ret) {
+-                                        gf_msg_debug (this->name, 0, "Add brick"
+-                                                    " to brick process failed");
+-                                        return ret;
+-                                }
+-
+                                 return 0;
+                         }
+                 }
+                 /*
+-                 * It might not actually be safe to manipulate the lock like
+-                 * this, but if we don't then the connection can never actually
+-                 * complete and retries are useless.  Unfortunately, all of the
+-                 * alternatives (e.g. doing all of this in a separate thread)
+-                 * are much more complicated and risky.  TBD: see if there's a
+-                 * better way
++                 * It might not actually be safe to manipulate the lock
++                 * like this, but if we don't then the connection can
++                 * never actually complete and retries are useless.
++                 * Unfortunately, all of the alternatives (e.g. doing
++                 * all of this in a separate thread) are much more
++                 * complicated and risky.
++                 * TBD: see if there's a better way
+                  */
+                 synclock_unlock (&conf->big_lock);
+                 sleep (1);
+                 synclock_lock (&conf->big_lock);
+         }
+-
++out:
+         gf_log (this->name, GF_LOG_WARNING,
+                 "attach failed for %s", brickinfo->path);
+         return ret;
+@@ -5855,6 +5910,7 @@ find_compatible_brick (glusterd_conf_t *conf,
+         return NULL;
+ }
+ 
++
+ /* Below function is use to populate sockpath based on passed pid
+    value as a argument after check the value from proc and also
+    check if passed pid is match with running  glusterfs process
+@@ -5941,6 +5997,62 @@ glusterd_get_sock_from_brick_pid (int pid, char *sockpath, size_t len)
+ }
+ 
+ 
++char *
++search_brick_path_from_proc (pid_t brick_pid, char *brickpath)
++{
++        struct dirent *dp = NULL;
++        DIR *dirp = NULL;
++        size_t len = 0;
++        int fd = -1;
++        char path[PATH_MAX] = {0,};
++        char sym[PATH_MAX] = {0,};
++        struct dirent  scratch[2] = {{0,},};
++        char *brick_path = NULL;
++
++        if (!brickpath)
++                goto out;
++
++        sprintf(path, "/proc/%d/fd/", brick_pid);
++        dirp = sys_opendir (path);
++        if (!dirp)
++                goto out;
++
++        len = strlen (path);
++        if (len >= (sizeof(path) - 2))
++                goto out;
++
++        fd = dirfd (dirp);
++        if (fd  < 0)
++                goto out;
++
++        memset(path, 0, sizeof(path));
++        memset(sym, 0, sizeof(sym));
++
++        while ((dp = sys_readdir(dirp, scratch))) {
++                if (!strcmp(dp->d_name, ".") ||
++                    !strcmp(dp->d_name, ".."))
++                        continue;
++
++                /* check for non numerical descriptors */
++                if (!strtol(dp->d_name, (char **)NULL, 10))
++                        continue;
++
++                len = readlinkat (fd, dp->d_name, sym, sizeof(sym) - 1);
++                if (len > 1) {
++                        sym[len] = '\0';
++                        if (!strcmp (sym, brickpath)) {
++                                brick_path = gf_strdup(sym);
++                                break;
++                        }
++                        memset (sym, 0, sizeof (sym));
++                }
++        }
++out:
++        sys_closedir(dirp);
++        return brick_path;
++}
++
++
+ int
+ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                       glusterd_brickinfo_t *brickinfo,
+@@ -5954,7 +6066,9 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+         int32_t                 pid                   = -1;
+         char                    pidfile[PATH_MAX]     = {0};
+         char                    socketpath[PATH_MAX]  = {0};
++        char                    *brickpath            = NULL;
+         glusterd_volinfo_t      *other_vol;
++        struct statvfs           brickstat = {0,};
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -6000,6 +6114,28 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                 brickinfo->start_triggered = _gf_true;
+ 
+         GLUSTERD_GET_BRICK_PIDFILE (pidfile, volinfo, brickinfo, conf);
++
++        ret = sys_statvfs (brickinfo->path, &brickstat);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR,
++                        errno, GD_MSG_BRICKINFO_CREATE_FAIL,
++                        "failed to get statfs() call on brick %s",
++                        brickinfo->path);
++                goto out;
++        }
++
++        /* Compare fsid is helpful to ensure the existence of a brick_root
++           path before the start/attach a brick
++        */
++        if (brickinfo->statfs_fsid &&
++            (brickinfo->statfs_fsid != brickstat.f_fsid)) {
++                gf_log (this->name, GF_LOG_ERROR,
++                        "fsid comparison is failed it means Brick root path"
++                        " %s is not created by glusterd, start/attach will also fail",
++                        brickinfo->path);
++                goto out;
++        }
++
+         if (gf_is_service_running (pidfile, &pid)) {
+                 if (brickinfo->status != GF_BRICK_STARTING &&
+                     brickinfo->status != GF_BRICK_STARTED) {
+@@ -6019,12 +6155,29 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                          * TBD: re-use RPC connection across bricks
+                          */
+                         if (is_brick_mx_enabled ()) {
++                                brickpath = search_brick_path_from_proc (pid, brickinfo->path);
++                                if (!brickpath) {
++                                        gf_log (this->name, GF_LOG_INFO,
++                                                "Either pid %d is not running or brick"
++                                                " path %s is not consumed so cleanup pidfile",
++                                                pid, brickinfo->path);
++                                        /* search brick is failed so unlink pidfile */
++                                        if (sys_access (pidfile , R_OK) == 0) {
++                                                sys_unlink (pidfile);
++                                        }
++                                        goto run;
++                                }
++                                GF_FREE (brickpath);
+                                 ret = glusterd_get_sock_from_brick_pid (pid, socketpath,
+                                                                         sizeof(socketpath));
+                                 if (ret) {
+-                                        gf_log (this->name, GF_LOG_DEBUG,
++                                        gf_log (this->name, GF_LOG_INFO,
+                                                 "Either pid %d is not running or is not match"
+                                                 " with any running brick process ", pid);
++                                        /* Fetch unix socket is failed so unlink pidfile */
++                                        if (sys_access (pidfile , R_OK) == 0) {
++                                                sys_unlink (pidfile);
++                                        }
+                                         goto run;
+                                 }
+                         } else {
+@@ -6039,7 +6192,7 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                         (void) glusterd_brick_connect (volinfo, brickinfo,
+                                         socketpath);
+ 
+-                        ret = glusterd_brick_process_add_brick (brickinfo, volinfo);
++                        ret = glusterd_brick_process_add_brick (brickinfo);
+                         if (ret) {
+                                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                                         GD_MSG_BRICKPROC_ADD_BRICK_FAILED,
+@@ -6079,6 +6232,10 @@ run:
+                 if (ret == 0) {
+                         goto out;
+                 }
++                /* Attach_brick is failed so unlink pidfile */
++                if (sys_access (pidfile , R_OK) == 0) {
++                        sys_unlink (pidfile);
++                }
+         }
+ 
+         /*
+@@ -7063,14 +7220,15 @@ glusterd_add_brick_to_dict (glusterd_volinfo_t *volinfo,
+                             dict_t  *dict, int32_t count)
+ {
+ 
+-        int             ret                   = -1;
+-        int32_t         pid                   = -1;
+-        char            key[1024]             = {0};
+-        char            base_key[1024]        = {0};
+-        char            pidfile[PATH_MAX]     = {0};
++        int              ret                  = -1;
++        int32_t          pid                  = -1;
++        char             key[1024]            = {0};
++        char             base_key[1024]       = {0};
++        char             pidfile[PATH_MAX]    = {0};
+         xlator_t        *this                 = NULL;
+         glusterd_conf_t *priv                 = NULL;
+-        gf_boolean_t    brick_online          = _gf_false;
++        gf_boolean_t     brick_online         = _gf_false;
++        char            *brickpath            = NULL;
+ 
+         GF_ASSERT (volinfo);
+         GF_ASSERT (brickinfo);
+@@ -7127,7 +7285,20 @@ glusterd_add_brick_to_dict (glusterd_volinfo_t *volinfo,
+         if (glusterd_is_brick_started (brickinfo)) {
+                 if (gf_is_service_running (pidfile, &pid) &&
+                     brickinfo->port_registered) {
+-                        brick_online = _gf_true;
++                        if (!is_brick_mx_enabled ()) {
++                                brick_online = _gf_true;
++                        } else {
++                                brickpath = search_brick_path_from_proc (pid, brickinfo->path);
++                                if (!brickpath) {
++                                        gf_log (this->name, GF_LOG_INFO,
++                                                "brick path %s is not consumed",
++                                                brickinfo->path);
++                                        brick_online = _gf_false;
++                                } else {
++                                        brick_online = _gf_true;
++                                        GF_FREE (brickpath);
++                                }
++                        }
+                 } else {
+                         pid = -1;
+                 }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.h b/xlators/mgmt/glusterd/src/glusterd-utils.h
+index 4c9561e..4835728 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.h
+@@ -179,8 +179,7 @@ int32_t
+ glusterd_resolve_brick (glusterd_brickinfo_t *brickinfo);
+ 
+ int
+-glusterd_brick_process_add_brick (glusterd_brickinfo_t *brickinfo,
+-                                  glusterd_volinfo_t *volinfo);
++glusterd_brick_process_add_brick (glusterd_brickinfo_t *brickinfo);
+ 
+ int
+ glusterd_brick_process_remove_brick (glusterd_brickinfo_t *brickinfo);
+@@ -200,7 +199,8 @@ glusterd_volume_stop_glusterfs (glusterd_volinfo_t *volinfo,
+ 
+ int
+ send_attach_req (xlator_t *this, struct rpc_clnt *rpc, char *path,
+-                 glusterd_brickinfo_t *brick, int op);
++                 glusterd_brickinfo_t *brick,
++                 glusterd_brickinfo_t *other_brick, int op);
+ 
+ glusterd_volinfo_t *
+ glusterd_volinfo_ref (glusterd_volinfo_t *volinfo);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index e34d58a..8bb0b6d 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -2585,8 +2585,13 @@ glusterd_start_volume (glusterd_volinfo_t *volinfo, int flags,
+         }
+ 
+         glusterd_set_volume_status (volinfo, GLUSTERD_STATUS_STARTED);
+-
++        /* Update volinfo on disk in critical section because
++           attach_brick_callback can also call store_volinfo for same
++           volume to update volinfo on disk
++        */
++        LOCK (&volinfo->lock);
+         ret = glusterd_store_volinfo (volinfo, verincrement);
++        UNLOCK (&volinfo->lock);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                         GD_MSG_VOLINFO_SET_FAIL,
+-- 
+1.8.3.1
+

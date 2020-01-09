@@ -1,0 +1,65 @@
+From 6ed11f5918cf21907df99839c9b76cf1144b2572 Mon Sep 17 00:00:00 2001
+From: "Bala.FA" <barumuga@redhat.com>
+Date: Mon, 7 Apr 2014 15:24:10 +0530
+Subject: [PATCH 07/74] build: remove ghost directory entries
+
+ovirt requires hook directories for gluster management and ghost
+directories are no more ghost entries
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Iaf1066ba0655619024f87eaaa039f0010578c567
+Signed-off-by: Bala.FA <barumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60133
+Tested-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 50db6cb..3be99b6 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -757,14 +757,29 @@ install -D -p -m 0644 extras/glusterfs-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs
+ 
+ %if ( 0%{!?_without_georeplication:1} )
+-# geo-rep ghosts
+ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/geo-replication
+ touch %{buildroot}%{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
+ install -D -p -m 0644 extras/glusterfs-georep-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs-georep
+ %endif
+ 
+-# the rest of the ghosts
++%if ( 0%{!?_without_syslog:1} )
++%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
++install -D -p -m 0644 extras/gluster-rsyslog-7.2.conf \
++    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
++%endif
++
++%if ( 0%{?rhel} && 0%{?rhel} == 6 )
++install -D -p -m 0644 extras/gluster-rsyslog-5.8.conf \
++    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
++%endif
++
++%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
++install -D -p -m 0644 extras/logger.conf.example \
++    %{buildroot}%{_sysconfdir}/glusterfs/logger.conf.example
++%endif
++%endif
++
+ touch %{buildroot}%{_sharedstatedir}/glusterd/glusterd.info
+ touch %{buildroot}%{_sharedstatedir}/glusterd/options
+ subdirs=(add-brick create copy-file delete gsync-create remove-brick reset set start stop)
+@@ -1262,6 +1277,7 @@ exit 0
+ %{_sbindir}/gcron.py
+ %{_sbindir}/conf.py
+ 
++<<<<<<< 2944c7b6656a36a79551f9f9f24ab7a10467f13a
+ # /var/lib/glusterd, e.g. hookscripts, etc.
+ %ghost      %attr(0644,-,-) %config(noreplace) %{_sharedstatedir}/glusterd/glusterd.info
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd
+-- 
+1.8.3.1
+

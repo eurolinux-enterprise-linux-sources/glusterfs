@@ -15,6 +15,27 @@
 . $(dirname $0)/../../include.rc
 . $(dirname $0)/../../volume.rc
 
+cleanup
+TEST truncate -s 10GB $B0/brick1
+TEST truncate -s 10GB $B0/brick2
+TEST truncate -s 10GB $B0/brick3
+
+TEST LO1=`SETUP_LOOP $B0/brick1`
+TEST MKFS_LOOP $LO1
+
+TEST LO2=`SETUP_LOOP $B0/brick2`
+TEST MKFS_LOOP $LO2
+
+TEST LO3=`SETUP_LOOP $B0/brick3`
+TEST MKFS_LOOP $LO3
+
+TEST mkdir -p $B0/${V0}1 $B0/${V0}2  $B0/${V0}3
+
+
+TEST MOUNT_LOOP $LO1 $B0/${V0}1
+TEST MOUNT_LOOP $LO2 $B0/${V0}2
+TEST MOUNT_LOOP $LO3 $B0/${V0}3
+
 checksticky () {
 	i=0;
 	while [ ! -k $1 ]; do
@@ -31,7 +52,6 @@ checksticky () {
 	return 0
 }
 
-cleanup;
 
 TEST glusterd
 TEST pidof glusterd
@@ -43,6 +63,7 @@ EXPECT "$V0" volinfo_field $V0 'Volume Name';
 EXPECT 'Created' volinfo_field $V0 'Status';
 EXPECT '3' brick_count $V0
 
+TEST $CLI volume set $V0 parallel-readdir on
 TEST $CLI volume start $V0;
 EXPECT 'Started' volinfo_field $V0 'Status';
 
@@ -53,8 +74,14 @@ TEST glusterfs -s $H0 --volfile-id $V0 $M0;
 TEST mkdir $M0/dir1
 TEST mkdir -p $M0/dir2/dir3
 
-# Create a large file (1GB), so that rebalance takes time
-dd if=/dev/urandom of=$M0/dir1/FILE2 bs=64k count=10240
+# Create a large file (6.4 GB), so that rebalance takes time
+# Reading from /dev/urandom is slow, so we'll cat it together
+dd if=/dev/urandom of=/tmp/FILE2 bs=64k count=10240
+for i in {1..10}; do
+  cat /tmp/FILE2 >> $M0/dir1/FILE2
+done
+
+#dd if=/dev/urandom of=$M0/dir1/FILE2 bs=64k count=10240
 
 # Rename the file to create a linkto, for rebalance to
 # act on the file
@@ -63,7 +90,7 @@ dd if=/dev/urandom of=$M0/dir1/FILE2 bs=64k count=10240
 TEST mv $M0/dir1/FILE2 $M0/dir1/FILE1
 
 # unmount and remount the volume
-TEST umount $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 TEST glusterfs -s $H0 --volfile-id $V0 $M0;
 
 # Start the rebalance
@@ -125,5 +152,6 @@ TEST ln ./dir1/FILE7 ./FILE7
 cd /
 linkcountsrc=$(stat -c %h $M0/dir1/FILE1)
 TEST [[ $linkcountsrc == 14 ]]
-
+UMOUNT_LOOP ${B0}/${V0}{1..3}
+rm -f ${B0}/brick{1..3}
 cleanup;

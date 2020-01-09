@@ -1,0 +1,41 @@
+From 98a7692aebbe05a50f39d9c8d3e44fcfb42a580b Mon Sep 17 00:00:00 2001
+From: moagrawa <moagrawa@redhat.com>
+Date: Mon, 28 May 2018 19:20:54 +0530
+Subject: [PATCH 285/305] gluster: Allow only read-only CLI commands via
+ remote-host
+
+Problem: Current CLI code allows to run all commands via remote-host
+         while SSL is enabled even node is not added in trusted storage
+         pool
+
+Solution: Change condition in init function in glusterd.c to allow only read-only
+          CLI commands via remote-host while SSL is enabled.
+
+BUG: 1582129
+Change-Id: Ibf427c417437cd051822e30dea11a6c21d0dca6b
+Signed-off-by: moagrawa <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140024
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd.c | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd.c b/xlators/mgmt/glusterd/src/glusterd.c
+index ed01b93..78a37eb 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.c
++++ b/xlators/mgmt/glusterd/src/glusterd.c
+@@ -1750,11 +1750,6 @@ init (xlator_t *this)
+                         goto out;
+                 }
+                 /*
+-                 * With strong authentication, we can afford to allow
+-                 * privileged operations over TCP.
+-                 */
+-                gd_inet_programs[1] = &gd_svc_cli_prog;
+-                /*
+                  * This is the only place where we want secure_srvr to reflect
+                  * the management-plane setting.
+                  */
+-- 
+1.8.3.1
+

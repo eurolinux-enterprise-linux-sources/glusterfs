@@ -14,7 +14,7 @@ TEST $CLI volume start $V0;
 
 TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0;
 B0_hiphenated=`echo $B0 | tr '/' '-'`
-kill -9 `cat $GLUSTERD_WORKDIR/vols/$V0/run/$H0$B0_hiphenated-brick1.pid` ;
+kill_brick $V0 $H0 $B0/brick1
 
 echo "GLUSTER FILE SYSTEM" > $M0/FILE1
 echo "GLUSTER FILE SYSTEM" > $M0/FILE2
@@ -26,7 +26,7 @@ function get_gfid()
 {
 path_of_file=$1
 
-gfid_value=`getfattr -d -m . $path_of_file -e hex 2>/dev/null |  grep trusted.gfid | cut --complement -c -15 | sed 's/\([a-f0-9]\{8\}\)\([a-f0-9]\{4\}\)\([a-f0-9]\{4\}\)\([a-f0-9]\{4\}\)/\1-\2-\3-\4-/'`
+gfid_value=`getfattr -d -m . $path_of_file -e hex 2>/dev/null |  grep trusted.gfid |  grep -v gfid2path | cut --complement -c -15 | sed 's/\([a-f0-9]\{8\}\)\([a-f0-9]\{4\}\)\([a-f0-9]\{4\}\)\([a-f0-9]\{4\}\)/\1-\2-\3-\4-/'`
 
 echo $gfid_value
 }

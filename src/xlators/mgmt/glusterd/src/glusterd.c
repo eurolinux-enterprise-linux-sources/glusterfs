@@ -8,10 +8,6 @@
    cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 #include <time.h>
 #include <grp.h>
 #include <sys/uio.h>
@@ -51,6 +47,7 @@
 #include "glusterd-geo-rep.h"
 #include "run.h"
 #include "rpc-clnt-ping.h"
+#include "rpc-common-xdr.h"
 
 #include "syncop.h"
 
@@ -127,6 +124,8 @@ const char *gd_op_list[GD_OP_MAX + 1] = {
         [GD_OP_SYS_EXEC]                = "Execute system commands",
         [GD_OP_GSYNC_CREATE]            = "Geo-replication Create",
         [GD_OP_SNAP]                    = "Snapshot",
+        [GD_OP_RESET_BRICK]             = "Reset Brick",
+        [GD_OP_MAX_OPVERSION]           = "Maximum supported op-version",
         [GD_OP_MAX]                     = "Invalid op"
 };
 
@@ -235,6 +234,72 @@ out:
 }
 
 int
+glusterd_client_statedump_submit_req (char *volname, char *target_ip,
+                                      char *pid)
+{
+        gf_statedump             statedump_req      = {0, };
+        glusterd_conf_t         *conf               = NULL;
+        int                      ret                = 0;
+        char                    *end_ptr            = NULL;
+        rpc_transport_t         *trans              = NULL;
+        char                    *ip_addr            = NULL;
+        xlator_t                *this               = NULL;
+        char                     tmp[UNIX_PATH_MAX] = {0, };
+
+        this = THIS;
+        GF_ASSERT (this);
+        conf = this->private;
+        GF_ASSERT (conf);
+
+        if (target_ip == NULL || pid == NULL) {
+                ret = -1;
+                goto out;
+        }
+
+        statedump_req.pid = strtol (pid, &end_ptr, 10);
+
+        gf_msg_debug (this->name, 0, "Performing statedump on volume %s "
+                      "client with pid:%d host:%s", volname, statedump_req.pid,
+                      target_ip);
+
+        pthread_mutex_lock (&conf->xprt_lock);
+        {
+                list_for_each_entry (trans, &conf->xprt_list, list) {
+                        /* check if this connection matches "all" or the
+                         * volname */
+                        if (strncmp (volname, "all", NAME_MAX) &&
+                            strncmp (trans->peerinfo.volname, volname,
+                                     NAME_MAX)) {
+                                /* no match, try next trans */
+                                continue;
+                        }
+
+                        strcpy (tmp, trans->peerinfo.identifier);
+                        ip_addr = strtok (tmp, ":");
+                        if (gf_is_same_address (ip_addr, target_ip)) {
+                                /* Every gluster client would have
+                                 * connected to glusterd(volfile server). This
+                                 * connection is used to send the statedump
+                                 * request rpc to the application.
+                                 */
+                                gf_msg_trace (this->name, 0, "Submitting "
+                                        "statedump rpc request for %s",
+                                        trans->peerinfo.identifier);
+                                rpcsvc_request_submit (conf->rpc, trans,
+                                                       &glusterd_cbk_prog,
+                                                       GF_CBK_STATEDUMP,
+                                                       &statedump_req, this->ctx,
+                                                       (xdrproc_t)xdr_gf_statedump);
+                        }
+                }
+        }
+        pthread_mutex_unlock (&conf->xprt_lock);
+out:
+        return ret;
+
+}
+
+int
 glusterd_fetchspec_notify (xlator_t *this)
 {
         int              ret   = -1;
@@ -248,7 +313,8 @@ glusterd_fetchspec_notify (xlator_t *this)
                 list_for_each_entry (trans, &priv->xprt_list, list) {
                         rpcsvc_callback_submit (priv->rpc, trans,
                                                 &glusterd_cbk_prog,
-                                                GF_CBK_FETCHSPEC, NULL, 0);
+                                                GF_CBK_FETCHSPEC, NULL, 0,
+                                                NULL);
                 }
         }
         pthread_mutex_unlock (&priv->xprt_lock);
@@ -284,7 +350,8 @@ glusterd_fetchsnap_notify (xlator_t *this)
                 list_for_each_entry (trans, &priv->xprt_list, list) {
                         rpcsvc_callback_submit (priv->rpc, trans,
                                                 &glusterd_cbk_prog,
-                                                GF_CBK_GET_SNAPS, NULL, 0);
+                                                GF_CBK_GET_SNAPS, NULL, 0,
+                                                NULL);
                 }
         }
         pthread_mutex_unlock (&priv->xprt_lock);
@@ -357,7 +424,7 @@ glusterd_rpcsvc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
                 pthread_mutex_lock (&priv->xprt_lock);
                 list_del (&xprt->list);
                 pthread_mutex_unlock (&priv->xprt_lock);
-                pmap_registry_remove (this, 0, NULL, GF_PMAP_PORT_NONE, xprt);
+                pmap_registry_remove (this, 0, NULL, GF_PMAP_PORT_ANY, xprt);
                 break;
         }
 
@@ -395,14 +462,12 @@ glusterd_rpcsvc_options_build (dict_t *options)
         int             ret = 0;
         uint32_t        backlog = 0;
 
-        ret = dict_get_uint32 (options, "transport.socket.listen-backlog",
-                               &backlog);
+        ret = dict_get_uint32 (options, "transport.listen-backlog", &backlog);
 
         if (ret) {
-                backlog = GLUSTERD_SOCKET_LISTEN_BACKLOG;
+                backlog = GLUSTERFS_SOCKET_LISTEN_BACKLOG;
                 ret = dict_set_uint32 (options,
-                                      "transport.socket.listen-backlog",
-                                      backlog);
+                                      "transport.listen-backlog", backlog);
                 if (ret)
                         goto out;
         }
@@ -477,16 +542,16 @@ group_write_allow (char *path, gid_t gid)
         struct stat st = {0,};
         int ret        = 0;
 
-        ret = stat (path, &st);
+        ret = sys_stat (path, &st);
         if (ret == -1)
                 goto out;
         GF_ASSERT (S_ISDIR (st.st_mode));
 
-        ret = chown (path, -1, gid);
+        ret = sys_chown (path, -1, gid);
         if (ret == -1)
                 goto out;
 
-        ret = chmod (path, (st.st_mode & ~S_IFMT) | S_IWGRP|S_IXGRP|S_ISVTX);
+        ret = sys_chmod (path, (st.st_mode & ~S_IFMT) | S_IWGRP|S_IXGRP|S_ISVTX);
 
  out:
         if (ret == -1)
@@ -700,7 +765,7 @@ configure_syncdaemon (glusterd_conf_t *conf)
         /* pid-file */
         runinit_gsyncd_setrx (&runner, conf);
         runner_add_arg (&runner, "pid-file");
-        runner_argprintf (&runner, "%s/${mastervol}_${remotehost}_${slavevol}/${eSlave}.pid", georepdir);
+        runner_argprintf (&runner, "%s/${mastervol}_${remotehost}_${slavevol}/monitor.pid", georepdir);
         runner_add_args (&runner, ".", ".", NULL);
         RUN_GSYNCD_CMD;
 
@@ -714,7 +779,7 @@ configure_syncdaemon (glusterd_conf_t *conf)
         /* state-file */
         runinit_gsyncd_setrx (&runner, conf);
         runner_add_arg (&runner, "state-file");
-        runner_argprintf (&runner, "%s/${mastervol}_${remotehost}_${slavevol}/${eSlave}.status", georepdir);
+        runner_argprintf (&runner, "%s/${mastervol}_${remotehost}_${slavevol}/monitor.status", georepdir);
         runner_add_args (&runner, ".", ".", NULL);
         RUN_GSYNCD_CMD;
 
@@ -805,7 +870,7 @@ configure_syncdaemon (glusterd_conf_t *conf)
         runinit_gsyncd_setrx (&runner, conf);
         runner_add_args (&runner,
                          "log-file",
-                         DEFAULT_LOG_FILE_DIRECTORY"/"GEOREP"-slaves/${session_owner}:${eSlave}.log",
+                         DEFAULT_LOG_FILE_DIRECTORY"/"GEOREP"-slaves/${session_owner}:${local_node}${local_id}.${slavevol}.log",
                          ".", NULL);
         RUN_GSYNCD_CMD;
 
@@ -813,7 +878,7 @@ configure_syncdaemon (glusterd_conf_t *conf)
         runinit_gsyncd_setrx (&runner, conf);
         runner_add_args (&runner,
                          "log-file-mbr",
-                         DEFAULT_LOG_FILE_DIRECTORY"/"GEOREP"-slaves/mbr/${session_owner}:${eSlave}.log",
+                         DEFAULT_LOG_FILE_DIRECTORY"/"GEOREP"-slaves/mbr/${session_owner}:${local_node}${local_id}.${slavevol}.log",
                          ".", NULL);
         RUN_GSYNCD_CMD;
 
@@ -821,7 +886,7 @@ configure_syncdaemon (glusterd_conf_t *conf)
         runinit_gsyncd_setrx (&runner, conf);
         runner_add_args (&runner,
                          "gluster-log-file",
-                         DEFAULT_LOG_FILE_DIRECTORY"/"GEOREP"-slaves/${session_owner}:${eSlave}.gluster.log",
+                         DEFAULT_LOG_FILE_DIRECTORY"/"GEOREP"-slaves/${session_owner}:${local_node}${local_id}.${slavevol}.gluster.log",
                          ".", NULL);
         RUN_GSYNCD_CMD;
 
@@ -851,7 +916,7 @@ check_prepare_mountbroker_root (char *mountbroker_root)
         ret = open (mountbroker_root, O_RDONLY);
         if (ret != -1) {
                 dfd = ret;
-                ret = fstat (dfd, &st);
+                ret = sys_fstat (dfd, &st);
         }
         if (ret == -1 || !S_ISDIR (st.st_mode)) {
                 gf_msg ("glusterd", GF_LOG_ERROR, errno,
@@ -880,10 +945,10 @@ check_prepare_mountbroker_root (char *mountbroker_root)
         dfd0 = dup (dfd);
 
         for (;;) {
-                ret = sys_openat (dfd, "..", O_RDONLY);
+                ret = sys_openat (dfd, "..", O_RDONLY, 0);
                 if (ret != -1) {
                         dfd2 = ret;
-                        ret = fstat (dfd2, &st2);
+                        ret = sys_fstat (dfd2, &st2);
                 }
                 if (ret == -1) {
                         gf_msg ("glusterd", GF_LOG_ERROR, errno,
@@ -913,7 +978,7 @@ check_prepare_mountbroker_root (char *mountbroker_root)
                                 "directory are probably too strict");
                 }
 
-                close (dfd);
+                sys_close (dfd);
                 dfd = dfd2;
                 st = st2;
         }
@@ -936,11 +1001,11 @@ check_prepare_mountbroker_root (char *mountbroker_root)
 
  out:
         if (dfd0 != -1)
-                close (dfd0);
+                sys_close (dfd0);
         if (dfd != -1)
-                close (dfd);
+                sys_close (dfd);
         if (dfd2 != -1)
-                close (dfd2);
+                sys_close (dfd2);
 
         return ret;
 }
@@ -1140,7 +1205,7 @@ glusterd_stop_uds_listener (xlator_t *this)
         } else {
                 strncpy (sockfile, sock_data->data, UNIX_PATH_MAX);
         }
-        unlink (sockfile);
+        sys_unlink (sockfile);
 
         return;
 }
@@ -1192,7 +1257,7 @@ glusterd_find_correct_var_run_dir (xlator_t *this, char *var_run_dir)
          * and glusterd maintained entry point will be different. Therefore
          * identify the correct run dir and use it
          */
-        ret = lstat (GLUSTERD_VAR_RUN_DIR, &buf);
+        ret = sys_lstat (GLUSTERD_VAR_RUN_DIR, &buf);
         if (ret != 0) {
                 gf_msg (this->name, GF_LOG_ERROR, errno,
                         GD_MSG_FILE_OP_FAILED,
@@ -1228,7 +1293,7 @@ glusterd_init_var_run_dirs (xlator_t *this, char *var_run_dir,
         snprintf (abs_path, sizeof(abs_path), "%s%s",
                   var_run_dir, dir_to_be_created);
 
-        ret = stat (abs_path, &buf);
+        ret = sys_stat (abs_path, &buf);
         if ((ret != 0) && (ENOENT != errno)) {
                 gf_msg (this->name, GF_LOG_ERROR, errno,
                         GD_MSG_FILE_OP_FAILED,
@@ -1264,34 +1329,50 @@ out:
         return ret;
 }
 
-static void
-glusterd_svcs_build ()
+static int
+is_upgrade (dict_t *options, gf_boolean_t *upgrade)
 {
-        xlator_t           *this    = NULL;
-        glusterd_conf_t    *priv    = NULL;
+        int              ret              = 0;
+        char            *type             = NULL;
 
-        this = THIS;
-        GF_ASSERT (this);
-
-        priv = this->private;
-        GF_ASSERT (priv);
-
-        priv->shd_svc.build = glusterd_shdsvc_build;
-        priv->shd_svc.build (&(priv->shd_svc));
-
-        priv->nfs_svc.build = glusterd_nfssvc_build;
-        priv->nfs_svc.build (&(priv->nfs_svc));
-
-        priv->quotad_svc.build = glusterd_quotadsvc_build;
-        priv->quotad_svc.build (&(priv->quotad_svc));
-
-        priv->bitd_svc.build = glusterd_bitdsvc_build;
-        priv->bitd_svc.build (&(priv->bitd_svc));
-
-        priv->scrub_svc.build = glusterd_scrubsvc_build;
-        priv->scrub_svc.build (&(priv->scrub_svc));
-
+        ret = dict_get_str (options, "upgrade", &type);
+        if (!ret) {
+                ret = gf_string2boolean (type, upgrade);
+                if (ret) {
+                        gf_msg ("glusterd", GF_LOG_ERROR, 0,
+                                GD_MSG_STR_TO_BOOL_FAIL, "upgrade option "
+                                "%s is not a valid boolean type", type);
+                        ret = -1;
+                        goto out;
+                }
+        }
+        ret = 0;
+out:
+        return ret;
 }
+
+static int
+is_downgrade (dict_t *options, gf_boolean_t *downgrade)
+{
+        int              ret              = 0;
+        char            *type             = NULL;
+
+        ret = dict_get_str (options, "downgrade", &type);
+        if (!ret) {
+                ret = gf_string2boolean (type, downgrade);
+                if (ret) {
+                        gf_msg ("glusterd", GF_LOG_ERROR, 0,
+                                GD_MSG_STR_TO_BOOL_FAIL, "downgrade option "
+                                "%s is not a valid boolean type", type);
+                        ret = -1;
+                        goto out;
+                }
+        }
+        ret = 0;
+out:
+        return ret;
+}
+
 /*
  * init - called during glusterd initialization
  *
@@ -1309,15 +1390,19 @@ init (xlator_t *this)
         struct stat        buf                        = {0,};
         char               storedir[PATH_MAX]         = {0,};
         char               workdir[PATH_MAX]          = {0,};
+        char               rundir[PATH_MAX]           = {0,};
         char               cmd_log_filename[PATH_MAX] = {0,};
-        int                first_time                 = 0;
         char              *mountbroker_root           = NULL;
         int                i                          = 0;
         int                total_transport            = 0;
+        gf_boolean_t       valgrind                   = _gf_false;
         char              *valgrind_str               = NULL;
         char              *transport_type             = NULL;
         char               var_run_dir[PATH_MAX]      = {0,};
         int32_t            workers                    = 0;
+        gf_boolean_t       upgrade                    = _gf_false;
+        gf_boolean_t       downgrade                  = _gf_false;
+        char              *localtime_logging          = NULL;
 
 #ifndef GF_DARWIN_HOST_OS
         {
@@ -1339,6 +1424,17 @@ init (xlator_t *this)
         }
 #endif
 
+        dir_data = dict_get (this->options, "run-directory");
+
+        if (!dir_data) {
+                /* Use default working dir */
+                strncpy (rundir, DEFAULT_VAR_RUN_DIRECTORY, PATH_MAX);
+        } else {
+                strncpy (rundir, dir_data->data, PATH_MAX);
+        }
+
+        dir_data = NULL;
+
         dir_data = dict_get (this->options, "working-directory");
 
         if (!dir_data) {
@@ -1348,7 +1444,7 @@ init (xlator_t *this)
                 strncpy (workdir, dir_data->data, PATH_MAX);
         }
 
-        ret = stat (workdir, &buf);
+        ret = sys_stat (workdir, &buf);
         if ((ret != 0) && (ENOENT != errno)) {
                 gf_msg (this->name, GF_LOG_ERROR, errno,
                         GD_MSG_DIR_OP_FAILED,
@@ -1376,14 +1472,17 @@ init (xlator_t *this)
                                 " ,errno = %d", workdir, errno);
                         exit (1);
                 }
-
-                first_time = 1;
         }
 
         setenv ("GLUSTERD_WORKDIR", workdir, 1);
         gf_msg (this->name, GF_LOG_INFO, 0,
                 GD_MSG_CURR_WORK_DIR_INFO, "Using %s as working directory",
                 workdir);
+
+        setenv ("DEFAULT_VAR_RUN_DIRECTORY", rundir, 1);
+        gf_msg (this->name, GF_LOG_INFO, 0,
+                GD_MSG_CURR_WORK_DIR_INFO, "Using %s as pid file working "
+                "directory", rundir);
 
         ret = glusterd_find_correct_var_run_dir (this, var_run_dir);
         if (ret) {
@@ -1395,6 +1494,7 @@ init (xlator_t *this)
 
         ret = glusterd_init_var_run_dirs (this, var_run_dir,
                                       GLUSTERD_DEFAULT_SNAPS_BRICK_DIR);
+
         if (ret) {
                 gf_msg (this->name, GF_LOG_CRITICAL, 0,
                         GD_MSG_CREATE_DIR_FAILED, "Unable to create "
@@ -1414,6 +1514,51 @@ init (xlator_t *this)
                 exit (1);
         }
 
+        ret = glusterd_init_var_run_dirs (this, rundir,
+                                          GLUSTERD_BITD_RUN_DIR);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                        GD_MSG_CREATE_DIR_FAILED, "Unable to create "
+                        "bitd running directory");
+                exit (1);
+        }
+
+        ret = glusterd_init_var_run_dirs (this, rundir,
+                                          GLUSTERD_SCRUB_RUN_DIR);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                        GD_MSG_CREATE_DIR_FAILED, "Unable to create "
+                        "scrub running directory");
+                exit (1);
+        }
+
+        ret = glusterd_init_var_run_dirs (this, rundir,
+                                          GLUSTERD_GLUSTERSHD_RUN_DIR);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                        GD_MSG_CREATE_DIR_FAILED, "Unable to create "
+                        "glustershd running directory");
+                exit (1);
+        }
+
+        ret = glusterd_init_var_run_dirs (this, rundir,
+                                          GLUSTERD_NFS_RUN_DIR);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                        GD_MSG_CREATE_DIR_FAILED, "Unable to create "
+                        "nfs running directory");
+                exit (1);
+        }
+
+        ret = glusterd_init_var_run_dirs (this, rundir,
+                                          GLUSTERD_QUOTAD_RUN_DIR);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                        GD_MSG_CREATE_DIR_FAILED, "Unable to create "
+                        "quota running directory");
+                exit (1);
+        }
+
         snprintf (cmd_log_filename, PATH_MAX, "%s/cmd_history.log",
                   DEFAULT_LOG_FILE_DIRECTORY);
         ret = gf_cmd_log_init (cmd_log_filename);
@@ -1427,7 +1572,20 @@ init (xlator_t *this)
 
         snprintf (storedir, PATH_MAX, "%s/vols", workdir);
 
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
+
+        if ((-1 == ret) && (errno != EEXIST)) {
+                gf_msg (this->name, GF_LOG_CRITICAL, errno,
+                        GD_MSG_CREATE_DIR_FAILED,
+                        "Unable to create volume directory %s"
+                        " ,errno = %d", storedir, errno);
+                exit (1);
+        }
+
+        /*keeping individual volume pid file information in /var/run/gluster* */
+        snprintf (storedir, PATH_MAX, "%s/vols", rundir);
+
+        ret = sys_mkdir (storedir, 0777);
 
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
@@ -1439,7 +1597,7 @@ init (xlator_t *this)
 
         snprintf (storedir, PATH_MAX, "%s/snaps", workdir);
 
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
 
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
@@ -1451,7 +1609,7 @@ init (xlator_t *this)
 
         snprintf (storedir, PATH_MAX, "%s/peers", workdir);
 
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
 
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
@@ -1462,7 +1620,7 @@ init (xlator_t *this)
         }
 
         snprintf (storedir, PATH_MAX, "%s/bricks", DEFAULT_LOG_FILE_DIRECTORY);
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_CREATE_DIR_FAILED,
@@ -1472,7 +1630,7 @@ init (xlator_t *this)
         }
 
         snprintf (storedir, PATH_MAX, "%s/nfs", workdir);
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_CREATE_DIR_FAILED,
@@ -1482,7 +1640,7 @@ init (xlator_t *this)
         }
 
         snprintf (storedir, PATH_MAX, "%s/bitd", workdir);
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_CREATE_DIR_FAILED,
@@ -1492,7 +1650,7 @@ init (xlator_t *this)
         }
 
         snprintf (storedir, PATH_MAX, "%s/scrub", workdir);
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_CREATE_DIR_FAILED,
@@ -1502,7 +1660,7 @@ init (xlator_t *this)
         }
 
         snprintf (storedir, PATH_MAX, "%s/glustershd", workdir);
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_CREATE_DIR_FAILED,
@@ -1512,7 +1670,7 @@ init (xlator_t *this)
         }
 
         snprintf (storedir, PATH_MAX, "%s/quotad", workdir);
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_CREATE_DIR_FAILED,
@@ -1522,7 +1680,7 @@ init (xlator_t *this)
         }
 
         snprintf (storedir, PATH_MAX, "%s/groups", workdir);
-        ret = mkdir (storedir, 0777);
+        ret = sys_mkdir (storedir, 0777);
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_msg (this->name, GF_LOG_CRITICAL, errno,
                         GD_MSG_CREATE_DIR_FAILED,
@@ -1642,12 +1800,14 @@ init (xlator_t *this)
         CDS_INIT_LIST_HEAD (&conf->volumes);
         CDS_INIT_LIST_HEAD (&conf->snapshots);
         CDS_INIT_LIST_HEAD (&conf->missed_snaps_list);
+        CDS_INIT_LIST_HEAD (&conf->brick_procs);
 
         pthread_mutex_init (&conf->mutex, NULL);
         conf->rpc = rpc;
         conf->uds_rpc = uds_rpc;
         conf->gfs_mgmt = &gd_brick_prog;
         strncpy (conf->workdir, workdir, PATH_MAX);
+        strncpy (conf->rundir, rundir, PATH_MAX);
 
         synclock_init (&conf->big_lock, SYNC_LOCK_RECURSIVE);
         pthread_mutex_init (&conf->xprt_lock, NULL);
@@ -1671,17 +1831,19 @@ init (xlator_t *this)
          }
 
         /* Set option to run bricks on valgrind if enabled in glusterd.vol */
-        conf->valgrind = _gf_false;
+        this->ctx->cmd_args.valgrind = valgrind;
         ret = dict_get_str (this->options, "run-with-valgrind", &valgrind_str);
         if (ret < 0) {
                 gf_msg_debug (this->name, 0,
                         "cannot get run-with-valgrind value");
         }
         if (valgrind_str) {
-                if (gf_string2boolean (valgrind_str, &(conf->valgrind))) {
+                if (gf_string2boolean (valgrind_str, &valgrind)) {
                         gf_msg (this->name, GF_LOG_WARNING, EINVAL,
                                 GD_MSG_INVALID_ENTRY,
                                 "run-with-valgrind value not a boolean string");
+                } else {
+                        this->ctx->cmd_args.valgrind = valgrind;
                 }
         }
 
@@ -1693,7 +1855,12 @@ init (xlator_t *this)
         this->private = conf;
         glusterd_mgmt_v3_lock_init ();
         glusterd_txn_opinfo_dict_init ();
-        glusterd_svcs_build ();
+
+        glusterd_shdsvc_build (&conf->shd_svc);
+        glusterd_nfssvc_build (&conf->nfs_svc);
+        glusterd_quotadsvc_build (&conf->quotad_svc);
+        glusterd_bitdsvc_build (&conf->bitd_svc);
+        glusterd_scrubsvc_build (&conf->scrub_svc);
 
         /* Make install copies few of the hook-scripts by creating hooks
          * directory. Hence purposefully not doing the check for the presence of
@@ -1722,9 +1889,19 @@ init (xlator_t *this)
         if (ret)
                 goto out;
 
-        ret = configure_syncdaemon (conf);
+        ret = is_upgrade (this->options, &upgrade);
         if (ret)
                 goto out;
+
+        ret = is_downgrade (this->options, &downgrade);
+        if (ret)
+                goto out;
+
+        if (!upgrade && !downgrade) {
+                ret = configure_syncdaemon (conf);
+                if (ret)
+                        goto out;
+        }
 
         /* Restoring op-version needs to be done before initializing the
          * services as glusterd_svc_init_common () invokes
@@ -1747,18 +1924,35 @@ init (xlator_t *this)
         if (ret < 0)
                 goto out;
 
-        /* If there are no 'friends', this would be the best time to
-         * spawn process/bricks that may need (re)starting since last
-         * time (this) glusterd was up.*/
+        if (dict_get_str (conf->opts, GLUSTERD_LOCALTIME_LOGGING_KEY,
+                          &localtime_logging) == 0) {
+                int already_enabled = gf_log_get_localtime ();
 
-        if (cds_list_empty (&conf->peers)) {
-                glusterd_launch_synctask (glusterd_spawn_daemons, NULL);
+                if (strcmp (localtime_logging, "enable") == 0) {
+                        gf_log_set_localtime (1);
+                        if (!already_enabled)
+                                gf_msg (this->name, GF_LOG_INFO, 0,
+                                        GD_MSG_LOCALTIME_LOGGING_ENABLE,
+                                        "localtime logging enable");
+                } else if (strcmp (localtime_logging, "disable") == 0) {
+                        gf_log_set_localtime (0);
+                        if (already_enabled)
+                                gf_msg (this->name, GF_LOG_INFO, 0,
+                                        GD_MSG_LOCALTIME_LOGGING_DISABLE,
+                                        "localtime logging disable");
+                }
         }
-        ret = glusterd_options_init (this);
-        if (ret < 0)
-                goto out;
 
-        ret = glusterd_handle_upgrade_downgrade (this->options, conf);
+        conf->blockers = 0;
+        /* If the peer count is less than 2 then this would be the best time to
+         * spawn process/bricks that may need (re)starting since last time
+         * (this) glusterd was up. */
+        if (glusterd_get_peers_count () < 2)
+                glusterd_launch_synctask (glusterd_spawn_daemons, NULL);
+
+
+        ret = glusterd_handle_upgrade_downgrade (this->options, conf, upgrade,
+                                                 downgrade);
         if (ret)
                 goto out;
 
@@ -1801,11 +1995,8 @@ out:
 void
 fini (xlator_t *this)
 {
-        glusterd_conf_t *conf = NULL;
         if (!this || !this->private)
                 goto out;
-
-        conf = this->private;
 
         glusterd_stop_uds_listener (this); /*stop unix socket rpc*/
         glusterd_stop_listener (this);     /*stop tcp/ip socket rpc*/
@@ -1853,7 +2044,7 @@ notify (xlator_t *this, int32_t event, void *data, ...)
                 case GF_EVENT_POLLERR:
                         break;
 
-                case GF_EVENT_TRANSPORT_CLEANUP:
+                case GF_EVENT_CLEANUP:
                         break;
 
                 default:

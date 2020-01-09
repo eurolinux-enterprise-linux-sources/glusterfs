@@ -10,11 +10,6 @@
 #ifndef _GLUSTERD_MGMT_H_
 #define _GLUSTERD_MGMT_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 void gd_mgmt_v3_collate_errors (struct syncargs *args, int op_ret, int op_errno,
                                 char *op_errstr, int op_code, uuid_t peerid,
                                 u_char *uuid);
@@ -79,4 +74,10 @@ glusterd_mgmt_v3_release_peer_locks (glusterd_op_t op, dict_t *dict,
 
 int32_t
 glusterd_multiple_mgmt_v3_unlock (dict_t *dict, uuid_t uuid);
+
+int
+glusterd_reset_brick_prevalidate (dict_t *dict, char **op_errstr,
+                                  dict_t *rsp_dict);
+int
+glusterd_op_reset_brick (dict_t *dict, dict_t *rsp_dict);
 #endif /* _GLUSTERD_MGMT_H_ */

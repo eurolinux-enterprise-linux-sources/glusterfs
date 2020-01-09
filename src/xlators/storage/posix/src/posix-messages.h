@@ -45,7 +45,7 @@
  */
 
 #define POSIX_COMP_BASE         GLFS_MSGID_COMP_POSIX
-#define GLFS_NUM_MESSAGES       105
+#define GLFS_NUM_MESSAGES       110
 #define GLFS_MSGID_END          (POSIX_COMP_BASE + GLFS_NUM_MESSAGES + 1)
 /* Messaged with message IDs */
 #define glfs_msg_start_x POSIX_COMP_BASE, "Invalid: Start of messages"
@@ -900,6 +900,60 @@
  * @recommendedaction
  *
  */
+
+#define P_MSG_SEEK_UNKOWN                       (POSIX_COMP_BASE + 106)
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define P_MSG_SEEK_FAILED                       (POSIX_COMP_BASE + 107)
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define P_MSG_INODE_RESOLVE_FAILED              (POSIX_COMP_BASE + 108)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define P_MSG_PREOP_CHECK_FAILED              (POSIX_COMP_BASE + 109)
+
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define P_MSG_LEASE_DISABLED                    (POSIX_COMP_BASE + 110)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
+#define P_MSG_ANCESTORY_FAILED                    (POSIX_COMP_BASE + 111)
+
+/*!
+ * @messageid
+ * @diagnosis
+ * @recommendedaction
+ *
+ */
+
 
 /*------------*/
 #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"

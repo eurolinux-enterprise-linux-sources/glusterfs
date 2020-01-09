@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -31,6 +26,8 @@
 
 #include <sys/stat.h>
 
+#include "syscall.h"
+
 #define GF_JSON_MSG_LENGTH      8192
 #define GF_SYSLOG_CEE_FORMAT    \
         "@cee: {\"msg\": \"%s\", \"gf_code\": \"%u\", \"gf_message\": \"%s\"}"
@@ -38,6 +35,7 @@
 #define GF_LOG_BACKTRACE_DEPTH  5
 #define GF_LOG_BACKTRACE_SIZE   4096
 #define GF_LOG_TIMESTR_SIZE     256
+#define GF_MAX_SLOG_PAIR_COUNT  100
 
 #include "xlator.h"
 #include "logging.h"
@@ -143,6 +141,31 @@ gf_log_set_loglevel (gf_loglevel_t level)
                 ctx->log.loglevel = level;
 }
 
+int
+gf_log_get_localtime (void)
+{
+        glusterfs_ctx_t *ctx = NULL;
+
+        ctx = THIS->ctx;
+
+        if (ctx)
+                return ctx->log.localtime;
+        else
+                /* return global defaults (see gf_log_globals_init) */
+                return 0;
+}
+
+void
+gf_log_set_localtime (int on_off)
+{
+        glusterfs_ctx_t *ctx = NULL;
+
+        ctx = THIS->ctx;
+
+        if (ctx)
+                ctx->log.localtime = on_off;
+}
+
 void
 gf_log_flush (void)
 {
@@ -167,7 +190,6 @@ gf_log_set_xl_loglevel (void *this, gf_loglevel_t level)
         xlator_t *xl = this;
         if (!xl)
                 return;
-        xl->ctx->log.gf_log_xl_log_set = 1;
         xl->loglevel = level;
 }
 
@@ -376,7 +398,7 @@ gf_log_rotate(glusterfs_ctx_t *ctx)
                                 "logfile");
                         return;
                 }
-                close (fd);
+                sys_close (fd);
 
                 new_logfile = fopen (ctx->log.filename, "a");
                 if (!new_logfile) {
@@ -645,19 +667,20 @@ gf_syslog (int facility_priority, char *format, ...)
 }
 
 void
-gf_log_globals_init (void *data)
+gf_log_globals_init (void *data, gf_loglevel_t level)
 {
         glusterfs_ctx_t *ctx = data;
 
         pthread_mutex_init (&ctx->log.logfile_mutex, NULL);
 
-        ctx->log.loglevel         = GF_LOG_INFO;
+        ctx->log.loglevel         = level;
         ctx->log.gf_log_syslog    = 1;
         ctx->log.sys_log_level    = GF_LOG_CRITICAL;
         ctx->log.logger           = gf_logger_glusterlog;
         ctx->log.logformat        = gf_logformat_withmsgid;
         ctx->log.lru_size         = GF_LOG_LRU_BUFSIZE_DEFAULT;
         ctx->log.timeout          = GF_LOG_FLUSH_TIMEOUT_DEFAULT;
+        ctx->log.localtime        = GF_LOG_LOCALTIME_DEFAULT;
 
         pthread_mutex_init (&ctx->log.log_buf_lock, NULL);
 
@@ -696,7 +719,7 @@ gf_log_init (void *data, const char *file, const char *ident)
                 gf_openlog (NULL, -1, LOG_DAEMON);
         }
         /* TODO: make FACILITY configurable than LOG_DAEMON */
-        if (stat (GF_LOG_CONTROL_FILE, &buf) == 0) {
+        if (sys_stat (GF_LOG_CONTROL_FILE, &buf) == 0) {
                 /* use syslog logging */
                 ctx->log.log_control_file_found = 1;
         } else {
@@ -748,7 +771,7 @@ gf_log_init (void *data, const char *file, const char *ident)
                          " \"%s\" (%s)\n", file, strerror (errno));
                 return -1;
         }
-        close (fd);
+        sys_close (fd);
 
         ctx->log.logfile = fopen (file, "a");
         if (!ctx->log.logfile) {
@@ -771,6 +794,30 @@ set_sys_log_level (gf_loglevel_t level)
 
         if (ctx)
                 ctx->log.sys_log_level = level;
+}
+
+/* Check if we should be logging
+ * Return value: _gf_false : Print the log
+ *               _gf_true : Do not Print the log
+ */
+static gf_boolean_t
+skip_logging (xlator_t *this, gf_loglevel_t level)
+{
+        gf_boolean_t ret = _gf_false;
+        gf_loglevel_t existing_level = GF_LOG_NONE;
+
+        if (level == GF_LOG_NONE) {
+                ret = _gf_true;
+                goto out;
+        }
+
+        existing_level = this->loglevel ? this->loglevel : this->ctx->log.loglevel;
+        if (level > existing_level) {
+                ret = _gf_true;
+                goto out;
+        }
+out:
+        return ret;
 }
 
 int
@@ -796,11 +843,7 @@ _gf_log_callingfn (const char *domain, const char *file, const char *function,
         if (!ctx)
                 goto out;
 
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         static char *level_strings[] = {"",  /* NONE */
@@ -917,6 +960,8 @@ out:
 
         FREE (str2);
 
+        va_end (ap);
+
         return ret;
 }
 
@@ -985,11 +1030,7 @@ _gf_msg_plain (gf_loglevel_t level, const char *fmt, ...)
         if (!ctx)
                 goto out;
 
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         va_start (ap, fmt);
@@ -1021,11 +1062,7 @@ _gf_msg_vplain (gf_loglevel_t level, const char *fmt, va_list ap)
         if (!ctx)
                 goto out;
 
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         ret = vasprintf (&msg, fmt, ap);
@@ -1053,11 +1090,7 @@ _gf_msg_plain_nomem (gf_loglevel_t level, const char *msg)
         if (!ctx)
                 goto out;
 
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         ret = _gf_msg_plain_internal (level, msg);
@@ -1085,11 +1118,7 @@ _gf_msg_backtrace_nomem (gf_loglevel_t level, int stacksize)
         if (ctx->log.logger != gf_logger_glusterlog)
                 goto out;
 
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         bt_size = backtrace (array, ((stacksize <= 200)? stacksize : 200));
@@ -1172,11 +1201,7 @@ _gf_msg_nomem (const char *domain, const char *file,
         if (!ctx)
                 goto out;
 
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         if (!domain || !file || !function) {
@@ -1241,7 +1266,7 @@ _gf_msg_nomem (const char *domain, const char *file,
 
                         /* write directly to the fd to prevent out of order
                          * message and stack */
-                        ret = write (fd, msg, wlen);
+                        ret = sys_write (fd, msg, wlen);
                         if (ret == -1) {
                                 pthread_mutex_unlock (&ctx->log.logfile_mutex);
                                 goto out;
@@ -2041,11 +2066,7 @@ _gf_msg (const char *domain, const char *file, const char *function,
         }
 
         /* check if we should be logging */
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         if (trace) {
@@ -2122,11 +2143,7 @@ _gf_log (const char *domain, const char *file, const char *function, int line,
         if (!ctx)
                 goto out;
 
-        if (ctx->log.gf_log_xl_log_set) {
-                if (this->loglevel && (level > this->loglevel))
-                        goto out;
-        }
-        if (level > ctx->log.loglevel || level == GF_LOG_NONE)
+        if (skip_logging (this, level))
                 goto out;
 
         static char *level_strings[] = {"",  /* NONE */
@@ -2186,7 +2203,7 @@ _gf_log (const char *domain, const char *file, const char *function, int line,
                                 "failed to open logfile");
                         return -1;
                 }
-                close (fd);
+                sys_close (fd);
 
                 new_logfile = fopen (ctx->log.filename, "a");
                 if (!new_logfile) {
@@ -2272,6 +2289,7 @@ err:
         FREE (str2);
 
 out:
+        va_end (ap);
         return (0);
 }
 
@@ -2301,8 +2319,6 @@ _gf_log_eh (const char *function, const char *fmt, ...)
                 goto out;
         }
 
-        va_end (ap);
-
         msg = GF_MALLOC (strlen (str1) + strlen (str2) + 1, gf_common_mt_char);
         if (!msg) {
                 ret = -1;
@@ -2313,6 +2329,8 @@ _gf_log_eh (const char *function, const char *fmt, ...)
         strcat (msg, str2);
 
         ret = eh_save_history (this->history, msg);
+        if (ret < 0)
+                GF_FREE (msg);
 
 out:
         GF_FREE (str1);
@@ -2321,7 +2339,9 @@ out:
         if (str2)
                 FREE (str2);
 
-         return ret;
+        va_end (ap);
+
+        return ret;
 }
 
 int
@@ -2360,7 +2380,7 @@ gf_cmd_log_init (const char *filename)
                         LG_MSG_FILE_OP_FAILED, "failed to open cmd_log_file");
                 return -1;
         }
-        close (fd);
+        sys_close (fd);
 
         ctx->log.cmdlogfile = fopen (ctx->log.cmd_log_filename, "a");
         if (!ctx->log.cmdlogfile){
@@ -2443,7 +2463,7 @@ gf_cmd_log (const char *domain, const char *fmt, ...)
                 }
 
                 fd = open (ctx->log.cmd_log_filename,
-                           O_CREAT | O_RDONLY, S_IRUSR | S_IWUSR);
+                           O_CREAT | O_WRONLY | O_APPEND, S_IRUSR | S_IWUSR);
                 if (fd < 0) {
                         gf_msg (THIS->name, GF_LOG_CRITICAL, errno,
                                 LG_MSG_FILE_OP_FAILED, "failed to open "
@@ -2473,5 +2493,150 @@ out:
 
         FREE (str2);
 
+        va_end (ap);
+
+        return ret;
+}
+
+int
+_do_slog_format (const char *event, va_list inp, char **msg) {
+        va_list                    valist_tmp;
+        int                        i = 0;
+        int                        j = 0;
+        int                        k = 0;
+        int                        ret = 0;
+        char                      *fmt = NULL;
+        char                      *buffer = NULL;
+        int                        num_format_chars = 0;
+        char                       format_char = '%';
+        char                      *tmp1 = NULL;
+        char                      *tmp2 = NULL;
+
+        ret = gf_asprintf (&tmp2, "%s", event);
+        if (ret == -1)
+                goto out;
+
+        /* Hardcoded value for max key value pairs, exits early */
+        /* from loop if found NULL */
+        for (i = 0; i < GF_MAX_SLOG_PAIR_COUNT; i++) {
+                fmt = va_arg (inp, char*);
+                if (fmt == NULL) {
+                        break;
+                }
+
+                /* Get number of times % is used in input for formating, */
+                /* this count will be used to skip those many args from the */
+                /* main list and will be used to format inner format */
+                num_format_chars = 0;
+                for (k = 0; fmt[k] != '\0'; k++) {
+                        /* If %% is used then that is escaped */
+                        if (fmt[k] == format_char && fmt[k+1] == format_char) {
+                                k++;
+                        } else if (fmt[k] == format_char) {
+                                num_format_chars++;
+                        }
+                }
+
+                tmp1 = gf_strdup (tmp2);
+                if (!tmp1) {
+                        ret = -1;
+                        goto out;
+                }
+
+                GF_FREE (tmp2);
+                tmp2 = NULL;
+
+                if (num_format_chars > 0) {
+                        /* Make separate valist and format the string */
+                        va_copy (valist_tmp, inp);
+                        ret = gf_vasprintf (&buffer, fmt, valist_tmp);
+                        if (ret < 0) {
+                                va_end (valist_tmp);
+                                goto out;
+                        }
+                        va_end (valist_tmp);
+
+                        for (j = 0; j < num_format_chars; j++) {
+                                /* Skip the va_arg value since these values
+                                   are already used for internal formatting */
+                                (void) va_arg (inp, void*);
+                        }
+
+                        ret = gf_asprintf (&tmp2, "%s\t%s", tmp1, buffer);
+                        if (ret < 0)
+                                goto out;
+
+                        GF_FREE (buffer);
+                        buffer = NULL;
+                } else {
+                        ret = gf_asprintf (&tmp2, "%s\t%s", tmp1, fmt);
+                        if (ret < 0)
+                                goto out;
+                }
+
+                GF_FREE (tmp1);
+                tmp1 = NULL;
+        }
+
+        *msg = gf_strdup (tmp2);
+        if (!msg)
+                ret = -1;
+
+ out:
+        if (buffer)
+                GF_FREE (buffer);
+
+        if (tmp1)
+                GF_FREE (tmp1);
+
+        if (tmp2)
+                GF_FREE (tmp2);
+
+        return ret;
+}
+
+int
+_gf_smsg (const char *domain, const char *file, const char *function,
+          int32_t line, gf_loglevel_t level, int errnum, int trace,
+          uint64_t msgid, const char *event, ...)
+{
+        va_list     valist;
+        char       *msg = NULL;
+        int         ret = 0;
+
+        va_start (valist, event);
+        ret = _do_slog_format (event, valist, &msg);
+        if (ret == -1)
+                goto out;
+
+        ret = _gf_msg (domain, file, function, line, level, errnum, trace,
+                       msgid, "%s", msg);
+
+ out:
+        va_end (valist);
+        if (msg)
+                GF_FREE (msg);
+        return ret;
+}
+
+int
+_gf_slog (const char *domain, const char *file, const char *function, int line,
+          gf_loglevel_t level, const char *event, ...)
+{
+        va_list      valist;
+        char        *msg = NULL;
+        int          ret = 0;
+
+        va_start (valist, event);
+        ret = _do_slog_format (event, valist, &msg);
+        if (ret == -1)
+                goto out;
+
+        ret = _gf_log (domain, file, function, line, level, "%s", msg);
+
+ out:
+        va_end (valist);
+        if (msg)
+                GF_FREE (msg);
         return ret;
 }

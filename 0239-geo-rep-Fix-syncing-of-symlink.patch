@@ -1,0 +1,54 @@
+From 80087936cf49a08848ee054179e4044ef42cd29e Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Fri, 13 Apr 2018 10:52:14 -0400
+Subject: [PATCH 239/260] geo-rep: Fix syncing of symlink
+
+Problem:
+If symlink is created on master pointing
+to current directory (e.g symlink -> ".") with
+non root uid or gid, geo-rep worker crashes
+with ENOTSUP.
+
+Cause:
+Geo-rep creates the symlink on slave and
+fixes the uid and gid using chown cmd.
+os.chown dereferences the symlink which is
+pointing to ".gfid" which is not supported.
+Note that geo-rep operates on aux-gfid-mount
+(e.g. "/mnt/.gfid/<gfid-of-symlink-file>").
+
+Solution:
+The uid or gid change is acutally on symlink
+file. So use os.lchown, i.e, don't deference.
+
+Upstream Reference
+> BUG: 1567209
+> Change-Id: I63575fc589d71f987bef1d350c030987738c78ad
+> Patch: https://review.gluster.org/19872
+
+BUG: 1565399
+Change-Id: Ib4613719ac735a4e2856bc0655351f69f2467dac
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136820
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ geo-replication/syncdaemon/resource.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/geo-replication/syncdaemon/resource.py b/geo-replication/syncdaemon/resource.py
+index 4b2a266..d6618c1 100644
+--- a/geo-replication/syncdaemon/resource.py
++++ b/geo-replication/syncdaemon/resource.py
+@@ -868,7 +868,7 @@ class Server(object):
+                 # UID:0 and GID:0, and then call chown to set UID/GID
+                 if uid != 0 or gid != 0:
+                     path = os.path.join(pfx, gfid)
+-                    cmd_ret = errno_wrap(os.chown, [path, uid, gid], [ENOENT],
++                    cmd_ret = errno_wrap(os.lchown, [path, uid, gid], [ENOENT],
+                                          [ESTALE, EINVAL])
+                     collect_failure(e, cmd_ret)
+ 
+-- 
+1.8.3.1
+

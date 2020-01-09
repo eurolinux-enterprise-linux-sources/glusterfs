@@ -21,11 +21,7 @@
 #include "mem-pool.h"
 #include "common-utils.h"
 #include "libglusterfs-messages.h"
-
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
+#include "syscall.h"
 
 
 
@@ -126,6 +122,8 @@ event_dispatch (struct event_pool *event_pool)
         GF_VALIDATE_OR_GOTO ("event", event_pool, out);
 
         ret = event_pool->ops->event_dispatch (event_pool);
+        if (ret)
+                goto out;
 
 out:
         return ret;
@@ -161,8 +159,9 @@ event_pool_destroy (struct event_pool *event_pool)
         }
         pthread_mutex_unlock (&event_pool->mutex);
 
-        if (!destroy || (activethreadcount > 0))
+        if (!destroy || (activethreadcount > 0)) {
                 goto out;
+        }
 
         ret = event_pool->ops->event_pool_destroy (event_pool);
 out:
@@ -170,19 +169,27 @@ out:
 }
 
 int
-poller_destroy_handler (int fd, int idx, void *data,
+poller_destroy_handler (int fd, int idx, int gen, void *data,
                        int poll_out, int poll_in, int poll_err)
 {
-        int readfd = -1;
-        char buf = '\0';
+        struct event_destroy_data *destroy = NULL;
+        int                        readfd  = -1, ret = -1;
+        char                       buf     = '\0';
 
-        readfd = *(int *)data;
-        if (readfd < 0)
-                return -1;
-
-        while (read (readfd, &buf, 1) > 0) {
+        destroy = data;
+        readfd = destroy->readfd;
+        if (readfd < 0) {
+                goto out;
         }
-        return 0;
+
+        while (sys_read (readfd, &buf, 1) > 0) {
+        }
+
+        ret = 0;
+out:
+        event_handled (destroy->pool, fd, idx, gen);
+
+        return ret;
 }
 
 /* This function destroys all the poller threads.
@@ -199,11 +206,12 @@ poller_destroy_handler (int fd, int idx, void *data,
 int
 event_dispatch_destroy (struct event_pool *event_pool)
 {
-        int  ret     = -1;
-        int  fd[2]   = {-1};
-        int  idx     = -1;
-        int  flags   = 0;
-        struct timespec   sleep_till = {0, };
+        int                       ret        = -1, threadcount = 0;
+        int  fd[2]                           = {-1};
+        int                       idx        = -1;
+        int                       flags      = 0;
+        struct timespec           sleep_till = {0, };
+        struct event_destroy_data data       = {0, };
 
         GF_VALIDATE_OR_GOTO ("event", event_pool, out);
 
@@ -221,14 +229,17 @@ event_dispatch_destroy (struct event_pool *event_pool)
         /* Make the write end of the pipe nonblocking */
         flags = fcntl(fd[1], F_GETFL);
         flags |= O_NONBLOCK;
-        fcntl(fd[1], F_SETFL, flags);
+        ret = fcntl(fd[1], F_SETFL, flags);
         if (ret < 0)
                 goto out;
+
+        data.pool = event_pool;
+        data.readfd = fd[1];
 
         /* From the main thread register an event on the pipe fd[0],
          */
         idx = event_register (event_pool, fd[0], poller_destroy_handler,
-                              &fd[1], 1, 0);
+                              &data, 1, 0);
         if (idx < 0)
                 goto out;
 
@@ -237,6 +248,7 @@ event_dispatch_destroy (struct event_pool *event_pool)
          */
         pthread_mutex_lock (&event_pool->mutex);
         {
+                threadcount = event_pool->eventthreadcount;
                 event_pool->destroy = 1;
         }
         pthread_mutex_unlock (&event_pool->mutex);
@@ -256,9 +268,11 @@ event_dispatch_destroy (struct event_pool *event_pool)
                  */
                 int retry = 0;
 
-                while (event_pool->activethreadcount > 0 && retry++ < 10) {
-                        if (write (fd[1], "dummy", 6) == -1)
+                while (event_pool->activethreadcount > 0
+                       && (retry++ < (threadcount + 10))) {
+                        if (sys_write (fd[1], "dummy", 6) == -1) {
                                 break;
+                        }
                         sleep_till.tv_sec = time (NULL) + 1;
                         ret = pthread_cond_timedwait (&event_pool->cond,
                                                       &event_pool->mutex,
@@ -271,9 +285,20 @@ event_dispatch_destroy (struct event_pool *event_pool)
 
  out:
         if (fd[0] != -1)
-                close (fd[0]);
+                sys_close (fd[0]);
         if (fd[1] != -1)
-                close (fd[1]);
+                sys_close (fd[1]);
+
+        return ret;
+}
+
+int
+event_handled (struct event_pool *event_pool, int fd, int idx, int gen)
+{
+        int ret = 0;
+
+        if (event_pool->ops->event_handled)
+                ret = event_pool->ops->event_handled (event_pool, fd, idx, gen);
 
         return ret;
 }

@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpcsvc.h"
 #include "dict.h"
 #include "xlator.h"
@@ -33,6 +28,7 @@
 #include "xdr-rpc.h"
 #include "xdr-generic.h"
 #include "nfs-messages.h"
+#include "glfs-internal.h"
 
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -353,29 +349,98 @@ out:
 }
 
 
-#define nfs3_funge_solaris_zerolen_fh(nfs3st, fhd, enam, nfsst, erl)    \
-        do {                                                            \
-                xlator_t        *fungexl = NULL;                        \
-                uuid_t          zero = {0, };                           \
-                fungexl =nfs_mntpath_to_xlator ((nfs3st)->exportslist,enam);\
-                if (!fungexl) {                                         \
-                        (nfsst) = NFS3ERR_NOENT;                        \
-                        goto erl;                                       \
-                }                                                       \
-                                                                        \
-                gf_uuid_copy ((fhd)->gfid, zero);                       \
-                (fhd)->gfid[15] = 1;                                    \
-                (enam) = NULL;                                          \
-                if ((gf_nfs_dvm_off (nfs_state (nfs3st->nfsx))))        \
-                        (fhd)->exportid[15] = nfs_xlator_to_xlid ((nfs3st)->exportslist, fungexl);                                                 \
-                else {                                                  \
-                        if(__nfs3_get_volume_id ((nfs3st), fungexl, (fhd)->exportid) < 0) { \
-                                (nfsst) = NFS3ERR_STALE;                \
-                                goto erl;                               \
-                        }                                               \
-                }                                                       \
-        } while (0)                                                     \
+static int
+nfs3_funge_webnfs_zerolen_fh (rpcsvc_request_t *req, struct nfs3_state *nfs3st,
+                              struct nfs3_fh *fhd, char *name)
+{
+        xlator_t           *fungexl           = NULL;
+        struct nfs_state   *nfs               = NULL;
+        glfs_t             *fs                = NULL;
+        loc_t               loc               = { 0, };
+        int                 ret               = -1;
+        char               *subdir            = NULL;
+        char                volname[NAME_MAX] = { 0, };
 
+        fungexl = nfs_mntpath_to_xlator (nfs3st->exportslist, name);
+        if (!fungexl) {
+                gf_msg_trace (GF_NFS3, 0, "failed to find xlator for volume");
+                ret = -ENOENT;
+                goto out;
+        }
+        /* fungexl is valid, set for nfs3_request_xlator_deviceid() */
+        rpcsvc_request_set_private (req, fungexl);
+
+        /* Permission checks are done through mnt3_parse_dir_exports(). The
+         * "nfs.export-dir" option gets checked as well. */
+        nfs = nfs_state (nfs3st->nfsx);
+        ret = mnt3_parse_dir_exports (req, nfs->mstate, name, _gf_false);
+        if (ret) {
+                gf_msg_trace (GF_NFS3, -ret, "mounting not possible");
+                goto out;
+        }
+
+        /* glfs_resolve_at copied from UDP MNT support */
+        fs = glfs_new_from_ctx (fungexl->ctx);
+        if (!fs) {
+                gf_msg_trace (GF_NFS3, 0, "failed to create glfs instance");
+                ret = -ENOENT;
+                goto out;
+        }
+
+        /* split name "volname/sub/dir/s" into pieces */
+        subdir = mnt3_get_volume_subdir (name, (char**) &volname);
+
+        ret = glfs_resolve_at (fs, fungexl, NULL, subdir, &loc, NULL, 1, 0);
+        if (ret != 0) {
+                gf_msg_trace (GF_NFS3, 0, "failed to resolve %s", subdir);
+                ret = -ENOENT;
+                goto out;
+        }
+
+        /* resolved subdir, copy gfid for the fh */
+        gf_uuid_copy (fhd->gfid, loc.gfid);
+        loc_wipe (&loc);
+
+        if (gf_nfs_dvm_off (nfs_state (nfs3st->nfsx)))
+                fhd->exportid[15] = nfs_xlator_to_xlid (nfs3st->exportslist,
+                                                        fungexl);
+        else {
+                if (__nfs3_get_volume_id (nfs3st, fungexl, fhd->exportid) < 0) {
+                        ret = -ESTALE;
+                        goto out;
+                }
+        }
+
+        ret = 0;
+out:
+        if (fs)
+                glfs_free_from_ctx (fs);
+
+        return ret;
+}
+
+
+/*
+ * This macro checks if the volume is started or not.
+ * If it is not started, it closes the client connection & logs it.
+ *
+ * Why do we do this?
+ *
+ * There is a "race condition" where gNFSd may start listening for RPC requests
+ * prior to the volume being started. Presumably, that is why this macro exists
+ * in the first place. In the NFS kernel client (specifically Linux's NFS
+ * kernel client), they establish a TCP connection to our endpoint and
+ * (re-)send requests. If we ignore the request, and return nothing back,
+ * the NFS kernel client waits forever for our response. If for some reason,
+ * the TCP connection were to die, and re-establish, the requests are
+ * retransmitted and everything begins working as expected
+ *
+ * Now, this is clearly bad behavior on the client side,
+ * but in order to make every user's life easier,
+ * gNFSd should simply disconnect the TCP connection if it sees requests
+ * before it is ready to accept them.
+ *
+ */
 
 #define nfs3_volume_started_check(nf3stt, vlm, rtval, erlbl)            \
         do {                                                            \
@@ -384,11 +449,32 @@ out:
                                 NFS_MSG_VOL_DISABLE,                    \
                                 "Volume is disabled: %s",               \
                                 vlm->name);                             \
+                      nfs3_disconnect_transport (req->trans);           \
                       rtval = RPCSVC_ACTOR_IGNORE;                      \
                       goto erlbl;                                       \
               }                                                         \
         } while (0)                                                     \
 
+void
+nfs3_disconnect_transport (rpc_transport_t *transport)
+{
+        int ret = 0;
+
+        GF_VALIDATE_OR_GOTO (GF_NFS3, transport, out);
+
+        ret = rpc_transport_disconnect (transport, _gf_false);
+        if (ret != 0) {
+                gf_log (GF_NFS3, GF_LOG_WARNING,
+                        "Unable to close client connection to %s.",
+                        transport->peerinfo.identifier);
+        } else {
+                gf_log (GF_NFS3, GF_LOG_WARNING,
+                        "Closed client connection to %s.",
+                        transport->peerinfo.identifier);
+        }
+out:
+        return;
+}
 
 int
 nfs3_export_sync_trusted (struct nfs3_state *nfs3, uuid_t exportid)
@@ -434,8 +520,10 @@ nfs3_solaris_zerolen_fh (struct nfs3_fh *fh, int fhlen)
         if (nfs3_fh_validate (fh))
                 return 0;
 
-        if (fhlen == 0)
+        if (fhlen == 0) {
+                gf_msg_trace (GF_NFS3, 0, "received WebNFS request");
                 return 1;
+        }
 
         return 0;
 }
@@ -447,40 +535,9 @@ nfs3_solaris_zerolen_fh (struct nfs3_fh *fh, int fhlen)
  */
 typedef ssize_t (*nfs3_serializer) (struct iovec outmsg, void *args);
 
-nfs3_call_state_t *
-nfs3_call_state_init (struct nfs3_state *s, rpcsvc_request_t *req, xlator_t *v)
+static void
+__nfs3_call_state_wipe (nfs3_call_state_t *cs)
 {
-        nfs3_call_state_t       *cs = NULL;
-
-        GF_VALIDATE_OR_GOTO (GF_NFS3, s, err);
-        GF_VALIDATE_OR_GOTO (GF_NFS3, req, err);
-        GF_VALIDATE_OR_GOTO (GF_NFS3, v, err);
-
-        cs = (nfs3_call_state_t *) mem_get (s->localpool);
-        if (!cs) {
-                gf_msg (GF_NFS3, GF_LOG_ERROR, ENOMEM, NFS_MSG_NO_MEMORY,
-                        "out of memory");
-                return NULL;
-        }
-
-        memset (cs, 0, sizeof (*cs));
-        INIT_LIST_HEAD (&cs->entries.list);
-        INIT_LIST_HEAD (&cs->openwait_q);
-        cs->operrno = EINVAL;
-        cs->req = req;
-        cs->vol = v;
-        cs->nfsx = s->nfsx;
-        cs->nfs3state = s;
-err:
-        return cs;
-}
-
-void
-nfs3_call_state_wipe (nfs3_call_state_t *cs)
-{
-        if (!cs)
-                return;
-
         if (cs->fd) {
                 gf_msg_trace (GF_NFS3, 0, "fd 0x%lx ref: %d",
                         (long)cs->fd, cs->fd->refcount);
@@ -505,6 +562,45 @@ nfs3_call_state_wipe (nfs3_call_state_t *cs)
         memset (cs, 0, sizeof (*cs));
         mem_put (cs);
         /* Already refd by fd_lookup, so no need to ref again. */
+}
+
+nfs3_call_state_t *
+nfs3_call_state_init (struct nfs3_state *s, rpcsvc_request_t *req, xlator_t *v)
+{
+        nfs3_call_state_t       *cs = NULL;
+
+        GF_VALIDATE_OR_GOTO (GF_NFS3, s, err);
+        GF_VALIDATE_OR_GOTO (GF_NFS3, req, err);
+        /* GF_VALIDATE_OR_GOTO (GF_NFS3, v, err); NLM sets this later */
+
+        cs = (nfs3_call_state_t *) mem_get (s->localpool);
+        if (!cs) {
+                gf_msg (GF_NFS3, GF_LOG_ERROR, ENOMEM, NFS_MSG_NO_MEMORY,
+                        "out of memory");
+                return NULL;
+        }
+
+        memset (cs, 0, sizeof (*cs));
+        GF_REF_INIT (cs, __nfs3_call_state_wipe);
+        INIT_LIST_HEAD (&cs->entries.list);
+        INIT_LIST_HEAD (&cs->openwait_q);
+        cs->operrno = EINVAL;
+        cs->req = req;
+        cs->vol = v;
+        cs->nfsx = s->nfsx;
+        cs->nfs3state = s;
+err:
+        return cs;
+}
+
+void
+nfs3_call_state_wipe (nfs3_call_state_t *cs)
+{
+        if (!cs) {
+                gf_log_callingfn ("nfs", GF_LOG_WARNING, "nfs calling state NULL");
+                return;
+        }
+        GF_REF_PUT (cs);
 }
 
 
@@ -783,6 +879,12 @@ nfs3svc_getattr_stat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         cs = frame->local;
 
         if (op_ret == -1) {
+                /* Prevent crashes for the case where this call fails
+                 * and buf is left in a NULL state, yet the op_errno == 0.
+                 */
+                if (!buf && op_errno == 0) {
+                        op_errno = EIO;
+                }
                 status = nfs3_cbk_errno_status (op_ret, op_errno);
         }
 
@@ -1024,10 +1126,11 @@ nfs3svc_setattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
          */
         if ((gf_attr_size_set (cs->setattr_valid)) &&
             (!IA_ISDIR (postop->ia_type)) &&
-            (preop->ia_size != cs->stbuf.ia_size)) {
+            (preop->ia_size != cs->attr_in.ia_size)) {
                 nfs_request_user_init (&nfu, cs->req);
                 ret = nfs_truncate (cs->nfsx, cs->vol, &nfu, &cs->resolvedloc,
-                                    cs->stbuf.ia_size, nfs3svc_truncate_cbk,cs);
+                                    cs->attr_in.ia_size, nfs3svc_truncate_cbk,
+                                    cs);
 
                 if (ret < 0)
                         stat = nfs3_errno_to_nfsstat3 (-ret);
@@ -1110,7 +1213,7 @@ nfs3_setattr_resume (void *carg)
         nfs3_check_fh_resolve_status (cs, stat, nfs3err);
         nfs_request_user_init (&nfu, cs->req);
         ret = nfs_setattr (cs->nfsx, cs->vol, &nfu, &cs->resolvedloc,
-                           &cs->stbuf, cs->setattr_valid,
+                           &cs->attr_in, cs->setattr_valid,
                            nfs3svc_setattr_cbk, cs);
 
         if (ret < 0)
@@ -1152,7 +1255,7 @@ nfs3_setattr (rpcsvc_request_t *req, struct nfs3_fh *fh, sattr3 *sattr,
         nfs3_check_rw_volaccess (nfs3, fh->exportid, stat, nfs3err);
         nfs3_handle_call_state_init (nfs3, cs, req, vol, stat, nfs3err);
 
-        cs->setattr_valid = nfs3_sattr3_to_setattr_valid (sattr, &cs->stbuf,
+        cs->setattr_valid = nfs3_sattr3_to_setattr_valid (sattr, &cs->attr_in,
                                                           NULL);
         if (guard->check) {
                 gf_msg_trace (GF_NFS3, 0, "Guard check required");
@@ -1499,9 +1602,14 @@ nfs3_lookup (rpcsvc_request_t *req, struct nfs3_fh *fh, int fhlen, char *name)
         nfs3_log_fh_entry_call (rpcsvc_request_xid (req), "LOOKUP", fh,
                                 name);
         nfs3_validate_nfs3_state (req, nfs3, stat, nfs3err, ret);
-        if (nfs3_solaris_zerolen_fh (fh, fhlen))
-                nfs3_funge_solaris_zerolen_fh (nfs3, fh, name, stat, nfs3err);
-        else
+        if (nfs3_solaris_zerolen_fh (fh, fhlen)) {
+                ret = nfs3_funge_webnfs_zerolen_fh (req, nfs3, fh, name);
+                if (ret < 0)
+                        goto nfs3err;
+
+                /* this fh means we're doing a mount, name is no more useful */
+                name = NULL;
+        } else
                 nfs3_validate_gluster_fh (fh, stat, nfs3err);
         nfs3_validate_strlen_or_goto (name, NFS_NAME_MAX, nfs3err, stat, ret);
         nfs3_map_fh_to_volume (nfs3, fh, req, vol, stat, nfs3err);
@@ -1515,17 +1623,18 @@ nfs3_lookup (rpcsvc_request_t *req, struct nfs3_fh *fh, int fhlen, char *name)
         if (ret < 0) {
                 gf_msg (GF_NFS, GF_LOG_ERROR, -ret,
                         NFS_MSG_HARD_RESOLVE_FAIL,
-                        "failed to start hard reslove");
-                stat = nfs3_errno_to_nfsstat3 (-ret);
+                        "failed to start hard resolve");
         }
 
 nfs3err:
         if (ret < 0) {
+                stat = nfs3_errno_to_nfsstat3 (-ret);
                 nfs3_log_common_res (rpcsvc_request_xid (req),
                                      NFS3_LOOKUP, stat, -ret,
                                      cs ? cs->resolvedloc.path : NULL);
                 nfs3_lookup_reply (req, stat, NULL, NULL, NULL);
-                nfs3_call_state_wipe (cs);
+                if (cs)
+                        nfs3_call_state_wipe (cs);
                 /* Ret must be 0 after this so that the caller does not
                  * also send an RPC reply.
                  */
@@ -2245,24 +2354,6 @@ nfs3_write_resume (void *carg)
 
         cs->fd = fd;    /* Gets unrefd when the call state is wiped. */
 
-/*
-  enum stable_how {
-  UNSTABLE = 0,
-  DATA_SYNC = 1,
-  FILE_SYNC = 2,
-  };
-*/
-	switch (cs->writetype) {
-	case UNSTABLE:
-		break;
-	case DATA_SYNC:
-		fd->flags |= O_DSYNC;
-		break;
-	case FILE_SYNC:
-		fd->flags |= O_SYNC;
-		break;
-	}
-
         ret = __nfs3_write_resume (cs);
         if (ret < 0)
                 stat = nfs3_errno_to_nfsstat3 (-ret);
@@ -2478,7 +2569,7 @@ nfs3svc_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         cs->preparent = *preparent;
         cs->postparent = *postparent;
         nfs_request_user_init (&nfu, cs->req);
-        gf_uuid_copy (cs->resolvedloc.gfid, inode->gfid);
+        gf_uuid_copy (cs->resolvedloc.gfid, oldinode->gfid);
         ret = nfs_setattr (cs->nfsx, cs->vol, &nfu, &cs->resolvedloc,&cs->stbuf,
                            cs->setattr_valid, nfs3svc_create_setattr_cbk, cs);
         if (ret < 0)
@@ -4449,6 +4540,8 @@ nfs3_readdir (rpcsvc_request_t *req, struct nfs3_fh *fh, cookie3 cookie,
         int                     ret = -EFAULT;
         struct nfs3_state       *nfs3 = NULL;
         nfs3_call_state_t       *cs = NULL;
+        struct nfs_state        *nfs = NULL;
+        gf_boolean_t            is_readdirp = !!maxcount;
 
         if ((!req) || (!fh)) {
                 gf_msg (GF_NFS3, GF_LOG_ERROR, EINVAL, NFS_MSG_INVALID_ENTRY,
@@ -4463,6 +4556,13 @@ nfs3_readdir (rpcsvc_request_t *req, struct nfs3_fh *fh, cookie3 cookie,
         nfs3_map_fh_to_volume (nfs3, fh, req, vol, stat, nfs3err);
         nfs3_volume_started_check (nfs3, vol, ret, out);
         nfs3_handle_call_state_init (nfs3, cs, req, vol, stat, nfs3err);
+        nfs = nfs_state (nfs3->nfsx);
+
+        if (is_readdirp && !nfs->rdirplus) {
+                ret = -ENOTSUP;
+                stat = nfs3_errno_to_nfsstat3 (-ret);
+                goto nfs3err;
+        }
 
         cs->cookieverf = cverf;
         cs->dircount = dircount;
@@ -4476,7 +4576,7 @@ nfs3_readdir (rpcsvc_request_t *req, struct nfs3_fh *fh, cookie3 cookie,
 
 nfs3err:
         if (ret < 0) {
-                if (maxcount == 0) {
+                if (!is_readdirp) {
                         nfs3_log_common_res (rpcsvc_request_xid (req),
                                              NFS3_READDIR, stat, -ret,
                                              cs ? cs->resolvedloc.path : NULL);

@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "dict.h"
 #include "glusterfs.h"
 #include "iobuf.h"
@@ -56,7 +51,7 @@ static int32_t
 gf_rdma_teardown (rpc_transport_t *this);
 
 static int32_t
-gf_rdma_disconnect (rpc_transport_t *this);
+gf_rdma_disconnect (rpc_transport_t *this, gf_boolean_t wait);
 
 static void
 gf_rdma_cm_handle_disconnect (rpc_transport_t *this);
@@ -821,7 +816,7 @@ gf_rdma_get_device (rpc_transport_t *this, struct ibv_context *ibctx,
                 /* completion threads */
                 ret = gf_thread_create (&trav->send_thread, NULL,
                                         gf_rdma_send_completion_proc,
-                                        trav->send_chan);
+                                        trav->send_chan, "rdmascom");
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
                                 RDMA_MSG_SEND_COMP_THREAD_FAILED,
@@ -831,8 +826,8 @@ gf_rdma_get_device (rpc_transport_t *this, struct ibv_context *ibctx,
                 }
 
                 ret = gf_thread_create (&trav->recv_thread, NULL,
-                                         gf_rdma_recv_completion_proc,
-                                         trav->recv_chan);
+                                        gf_rdma_recv_completion_proc,
+                                        trav->recv_chan, "rdmarcom");
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
                                 RDMA_MSG_RECV_COMP_THREAD_FAILED,
@@ -842,8 +837,8 @@ gf_rdma_get_device (rpc_transport_t *this, struct ibv_context *ibctx,
                 }
 
                 ret = gf_thread_create (&trav->async_event_thread, NULL,
-                                         gf_rdma_async_event_thread,
-                                         ibctx);
+                                        gf_rdma_async_event_thread,
+                                        ibctx, "rdmaAsyn");
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
                                 RDMA_MSG_ASYNC_EVENT_THEAD_FAILED,
@@ -1135,6 +1130,7 @@ gf_rdma_cm_handle_addr_resolved (struct rdma_cm_event *event)
                         "failed (me:%s peer:%s)",
                         this->myinfo.identifier, this->peerinfo.identifier);
                 gf_rdma_cm_handle_disconnect (this);
+                return ret;
         }
 
         gf_msg_trace (this->name, 0, "Address resolved (me:%s peer:%s)",
@@ -1214,7 +1210,7 @@ gf_rdma_cm_handle_connect_init (struct rdma_cm_event *event)
         }
 
         if (ret < 0) {
-                gf_rdma_disconnect (this);
+                gf_rdma_disconnect (this, _gf_false);
         }
 
         return ret;
@@ -3019,7 +3015,7 @@ gf_rdma_submit_request (rpc_transport_t *this, rpc_transport_req_t *req)
                         RDMA_MSG_WRITE_PEER_FAILED,
                         "sending request to peer (%s) failed",
                         this->peerinfo.identifier);
-                rpc_transport_disconnect (this);
+                rpc_transport_disconnect (this, _gf_false);
         }
 
 out:
@@ -3056,7 +3052,7 @@ gf_rdma_submit_reply (rpc_transport_t *this, rpc_transport_reply_t *reply)
                         RDMA_MSG_WRITE_PEER_FAILED,
                         "sending request to peer (%s) failed",
                         this->peerinfo.identifier);
-                rpc_transport_disconnect (this);
+                rpc_transport_disconnect (this, _gf_false);
         }
 
 out:
@@ -3257,7 +3253,7 @@ __gf_rdma_teardown (rpc_transport_t *this)
         priv = this->private;
         peer = &priv->peer;
 
-        if (peer->cm_id->qp != NULL) {
+        if (peer->cm_id && peer->cm_id->qp != NULL) {
                 __gf_rdma_destroy_qp (this);
         }
 
@@ -4100,7 +4096,7 @@ gf_rdma_process_recv (gf_rdma_peer_t *peer, struct ibv_wc *wc)
 
 out:
         if (ret == -1) {
-                rpc_transport_disconnect (peer->trans);
+                rpc_transport_disconnect (peer->trans, _gf_false);
         }
 
         return;
@@ -4221,7 +4217,8 @@ gf_rdma_recv_completion_proc (void *data)
                                 if (peer) {
                                         ibv_ack_cq_events (event_cq, num_wr);
                                         rpc_transport_unref (peer->trans);
-                                        rpc_transport_disconnect (peer->trans);
+                                        rpc_transport_disconnect (peer->trans,
+                                                                  _gf_false);
                                 }
 
                                 if (post) {
@@ -4297,7 +4294,7 @@ gf_rdma_handle_failed_send_completion (gf_rdma_peer_t *peer, struct ibv_wc *wc)
         }
 
         if (peer) {
-                rpc_transport_disconnect (peer->trans);
+                rpc_transport_disconnect (peer->trans, _gf_false);
         }
 
         return;
@@ -4348,7 +4345,7 @@ gf_rdma_handle_successful_send_completion (gf_rdma_peer_t *peer,
 
         ret = gf_rdma_pollin_notify (peer, post);
         if ((ret == -1) && (peer != NULL)) {
-                rpc_transport_disconnect (peer->trans);
+                rpc_transport_disconnect (peer->trans, _gf_false);
         }
 
 out:
@@ -4502,6 +4499,12 @@ gf_rdma_options_init (rpc_transport_t *this)
         options->attr_retry_cnt = GF_RDMA_RETRY_CNT;
         options->attr_rnr_retry = GF_RDMA_RNR_RETRY;
 
+        temp = dict_get (this->options, "transport.listen-backlog");
+        if (temp)
+                options->backlog = data_to_uint32 (temp);
+        else
+                options->backlog = GLUSTERFS_SOCKET_LISTEN_BACKLOG;
+
         temp = dict_get (this->options,
                          "transport.rdma.work-request-send-count");
         if (temp)
@@ -4597,7 +4600,7 @@ __gf_rdma_ctx_create (void)
 
         ret = gf_thread_create (&rdma_ctx->rdma_cm_thread, NULL,
                                 gf_rdma_cm_event_handler,
-                                rdma_ctx->rdma_cm_event_channel);
+                                rdma_ctx->rdma_cm_event_channel, "rdmaehan");
         if (ret != 0) {
                 gf_msg (GF_RDMA_LOG_NAME, GF_LOG_WARNING, ret,
                         RDMA_MSG_CM_EVENT_FAILED, "creation of thread to "
@@ -4638,6 +4641,7 @@ gf_rdma_init (rpc_transport_t *this)
         priv->peer.recv_count = options->recv_count;
         priv->peer.send_size = options->send_size;
         priv->peer.recv_size = options->recv_size;
+        priv->backlog = options->backlog;
 
         priv->peer.trans = this;
         INIT_LIST_HEAD (&priv->peer.ioq);
@@ -4646,7 +4650,7 @@ gf_rdma_init (rpc_transport_t *this)
         pthread_mutex_init (&priv->recv_mutex, NULL);
         pthread_cond_init (&priv->recv_cond, NULL);
 
-        pthread_mutex_lock (&ctx->lock);
+        LOCK (&ctx->lock);
         {
                 if (ctx->ib == NULL) {
                         ctx->ib = __gf_rdma_ctx_create ();
@@ -4655,14 +4659,14 @@ gf_rdma_init (rpc_transport_t *this)
                         }
                 }
         }
-        pthread_mutex_unlock (&ctx->lock);
+        UNLOCK (&ctx->lock);
 
         return ret;
 }
 
 
 static int32_t
-gf_rdma_disconnect (rpc_transport_t *this)
+gf_rdma_disconnect (rpc_transport_t *this, gf_boolean_t wait)
 {
         gf_rdma_private_t *priv = NULL;
         int32_t            ret  = 0;
@@ -4851,7 +4855,8 @@ gf_rdma_listen (rpc_transport_t *this)
                 goto err;
         }
 
-        ret = rdma_listen (peer->cm_id, 10);
+        ret = rdma_listen (peer->cm_id, priv->backlog);
+
         if (ret != 0) {
                 gf_msg (this->name, GF_LOG_WARNING, errno,
                         RDMA_MSG_LISTEN_FAILED,
@@ -4922,6 +4927,28 @@ init (rpc_transport_t *this)
         return 0;
 }
 
+int
+reconfigure (rpc_transport_t *this, dict_t *options)
+{
+        gf_rdma_private_t *priv          = NULL;
+        uint32_t          backlog        = 0;
+        int               ret            = -1;
+
+        GF_VALIDATE_OR_GOTO ("rdma", this, out);
+        GF_VALIDATE_OR_GOTO ("rdma", this->private, out);
+
+        priv = this->private;
+
+        if (dict_get_uint32 (options, "transport.listen-backlog",
+                             &backlog) == 0) {
+                priv->backlog = backlog;
+                gf_log (this->name, GF_LOG_DEBUG, "Reconfigued "
+                        "transport.listen-backlog=%d", priv->backlog);
+        }
+        ret = 0;
+out:
+        return ret;
+}
 void
 fini (struct rpc_transport *this)
 {

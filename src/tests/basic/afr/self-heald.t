@@ -48,8 +48,9 @@ TEST pidof glusterd
 TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0,1,2,3,4,5}
 TEST $CLI volume set $V0 cluster.background-self-heal-count 0
 TEST $CLI volume set $V0 cluster.eager-lock off
+TEST $CLI volume set $V0 performance.flush-behind off
 TEST $CLI volume start $V0
-TEST glusterfs --volfile-id=/$V0 --volfile-server=$H0 $M0 --attribute-timeout=0 --entry-timeout=0
+TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0
 
 decide_kill=$((`date +"%j"|sed 's/^0*//'` % 2 ))
 
@@ -92,7 +93,7 @@ TEST ! $CLI volume heal $V0
 TEST ! $CLI volume heal $V0 full
 TEST $CLI volume start $V0 force
 TEST $CLI volume set $V0 cluster.self-heal-daemon on
-EXPECT_WITHIN 20 "Y" glustershd_up_status
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" glustershd_up_status
 
 check_bricks_up $V0
 
@@ -102,7 +103,7 @@ sleep 5 #Until the heal-statistics command implementation
 TEST [ $HEAL_FILES -gt $(get_pending_heal_count $V0) ]
 
 TEST $CLI volume heal $V0 full
-EXPECT_WITHIN 30 "0" get_pending_heal_count $V0
+EXPECT_WITHIN $HEAL_TIMEOUT "^0$" get_pending_heal_count $V0
 
 #Test that ongoing IO is not considered as Pending heal
 (dd if=/dev/zero of=$M0/file1 bs=1k 2>/dev/null 1>/dev/null)&
@@ -134,11 +135,11 @@ kill_multiple_bricks $V0 $H0 $B0
 echo abc > $M0/f
 EXPECT 1 get_pending_heal_count $V0
 TEST $CLI volume start $V0 force
-EXPECT_WITHIN 20 "Y" glustershd_up_status
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" glustershd_up_status
 check_bricks_up $V0
 
 TEST $CLI volume heal $V0
-EXPECT_WITHIN 30 "0" get_pending_heal_count $V0
+EXPECT_WITHIN $HEAL_TIMEOUT "^0$" get_pending_heal_count $V0
 TEST $CLI volume set $V0 cluster.data-self-heal on
 
 #METADATA
@@ -149,11 +150,11 @@ kill_multiple_bricks $V0 $H0 $B0
 TEST chmod 777 $M0/f
 EXPECT 1 get_pending_heal_count $V0
 TEST $CLI volume start $V0 force
-EXPECT_WITHIN 20 "Y" glustershd_up_status
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" glustershd_up_status
 check_bricks_up $V0
 
 TEST $CLI volume heal $V0
-EXPECT_WITHIN 30 "0" get_pending_heal_count $V0
+EXPECT_WITHIN $HEAL_TIMEOUT "^0$" get_pending_heal_count $V0
 TEST $CLI volume set $V0 cluster.metadata-self-heal on
 
 #ENTRY
@@ -166,10 +167,10 @@ TEST touch $M0/d/a
 PENDING=$( get_pending_heal_count $V0 )
 TEST test $PENDING -eq 2 -o $PENDING -eq 4
 TEST $CLI volume start $V0 force
-EXPECT_WITHIN 20 "Y" glustershd_up_status
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" glustershd_up_status
 check_bricks_up $V0
 TEST $CLI volume heal $V0
-EXPECT_WITHIN 30 "0" get_pending_heal_count $V0
+EXPECT_WITHIN $HEAL_TIMEOUT "^0$" get_pending_heal_count $V0
 TEST $CLI volume set $V0 cluster.entry-self-heal on
 
 #Negative test cases

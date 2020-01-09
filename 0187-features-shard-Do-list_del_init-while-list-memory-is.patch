@@ -1,0 +1,55 @@
+From c4ce2bb15a9df0a1b6a999612ccd053e67dc7083 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 19 Mar 2018 12:09:18 +0530
+Subject: [PATCH 187/201] features/shard: Do list_del_init() while list memory
+ is valid
+
+Problem:
+shard_post_lookup_fsync_handler() goes over the list of inode-ctx that need to
+be fsynced and in cbk it removes each of the inode-ctx from the list. When the
+first member of list is removed it tries to modifies list head's memory with
+the latest next/prev and when this happens, there is no guarantee that the
+list-head which is from stack memory of shard_post_lookup_fsync_handler() is
+valid.
+
+Fix:
+Do list_del_init() in the loop before winding fsync.
+
+ >BUG: 1557876
+ >Change-Id: If429d3634219e1a435bd0da0ed985c646c59c2ca
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+
+Upstream-patch: https://review.gluster.org/19737
+BUG: 1556895
+Change-Id: If429d3634219e1a435bd0da0ed985c646c59c2ca
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/133241
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/features/shard/src/shard.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index a661345..945458e 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -4521,7 +4521,6 @@ out:
+                         if (op_ret == 0)
+                                 ctx->fsync_needed -= fsync_count;
+                         GF_ASSERT (ctx->fsync_needed >= 0);
+-                        list_del_init (&ctx->to_fsync_list);
+                         if (ctx->fsync_needed != 0) {
+                                 list_add_tail (&ctx->to_fsync_list,
+                                                &base_ictx->to_fsync_list);
+@@ -4596,6 +4595,7 @@ shard_post_lookup_fsync_handler (call_frame_t *frame, xlator_t *this)
+         anon_fd = NULL;
+ 
+         list_for_each_entry_safe (iter, tmp, &copy, to_fsync_list) {
++                list_del_init (&iter->to_fsync_list);
+                 fsync_count = 0;
+                 shard_inode_ctx_get_fsync_count (iter->inode, this,
+                                                  &fsync_count);
+-- 
+1.8.3.1
+

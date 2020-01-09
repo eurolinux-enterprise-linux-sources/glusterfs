@@ -16,11 +16,6 @@
 #include <signal.h>
 #include <pthread.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif /* _CONFIG_H */
-
 #include "glusterfs.h"
 #include "glfs.h"
 #include "stack.h"
@@ -34,6 +29,7 @@
 #include "portmap-xdr.h"
 #include "xdr-common.h"
 #include "xdr-generic.h"
+#include "rpc-common-xdr.h"
 
 #include "syncop.h"
 #include "xlator.h"
@@ -41,6 +37,7 @@
 #include "glfs-internal.h"
 #include "glfs-mem-types.h"
 #include "gfapi-messages.h"
+#include "syscall.h"
 
 int glfs_volfile_fetch (struct glfs *fs);
 int32_t glfs_get_volume_info_rpc (call_frame_t *frame, xlator_t *this,
@@ -64,16 +61,16 @@ glfs_process_volfp (struct glfs *fs, FILE *fp)
 	}
 
 	for (trav = graph->first; trav; trav = trav->next) {
-		if (strcmp (trav->type, "mount/fuse") == 0) {
+		if (strcmp (trav->type, "mount/api") == 0) {
 			gf_msg ("glfs", GF_LOG_ERROR, EINVAL,
-                                API_MSG_FUSE_XLATOR_ERROR,
-				"fuse xlator cannot be specified "
+                                API_MSG_API_XLATOR_ERROR,
+				"api master xlator cannot be specified "
 				"in volume file");
 			goto out;
 		}
 	}
 
-	ret = glusterfs_graph_prepare (graph, ctx);
+	ret = glusterfs_graph_prepare (graph, ctx, fs->volname);
 	if (ret) {
 		glusterfs_graph_destroy (graph);
 		goto out;
@@ -85,6 +82,8 @@ glfs_process_volfp (struct glfs *fs, FILE *fp)
 		glusterfs_graph_destroy (graph);
 		goto out;
 	}
+
+        gf_log_dump_graph (fp, graph);
 
 	ret = 0;
 out:
@@ -120,11 +119,71 @@ mgmt_cbk_event (struct rpc_clnt *rpc, void *mydata, void *data)
 	return 0;
 }
 
+static int
+mgmt_cbk_statedump (struct rpc_clnt *rpc, void *mydata, void *data)
+{
+        struct glfs      *fs          = NULL;
+        xlator_t         *this        = NULL;
+        gf_statedump      target_pid  = {0, };
+        struct iovec     *iov         = NULL;
+        int               ret         = -1;
+
+        this = mydata;
+        if (!this) {
+                gf_msg ("glfs", GF_LOG_ERROR, EINVAL,
+                        API_MSG_STATEDUMP_FAILED, "NULL mydata");
+                errno = EINVAL;
+                goto out;
+        }
+
+        fs = this->private;
+        if (!fs) {
+                gf_msg ("glfs", GF_LOG_ERROR, EINVAL,
+                        API_MSG_STATEDUMP_FAILED, "NULL glfs");
+                errno = EINVAL;
+                goto out;
+        }
+
+        iov = (struct iovec *)data;
+        if (!iov) {
+                gf_msg ("glfs", GF_LOG_ERROR, EINVAL,
+                        API_MSG_STATEDUMP_FAILED, "NULL iovec data");
+                errno = EINVAL;
+                goto out;
+        }
+
+        ret = xdr_to_generic (*iov, &target_pid,
+                              (xdrproc_t)xdr_gf_statedump);
+        if (ret < 0) {
+                gf_msg ("glfs", GF_LOG_ERROR, EINVAL,
+                        API_MSG_STATEDUMP_FAILED,
+                        "Failed to decode xdr response for GF_CBK_STATEDUMP");
+                goto out;
+        }
+
+        gf_msg_trace ("glfs", 0, "statedump requested for pid: %d",
+                      target_pid.pid);
+
+        if ((uint64_t)getpid() == target_pid.pid) {
+                gf_msg_debug ("glfs", 0, "Taking statedump for pid: %d",
+                              target_pid.pid);
+
+                ret = glfs_sysrq (fs, GLFS_SYSRQ_STATEDUMP);
+                if (ret < 0) {
+                        gf_msg ("glfs", GF_LOG_INFO, 0,
+                                API_MSG_STATEDUMP_FAILED,
+                                "statedump failed");
+                }
+        }
+out:
+        return ret;
+}
 
 rpcclnt_cb_actor_t mgmt_cbk_actors[GF_CBK_MAXVALUE] = {
 	[GF_CBK_FETCHSPEC] = {"FETCHSPEC", GF_CBK_FETCHSPEC, mgmt_cbk_spec },
 	[GF_CBK_EVENT_NOTIFY] = {"EVENTNOTIFY", GF_CBK_EVENT_NOTIFY,
 				 mgmt_cbk_event},
+        [GF_CBK_STATEDUMP] = {"STATEDUMP", GF_CBK_STATEDUMP, mgmt_cbk_statedump},
 };
 
 
@@ -244,7 +303,7 @@ mgmt_get_volinfo_cbk (struct rpc_req *req, struct iovec *iov,
         if (-1 == req->rpc_status) {
                 gf_msg (frame->this->name, GF_LOG_ERROR, EINVAL,
                         API_MSG_INVALID_ENTRY,
-                        "GET_VOLUME_INFO RPC call is not successfull");
+                        "GET_VOLUME_INFO RPC call is not successful");
                 errno = EINVAL;
                 ret = -1;
                 goto out;
@@ -318,12 +377,12 @@ out:
         }
 
         if (dict)
-                dict_destroy (dict);
+                dict_unref (dict);
 
         if (rsp.dict.dict_val)
                 free (rsp.dict.dict_val);
 
-        if (rsp.op_errstr && *rsp.op_errstr)
+        if (rsp.op_errstr)
                 free (rsp.op_errstr);
 
         gf_msg_debug (frame->this->name, 0, "Returning: %d", ret);
@@ -591,8 +650,8 @@ glfs_mgmt_getspec_cbk (struct rpc_req *req, struct iovec *iov, int count,
 	*  return -1(or -ve) =======> Some Internal Error occurred during the operation
 	*/
 
-	ret = glusterfs_volfile_reconfigure (fs->oldvollen, tmpfp, fs->ctx,
-					     fs->oldvolfile);
+        ret = gf_volfile_reconfigure (fs->oldvollen, tmpfp, fs->ctx,
+                                      fs->oldvolfile);
 	if (ret == 0) {
 		gf_msg_debug ("glusterfsd-mgmt", 0, "No need to re-load "
                               "volfile, reconfigure done");
@@ -617,6 +676,9 @@ out:
 
 	if (rsp.spec)
 		free (rsp.spec);
+
+        if (rsp.xdata.xdata_val)
+                free (rsp.xdata.xdata_val);
 
 	// Stop if server is running at an unsupported op-version
 	if (ENOTSUP == ret) {
@@ -704,6 +766,11 @@ glfs_volfile_fetch (struct glfs *fs)
 				   GF_HNDSK_GETSPEC, glfs_mgmt_getspec_cbk,
 				   (xdrproc_t)xdr_gf_getspec_req);
 out:
+        if (req.xdata.xdata_val)
+                GF_FREE(req.xdata.xdata_val);
+        if (dict)
+                dict_unref (dict);
+
         return ret;
 }
 
@@ -718,6 +785,7 @@ mgmt_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
         rpc_transport_t  *rpc_trans = NULL;
 	struct glfs	 *fs = NULL;
 	int		 ret = 0;
+	struct dnscache6 *dnscache = NULL;
 
 	this = mydata;
         rpc_trans = rpc->conn.trans;
@@ -731,11 +799,27 @@ mgmt_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
 	switch (event) {
 	case RPC_CLNT_DISCONNECT:
 		if (!ctx->active) {
-                        gf_msg ("glfs-mgmt", GF_LOG_ERROR, errno,
-                                API_MSG_REMOTE_HOST_CONN_FAILED,
-                                "failed to connect with remote-host: %s (%s)",
-                                ctx->cmd_args.volfile_server,
-                                strerror (errno));
+                        if (rpc_trans->connect_failed)
+                                gf_msg ("glfs-mgmt", GF_LOG_ERROR, 0,
+                                        API_MSG_REMOTE_HOST_CONN_FAILED,
+                                        "failed to connect to remote-host: %s",
+                                        ctx->cmd_args.volfile_server);
+                        else
+                                gf_msg ("glfs-mgmt", GF_LOG_INFO, 0,
+                                        API_MSG_REMOTE_HOST_CONN_FAILED,
+                                        "disconnected from remote-host: %s",
+                                        ctx->cmd_args.volfile_server);
+
+                        if (!rpc->disabled) {
+                                /*
+                                 * Check if dnscache is exhausted for current server
+                                 * and continue until cache is exhausted
+                                 */
+                                dnscache = rpc_trans->dnscache;
+                                if (dnscache && dnscache->next) {
+                                        break;
+                                }
+                        }
                         server = ctx->cmd_args.curr_server;
                         if (server->list.next == &ctx->cmd_args.volfile_servers) {
                                 errno = ENOTCONN;
@@ -752,32 +836,6 @@ mgmt_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
                         ctx->cmd_args.volfile_server = server->volfile_server;
                         ctx->cmd_args.volfile_server_transport = server->transport;
 
-                        ret = dict_set_int32 (rpc_trans->options,
-                                              "remote-port",
-                                              server->port);
-                        if (ret != 0) {
-                                gf_msg ("glfs-mgmt", GF_LOG_ERROR, ENOTCONN,
-                                        API_MSG_DICT_SET_FAILED,
-                                        "failed to set remote-port: %d",
-                                        server->port);
-                                errno = ENOTCONN;
-                                glfs_init_done (fs, -1);
-                                break;
-                        }
-
-                        ret = dict_set_str (rpc_trans->options,
-                                            "remote-host",
-                                            server->volfile_server);
-                        if (ret != 0) {
-                                gf_msg ("glfs-mgmt", GF_LOG_ERROR, ENOTCONN,
-                                        API_MSG_DICT_SET_FAILED,
-                                        "failed to set remote-host: %s",
-                                        server->volfile_server);
-                                errno = ENOTCONN;
-                                glfs_init_done (fs, -1);
-                                break;
-                        }
-
                         ret = dict_set_str (rpc_trans->options,
                                             "transport-type",
                                             server->transport);
@@ -790,6 +848,63 @@ mgmt_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
                                 glfs_init_done (fs, -1);
                                 break;
                         }
+
+                        if (strcmp(server->transport, "unix") == 0) {
+                                ret = dict_set_str (rpc_trans->options,
+                                                    "transport.socket.connect-path",
+                                                    server->volfile_server);
+                                if (ret != 0) {
+                                        gf_msg ("glfs-mgmt", GF_LOG_ERROR,
+                                                ENOTCONN,
+                                                API_MSG_DICT_SET_FAILED,
+                                                "failed to set socket.connect-path: %s",
+                                                server->volfile_server);
+                                        errno = ENOTCONN;
+                                        glfs_init_done (fs, -1);
+                                        break;
+                                }
+                                /* delete the remote-host and remote-port keys
+                                 * in case they were set while looping through
+                                 * list of volfile servers previously
+                                 */
+                                dict_del (rpc_trans->options, "remote-host");
+                                dict_del (rpc_trans->options, "remote-port");
+                        } else {
+                                ret = dict_set_int32 (rpc_trans->options,
+                                                      "remote-port",
+                                                      server->port);
+                                if (ret != 0) {
+                                        gf_msg ("glfs-mgmt", GF_LOG_ERROR,
+                                                ENOTCONN,
+                                                API_MSG_DICT_SET_FAILED,
+                                                "failed to set remote-port: %d",
+                                                server->port);
+                                        errno = ENOTCONN;
+                                        glfs_init_done (fs, -1);
+                                        break;
+                                }
+
+                                ret = dict_set_str (rpc_trans->options,
+                                                    "remote-host",
+                                                    server->volfile_server);
+                                if (ret != 0) {
+                                        gf_msg ("glfs-mgmt", GF_LOG_ERROR,
+                                                ENOTCONN,
+                                                API_MSG_DICT_SET_FAILED,
+                                                "failed to set remote-host: %s",
+                                                server->volfile_server);
+                                        errno = ENOTCONN;
+                                        glfs_init_done (fs, -1);
+                                        break;
+                                }
+                                /* delete the "transport.socket.connect-path"
+                                 * key in case if it was set while looping
+                                 * through list of volfile servers previously
+                                 */
+                                dict_del (rpc_trans->options,
+                                          "transport.socket.connect-path");
+                        }
+
                         gf_msg ("glfs-mgmt", GF_LOG_INFO, 0,
                                 API_MSG_VOLFILE_CONNECTING,
                                 "connecting to next volfile server %s"
@@ -869,7 +984,8 @@ glfs_mgmt_init (struct glfs *fs)
                 host = "localhost";
         }
 
-        if (!strcmp (cmd_args->volfile_server_transport, "unix")) {
+        if (cmd_args->volfile_server_transport &&
+            !strcmp (cmd_args->volfile_server_transport, "unix")) {
                 ret = rpc_transport_unix_options_build (&options, host, 0);
         } else {
                 ret = rpc_transport_inet_options_build (&options, host, port);
@@ -877,6 +993,10 @@ glfs_mgmt_init (struct glfs *fs)
 
 	if (ret)
 		goto out;
+
+        if (sys_access (SECURE_ACCESS_FILE, F_OK) == 0) {
+                ctx->secure_mgmt = 1;
+        }
 
 	rpc = rpc_clnt_new (options, THIS, THIS->name, 8);
 	if (!rpc) {

@@ -1,0 +1,89 @@
+From b1a9673560ec20df2c7944fce55a64f7b5913f77 Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Tue, 7 Nov 2017 16:09:37 +0530
+Subject: [PATCH 108/128] mount/fuse: use fstat in getattr implementation if
+ any opened fd is available
+
+The restriction of using fds opened by the same Pid means fds cannot
+be shared across threads of multithreaded application. Note that fops
+from kernel have different Pid for different threads. Imagine
+following sequence of operations:
+
+* Turn off performance.open-behind
+* Thread t1 opens an fd - fd1 - on file "file". Let's assume nodeid of
+  "file" is "nodeid-file".
+* Thread t2 does RENAME ("newfile", "file"). Let's assume nodeid of
+  "newfile" as "nodeid-newfile".
+* t2 proceeds to do fstat (fd1)
+
+The above set of operations can sometimes result in ESTALE/ENOENT
+errors. RENAME overwrites "file" with "newfile" changing its nodeid
+from "nodeid-file" to "nodeid-newfile" and post RENAME, "nodeid-file" is
+removed from the backend. If fstat carries nodeid-file as argument,
+which can happen if lookup has not refreshed the nodeid of "file" and
+since t2 doesn't have an fd opened, fuse_getattr_resume uses STAT
+which will fail as "nodeid-file" no longer exists.
+
+Since the above set of operations and sharing of fds across
+multiple threads are valid, this is a bug.
+
+The fix is to use any fd opened on the inode. In this specific example
+fuse_getattr_resume will find fd1 and winds down the call as fstat
+(fd1) which won't fail.
+
+Cross-checked with "Miklos Szeredi" <mszeredi.at.redhat.dot.com> for
+any security issues with this solution and he approves the solution.
+
+Thanks to "Miklos Szeredi" <mszeredi.at.redhat.dot.com> for all the
+pointers and discussions.
+
+Change-Id: I88dd29b3607cd2594eee9d72a1637b5346c8d49c
+BUG: 1492591
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Upstream patch: https://review.gluster.org/#/c/18681/
+Reviewed-on: https://code.engineering.redhat.com/gerrit/126511
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ tests/bugs/replicate/bug-913051.t    | 11 -----------
+ xlators/mount/fuse/src/fuse-bridge.c |  2 +-
+ 2 files changed, 1 insertion(+), 12 deletions(-)
+
+diff --git a/tests/bugs/replicate/bug-913051.t b/tests/bugs/replicate/bug-913051.t
+index 43d1330..6794995 100644
+--- a/tests/bugs/replicate/bug-913051.t
++++ b/tests/bugs/replicate/bug-913051.t
+@@ -37,17 +37,6 @@ TEST fd_open $rfd "r" $M0/dir/b
+ TEST $CLI volume start $V0 force
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 0
+ 
+-#check that the files are not opned on brick-0
+-TEST stat $M0/dir/a
+-realpatha=$(gf_get_gfid_backend_file_path $B0/${V0}0 "dir/a")
+-EXPECT "N" gf_check_file_opened_in_brick $V0 $H0 $B0/${V0}0 "$realpatha"
+-EXPECT "N" gf_check_file_opened_in_brick $V0 $H0 $B0/${V0}0 $B0/${V0}0/dir/a
+-
+-TEST stat $M0/dir/b
+-realpathb=$(gf_get_gfid_backend_file_path $B0/${V0}0 "dir/b")
+-EXPECT "N" gf_check_file_opened_in_brick $V0 $H0 $B0/${V0}0 "$realpathb"
+-EXPECT "N" gf_check_file_opened_in_brick $V0 $H0 $B0/${V0}0 $B0/${V0}0/dir/b
+-
+ #attempt self-heal so that the files are created on brick-0
+ 
+ TEST dd if=$M0/dir/a of=/dev/null bs=1024k
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 34a0dbb..74b59b8 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -908,7 +908,7 @@ fuse_getattr_resume (fuse_state_t *state)
+         }
+ 
+         if (!IA_ISDIR (state->loc.inode->ia_type)) {
+-                state->fd = fd_lookup (state->loc.inode, state->finh->pid);
++                state->fd = fd_lookup (state->loc.inode, 0);
+         }
+ 
+         if (!state->fd) {
+-- 
+1.8.3.1
+

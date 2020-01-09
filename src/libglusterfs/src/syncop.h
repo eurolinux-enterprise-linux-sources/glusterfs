@@ -11,11 +11,6 @@
 #ifndef _SYNCOP_H
 #define _SYNCOP_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include <sys/time.h>
 #include <pthread.h>
@@ -143,6 +138,8 @@ struct syncbarrier {
 	pthread_cond_t      cond;  /* waiting non-synctasks */
 	struct list_head    waitq; /* waiting synctasks */
 	int                 count; /* count the number of wakes */
+        int                 waitfor; /* no. of wakes until which task can be in
+                                        waitq before being woken up. */
 };
 typedef struct syncbarrier syncbarrier_t;
 
@@ -160,6 +157,7 @@ struct syncargs {
         char               *buffer;
         dict_t             *xdata;
 	struct gf_flock     flock;
+        struct gf_lease     lease;
 
         /* some more _cbk needs */
         uuid_t              uuid;
@@ -174,7 +172,11 @@ struct syncargs {
         pthread_mutex_t     mutex;
         pthread_cond_t      cond;
 	int                 done;
+
         gf_dirent_t        entries;
+        off_t              offset;
+
+        lock_migration_info_t locklist;
 };
 
 struct syncopctx {
@@ -255,6 +257,29 @@ struct syncopctx {
                         STACK_RESET (frame->root);                      \
                 else                                                    \
                         STACK_DESTROY (frame->root);                    \
+        } while (0)
+
+
+/*
+ * syncop_xxx() calls are executed in two ways, one is inside a synctask where
+ * the executing function will do 'swapcontext' and the other is without
+ * synctask where the executing thread is made to wait using pthread_cond_wait.
+ * Executing thread may change when syncop_xxx() is executed inside a synctask.
+ * This leads to errno_location change i.e. errno may give errno of
+ * non-executing thread. So errno is not touched inside a synctask execution.
+ * All gfapi calls are executed using the second way of executing syncop_xxx()
+ * where the executing thread waits using pthread_cond_wait so it is ok to set
+ * errno in these cases. The following macro makes syncop_xxx() behave just
+ * like a system call, where -1 is returned and errno is set when a failure
+ * occurs.
+ */
+#define DECODE_SYNCOP_ERR(ret) do {  \
+        if (ret < 0) {          \
+                errno = -ret;   \
+                ret = -1;       \
+        } else {                \
+                errno = 0;      \
+        }                       \
         } while (0)
 
 
@@ -508,6 +533,9 @@ int syncop_inodelk (xlator_t *subvol, const char *volume, loc_t *loc,
                     int32_t cmd, struct gf_flock *lock, dict_t *xdata_in,
                     dict_t **xdata_out);
 
+int syncop_lease (xlator_t *subvol, loc_t *loc, struct gf_lease *lease,
+                  dict_t *xdata_in, dict_t **xdata_out);
+
 int syncop_ipc (xlator_t *subvol, int op, dict_t *xdata_in, dict_t **xdata_out);
 
 int syncop_xattrop (xlator_t *subvol, loc_t *loc, gf_xattrop_flags_t flags,
@@ -516,4 +544,22 @@ int syncop_xattrop (xlator_t *subvol, loc_t *loc, gf_xattrop_flags_t flags,
 int
 syncop_fxattrop (xlator_t *subvol, fd_t *fd, gf_xattrop_flags_t flags,
                  dict_t *dict, dict_t *xdata_in, dict_t **xdata_out);
+
+int
+syncop_seek (xlator_t *subvol, fd_t *fd, off_t offset, gf_seek_what_t what,
+             dict_t *xdata_in, off_t *off);
+
+int
+syncop_getactivelk (xlator_t *subvol, loc_t *loc,                                                                                                    lock_migration_info_t *locklist,
+                     dict_t *xdata_in, dict_t **xdata_out);
+
+int
+syncop_setactivelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                          int32_t op_ret, int32_t op_errno, dict_t *xdata);
+
+int
+syncop_setactivelk (xlator_t *subvol, loc_t *loc,
+                     lock_migration_info_t *locklist,  dict_t *xdata_in,
+                     dict_t **xdata_out);
+
 #endif /* _SYNCOP_H */

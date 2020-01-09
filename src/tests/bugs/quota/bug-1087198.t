@@ -28,7 +28,7 @@ build_tester $(dirname $0)/../../basic/quota.c -o $QDD
 TEST glusterd
 
 TEST $CLI volume create $V0 $H0:$B0/brick{1..4};
-
+TEST $CLI volume set $V0 nfs.disable false
 TEST $CLI volume start $V0;
 
 EXPECT_WITHIN $NFS_EXPORT_TIMEOUT "1" is_nfs_export_available;
@@ -78,7 +78,6 @@ TEST grep -e "\"Usage is above soft limit:.*used by /\"" -- $BRICK_LOG_DIR/*
 EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $N0
 
 TEST $CLI volume stop $V0
-EXPECT "1" get_aux
 
 rm -f $QDD
 

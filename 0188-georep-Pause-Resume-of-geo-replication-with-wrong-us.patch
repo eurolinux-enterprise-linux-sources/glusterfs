@@ -1,0 +1,70 @@
+From 60575494a3b1ef52ea6374d62654693b6ee0d9bd Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Fri, 16 Mar 2018 17:11:09 +0530
+Subject: [PATCH 188/201] georep : Pause/Resume of geo-replication with wrong
+ user
+
+While performing pause/resume on geo-replication with wrong user
+(other user then you setup), always returns success. Which further
+leads to snapshot creation failure as it is detecting active
+geo-replication session.
+
+upstream patch : https://review.gluster.org/#/c/19658/
+
+>BUG: 1550936
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+
+Change-Id: I6e96e8dd3e861348b057475387f0093cb903ae88
+BUG: 1557297
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/132890
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-geo-rep.c | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+index 93d4516..dff8065 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
++++ b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+@@ -3641,6 +3641,18 @@ glusterd_op_stage_gsync_set (dict_t *dict, char **op_errstr)
+                                 if (path_list)
+                                         ret = -1;
+                         }
++
++                        /* Check for geo-rep session is active or not for
++                         * configured user.*/
++                        ret = glusterd_gsync_get_uuid (slave, volinfo, uuid);
++                        if (ret) {
++                                snprintf (errmsg, sizeof(errmsg),
++                                          "Geo-replication session between %s "
++                                          "and %s does not exist.",
++                                          volinfo->volname, slave);
++                                ret = -1;
++                                goto out;
++                        }
+                 }
+                 break;
+ 
+@@ -3665,6 +3677,17 @@ glusterd_op_stage_gsync_set (dict_t *dict, char **op_errstr)
+                         }
+                 }
+ 
++                /* Check for geo-rep session is active or not
++                 * for configured user.*/
++                ret = glusterd_gsync_get_uuid (slave, volinfo, uuid);
++                if (ret) {
++                        snprintf (errmsg, sizeof(errmsg), "Geo-replication"
++                                  " session between %s and %s does not exist.",
++                                  volinfo->volname, slave);
++                        ret = -1;
++                        goto out;
++                }
++
+                 if (!is_force) {
+                         ret = gd_pause_resume_validation (type, volinfo, slave,
+                                                           statefile, op_errstr);
+-- 
+1.8.3.1
+

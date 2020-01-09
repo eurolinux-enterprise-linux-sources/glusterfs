@@ -145,8 +145,9 @@ auth_cache_add (struct auth_cache *cache, char *hashkey,
         GF_VALIDATE_OR_GOTO (GF_NFS, cache, out);
         GF_VALIDATE_OR_GOTO (GF_NFS, cache->cache_dict, out);
 
-        ret = GF_REF_GET (entry);
-        if (ret == 0) {
+        /* FIXME: entry is passed as parameter, this can never fail? */
+        entry = GF_REF_GET (entry);
+        if (!entry) {
                 /* entry does not have any references */
                 ret = -1;
                 goto out;
@@ -221,8 +222,9 @@ auth_cache_get (struct auth_cache *cache, char *hashkey,
                 if (!entry_data)
                         goto unlock;
 
-                lookup_res = (struct auth_cache_entry *)(entry_data->data);
-                if (GF_REF_GET (lookup_res) == 0) {
+                /* FIXME: this is dangerous use of entry_data */
+                lookup_res = GF_REF_GET ((struct auth_cache_entry *) entry_data->data);
+                if (lookup_res == NULL) {
                         /* entry has been free'd */
                         ret = ENTRY_EXPIRED;
                         goto unlock;
@@ -442,7 +444,6 @@ cache_nfs_fh (struct auth_cache *cache, struct nfs3_fh *fh,
 {
         int                      ret        = -EINVAL;
         char                    *hashkey    = NULL;
-        data_t                  *entry_data = NULL;
         time_t                   timestamp  = 0;
         gf_boolean_t             can_write  = _gf_false;
         struct auth_cache_entry *entry      = NULL;

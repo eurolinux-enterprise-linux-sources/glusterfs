@@ -13,11 +13,6 @@ MIGRATION_TIMEOUT=10
 DEMOTE_FREQ=4
 PROMOTE_FREQ=12
 
-function detach_start {
-        $CLI volume tier $1 detach start
-        echo $?;
-}
-
 function file_on_slow_tier {
     found=0
 
@@ -112,17 +107,28 @@ TEST $CLI volume set $V0 cluster.watermark-hi 85
 TEST $CLI volume set $V0 cluster.watermark-low 75
 TEST $CLI volume set $V0 cluster.tier-max-mb 1000
 TEST $CLI volume set $V0 cluster.tier-max-files 1000
+TEST $CLI volume set $V0 cluster.tier-max-promote-file-size 1000
 TEST ! $CLI volume set $V0 cluster.tier-max-files -3
 TEST ! $CLI volume set $V0 cluster.watermark-low 90
+TEST ! $CLI volume set $V0 cluster.watermark-hi 75
 TEST ! $CLI volume set $V0 cluster.read-freq-threshold -12
 TEST ! $CLI volume set $V0 cluster.write-freq-threshold -12
 
+#check for watermark reset
+TEST $CLI volume set $V0 cluster.watermark-low 10
+TEST $CLI volume set $V0 cluster.watermark-hi 30
+TEST ! $CLI volume reset $V0 cluster.watermark-low
+TEST $CLI volume reset $V0 cluster.watermark-hi
+TEST $CLI volume reset $V0 cluster.watermark-low
 
 # stop the volume and restart it. The rebalance daemon should restart.
 cd /tmp
 umount $M0
 TEST $CLI volume stop $V0
 TEST $CLI volume start $V0
+
+wait_for_tier_start
+
 TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
 cd $M0
 
@@ -210,3 +216,4 @@ cleanup
 rm -rf /tmp/d1
 
 
+#G_TESTDEF_TEST_STATUS_NETBSD7=KNOWN_ISSUE,BUG=000000

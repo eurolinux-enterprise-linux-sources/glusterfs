@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 
 #include "glusterfs.h"
 #include "xlator.h"
@@ -94,7 +89,7 @@ dht_layout_set (xlator_t *this, inode_t *inode, dht_layout_t *layout)
 {
         dht_conf_t   *conf = NULL;
         int           oldret = -1;
-        int           ret = 0;
+        int           ret = -1;
         dht_layout_t *old_layout;
 
         conf = this->private;
@@ -106,7 +101,7 @@ dht_layout_set (xlator_t *this, inode_t *inode, dht_layout_t *layout)
                 oldret = dht_inode_ctx_layout_get (inode, this, &old_layout);
                 if (layout)
                         layout->ref++;
-                dht_inode_ctx_layout_set (inode, this, layout);
+                ret = dht_inode_ctx_layout_set (inode, this, layout);
         }
         UNLOCK (&conf->layout_lock);
 
@@ -285,6 +280,22 @@ out:
         return ret;
 }
 
+int
+dht_disk_layout_extract_for_subvol (xlator_t *this, dht_layout_t *layout,
+                                    xlator_t *subvol, int32_t **disk_layout_p)
+{
+        int i = 0;
+
+        for (i = 0; i < layout->cnt; i++) {
+                if (layout->list[i].xlator == subvol)
+                        break;
+        }
+
+        if (i == layout->cnt)
+                return -1;
+
+        return dht_disk_layout_extract (this, layout, i, disk_layout_p);
+}
 
 int
 dht_disk_layout_merge (xlator_t *this, dht_layout_t *layout,
@@ -754,9 +765,12 @@ dht_layout_dir_mismatch (xlator_t *this, dht_layout_t *layout, xlator_t *subvol,
         }
 
         if (pos == -1) {
-                gf_msg_debug (this->name, 0,
-                              "%s - no layout info for subvolume %s",
-                              loc->path, subvol->name);
+                if (loc) {
+                        gf_msg_debug (this->name, 0,
+                                      "%s - no layout info for subvolume %s",
+                                      loc ? loc->path : "path not found",
+                                      subvol->name);
+                }
                 ret = 1;
                 goto out;
         }
@@ -765,10 +779,17 @@ dht_layout_dir_mismatch (xlator_t *this, dht_layout_t *layout, xlator_t *subvol,
 
         if (!xattr) {
                 if (err == 0) {
-                        gf_msg (this->name, GF_LOG_INFO, 0,
-                                DHT_MSG_DICT_GET_FAILED,
-                                "%s: xattr dictionary is NULL",
-                                loc->path);
+                        if (loc) {
+                                gf_msg (this->name, GF_LOG_INFO, 0,
+                                        DHT_MSG_DICT_GET_FAILED,
+                                        "%s: xattr dictionary is NULL",
+                                        loc->path);
+                        } else {
+                                gf_msg (this->name, GF_LOG_INFO, 0,
+                                        DHT_MSG_DICT_GET_FAILED,
+                                        "path not found: "
+                                        "xattr dictionary is NULL");
+                        }
                         ret = -1;
                 }
                 goto out;
@@ -779,10 +800,18 @@ dht_layout_dir_mismatch (xlator_t *this, dht_layout_t *layout, xlator_t *subvol,
 
         if (dict_ret < 0) {
                 if (err == 0 && layout->list[pos].stop) {
-                        gf_msg (this->name, GF_LOG_INFO, 0,
-                                DHT_MSG_DISK_LAYOUT_MISSING,
-                                "%s: Disk layout missing, gfid = %s",
-                                loc->path, gfid);
+                        if (loc) {
+                                gf_msg (this->name, GF_LOG_INFO, 0,
+                                        DHT_MSG_DISK_LAYOUT_MISSING,
+                                    "%s: Disk layout missing, gfid = %s",
+                                    loc->path, gfid);
+                        } else {
+                                gf_msg (this->name, GF_LOG_INFO, 0,
+                                        DHT_MSG_DISK_LAYOUT_MISSING,
+                                        "path not found: "
+                                        "Disk layout missing, gfid = %s",
+                                        gfid);
+                        }
                         ret = -1;
                 }
                 goto out;
@@ -826,6 +855,7 @@ dht_layout_preset (xlator_t *this, xlator_t *subvol, inode_t *inode)
         if (!conf)
                 goto out;
 
+
         layout = dht_layout_for_subvol (this, subvol);
         if (!layout) {
                 gf_msg (this->name, GF_LOG_INFO, 0,
@@ -836,10 +866,14 @@ dht_layout_preset (xlator_t *this, xlator_t *subvol, inode_t *inode)
                 goto out;
         }
 
+        gf_msg_debug (this->name, 0, "file = %s, subvol = %s",
+                      uuid_utoa (inode->gfid), subvol ? subvol->name : "<nil>");
+
         LOCK (&conf->layout_lock);
         {
                 dht_inode_ctx_layout_set (inode, this, layout);
         }
+
         UNLOCK (&conf->layout_lock);
 
         ret = 0;

@@ -99,17 +99,10 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
 int32_t
 glusterd_restore_geo_rep_files (glusterd_volinfo_t *snap_vol);
 
-int
-glusterd_restore_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
-                                   glusterd_snap_t *snap);
 int32_t
 glusterd_copy_quota_files (glusterd_volinfo_t *src_vol,
                            glusterd_volinfo_t *dest_vol,
                            gf_boolean_t *conf_present);
-
-int
-glusterd_copy_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
-                                glusterd_volinfo_t *dest_vol);
 
 int
 glusterd_snap_use_rsp_dict (dict_t *aggr, dict_t *rsp_dict);
@@ -137,7 +130,7 @@ glusterd_snap_quorum_check (dict_t *dict, gf_boolean_t snap_volume,
 int32_t
 glusterd_snap_brick_create (glusterd_volinfo_t *snap_volinfo,
                             glusterd_brickinfo_t *brickinfo,
-                            int32_t brick_count);
+                            int32_t brick_count, int32_t clone);
 
 int
 glusterd_snapshot_restore_cleanup (dict_t *rsp_dict,
@@ -161,6 +154,8 @@ glusterd_is_snap_soft_limit_reached (glusterd_volinfo_t *volinfo,
 void
 gd_get_snap_conf_values_if_present (dict_t *opts, uint64_t *sys_hard_limit,
                                     uint64_t *sys_soft_limit);
+int
+glusterd_get_snap_status_str (glusterd_snap_t *snapinfo, char *snap_status_str);
 
 #endif
 

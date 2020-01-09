@@ -1,0 +1,53 @@
+From b37253008e93571088537d77282d985b484302c8 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Mon, 16 Apr 2018 17:44:19 +0530
+Subject: [PATCH 223/236] glusterd: Make localtime-logging option invisible in
+ downstream
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Ie631edebb7e19152392bfd3c369a96e88796bd75
+BUG: 1567110
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/135754
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c      | 2 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 72d349b..d479ed4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -85,7 +85,7 @@ glusterd_all_vol_opts valid_all_vol_opts[] = {
+          * TBD: Discuss the default value for this. Maybe this should be a
+          * dynamic value depending on the memory specifications per node */
+         { GLUSTERD_BRICKMUX_LIMIT_KEY,          "0"},
+-        { GLUSTERD_LOCALTIME_LOGGING_KEY,       "disable"},
++        /*{ GLUSTERD_LOCALTIME_LOGGING_KEY,       "disable"},*/
+         { NULL },
+ };
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 4d41c6e..9bc0933 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -3567,12 +3567,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version = GD_OP_VERSION_3_11_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+-        { .key         = GLUSTERD_LOCALTIME_LOGGING_KEY,
++        /*{ .key         = GLUSTERD_LOCALTIME_LOGGING_KEY,
+           .voltype     = "mgmt/glusterd",
+           .type        = GLOBAL_DOC,
+           .op_version  = GD_OP_VERSION_3_12_0,
+           .validate_fn = validate_boolean
+-        },
++        },*/
+         { .key        = "disperse.parallel-writes",
+           .voltype    = "cluster/disperse",
+           .type       = NO_DOC,
+-- 
+1.8.3.1
+

@@ -1,0 +1,47 @@
+From 9efbf3a9fb009706ca71068449a961ee0237a705 Mon Sep 17 00:00:00 2001
+From: hari gowtham <hgowtham@redhat.com>
+Date: Tue, 8 May 2018 11:42:33 +0530
+Subject: [PATCH 265/271] Glusterfsd: brick crash during get-state
+
+        back-port of: https://review.gluster.org/#/c/19977/
+
+The xprt's dereferencing wasn't checked before using it for the
+strcmp, which caused the segfault and crashed the brick process.
+
+fix: Check every deferenced variable before using it.
+
+>Change-Id: I7f705d1c88a124e8219bb877156fadb17ecf11c3
+>fixes: bz#1575864
+>Signed-off-by: hari gowtham <hgowtham@redhat.com>
+
+Change-Id: I7f705d1c88a124e8219bb877156fadb17ecf11c3
+BUG: 1572075
+Signed-off-by: hari gowtham <hgowtham@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138650
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/server/src/server.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index 6f20a06..2ba5da3 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -245,8 +245,11 @@ server_priv_to_dict (xlator_t *this, dict_t *dict, char *brickname)
+         pthread_mutex_lock (&conf->mutex);
+         {
+                 list_for_each_entry (xprt, &conf->xprt_list, list) {
+-                        if (!strcmp (brickname,
+-                                     xprt->xl_private->bound_xl->name)) {
++                        if ((xprt) && (xprt->xl_private) &&
++                            (xprt->xl_private->bound_xl) &&
++                            (xprt->xl_private->bound_xl->name) && (brickname) &&
++                            (!strcmp (brickname,
++                                     xprt->xl_private->bound_xl->name))) {
+                                 peerinfo = &xprt->peerinfo;
+                                 memset (key, 0, sizeof (key));
+                                 snprintf (key, sizeof (key),
+-- 
+1.8.3.1
+

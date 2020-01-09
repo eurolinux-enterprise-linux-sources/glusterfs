@@ -28,7 +28,8 @@ typedef enum {
 #define EC_CONFIG_ALGORITHM 0
 
 #define EC_FLAG_LOCK_SHARED       0x0001
-#define EC_FLAG_WAITING_SIZE      0x0002
+#define EC_FLAG_WAITING_XATTROP   0x0002
+#define EC_FLAG_QUERY_METADATA    0x0004
 
 #define EC_SELFHEAL_BIT 62
 
@@ -89,7 +90,7 @@ gf_boolean_t
 ec_cbk_set_error(ec_cbk_data_t *cbk, int32_t error, gf_boolean_t ro);
 
 void ec_lock_prepare_inode(ec_fop_data_t *fop, loc_t *loc, uint32_t flags);
-void ec_lock_prepare_parent_inode(ec_fop_data_t *fop, loc_t *loc,
+void ec_lock_prepare_parent_inode(ec_fop_data_t *fop, loc_t *loc, loc_t *base,
                                   uint32_t flags);
 void ec_lock_prepare_fd(ec_fop_data_t *fop, fd_t *fd, uint32_t flags);
 void ec_lock(ec_fop_data_t * fop);
@@ -116,5 +117,13 @@ void ec_resume_parent(ec_fop_data_t * fop, int32_t error);
 void ec_manager(ec_fop_data_t * fop, int32_t error);
 gf_boolean_t ec_is_recoverable_error (int32_t op_errno);
 void ec_handle_healers_done (ec_fop_data_t *fop);
+
+int32_t
+ec_heal_inspect (call_frame_t *frame, ec_t *ec,
+                 inode_t *inode, unsigned char *locked_on,
+                 gf_boolean_t self_locked, gf_boolean_t thorough,
+                 gf_boolean_t *need_heal);
+int32_t
+ec_get_heal_info (xlator_t *this, loc_t *loc, dict_t **dict);
 
 #endif /* __EC_COMMON_H__ */

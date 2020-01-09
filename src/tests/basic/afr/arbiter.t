@@ -9,15 +9,27 @@ TEST glusterd;
 TEST pidof glusterd
 
 # Non arbiter replica 3 volumes should not have arbiter-count option enabled.
+TEST mkdir -p $B0/${V0}{0,1,2}
 TEST $CLI volume create $V0 replica 3 $H0:$B0/${V0}{0,1,2}
 TEST $CLI volume start $V0
-TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 --entry-timeout=0 $M0;
+EXPECT 'Started' volinfo_field $V0 'Status'
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status $V0 $H0 $B0/${V0}0
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status $V0 $H0 $B0/${V0}1
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status $V0 $H0 $B0/${V0}2
+TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0;
 TEST ! stat $M0/.meta/graphs/active/$V0-replicate-0/options/arbiter-count
-TEST umount $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 TEST $CLI volume stop $V0
 TEST $CLI volume delete $V0
 
+# Make sure we clean up *all the way* so we don't get "brick X is already part
+# of a volume" errors.
+cleanup;
+TEST glusterd;
+TEST pidof glusterd
+
 # Create and mount a replica 3 arbiter volume.
+TEST mkdir -p $B0/${V0}{0,1,2}
 TEST $CLI volume create $V0 replica 3 arbiter 1 $H0:$B0/${V0}{0,1,2}
 TEST $CLI volume set $V0 performance.write-behind off
 TEST $CLI volume set $V0 performance.stat-prefetch off
@@ -26,7 +38,11 @@ TEST $CLI volume set $V0 cluster.metadata-self-heal off
 TEST $CLI volume set $V0 cluster.data-self-heal off
 TEST $CLI volume set $V0 cluster.entry-self-heal off
 TEST $CLI volume start $V0
-TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 --attribute-timeout=0 --entry-timeout=0 $M0;
+EXPECT 'Started' volinfo_field $V0 'Status'
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status $V0 $H0 $B0/${V0}0
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status $V0 $H0 $B0/${V0}1
+EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status $V0 $H0 $B0/${V0}2
+TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0;
 TEST stat $M0/.meta/graphs/active/$V0-replicate-0/options/arbiter-count
 EXPECT "1" cat $M0/.meta/graphs/active/$V0-replicate-0/options/arbiter-count
 
@@ -72,5 +88,5 @@ EXPECT 0 get_pending_heal_count $V0
 TEST cat $M0/file
 TEST getfattr -n user.name $M0/file
 TEST `echo append>> $M0/file`
-TEST umount $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 cleanup

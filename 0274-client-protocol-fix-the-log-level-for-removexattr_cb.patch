@@ -1,0 +1,47 @@
+From 6699edde4b8d82346dc06a2468434aa99ee53b53 Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Wed, 9 May 2018 00:56:11 +0530
+Subject: [PATCH 274/274] client/protocol: fix the log level for
+ removexattr_cbk
+
+noticed that server protocol actually logs all the errors for
+removexattr as INFO, instead of WARNING like client, and hence,
+doesn't create a confusion in user.
+
+Upstream:
+> Patch URL: https://review.gluster.org/19990/
+> Change-Id: Ia6681e9ee433fda3c77a4509906c78333396e339
+> Signed-off-by: Amar Tumballi <amarts@redhat.com>
+
+BUG: 1575555
+Change-Id: I1540a6b77abc48eebf06072d781afadf371e982d
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139053
+Tested-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/client/src/client-rpc-fops.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/protocol/client/src/client-rpc-fops.c b/xlators/protocol/client/src/client-rpc-fops.c
+index 973a795..e6a9b90 100644
+--- a/xlators/protocol/client/src/client-rpc-fops.c
++++ b/xlators/protocol/client/src/client-rpc-fops.c
+@@ -1196,7 +1196,12 @@ client3_3_removexattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
+         ret = client_post_removexattr (this, &rsp, &xdata);
+ out:
+         if (rsp.op_ret == -1) {
+-                if ((ENODATA == rsp.op_errno) || (ENOATTR == rsp.op_errno))
++                /* EPERM/EACCESS is returned some times in case of selinux
++                   attributes, or other system attributes which may not be
++                   possible to remove from an user process is encountered.
++                   we can't treat it as an error */
++                if ((ENODATA == rsp.op_errno) || (ENOATTR == rsp.op_errno) ||
++                    (EPERM == rsp.op_errno) || (EACCES == rsp.op_errno))
+                         loglevel = GF_LOG_DEBUG;
+                 else
+                         loglevel = GF_LOG_WARNING;
+-- 
+1.8.3.1
+

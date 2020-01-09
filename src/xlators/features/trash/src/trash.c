@@ -7,13 +7,9 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "trash.h"
 #include "trash-mem-types.h"
+#include "syscall.h"
 
 #define root_gfid        (uuid_t){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 #define trash_gfid       (uuid_t){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5}
@@ -53,7 +49,7 @@ get_permission (char *path)
         struct iatt             ibuf                    = {0,};
         int                     ret                     = 0;
 
-        ret = stat (path, &sbuf);
+        ret = sys_stat (path, &sbuf);
         if (!ret) {
                 iatt_from_stat (&ibuf, &sbuf);
                 mode = st_mode_from_ia (ibuf.ia_prot, ibuf.ia_type);
@@ -129,30 +125,6 @@ remove_trash_path (const char *path, gf_boolean_t internal, char **rem_path)
                 *rem_path =  strchr (*rem_path + 1, '/');
 }
 
-/**
- * Check whether the path includes trash directory or internal op directory
- * inside trash. This check is used to make sure that we avoid deletion,
- * rename and creation operations from trash directory.
- */
-int
-check_whether_trash_directory (const char *path,
-                               const char *trash_directory_path)
-{
-        char                    tmp_path[PATH_MAX]              = {0,};
-        char                    internal_op_path[PATH_MAX]      = {0,};
-        int                     ret                             = 0;
-
-        if (path[strlen(path)-1] == '/')
-                sprintf (tmp_path, "%s", path);
-        else
-                sprintf (tmp_path, "%s/", path);
-
-        copy_trash_path (trash_directory_path, _gf_true, internal_op_path);
-        ret = strcmp (tmp_path, trash_directory_path) &&
-              strcmp (tmp_path, internal_op_path);
-
-        return ret;
-}
 
 /**
  * Checks whether the given path reside under the specified eliminate path
@@ -240,6 +212,24 @@ append_time_stamp (char *name)
         strcat (name, timestr);
 }
 
+/* *
+ * Check whether delete/rename operation is permitted on
+ * trash directory
+ */
+
+gf_boolean_t
+check_whether_op_permitted (trash_private_t *priv, loc_t *loc)
+{
+        if ((priv->state &&
+            (gf_uuid_compare(loc->inode->gfid, trash_gfid) == 0)))
+                return _gf_false;
+        if (priv->internal &&
+           (gf_uuid_compare(loc->inode->gfid, internal_op_gfid) == 0))
+                return _gf_false;
+
+        return _gf_true;
+}
+
 /**
  * Wipe the memory used by trash location variable
  */
@@ -284,45 +274,330 @@ wipe_eliminate_path (trash_elim_path **trav)
 }
 
 /**
+ * This is the call back of rename fop initated using STACK_WIND in
+ * reconfigure/notify function which is used to rename trash directory
+ * in the brick when it is required either in volume start or set.
+ * This frame  must destroyed from this function itself since it was
+ * created by trash xlator
+ */
+int32_t
+trash_dir_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                      int32_t op_ret, int32_t op_errno, struct iatt *buf,
+                      struct iatt *preoldparent, struct iatt *postoldparent,
+                      struct iatt *prenewparent, struct iatt *postnewparent,
+                      dict_t *xdata)
+{
+        trash_private_t       *priv      = NULL;
+        trash_local_t         *local     = NULL;
+
+        priv = this->private;
+
+        local = frame->local;
+
+        if (op_ret == -1) {
+                gf_log (this->name, GF_LOG_ERROR, "rename trash directory "
+                                "failed: %s", strerror (op_errno));
+                goto out;
+        }
+
+        GF_FREE (priv->oldtrash_dir);
+
+        priv->oldtrash_dir = gf_strdup(priv->newtrash_dir);
+        if (!priv->oldtrash_dir) {
+                op_ret = ENOMEM;
+                gf_log (this->name, GF_LOG_DEBUG,
+                                "out of memory");
+        }
+
+out:
+        frame->local = NULL;
+        STACK_DESTROY (frame->root);
+        trash_local_wipe (local);
+        return op_ret;
+}
+
+int
+rename_trash_directory (xlator_t *this)
+{
+        trash_private_t       *priv      = NULL;
+        int                   ret        = 0;
+        loc_t                 loc        = {0, };
+        loc_t                 old_loc    = {0, };
+        call_frame_t          *frame     = NULL;
+        trash_local_t         *local     = NULL;
+
+        priv = this->private;
+
+        frame = create_frame (this, this->ctx->pool);
+        if (frame == NULL) {
+                gf_log (this->name, GF_LOG_ERROR,
+                                "failed to create frame");
+                ret = ENOMEM;
+                goto out;
+        }
+
+        local = mem_get0 (this->local_pool);
+        if (!local) {
+                gf_log (this->name, GF_LOG_DEBUG, "out of memory");
+                ret = ENOMEM;
+                goto out;
+        }
+        frame->local = local;
+
+        /* assign new location values to new_loc members */
+        gf_uuid_copy (loc.gfid, trash_gfid);
+        gf_uuid_copy (loc.pargfid, root_gfid);
+        ret = extract_trash_directory (priv->newtrash_dir,
+                                                &loc.name);
+        if (ret) {
+                gf_log (this->name, GF_LOG_DEBUG,
+                                "out of memory");
+                goto out;
+        }
+        loc.path = gf_strdup (priv->newtrash_dir);
+        if (!loc.path) {
+                ret = ENOMEM;
+                gf_log (this->name, GF_LOG_DEBUG,
+                                "out of memory");
+                goto out;
+        }
+
+        /* assign old location values to old_loc members */
+        gf_uuid_copy (old_loc.gfid, trash_gfid);
+        gf_uuid_copy (old_loc.pargfid, root_gfid);
+        ret = extract_trash_directory (priv->oldtrash_dir,
+                                                &old_loc.name);
+        if (ret) {
+                gf_log (this->name, GF_LOG_DEBUG,
+                                "out of memory");
+                goto out;
+        }
+        old_loc.path = gf_strdup (priv->oldtrash_dir);
+        if (!old_loc.path) {
+                ret = ENOMEM;
+                gf_log (this->name, GF_LOG_DEBUG,
+                                "out of memory");
+                goto out;
+        }
+
+        old_loc.inode = inode_ref (priv->trash_inode);
+        gf_uuid_copy(old_loc.inode->gfid, old_loc.gfid);
+
+        loc_copy (&local->loc, &old_loc);
+        loc_copy (&local->newloc, &loc);
+
+        STACK_WIND (frame, trash_dir_rename_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->rename,
+                    &old_loc, &loc, NULL);
+        return 0;
+
+out:
+        frame->local = NULL;
+        STACK_DESTROY (frame->root);
+        trash_local_wipe (local);
+
+        return ret;
+}
+
+int32_t
+trash_internal_op_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                        int32_t op_ret, int32_t op_errno, inode_t *inode,
+                        struct iatt *buf, struct iatt *preparent,
+                        struct iatt *postparent, dict_t *xdata)
+{
+       trash_local_t          *local   = NULL;
+       local = frame->local;
+
+        if (op_ret != 0 && !(op_errno == EEXIST))
+                gf_log (this->name, GF_LOG_ERROR, "mkdir failed for "
+                        "internal op directory : %s", strerror (op_errno));
+
+        frame->local = NULL;
+        STACK_DESTROY (frame->root);
+        trash_local_wipe (local);
+        return op_ret;
+}
+
+/**
+ * This is the call back of mkdir fop initated using STACK_WIND in
+ * notify/reconfigure function which is used to create trash directory
+ * in the brick when "trash" is on. The frame of the mkdir must
+ * destroyed from this function itself since it was created by trash xlator
+ */
+
+int32_t
+trash_dir_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                     int32_t op_ret, int32_t op_errno, inode_t *inode,
+                     struct iatt *buf, struct iatt *preparent,
+                     struct iatt *postparent, dict_t *xdata)
+{
+        trash_private_t        *priv    = NULL;
+        trash_local_t          *local   = NULL;
+
+        priv = this->private;
+
+        local = frame->local;
+
+        if (op_ret == 0) {
+                priv->oldtrash_dir = gf_strdup (priv->newtrash_dir);
+                if (!priv->oldtrash_dir) {
+                        gf_log (this->name, GF_LOG_ERROR, "out of memory");
+                        op_ret = ENOMEM;
+                }
+        } else if (op_ret != 0 && errno != EEXIST)
+                gf_log (this->name, GF_LOG_ERROR, "mkdir failed for trash"
+                                " directory : %s", strerror (op_errno));
+
+        frame->local = NULL;
+        STACK_DESTROY (frame->root);
+        trash_local_wipe (local);
+        return op_ret;
+}
+
+/**
  * This getxattr calls returns existing trash directory path in
  * the dictionary
  */
 int32_t
-trash_notify_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+trash_dir_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                       int32_t op_ret, int32_t op_errno, dict_t *dict,
                       dict_t *xdata)
 {
         data_t                 *data                  = NULL;
         trash_private_t        *priv                  = NULL;
-        int ret                                       = 0;
+        int                    ret                    = 0;
+        trash_local_t          *local                 = NULL;
 
         priv = this->private;
         GF_VALIDATE_OR_GOTO ("trash", priv, out);
 
+        local = frame->local;
+
         data = dict_get (dict, GET_ANCESTRY_PATH_KEY);
         if (!data) {
-                gf_log (this->name, GF_LOG_DEBUG,
-                                "oldtrash-directory doesnot exists");
-                priv->oldtrash_dir = gf_strdup (priv->newtrash_dir);
-                if (!priv->oldtrash_dir) {
-                        gf_log (this->name, GF_LOG_ERROR, "out of memory");
-                        ret = ENOMEM;
-                        goto out;
-                }
-        } else {
-                priv->oldtrash_dir = gf_strdup (data->data);
-                if (!priv->oldtrash_dir) {
-                        gf_log (this->name, GF_LOG_ERROR, "out of memory");
-                         ret = ENOMEM;
-                         goto out;
-                }
-                gf_log (this->name, GF_LOG_DEBUG, "old trash directory"
-                                                  " path is %s", data->data);
+                goto out;
+        }
+        priv->oldtrash_dir = GF_CALLOC (1, PATH_MAX,
+                                        gf_common_mt_char);
+        if (!priv->oldtrash_dir) {
+                gf_log (this->name, GF_LOG_ERROR, "out of memory");
+                 ret = ENOMEM;
+                 goto out;
+        }
+        /* appending '/' if it is not present */
+        sprintf (priv->oldtrash_dir, "%s%c", data->data,
+                 data->data[strlen(data->data) - 1] != '/' ? '/' : '\0'
+                 );
+        gf_log (this->name, GF_LOG_DEBUG, "old trash directory path "
+                                          "is %s", priv->oldtrash_dir);
+        if (strcmp(priv->newtrash_dir, priv->oldtrash_dir) != 0) {
+
+                /* When user set a new name for trash directory, trash
+                * xlator will perform a rename operation on old trash
+                * directory to the new one using a STACK_WIND from here.
+                * This option can be configured only when volume is in
+                * started state
+                */
+                ret = rename_trash_directory (this);
         }
 
 out:
-          return ret;
+        frame->local = NULL;
+        STACK_DESTROY (frame->root);
+        trash_local_wipe (local);
+        return ret;
 }
+/**
+ * This is a nameless look up for internal op directory
+ * The lookup is based on gfid, because internal op directory
+ * has fixed gfid.
+ */
+int32_t
+trash_internalop_dir_lookup_cbk (call_frame_t *frame, void *cookie,
+                                 xlator_t *this, int32_t op_ret,
+                                 int32_t op_errno, inode_t *inode,
+                                 struct iatt *buf, dict_t *xdata,
+                                 struct iatt *postparent)
+{
+        trash_private_t       *priv      = NULL;
+        int                   ret        = 0;
+        uuid_t                *gfid_ptr  = NULL;
+        loc_t                 loc        = {0, };
+        char                  internal_op_path[PATH_MAX]        = {0,};
+        dict_t                *dict      = NULL;
+        trash_local_t          *local    = NULL;
+
+        priv = this->private;
+        GF_VALIDATE_OR_GOTO ("trash", priv, out);
+
+        local = frame->local;
+        if (op_ret != 0 && op_errno == ENOENT) {
+                loc_wipe (&local->loc);
+                gfid_ptr = GF_CALLOC (1, sizeof(uuid_t),
+                                   gf_common_mt_uuid_t);
+                if (!gfid_ptr) {
+                        ret = ENOMEM;
+                        goto out;
+                }
+
+                gf_uuid_copy (*gfid_ptr, internal_op_gfid);
+
+                dict = dict_new ();
+                if (!dict) {
+                        ret = ENOMEM;
+                        goto out;
+                }
+                ret = dict_set_dynptr (dict, "gfid-req", gfid_ptr,
+                               sizeof (uuid_t));
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "setting key gfid-req failed");
+                        goto out;
+                }
+                gf_uuid_copy (loc.gfid, internal_op_gfid);
+                gf_uuid_copy (loc.pargfid, trash_gfid);
+
+                loc.inode = inode_new (priv->trash_itable);
+
+                /* The mkdir call for creating internal op directory */
+                loc.name = gf_strdup ("internal_op");
+                if (!loc.name) {
+                        gf_log (this->name, GF_LOG_DEBUG,
+                                 "out of memory");
+                        ret = ENOMEM;
+                        goto out;
+                }
+                sprintf (internal_op_path, "%s%s/",
+                         priv->newtrash_dir, loc.name);
+
+                loc.path = gf_strdup (internal_op_path);
+                if (!loc.path) {
+                        gf_log (this->name, GF_LOG_DEBUG,
+                                 "out of memory");
+                        ret = ENOMEM;
+                        goto out;
+                }
+
+                loc_copy (&local->loc, &loc);
+                STACK_WIND (frame, trash_internal_op_mkdir_cbk,
+                            FIRST_CHILD(this),
+                            FIRST_CHILD(this)->fops->mkdir,
+                            &loc, 0755, 0022, dict);
+                return 0;
+        }
+
+out:
+        if (ret && gfid_ptr)
+                GF_FREE (gfid_ptr);
+        if (dict)
+                dict_unref (dict);
+        frame->local = NULL;
+        STACK_DESTROY (frame->root);
+        trash_local_wipe (local);
+        return op_ret;
+}
+
 
 /**
  * This is a nameless look up for old trash directory
@@ -330,18 +605,24 @@ out:
  * has fixed gfid.
  */
 int32_t
-trash_notify_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                         int32_t op_ret, int32_t op_errno, inode_t *inode,
-                         struct iatt *buf, dict_t *xdata,
-                         struct iatt *postparent)
+trash_dir_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                      int32_t op_ret, int32_t op_errno, inode_t *inode,
+                      struct iatt *buf, dict_t *xdata,
+                      struct iatt *postparent)
 {
         trash_private_t         *priv                  = NULL;
         loc_t                   loc                    = {0,};
         int                     ret                    = 0;
+        uuid_t                  *gfid_ptr              = NULL;
+        dict_t                  *dict                  = NULL;
+        trash_local_t           *local                 = NULL;
 
         priv = this->private;
         GF_VALIDATE_OR_GOTO ("trash", priv, out);
 
+        local = frame->local;
+
+        loc_wipe (&local->loc);
         if (op_ret == 0) {
 
                 gf_log (this->name, GF_LOG_DEBUG, "inode found with gfid %s",
@@ -353,174 +634,167 @@ trash_notify_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 priv->trash_inode = inode_link (inode, NULL, NULL, buf);
 
                 loc.inode = inode_ref (priv->trash_inode);
+                loc_copy (&local->loc, &loc);
 
                 /*Used to find path of old trash directory*/
-                STACK_WIND (frame, trash_notify_getxattr_cbk, FIRST_CHILD(this),
+                STACK_WIND (frame, trash_dir_getxattr_cbk, FIRST_CHILD(this),
                             FIRST_CHILD(this)->fops->getxattr, &loc,
                             GET_ANCESTRY_PATH_KEY, xdata);
+                return 0;
         }
 
         /* If there is no old trash directory we set its value to new one,
          * which is the valid condition for trash directory creation
          */
         else {
-                priv->oldtrash_dir = gf_strdup (priv->newtrash_dir);
-                if (!priv->oldtrash_dir) {
-                        gf_log (this->name, GF_LOG_ERROR, "out of memory");
-                        goto out;
-                }
-        }
+                gf_log (this->name, GF_LOG_DEBUG, "Creating trash "
+                                   "directory %s ",
+                                   priv->newtrash_dir);
 
-out:
-        loc_wipe (&loc);
-        return ret;
-}
-
-int32_t
-trash_internal_op_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                        int32_t op_ret, int32_t op_errno, inode_t *inode,
-                        struct iatt *buf, struct iatt *preparent,
-                        struct iatt *postparent, dict_t *xdata)
-{
-        if (op_ret != 0)
-                gf_log (this->name, GF_LOG_ERROR, "mkdir failed for "
-                        "internal op directory : %s", strerror (op_errno));
-        return op_ret;
-}
-
-/**
- * This is the call back of mkdir fop initated using STACK_WIND in
- * notify function which is used to create trash directory in the brick
- * when a volume starts.The frame of the mkdir must destroyed from
- * this function itself since it was created by trash xlator
- */
-int32_t
-trash_notify_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                        int32_t op_ret, int32_t op_errno, inode_t *inode,
-                        struct iatt *buf, struct iatt *preparent,
-                        struct iatt *postparent, dict_t *xdata)
-{
-        uuid_t                *gfid_ptr                         = NULL;
-        loc_t                 loc                               = {0, };
-        int                   ret                               = 0;
-        dict_t                *dict                             = NULL;
-        char                  internal_op_path[PATH_MAX]        = {0,};
-        trash_private_t       *priv       = NULL;
-
-        priv = this->private;
-        GF_VALIDATE_OR_GOTO ("trash", priv, out);
-
-        dict = dict_new ();
-        if (!dict) {
-                ret = -1;
-                goto out;
-        }
-        if ((op_ret == 0) || (op_ret == -1 && op_errno == EEXIST)) {
                 gfid_ptr = GF_CALLOC (1, sizeof(uuid_t),
-                                           gf_common_mt_uuid_t);
+                                          gf_common_mt_uuid_t);
                 if (!gfid_ptr) {
                         ret = ENOMEM;
                         goto out;
                 }
-                gf_uuid_copy (*gfid_ptr, internal_op_gfid);
+                gf_uuid_copy (*gfid_ptr, trash_gfid);
 
-                gf_uuid_copy (loc.gfid, internal_op_gfid);
-                gf_uuid_copy (loc.pargfid, trash_gfid);
-                loc.name = gf_strdup ("internal_op");
-
-                if (!loc.name) {
+                gf_uuid_copy (loc.gfid, trash_gfid);
+                gf_uuid_copy (loc.pargfid, root_gfid);
+                ret = extract_trash_directory (priv->newtrash_dir,
+                                               &loc.name);
+                if (ret) {
                         gf_log (this->name, GF_LOG_DEBUG,
-                                         "out of memory");
-                        ret = ENOMEM;
+                                        "out of memory");
                         goto out;
                 }
-                sprintf (internal_op_path, "%s%s",
-                                priv->newtrash_dir, loc.name);
-
-                loc.path = gf_strdup (internal_op_path);
-
+                loc.path = gf_strdup (priv->newtrash_dir);
                 if (!loc.path) {
                         gf_log (this->name, GF_LOG_DEBUG,
-                                         "out of memory");
+                                        "out of memory");
                         ret = ENOMEM;
                         goto out;
                 }
 
-                loc.inode = inode_new (priv->trash_itable);
-                loc.inode->ia_type = IA_IFDIR;
+                priv->trash_inode = inode_new (priv->trash_itable);
+                priv->trash_inode->ia_type = IA_IFDIR;
+                loc.inode = inode_ref (priv->trash_inode);
+                dict = dict_new ();
+                if (!dict) {
+                        ret = ENOMEM;
+                        goto out;
+                }
                 /* Fixed gfid is set for trash directory with
                  * this function
                  */
                 ret = dict_set_dynptr (dict, "gfid-req", gfid_ptr,
-                                       sizeof (uuid_t));
+                                      sizeof (uuid_t));
                 if (ret) {
                         gf_log (this->name, GF_LOG_ERROR,
-                                 "setting key gfid-req failed");
+                                "setting key gfid-req failed");
                         goto out;
                 }
+                loc_copy (&local->loc, &loc);
 
                 /* The mkdir call for creating trash directory */
-                STACK_WIND (frame, trash_internal_op_mkdir_cbk,
+                STACK_WIND (frame, trash_dir_mkdir_cbk,
                             FIRST_CHILD(this),
                             FIRST_CHILD(this)->fops->mkdir, &loc, 0755,
                             0022, dict);
-                /* After creating we must call other notify functions */
-                default_notify (this, GF_EVENT_CHILD_UP, NULL);
-        } else {
-                gf_log (this->name, GF_LOG_ERROR, "mkdir failed for trash"
-                                " directory : %s", strerror (op_errno));
+                return 0;
         }
-
-        STACK_DESTROY (frame->root);
 out:
         if (ret && gfid_ptr)
                 GF_FREE (gfid_ptr);
         if (dict)
                 dict_unref (dict);
-        return 0;
+        frame->local = NULL;
+        STACK_DESTROY (frame->root);
+        trash_local_wipe (local);
+        return ret;
 }
 
-int32_t
-trash_notify_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                    int32_t op_ret, int32_t op_errno, struct iatt *buf,
-                    struct iatt *preoldparent, struct iatt *postoldparent,
-                    struct iatt *prenewparent, struct iatt *postnewparent,
-                    dict_t *xdata)
+int
+create_or_rename_trash_directory (xlator_t *this)
 {
-        if ((op_ret == 0) || (op_ret == -1 && op_errno == EEXIST)) {
-                /* After creating we must call other notify functions */
-                default_notify (this, GF_EVENT_CHILD_UP, NULL);
-        } else {
-                gf_log (this->name, GF_LOG_ERROR, "rename failed: %s",
-                        strerror (op_errno));
+        trash_private_t       *priv      = NULL;
+        int                   ret        = 0;
+        loc_t                 loc        = {0, };
+        call_frame_t          *frame     = NULL;
+        trash_local_t         *local     = NULL;
+
+        priv = this->private;
+
+
+        frame = create_frame (this, this->ctx->pool);
+        if (frame == NULL) {
+                gf_log (this->name, GF_LOG_ERROR,
+                                "failed to create frame");
+                ret = ENOMEM;
+                goto out;
         }
 
-        STACK_DESTROY (frame->root);
-        return op_ret;
+        local = mem_get0 (this->local_pool);
+        if (!local) {
+                gf_log (this->name, GF_LOG_DEBUG, "out of memory");
+                ret = ENOMEM;
+                goto out;
+        }
+        frame->local = local;
+
+        loc.inode = inode_new (priv->trash_itable);
+        gf_uuid_copy (loc.gfid, trash_gfid);
+        loc_copy (&local->loc, &loc);
+        gf_log (this->name, GF_LOG_DEBUG, "nameless lookup for"
+                           "old trash directory");
+        STACK_WIND (frame, trash_dir_lookup_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->lookup,
+                    &loc, NULL);
+out:
+        return ret;
 }
 
-/**
- * This is the call back of rename fop initated using STACK_WIND in
- * reconfigure function which is used to rename trash directory in
- * the brick when we perform volume set.This frame  must destroyed
- * from this function itself since it was created by trash xlator
- */
-int32_t
-trash_reconf_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                         int32_t op_ret, int32_t op_errno, struct iatt *buf,
-                         struct iatt *preoldparent, struct iatt *postoldparent,
-                         struct iatt *prenewparent, struct iatt *postnewparent,
-                         dict_t *xdata)
+int
+create_internalop_directory (xlator_t *this)
 {
-        if (op_ret == -1 && op_errno == EEXIST) {
+        trash_private_t       *priv      = NULL;
+        int                   ret        = 0;
+        loc_t                 loc        = {0, };
+        call_frame_t          *frame     = NULL;
+        trash_local_t         *local     = NULL;
 
-                gf_log (this->name, GF_LOG_ERROR, "rename failed: %s",
-                        strerror (op_errno));
+        priv = this->private;
+
+        frame = create_frame (this, this->ctx->pool);
+        if (frame == NULL) {
+                gf_log (this->name, GF_LOG_ERROR,
+                                "failed to create frame");
+                ret = ENOMEM;
+                goto out;
         }
 
-        STACK_DESTROY (frame->root);
+        local = mem_get0 (this->local_pool);
+        if (!local) {
+                gf_log (this->name, GF_LOG_DEBUG, "out of memory");
+                ret = ENOMEM;
+                goto out;
+        }
+        frame->local = local;
 
-        return op_ret;
+        gf_uuid_copy (loc.gfid, internal_op_gfid);
+        gf_uuid_copy (loc.pargfid, trash_gfid);
+        loc.inode = inode_new (priv->trash_itable);
+        loc.inode->ia_type = IA_IFDIR;
+
+        loc_copy (&local->loc, &loc);
+        STACK_WIND (frame, trash_internalop_dir_lookup_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->lookup,
+                    &loc, NULL);
+out:
+
+        return ret;
 }
 
 int32_t
@@ -602,6 +876,8 @@ trash_unlink_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local   = frame->local;
         GF_VALIDATE_OR_GOTO ("trash", local, out);
 
+        TRASH_UNSET_PID (frame, local);
+
         tmp_str = gf_strdup (local->newpath);
         if (!tmp_str) {
                 gf_log (this->name, GF_LOG_ERROR, "out of memory");
@@ -649,6 +925,9 @@ trash_unlink_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 remove_trash_path (tmp_path, (frame->root->pid < 0), &tmp_stat);
                 if (tmp_stat)
                         strcat (real_path, tmp_stat);
+
+                TRASH_SET_PID (frame, local);
+
                 STACK_WIND_COOKIE (frame, trash_unlink_mkdir_cbk, tmp_path,
                                    FIRST_CHILD(this),
                                    FIRST_CHILD(this)->fops->mkdir,
@@ -671,6 +950,17 @@ trash_unlink_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                     &local->loc, &tmp_loc, xdata);
                         goto out;
                 }
+        }
+
+        if ((op_ret == -1) && (op_errno != EEXIST)) {
+                gf_log (this->name, GF_LOG_ERROR, "Directory creation failed [%s]. "
+                                "Therefore unlinking %s without moving to trash "
+                                "directory", strerror(op_errno), local->loc.name);
+                STACK_WIND (frame, trash_common_unwind_cbk,
+                            FIRST_CHILD(this),
+                            FIRST_CHILD(this)->fops->unlink, &local->loc, 0,
+                            xdata);
+                goto out;
         }
 
         LOCK (&frame->lock);
@@ -719,6 +1009,8 @@ trash_unlink_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         remove_trash_path (tmp_path, (frame->root->pid < 0), &tmp_stat);
         if (tmp_stat)
                 strcat (real_path, tmp_stat);
+
+        TRASH_SET_PID (frame, local);
 
         STACK_WIND_COOKIE (frame, trash_unlink_mkdir_cbk, tmp_path,
                            FIRST_CHILD(this),
@@ -791,6 +1083,9 @@ trash_unlink_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 remove_trash_path (tmp_str, (frame->root->pid < 0), &tmp_stat);
                 if (tmp_stat)
                         strcat (real_path, tmp_stat);
+
+                TRASH_SET_PID (frame, local);
+
                 /* create the directory with proper permissions */
                 STACK_WIND_COOKIE (frame, trash_unlink_mkdir_cbk, tmp_cookie,
                                    FIRST_CHILD(this),
@@ -886,6 +1181,7 @@ ctr_out:
         TRASH_STACK_UNWIND (unlink, frame, 0, op_errno, preoldparent,
                             postoldparent, xdata);
 out:
+
         if (tmp_str)
                 GF_FREE (tmp_str);
         if (tmp_cookie)
@@ -1283,6 +1579,8 @@ trash_truncate_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = frame->local;
         GF_VALIDATE_OR_GOTO ("trash", local, out);
 
+        TRASH_UNSET_PID (frame, local);
+
         /* Checks whether path is present in trash directory or not */
 
         if ((op_ret == -1) && (op_errno == ENOENT)) {
@@ -1309,6 +1607,9 @@ trash_truncate_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 remove_trash_path (tmp_path, (frame->root->pid < 0), &tmp_stat);
                 if (tmp_stat)
                         strcat (real_path, tmp_stat);
+
+                TRASH_SET_PID (frame, local);
+
                 /* create the directory with proper permissions */
                 STACK_WIND_COOKIE (frame, trash_truncate_mkdir_cbk,
                                    tmp_path, FIRST_CHILD(this),
@@ -1387,6 +1688,8 @@ trash_truncate_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         loop_count = local->loop_count;
 
+        TRASH_UNSET_PID (frame, local);
+
         tmp_str = gf_strdup (local->newpath);
         if (!tmp_str) {
                 gf_log (this->name, GF_LOG_DEBUG, "out of memory");
@@ -1432,6 +1735,9 @@ trash_truncate_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 remove_trash_path (tmp_path, (frame->root->pid < 0), &tmp_stat);
                 if (tmp_stat)
                         strcat (real_path, tmp_stat);
+
+                TRASH_SET_PID (frame, local);
+
                 STACK_WIND_COOKIE (frame, trash_truncate_mkdir_cbk,
                                    tmp_path, FIRST_CHILD(this),
                                    FIRST_CHILD(this)->fops->mkdir,
@@ -1449,6 +1755,9 @@ trash_truncate_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         strcat (real_path, local->origpath);
                         /* Call create again once directory structure
                            is created. */
+
+                        TRASH_SET_PID (frame, local);
+
                         STACK_WIND (frame, trash_truncate_create_cbk,
                                     FIRST_CHILD(this),
                                     FIRST_CHILD(this)->fops->create,
@@ -1457,6 +1766,18 @@ trash_truncate_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                     0022, local->newfd, xdata);
                         goto out;
                 }
+        }
+
+        if ((op_ret == -1) && (op_errno != EEXIST)) {
+                gf_log (this->name, GF_LOG_ERROR, "Directory creation failed [%s]. "
+                                "Therefore truncating %s without moving the "
+                                "original copy to trash directory",
+                                strerror(op_errno), local->loc.name);
+                STACK_WIND (frame, trash_common_unwind_buf_cbk,
+                            FIRST_CHILD(this),
+                            FIRST_CHILD(this)->fops->truncate, &local->loc,
+                            local->fop_offset, xdata);
+                goto out;
         }
 
         LOCK (&frame->lock);
@@ -1502,6 +1823,8 @@ trash_truncate_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         remove_trash_path (tmp_path, (frame->root->pid < 0), &tmp_stat);
         if (tmp_stat)
                 strcat (real_path, tmp_stat);
+
+        TRASH_SET_PID (frame, local);
 
         STACK_WIND_COOKIE (frame, trash_truncate_mkdir_cbk, tmp_path,
                            FIRST_CHILD(this),
@@ -1571,8 +1894,9 @@ trash_truncate_stat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
          */
         if (buf->ia_size > (priv->max_trash_file_size) ||
                                 buf->ia_size <= local->fop_offset) {
-                gf_log (this->name, GF_LOG_DEBUG, "%s: not moving to trash , "
-                           "having inappropiate file size", local->loc.path);
+                gf_log (this->name, GF_LOG_DEBUG,
+                        "%s: file is too large to move to trash",
+                         local->loc.path);
 
                 STACK_WIND (frame,  trash_common_unwind_buf_cbk,
                             FIRST_CHILD(this),
@@ -1624,7 +1948,7 @@ trash_truncate_stat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local->newloc.inode = inode_new (local->loc.inode->table);
         local->newfd = fd_create (local->newloc.inode, frame->root->pid);
 
-        /* Creating vaild parent and pargfids for both files */
+        /* Creating valid parent and pargfids for both files */
 
         if (dir_entry == NULL) {
                 ret = EINVAL;
@@ -1637,6 +1961,8 @@ trash_truncate_stat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         gf_uuid_copy (local->newloc.pargfid, dir_entry->parent->gfid);
 
         flags = O_CREAT|O_EXCL|O_WRONLY;
+
+        TRASH_SET_PID (frame, local);
 
         STACK_WIND (frame, trash_truncate_create_cbk,
                     FIRST_CHILD(this),
@@ -1855,7 +2181,7 @@ trash_mkdir (call_frame_t *frame, xlator_t *this,
         priv = this->private;
         GF_VALIDATE_OR_GOTO ("trash", priv, out);
 
-        if (!check_whether_trash_directory (loc->path, priv->newtrash_dir)) {
+        if (!check_whether_op_permitted (priv, loc)) {
                 gf_log (this->name, GF_LOG_WARNING,
                         "mkdir issued on %s, which is not permitted",
                         priv->newtrash_dir);
@@ -1868,6 +2194,7 @@ trash_mkdir (call_frame_t *frame, xlator_t *this,
                 STACK_WIND (frame, trash_common_mkdir_cbk, FIRST_CHILD(this),
                     FIRST_CHILD(this)->fops->mkdir, loc, mode, umask, xdata);
         }
+
 out:
         return 0;
 }
@@ -1887,7 +2214,7 @@ trash_rename (call_frame_t *frame, xlator_t *this,
         priv = this->private;
         GF_VALIDATE_OR_GOTO ("trash", priv, out);
 
-        if (!check_whether_trash_directory (oldloc->path, priv->newtrash_dir)) {
+        if (!check_whether_op_permitted (priv, oldloc)) {
                 gf_log (this->name, GF_LOG_WARNING,
                         "rename issued on %s, which is not permitted",
                         priv->newtrash_dir);
@@ -1900,8 +2227,9 @@ trash_rename (call_frame_t *frame, xlator_t *this,
                 STACK_WIND (frame, trash_common_rename_cbk, FIRST_CHILD(this),
                     FIRST_CHILD(this)->fops->rename, oldloc, newloc, xdata);
         }
+
 out:
-        return 0;
+       return 0;
 }
 
 /**
@@ -1919,7 +2247,7 @@ trash_rmdir (call_frame_t *frame, xlator_t *this,
         priv = this->private;
         GF_VALIDATE_OR_GOTO ("trash", priv, out);
 
-        if (!check_whether_trash_directory (loc->path, priv->newtrash_dir)) {
+        if (!check_whether_op_permitted (priv, loc)) {
                 gf_log (this->name, GF_LOG_WARNING,
                         "rmdir issued on %s, which is not permitted",
                         priv->newtrash_dir);
@@ -1932,8 +2260,9 @@ trash_rmdir (call_frame_t *frame, xlator_t *this,
                 STACK_WIND (frame, trash_common_rmdir_cbk, FIRST_CHILD(this),
                     FIRST_CHILD(this)->fops->rmdir, loc, flags, xdata);
         }
+
 out:
-        return 0;
+       return 0;
 }
 
 /**
@@ -1944,24 +2273,31 @@ out:
 int
 reconfigure (xlator_t *this, dict_t *options)
 {
-        uint64_t              max_fsize           = 0;
-        int                   ret                 = 0;
-        char                  *tmp                = NULL;
-        char                  *tmp_str            = NULL;
-        trash_private_t       *priv               = NULL;
-        loc_t                 old_loc             = {0, };
-        loc_t                 new_loc             = {0, };
-        call_frame_t          *frame              = NULL;
-        char                  trash_dir[PATH_MAX] = {0,};
+        uint64_t              max_fsize                         = 0;
+        int                   ret                               = 0;
+        char                  *tmp                              = NULL;
+        char                  *tmp_str                          = NULL;
+        trash_private_t       *priv                             = NULL;
+        char                  trash_dir[PATH_MAX]               = {0,};
 
         priv = this->private;
+
         GF_VALIDATE_OR_GOTO ("trash", priv, out);
+
+        GF_OPTION_RECONF ("trash-internal-op", priv->internal, options,
+                                               bool, out);
+        GF_OPTION_RECONF ("trash-dir", tmp, options, str, out);
 
         GF_OPTION_RECONF ("trash", priv->state, options, bool, out);
 
-        GF_OPTION_RECONF ("trash-dir", tmp, options, str, out);
-        if (tmp) {
-                sprintf(trash_dir, "/%s/", tmp);
+        if (priv->state) {
+                ret = create_or_rename_trash_directory (this);
+
+                if (tmp)
+                        sprintf(trash_dir, "/%s/", tmp);
+                else
+                        sprintf(trash_dir, "%s", priv->oldtrash_dir);
+
                 if (strcmp(priv->newtrash_dir, trash_dir) != 0) {
 
                         /* When user set a new name for trash directory, trash
@@ -1990,83 +2326,21 @@ reconfigure (xlator_t *this, dict_t *options)
                                 ret = ENOMEM;
                                 goto out;
                         }
-                        frame = create_frame (this, this->ctx->pool);
-                        if (frame == NULL) {
-                                gf_log (this->name, GF_LOG_ERROR,
-                                                "failed to create frame");
-                                ret = ENOMEM;
-                                goto out;
-                        }
+                        ret = rename_trash_directory (this);
 
-                        /* assign new location values to new_loc members */
-                        gf_uuid_copy (new_loc.gfid, trash_gfid);
-                        gf_uuid_copy (new_loc.pargfid, root_gfid);
-                        ret = extract_trash_directory (priv->newtrash_dir,
-                                                                &new_loc.name);
-                        if (ret) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
-                        new_loc.path = gf_strdup (priv->newtrash_dir);
-                        if (!new_loc.path) {
-                                ret = ENOMEM;
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
+                }
 
-                        /* assign old location values to old_loc members */
-                        gf_uuid_copy (old_loc.gfid, trash_gfid);
-                        gf_uuid_copy (old_loc.pargfid, root_gfid);
-                        ret = extract_trash_directory (priv->oldtrash_dir,
-                                                                &old_loc.name);
-                        if (ret) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
-                        old_loc.path = gf_strdup (priv->oldtrash_dir);
-                        if (!old_loc.path) {
-                                ret = ENOMEM;
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
+                if (priv->internal) {
+                        ret = create_internalop_directory (this);
 
-                        old_loc.inode = inode_ref (priv->trash_inode);
-                        gf_uuid_copy(old_loc.inode->gfid, old_loc.gfid);
-
-                        STACK_WIND (frame, trash_reconf_rename_cbk,
-                                    FIRST_CHILD(this),
-                                    FIRST_CHILD(this)->fops->rename,
-                                    &old_loc, &new_loc, options);
-                        GF_FREE (priv->oldtrash_dir);
-
-                        priv->oldtrash_dir = gf_strdup(priv->newtrash_dir);
-                        if (!priv->oldtrash_dir) {
-                                ret = ENOMEM;
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
                 }
         }
         tmp = NULL;
 
-        GF_OPTION_RECONF ("trash-internal-op", priv->internal, options,
-                                               bool, out);
-
         GF_OPTION_RECONF ("trash-max-filesize", max_fsize, options,
                                                 size_uint64, out);
         if (max_fsize) {
-                if (max_fsize > GF_ALLOWED_MAX_FILE_SIZE) {
-                        gf_log (this->name, GF_LOG_DEBUG,
-                                "Size specified for max-size(in MB) is too "
-                                "large so using 1GB as max-size (NOT IDEAL)");
-                        priv->max_trash_file_size = GF_ALLOWED_MAX_FILE_SIZE;
-                } else
-                        priv->max_trash_file_size = max_fsize;
+                priv->max_trash_file_size = max_fsize;
                 gf_log (this->name, GF_LOG_DEBUG, "%"GF_PRI_SIZET" max-size",
                         priv->max_trash_file_size);
         }
@@ -2089,10 +2363,6 @@ reconfigure (xlator_t *this, dict_t *options)
         }
 
 out:
-        if (tmp_str)
-                GF_FREE (tmp_str);
-        loc_wipe (&new_loc);
-        loc_wipe (&old_loc);
 
         return ret;
 }
@@ -2105,32 +2375,18 @@ int
 notify (xlator_t *this, int event, void *data, ...)
 {
         trash_private_t       *priv      = NULL;
-        dict_t                *dict      = NULL;
         int                   ret        = 0;
-        uuid_t                *tgfid_ptr = NULL;
-        loc_t                 loc        = {0, };
-        loc_t                 old_loc    = {0, };
-        call_frame_t          *frame     = NULL;
 
         priv = this->private;
         GF_VALIDATE_OR_GOTO ("trash", priv, out);
 
-        /* Check whether posix is up not */
+       /* Check whether posix is up not */
         if (event == GF_EVENT_CHILD_UP) {
-                frame = create_frame(this, this->ctx->pool);
-                if (frame == NULL) {
-                        gf_log (this->name, GF_LOG_ERROR,
-                                        "failed to create frame");
-                        ret = ENOMEM;
-                        goto out;
-                }
 
-                dict = dict_new ();
-                if (!dict) {
-                        ret = ENOMEM;
+                if (!priv->state) {
+                        gf_log (this->name, GF_LOG_DEBUG, "trash xlator is off");
                         goto out;
                 }
-                priv->trash_itable = inode_table_new (0, this);
 
                 /* Here there is two possiblities ,if trash directory already
                  * exist ,then we need to perform a rename operation on the
@@ -2139,146 +2395,22 @@ notify (xlator_t *this, int event, void *data, ...)
                  * and a frame for calling STACK_WIND.The location variable
                  * requires name,path,gfid and inode
                  */
-                if (!priv->oldtrash_dir) {
-                        loc.inode = inode_new (priv->trash_itable);
-                        gf_uuid_copy (loc.gfid, trash_gfid);
-
-                        gf_log (this->name, GF_LOG_DEBUG, "nameless lookup for"
-                                           "old trash directory");
-                        STACK_WIND (frame, trash_notify_lookup_cbk,
-                                    FIRST_CHILD(this),
-                                    FIRST_CHILD(this)->fops->lookup,
-                                    &loc, dict);
-                        gf_log (this->name, GF_LOG_DEBUG, "old_trash_dir %s",
-                                        priv->oldtrash_dir);
-                        loc_wipe (&loc);
-                }
-
-                if (priv->oldtrash_dir == NULL) {
-                        ret = EINVAL;
-                        goto out;
-                }
-                if (strcmp (priv->oldtrash_dir, priv->newtrash_dir) == 0) {
-                        gf_log (this->name, GF_LOG_DEBUG, "Creating trash "
-                                           "directory %s from notify",
-                                           priv->newtrash_dir);
-
-                        tgfid_ptr = GF_CALLOC (1, sizeof(uuid_t),
-                                                  gf_common_mt_uuid_t);
-                        if (!tgfid_ptr) {
-                                ret = ENOMEM;
-                                goto out;
-                        }
-                        gf_uuid_copy (*tgfid_ptr, trash_gfid);
-
-                        gf_uuid_copy (loc.gfid, trash_gfid);
-                        gf_uuid_copy (loc.pargfid, root_gfid);
-                        ret = extract_trash_directory (priv->newtrash_dir,
-                                                                &loc.name);
-                        if (ret) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
-                        loc.path = gf_strdup (priv->newtrash_dir);
-                        if (!loc.path) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                ret = ENOMEM;
-                                goto out;
-                        }
-
-                        priv->trash_inode = inode_new (priv->trash_itable);
-                        priv->trash_inode->ia_type = IA_IFDIR;
-                        loc.inode = inode_ref (priv->trash_inode);
-
-                        /* Fixed gfid is set for trash directory with
-                         * this function
-                         */
-                        ret = dict_set_dynptr (dict, "gfid-req", tgfid_ptr,
-                                              sizeof (uuid_t));
-                        if (ret) {
-                                gf_log (this->name, GF_LOG_ERROR,
-                                        "setting key gfid-req failed");
-                                goto out;
-                        }
-
-                        /* The mkdir call for creating trash directory */
-                        STACK_WIND (frame, trash_notify_mkdir_cbk,
-                                    FIRST_CHILD(this),
-                                    FIRST_CHILD(this)->fops->mkdir, &loc, 0755,
-                                    0022, dict);
-                } else {
-                        /* assign new location values to new_loc members */
-                        gf_log (this->name, GF_LOG_DEBUG, "Renaming %s -> %s"
-                                        " from notify", priv->oldtrash_dir,
-                                        priv->newtrash_dir);
-                        gf_uuid_copy (loc.gfid, trash_gfid);
-                        gf_uuid_copy (loc.pargfid, root_gfid);
-                        ret = extract_trash_directory (priv->newtrash_dir,
-                                                                &loc.name);
-                        if (ret) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
-                        loc.path = gf_strdup (priv->newtrash_dir);
-                        if (!loc.path) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                ret = ENOMEM;
-                                goto out;
-                        }
-                        /* assign old location values to old_loc members */
-                        gf_uuid_copy (old_loc.gfid, trash_gfid);
-                        gf_uuid_copy (old_loc.pargfid, root_gfid);
-                        ret = extract_trash_directory (priv->oldtrash_dir,
-                                                                &old_loc.name);
-                        if (ret) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                goto out;
-                        }
-                        old_loc.path = gf_strdup (priv->oldtrash_dir);
-                        if (!old_loc.path) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                ret = ENOMEM;
-                                goto out;
-                        }
-
-                        old_loc.inode = inode_ref (priv->trash_inode);
-                        gf_uuid_copy(old_loc.inode->gfid, old_loc.gfid);
-
-                        STACK_WIND (frame, trash_notify_rename_cbk,
-                                    FIRST_CHILD(this),
-                                    FIRST_CHILD(this)->fops->rename,
-                                    &old_loc, &loc, dict);
-                        GF_FREE (priv->oldtrash_dir);
-
-                        priv->oldtrash_dir = gf_strdup(priv->newtrash_dir);
-                        if (!priv->oldtrash_dir) {
-                                gf_log (this->name, GF_LOG_DEBUG,
-                                                "out of memory");
-                                ret = ENOMEM;
-                                goto out;
-                        }
-                }
-        } else {
-                ret = default_notify (this, event, data);
+                if (!priv->oldtrash_dir)
+                        ret = create_or_rename_trash_directory (this);
+                else if (strcmp(priv->newtrash_dir, priv->oldtrash_dir) != 0)
+                        ret = rename_trash_directory (this);
                 if (ret)
-                        gf_log (this->name, GF_LOG_INFO,
-                                "default notify event failed");
+                        goto out;
+
+                if (priv->internal)
+                        ret = create_internalop_directory (this);
+
         }
-
 out:
-        if (ret && tgfid_ptr)
-                GF_FREE (tgfid_ptr);
-        if (dict)
-                dict_unref (dict);
-        loc_wipe (&loc);
-        loc_wipe (&old_loc);
-
+        ret = default_notify (this, event, data);
+        if (ret)
+                gf_log (this->name, GF_LOG_INFO,
+                        "default notify event failed");
         return ret;
 }
 
@@ -2389,13 +2521,7 @@ init (xlator_t *this)
                         GF_DEFAULT_MAX_FILE_SIZE / GF_UNIT_MB);
                 priv->max_trash_file_size = GF_DEFAULT_MAX_FILE_SIZE;
         } else {
-                if( max_trash_file_size64 > GF_ALLOWED_MAX_FILE_SIZE ) {
-                        gf_log (this->name, GF_LOG_DEBUG,
-                                "Size specified for max-size(in MB) is too "
-                                "large so using 1GB as max-size (NOT IDEAL)");
-                        priv->max_trash_file_size = GF_ALLOWED_MAX_FILE_SIZE;
-                } else
-                        priv->max_trash_file_size = max_trash_file_size64;
+                priv->max_trash_file_size = max_trash_file_size64;
                 gf_log (this->name, GF_LOG_DEBUG, "%"GF_PRI_SIZET" max-size",
                         priv->max_trash_file_size);
         }
@@ -2428,6 +2554,7 @@ init (xlator_t *this)
                 goto out;
         }
 
+        priv->trash_itable = inode_table_new (0, this);
         gf_log (this->name, GF_LOG_DEBUG, "brick path is%s", priv->brick_path);
 
         this->private = (void *)priv;

@@ -1,0 +1,1505 @@
+From a33f967c77ccf580db42a9f02708fa39f5d7f310 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Fri, 2 Mar 2018 12:37:42 +0530
+Subject: [PATCH 193/201] cluster/afr: Remove unused code paths
+
+Removed
+1) afr-v1 self-heal locks related code which is not used anymore
+2) transaction has some data types that are not needed, so removed them
+3) Never used lock tracing available in afr as gluster's network tracing does
+the job. So removed that as well.
+4) Changelog is always enabled and afr is always used with locks, so
+__changelog_enabled, afr_lock_server_count etc functions can be deleted.
+5) transaction.fop/done/resume always call the same functions, so no need
+to have these variables.
+
+ > BUG: 1549606
+
+Upstream-patch: https://review.gluster.org/19661
+BUG: 1491785
+Change-Id: I370c146fec2892d40e674d232a5d7256e003c7f1
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131944
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c      |  10 +-
+ xlators/cluster/afr/src/afr-dir-write.c   |  18 +-
+ xlators/cluster/afr/src/afr-inode-write.c |  39 +--
+ xlators/cluster/afr/src/afr-lk-common.c   | 508 +-----------------------------
+ xlators/cluster/afr/src/afr-transaction.c | 137 +-------
+ xlators/cluster/afr/src/afr-transaction.h |   2 -
+ xlators/cluster/afr/src/afr.c             |  35 +-
+ xlators/cluster/afr/src/afr.h             |  52 +--
+ 8 files changed, 41 insertions(+), 760 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 04c8613..06863b6 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -4526,9 +4526,6 @@ afr_priv_dump (xlator_t *this)
+         gf_proc_dump_write("data_self_heal", "%s", priv->data_self_heal);
+         gf_proc_dump_write("metadata_self_heal", "%d", priv->metadata_self_heal);
+         gf_proc_dump_write("entry_self_heal", "%d", priv->entry_self_heal);
+-        gf_proc_dump_write("data_change_log", "%d", priv->data_change_log);
+-        gf_proc_dump_write("metadata_change_log", "%d", priv->metadata_change_log);
+-        gf_proc_dump_write("entry-change_log", "%d", priv->entry_change_log);
+         gf_proc_dump_write("read_child", "%d", priv->read_child);
+         gf_proc_dump_write("favorite_child", "%d", priv->favorite_child);
+         gf_proc_dump_write("wait_count", "%u", priv->wait_count);
+@@ -5252,8 +5249,7 @@ out:
+ }
+ 
+ int
+-afr_internal_lock_init (afr_internal_lock_t *lk, size_t child_count,
+-                        transaction_lk_type_t lk_type)
++afr_internal_lock_init (afr_internal_lock_t *lk, size_t child_count)
+ {
+         int             ret = -ENOMEM;
+ 
+@@ -5269,7 +5265,6 @@ afr_internal_lock_init (afr_internal_lock_t *lk, size_t child_count,
+ 
+         lk->lock_op_ret   = -1;
+         lk->lock_op_errno = EUCLEAN;
+-        lk->transaction_lk_type = lk_type;
+ 
+         ret = 0;
+ out:
+@@ -5336,8 +5331,7 @@ afr_transaction_local_init (afr_local_t *local, xlator_t *this)
+         afr_private_t *priv = NULL;
+ 
+         priv = this->private;
+-        ret = afr_internal_lock_init (&local->internal_lock, priv->child_count,
+-                                      AFR_TRANSACTION_LK);
++        ret = afr_internal_lock_init (&local->internal_lock, priv->child_count);
+         if (ret < 0)
+                 goto out;
+ 
+diff --git a/xlators/cluster/afr/src/afr-dir-write.c b/xlators/cluster/afr/src/afr-dir-write.c
+index e088ed6..75889de 100644
+--- a/xlators/cluster/afr/src/afr-dir-write.c
++++ b/xlators/cluster/afr/src/afr-dir-write.c
+@@ -267,7 +267,7 @@ __afr_dir_write_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+ 		afr_mark_entry_pending_changelog (frame, this);
+ 
+-                local->transaction.resume (frame, this);
++                afr_transaction_resume (frame, this);
+         }
+ 
+         return 0;
+@@ -496,8 +496,6 @@ afr_create (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_create_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_create_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, loc,
+@@ -626,8 +624,6 @@ afr_mknod (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_mknod_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_mknod_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, loc,
+@@ -762,8 +758,6 @@ afr_mkdir (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
+ 
+         local->op = GF_FOP_MKDIR;
+         local->transaction.wind   = afr_mkdir_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_mkdir_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, loc,
+@@ -891,8 +885,6 @@ afr_link (call_frame_t *frame, xlator_t *this, loc_t *oldloc, loc_t *newloc,
+         local->op = GF_FOP_LINK;
+ 
+         local->transaction.wind   = afr_link_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_link_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, newloc,
+@@ -1021,8 +1013,6 @@ afr_symlink (call_frame_t *frame, xlator_t *this, const char *linkpath,
+ 
+         local->op = GF_FOP_SYMLINK;
+         local->transaction.wind   = afr_symlink_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_symlink_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, loc,
+@@ -1156,8 +1146,6 @@ afr_rename (call_frame_t *frame, xlator_t *this, loc_t *oldloc, loc_t *newloc,
+ 
+         local->op = GF_FOP_RENAME;
+         local->transaction.wind   = afr_rename_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_rename_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, oldloc,
+@@ -1308,8 +1296,6 @@ afr_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
+ 
+         local->op = GF_FOP_UNLINK;
+         local->transaction.wind   = afr_unlink_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_unlink_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, loc,
+@@ -1436,8 +1422,6 @@ afr_rmdir (call_frame_t *frame, xlator_t *this, loc_t *loc, int flags,
+ 
+         local->op = GF_FOP_RMDIR;
+         local->transaction.wind   = afr_rmdir_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_rmdir_unwind;
+ 
+         ret = afr_build_parent_loc (&local->transaction.parent_loc, loc,
+diff --git a/xlators/cluster/afr/src/afr-inode-write.c b/xlators/cluster/afr/src/afr-inode-write.c
+index 0e50443..2402bb2 100644
+--- a/xlators/cluster/afr/src/afr-inode-write.c
++++ b/xlators/cluster/afr/src/afr-inode-write.c
+@@ -207,7 +207,7 @@ __afr_inode_write_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                         local->transaction.unwind (frame, this);
+                 }
+ 
+-                local->transaction.resume (frame, this);
++                afr_transaction_resume (frame, this);
+         }
+ 
+         return 0;
+@@ -357,13 +357,10 @@ afr_writev_wind_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                      int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
+                      struct iatt *postbuf, dict_t *xdata)
+ {
+-        afr_local_t     *local = NULL;
+         call_frame_t    *fop_frame = NULL;
+         int child_index = (long) cookie;
+         int call_count  = -1;
+ 
+-        local = frame->local;
+-
+         afr_inode_write_fill (frame, this, child_index, op_ret, op_errno,
+                               prebuf, postbuf, xdata);
+ 
+@@ -374,7 +371,7 @@ afr_writev_wind_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+                 if (!afr_txn_nothing_failed (frame, this)) {
+                         //Don't unwind until post-op is complete
+-                        local->transaction.resume (frame, this);
++                        afr_transaction_resume (frame, this);
+                 } else {
+                 /*
+                  * Generally inode-write fops do transaction.unwind then
+@@ -389,7 +386,7 @@ afr_writev_wind_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+                         fop_frame = afr_transaction_detach_fop_frame (frame);
+                         afr_writev_copy_outvars (frame, fop_frame);
+-                        local->transaction.resume (frame, this);
++                        afr_transaction_resume (frame, this);
+                         afr_writev_unwind (fop_frame, this);
+                 }
+         }
+@@ -462,8 +459,6 @@ afr_do_writev (call_frame_t *frame, xlator_t *this)
+         local->op = GF_FOP_WRITE;
+ 
+         local->transaction.wind   = afr_writev_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_transaction_writev_unwind;
+ 
+         local->transaction.main_frame = frame;
+@@ -652,8 +647,6 @@ afr_truncate (call_frame_t *frame, xlator_t *this,
+ 		goto out;
+ 
+ 	local->transaction.wind   = afr_truncate_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_truncate_unwind;
+ 
+         loc_copy (&local->loc, loc);
+@@ -780,8 +773,6 @@ afr_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+         local->op = GF_FOP_FTRUNCATE;
+ 
+ 	local->transaction.wind   = afr_ftruncate_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_ftruncate_unwind;
+ 
+         local->transaction.main_frame = frame;
+@@ -888,8 +879,6 @@ afr_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc, struct iatt *buf,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_setattr_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_setattr_unwind;
+ 
+         loc_copy (&local->loc, loc);
+@@ -995,8 +984,6 @@ afr_fsetattr (call_frame_t *frame, xlator_t *this,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_fsetattr_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_fsetattr_unwind;
+ 
+         local->fd                 = fd_ref (fd);
+@@ -1639,8 +1626,6 @@ afr_setxattr (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *dict,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_setxattr_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_setxattr_unwind;
+ 
+         loc_copy (&local->loc, loc);
+@@ -1753,8 +1738,6 @@ afr_fsetxattr (call_frame_t *frame, xlator_t *this,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_fsetxattr_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_fsetxattr_unwind;
+ 
+         local->fd                 = fd_ref (fd);
+@@ -1868,8 +1851,6 @@ afr_removexattr (call_frame_t *frame, xlator_t *this,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_removexattr_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_removexattr_unwind;
+ 
+         loc_copy (&local->loc, loc);
+@@ -1977,8 +1958,6 @@ afr_fremovexattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
+ 		goto out;
+ 
+         local->transaction.wind   = afr_fremovexattr_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_fremovexattr_unwind;
+ 
+         local->fd = fd_ref (fd);
+@@ -2094,8 +2073,6 @@ afr_fallocate (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
+         local->op = GF_FOP_FALLOCATE;
+ 
+         local->transaction.wind   = afr_fallocate_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_fallocate_unwind;
+ 
+         local->transaction.main_frame = frame;
+@@ -2208,8 +2185,6 @@ afr_discard (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+         local->op = GF_FOP_DISCARD;
+ 
+         local->transaction.wind   = afr_discard_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_discard_unwind;
+ 
+         local->transaction.main_frame = frame;
+@@ -2319,8 +2294,6 @@ afr_zerofill (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+         local->op = GF_FOP_ZEROFILL;
+ 
+         local->transaction.wind   = afr_zerofill_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_zerofill_unwind;
+ 
+         local->transaction.main_frame = frame;
+@@ -2413,8 +2386,6 @@ afr_xattrop (call_frame_t *frame, xlator_t *this, loc_t *loc,
+ 		local->xdata_req = dict_ref (xdata);
+ 
+         local->transaction.wind   = afr_xattrop_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_xattrop_unwind;
+ 
+         loc_copy (&local->loc, loc);
+@@ -2509,8 +2480,6 @@ afr_fxattrop (call_frame_t *frame, xlator_t *this, fd_t *fd,
+ 		local->xdata_req = dict_ref (xdata);
+ 
+         local->transaction.wind   = afr_fxattrop_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_fxattrop_unwind;
+ 
+ 	local->fd = fd_ref (fd);
+@@ -2626,8 +2595,6 @@ afr_fsync (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t datasync,
+ 	}
+ 
+         local->transaction.wind   = afr_fsync_wind;
+-        local->transaction.fop    = __afr_txn_write_fop;
+-        local->transaction.done   = __afr_txn_write_done;
+         local->transaction.unwind = afr_fsync_unwind;
+ 
+         local->transaction.main_frame = frame;
+diff --git a/xlators/cluster/afr/src/afr-lk-common.c b/xlators/cluster/afr/src/afr-lk-common.c
+index f50c7b6..260815f 100644
+--- a/xlators/cluster/afr/src/afr-lk-common.c
++++ b/xlators/cluster/afr/src/afr-lk-common.c
+@@ -23,38 +23,6 @@
+ #define LOCKED_YES      0x1        /* for DATA, METADATA, ENTRY and higher_path */
+ #define LOCKED_LOWER    0x2        /* for lower path */
+ 
+-#define AFR_TRACE_INODELK_IN(frame, this, params ...)           \
+-        do {                                                    \
+-                afr_private_t *_priv = this->private;           \
+-                if (!_priv->inodelk_trace)                      \
+-                        break;                                  \
+-                afr_trace_inodelk_in (frame, this, params);     \
+-        } while (0);
+-
+-#define AFR_TRACE_INODELK_OUT(frame, this, params ...)          \
+-        do {                                                    \
+-                afr_private_t *_priv = this->private;           \
+-                if (!_priv->inodelk_trace)                      \
+-                        break;                                  \
+-                afr_trace_inodelk_out (frame, this, params);    \
+-        } while (0);
+-
+-#define AFR_TRACE_ENTRYLK_IN(frame, this, params ...)           \
+-        do {                                                    \
+-                afr_private_t *_priv = this->private;           \
+-                if (!_priv->entrylk_trace)                      \
+-                        break;                                  \
+-                afr_trace_entrylk_in (frame, this, params);     \
+-        } while (0);
+-
+-#define AFR_TRACE_ENTRYLK_OUT(frame, this, params ...)          \
+-        do {                                                    \
+-                afr_private_t *_priv = this->private;           \
+-                if (!_priv->entrylk_trace)                      \
+-                        break;                                  \
+-                afr_trace_entrylk_out (frame, this, params);    \
+-        } while (0);
+-
+ int
+ afr_entry_lockee_cmp (const void *l1, const void *l2)
+ {
+@@ -119,28 +87,6 @@ afr_set_lk_owner (call_frame_t *frame, xlator_t *this, void *lk_owner)
+         set_lk_owner_from_ptr (&frame->root->lk_owner, lk_owner);
+ }
+ 
+-static int
+-is_afr_lock_selfheal (afr_local_t *local)
+-{
+-        afr_internal_lock_t *int_lock = NULL;
+-        int                  ret      = -1;
+-
+-        int_lock = &local->internal_lock;
+-
+-        switch (int_lock->selfheal_lk_type) {
+-        case AFR_DATA_SELF_HEAL_LK:
+-        case AFR_METADATA_SELF_HEAL_LK:
+-                ret = 1;
+-                break;
+-        case AFR_ENTRY_SELF_HEAL_LK:
+-                ret = 0;
+-                break;
+-        }
+-
+-        return ret;
+-
+-}
+-
+ int32_t
+ internal_lock_count (call_frame_t *frame, xlator_t *this)
+ {
+@@ -160,315 +106,12 @@ internal_lock_count (call_frame_t *frame, xlator_t *this)
+         return call_count;
+ }
+ 
+-static void
+-afr_print_inodelk (char *str, int size, int cmd,
+-                   struct gf_flock *flock, gf_lkowner_t *owner)
+-{
+-        char *cmd_str = NULL;
+-        char *type_str = NULL;
+-
+-        switch (cmd) {
+-#if F_GETLK != F_GETLK64
+-        case F_GETLK64:
+-#endif
+-        case F_GETLK:
+-                cmd_str = "GETLK";
+-                break;
+-
+-#if F_SETLK != F_SETLK64
+-        case F_SETLK64:
+-#endif
+-        case F_SETLK:
+-                cmd_str = "SETLK";
+-                break;
+-
+-#if F_SETLKW != F_SETLKW64
+-        case F_SETLKW64:
+-#endif
+-        case F_SETLKW:
+-                cmd_str = "SETLKW";
+-                break;
+-
+-        default:
+-                cmd_str = "<null>";
+-                break;
+-        }
+-
+-        switch (flock->l_type) {
+-        case F_RDLCK:
+-                type_str = "READ";
+-                break;
+-        case F_WRLCK:
+-                type_str = "WRITE";
+-                break;
+-        case F_UNLCK:
+-                type_str = "UNLOCK";
+-                break;
+-        default:
+-                type_str = "UNKNOWN";
+-                break;
+-        }
+-
+-        snprintf (str, size, "lock=INODELK, cmd=%s, type=%s, "
+-                  "start=%llu, len=%llu, pid=%llu, lk-owner=%s",
+-                  cmd_str, type_str, (unsigned long long) flock->l_start,
+-                  (unsigned long long) flock->l_len,
+-                  (unsigned long long) flock->l_pid,
+-                  lkowner_utoa (owner));
+-
+-}
+-
+-static void
+-afr_print_lockee (char *str, int size, loc_t *loc, fd_t *fd,
+-                  int child_index)
+-{
+-        snprintf (str, size, "path=%s, fd=%p, child=%d",
+-                  loc->path ? loc->path : "<nul>",
+-                  fd ? fd : NULL,
+-                  child_index);
+-}
+-
+-void
+-afr_print_entrylk (char *str, int size, const char *basename,
+-                   gf_lkowner_t *owner)
+-{
+-        snprintf (str, size, "Basename=%s, lk-owner=%s",
+-                  basename ? basename : "<nul>",
+-                  lkowner_utoa (owner));
+-}
+-
+-static void
+-afr_print_verdict (int op_ret, int op_errno, char *str)
+-{
+-        if (op_ret < 0) {
+-                if (op_errno == EAGAIN)
+-                        strcpy (str, "EAGAIN");
+-                else
+-                        strcpy (str, "FAILED");
+-        }
+-        else
+-                strcpy (str, "GRANTED");
+-}
+-
+-static void
+-afr_set_lock_call_type (afr_lock_call_type_t lock_call_type,
+-                        char *lock_call_type_str,
+-                        afr_internal_lock_t *int_lock)
+-{
+-        switch (lock_call_type) {
+-        case AFR_INODELK_TRANSACTION:
+-                if (int_lock->transaction_lk_type == AFR_TRANSACTION_LK)
+-                        strcpy (lock_call_type_str, "AFR_INODELK_TRANSACTION");
+-                else
+-                        strcpy (lock_call_type_str, "AFR_INODELK_SELFHEAL");
+-                break;
+-        case AFR_INODELK_NB_TRANSACTION:
+-                if (int_lock->transaction_lk_type == AFR_TRANSACTION_LK)
+-                        strcpy (lock_call_type_str, "AFR_INODELK_NB_TRANSACTION");
+-                else
+-                        strcpy (lock_call_type_str, "AFR_INODELK_NB_SELFHEAL");
+-                break;
+-        case AFR_ENTRYLK_TRANSACTION:
+-                if (int_lock->transaction_lk_type == AFR_TRANSACTION_LK)
+-                        strcpy (lock_call_type_str, "AFR_ENTRYLK_TRANSACTION");
+-                else
+-                        strcpy (lock_call_type_str, "AFR_ENTRYLK_SELFHEAL");
+-                break;
+-        case AFR_ENTRYLK_NB_TRANSACTION:
+-                if (int_lock->transaction_lk_type == AFR_TRANSACTION_LK)
+-                        strcpy (lock_call_type_str, "AFR_ENTRYLK_NB_TRANSACTION");
+-                else
+-                        strcpy (lock_call_type_str, "AFR_ENTRYLK_NB_SELFHEAL");
+-                break;
+-        default:
+-                strcpy (lock_call_type_str, "UNKNOWN");
+-                break;
+-        }
+-
+-}
+-
+-static void
+-afr_trace_inodelk_out (call_frame_t *frame, xlator_t *this,
+-                       afr_lock_call_type_t lock_call_type,
+-                       afr_lock_op_type_t lk_op_type, struct gf_flock *flock,
+-                       int op_ret, int op_errno, int32_t child_index)
+-{
+-        afr_internal_lock_t *int_lock = NULL;
+-        afr_local_t         *local    = NULL;
+-
+-        char lockee[256];
+-        char lock_call_type_str[256];
+-        char verdict[16];
+-
+-        local    = frame->local;
+-        int_lock = &local->internal_lock;
+-
+-        afr_print_lockee (lockee, 256, &local->loc, local->fd, child_index);
+-
+-        afr_set_lock_call_type (lock_call_type, lock_call_type_str, int_lock);
+-
+-        afr_print_verdict (op_ret, op_errno, verdict);
+-
+-        gf_msg (this->name, GF_LOG_INFO, 0, AFR_MSG_LOCK_INFO,
+-                "[%s %s] [%s] lk-owner=%s Lockee={%s} Number={%llu}",
+-                lock_call_type_str,
+-                lk_op_type == AFR_LOCK_OP ? "LOCK REPLY" : "UNLOCK REPLY",
+-                verdict, lkowner_utoa (&frame->root->lk_owner), lockee,
+-                (unsigned long long) int_lock->lock_number);
+-
+-}
+-
+-static void
+-afr_trace_inodelk_in (call_frame_t *frame, xlator_t *this,
+-                      afr_lock_call_type_t lock_call_type,
+-                      afr_lock_op_type_t lk_op_type, struct gf_flock *flock,
+-                      int32_t cmd, int32_t child_index)
+-{
+-        afr_local_t         *local    = NULL;
+-        afr_internal_lock_t *int_lock = NULL;
+-
+-        char lock[256];
+-        char lockee[256];
+-        char lock_call_type_str[256];
+-
+-        local    = frame->local;
+-        int_lock = &local->internal_lock;
+-
+-        afr_print_inodelk (lock, 256, cmd, flock, &frame->root->lk_owner);
+-        afr_print_lockee (lockee, 256, &local->loc, local->fd, child_index);
+-
+-        afr_set_lock_call_type (lock_call_type, lock_call_type_str, int_lock);
+-
+-        gf_msg (this->name, GF_LOG_INFO, 0, AFR_MSG_LOCK_INFO,
+-                "[%s %s] Lock={%s} Lockee={%s} Number={%llu}",
+-                lock_call_type_str,
+-                lk_op_type == AFR_LOCK_OP ? "LOCK REQUEST" : "UNLOCK REQUEST",
+-                lock, lockee,
+-                (unsigned long long) int_lock->lock_number);
+-
+-}
+-
+-static void
+-afr_trace_entrylk_in (call_frame_t *frame, xlator_t *this,
+-                      afr_lock_call_type_t lock_call_type,
+-                      afr_lock_op_type_t lk_op_type, const char *basename,
+-                      int32_t cookie)
+-{
+-        afr_local_t         *local    = NULL;
+-        afr_internal_lock_t *int_lock = NULL;
+-        afr_private_t       *priv     = NULL;
+-        int                 child_index = 0;
+-        int                 lockee_no = 0;
+-
+-        char lock[256];
+-        char lockee[256];
+-        char lock_call_type_str[256];
+-
+-        local    = frame->local;
+-        int_lock = &local->internal_lock;
+-        priv     = this->private;
+-
+-        if (!priv->entrylk_trace) {
+-                return;
+-        }
+-        lockee_no = cookie / priv->child_count;
+-        child_index = cookie % priv->child_count;
+-
+-        afr_print_entrylk (lock, 256, basename, &frame->root->lk_owner);
+-        afr_print_lockee (lockee, 256, &int_lock->lockee[lockee_no].loc, local->fd,
+-                          child_index);
+-
+-        afr_set_lock_call_type (lock_call_type, lock_call_type_str, int_lock);
+-
+-        gf_msg (this->name, GF_LOG_INFO, 0, AFR_MSG_LOCK_INFO,
+-                "[%s %s] Lock={%s} Lockee={%s} Number={%llu}, Cookie={%d}",
+-                lock_call_type_str,
+-                lk_op_type == AFR_LOCK_OP ? "LOCK REQUEST" : "UNLOCK REQUEST",
+-                lock, lockee,
+-                (unsigned long long) int_lock->lock_number,
+-                cookie);
+-}
+-
+-static void
+-afr_trace_entrylk_out (call_frame_t *frame, xlator_t *this,
+-                       afr_lock_call_type_t lock_call_type,
+-                       afr_lock_op_type_t lk_op_type, const char *basename,
+-                       int op_ret, int op_errno, int32_t cookie)
+-{
+-        afr_internal_lock_t *int_lock = NULL;
+-        afr_local_t         *local    = NULL;
+-        afr_private_t       *priv     = NULL;
+-        int                 lockee_no = 0;
+-        int                 child_index = 0;
+-
+-        char lock[256];
+-        char lockee[256];
+-        char lock_call_type_str[256];
+-        char verdict[16];
+-
+-        local    = frame->local;
+-        int_lock = &local->internal_lock;
+-        priv     = this->private;
+-
+-        if (!priv->entrylk_trace) {
+-                return;
+-        }
+-        lockee_no = cookie / priv->child_count;
+-        child_index = cookie % priv->child_count;
+-
+-        afr_print_entrylk (lock, 256, basename, &frame->root->lk_owner);
+-        afr_print_lockee (lockee, 256, &int_lock->lockee[lockee_no].loc, local->fd,
+-                          child_index);
+-
+-        afr_set_lock_call_type (lock_call_type, lock_call_type_str, int_lock);
+-
+-        afr_print_verdict (op_ret, op_errno, verdict);
+-
+-        gf_msg (this->name, GF_LOG_INFO, 0, AFR_MSG_LOCK_INFO,
+-                "[%s %s] [%s] Lock={%s} Lockee={%s} Number={%llu} Cookie={%d}",
+-                lock_call_type_str,
+-                lk_op_type == AFR_LOCK_OP ? "LOCK REPLY" : "UNLOCK REPLY",
+-                verdict,
+-                lock, lockee,
+-                (unsigned long long) int_lock->lock_number,
+-                cookie);
+-
+-}
+-
+-static int
+-transaction_lk_op (afr_local_t *local)
+-{
+-        afr_internal_lock_t *int_lock = NULL;
+-        int ret = -1;
+-
+-        int_lock = &local->internal_lock;
+-
+-        if (int_lock->transaction_lk_type == AFR_TRANSACTION_LK) {
+-                gf_msg_debug (THIS->name, 0,
+-                              "lk op is for a transaction");
+-                ret = 1;
+-        }
+-        else if (int_lock->transaction_lk_type == AFR_SELFHEAL_LK) {
+-                gf_msg_debug (THIS->name, 0,
+-                              "lk op is for a self heal");
+-
+-                ret = 0;
+-        }
+-
+-        if (ret == -1)
+-                gf_msg_debug (THIS->name, 0,
+-                              "lk op is not set");
+-
+-        return ret;
+-
+-}
+-
+ int
+-afr_is_inodelk_transaction(afr_local_t *local)
++afr_is_inodelk_transaction(afr_transaction_type type)
+ {
+         int ret = 0;
+ 
+-        switch (local->transaction.type) {
++        switch (type) {
+         case AFR_DATA_TRANSACTION:
+         case AFR_METADATA_TRANSACTION:
+                 ret = 1;
+@@ -664,10 +307,6 @@ afr_unlock_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         local = frame->local;
+         int_lock = &local->internal_lock;
+ 
+-        AFR_TRACE_INODELK_OUT (frame, this, AFR_INODELK_TRANSACTION,
+-                               AFR_UNLOCK_OP, NULL, op_ret,
+-                               op_errno, child_index);
+-
+         priv = this->private;
+ 
+         if (op_ret < 0 && op_errno != ENOTCONN && op_errno != EBADFD) {
+@@ -764,11 +403,6 @@ afr_unlock_inodelk (call_frame_t *frame, xlator_t *this)
+ 
+                         flock_use = &full_flock;
+                 wind:
+-                        AFR_TRACE_INODELK_IN (frame, this,
+-                                              AFR_INODELK_TRANSACTION,
+-                                              AFR_UNLOCK_OP, flock_use, F_SETLK,
+-                                              i);
+-
+                         STACK_WIND_COOKIE (frame, afr_unlock_inodelk_cbk,
+                                            (void *) (long)i,
+                                            priv->children[i],
+@@ -780,9 +414,6 @@ afr_unlock_inodelk (call_frame_t *frame, xlator_t *this)
+                                 break;
+ 
+                 } else {
+-                        AFR_TRACE_INODELK_IN (frame, this,
+-                                              AFR_INODELK_TRANSACTION,
+-                                              AFR_UNLOCK_OP, &flock, F_SETLK, i);
+ 
+                         STACK_WIND_COOKIE (frame, afr_unlock_inodelk_cbk,
+                                            (void *) (long)i,
+@@ -816,11 +447,6 @@ afr_unlock_entrylk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         local = frame->local;
+         int_lock = &local->internal_lock;
+ 
+-        AFR_TRACE_ENTRYLK_OUT (frame, this, AFR_ENTRYLK_TRANSACTION,
+-                               AFR_UNLOCK_OP,
+-                               int_lock->lockee[lockee_no].basename, op_ret,
+-                               op_errno, (int) ((long)cookie));
+-
+         if (op_ret < 0) {
+                 gf_msg (this->name, GF_LOG_ERROR, op_errno,
+                         AFR_MSG_ENTRY_UNLOCK_FAIL,
+@@ -866,10 +492,6 @@ afr_unlock_entrylk (call_frame_t *frame, xlator_t *this)
+                 lockee_no = i / copies;
+                 index     = i % copies;
+                 if (int_lock->lockee[lockee_no].locked_nodes[index] & LOCKED_YES) {
+-                        AFR_TRACE_ENTRYLK_IN (frame, this, AFR_ENTRYLK_NB_TRANSACTION,
+-                                              AFR_UNLOCK_OP,
+-                                              int_lock->lockee[lockee_no].basename,
+-                                              i);
+ 
+                         STACK_WIND_COOKIE (frame, afr_unlock_entrylk_cbk,
+                                            (void *) (long) i,
+@@ -963,10 +585,6 @@ static int32_t
+ afr_blocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno, dict_t *xdata)
+ {
+-        AFR_TRACE_INODELK_OUT (frame, this, AFR_INODELK_TRANSACTION,
+-                               AFR_LOCK_OP, NULL, op_ret,
+-                               op_errno, (long) cookie);
+-
+         afr_lock_cbk (frame, cookie, this, op_ret, op_errno, xdata);
+         return 0;
+ 
+@@ -976,10 +594,6 @@ static int32_t
+ afr_blocking_entrylk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                           int32_t op_ret, int32_t op_errno, dict_t *xdata)
+ {
+-        AFR_TRACE_ENTRYLK_OUT (frame, this, AFR_ENTRYLK_TRANSACTION,
+-                               AFR_LOCK_OP, NULL, op_ret,
+-                               op_errno, (long)cookie);
+-
+         afr_lock_cbk (frame, cookie, this, op_ret, op_errno, xdata);
+         return 0;
+ }
+@@ -1017,27 +631,11 @@ afr_copy_locked_nodes (call_frame_t *frame, xlator_t *this)
+ }
+ 
+ static gf_boolean_t
+-afr_is_entrylk (afr_internal_lock_t *int_lock,
+-                afr_transaction_type trans_type)
++afr_is_entrylk (afr_transaction_type trans_type)
+ {
+-        gf_boolean_t is_entrylk = _gf_false;
+-
+-        if ((int_lock->transaction_lk_type == AFR_SELFHEAL_LK) &&
+-            int_lock->selfheal_lk_type == AFR_ENTRY_SELF_HEAL_LK) {
+-
+-                is_entrylk = _gf_true;
+-
+-        } else if ((int_lock->transaction_lk_type == AFR_TRANSACTION_LK) &&
+-                 (trans_type == AFR_ENTRY_TRANSACTION ||
+-                  trans_type == AFR_ENTRY_RENAME_TRANSACTION)) {
+-
+-                is_entrylk = _gf_true;
+-
+-        } else {
+-                is_entrylk = _gf_false;
+-        }
+-
+-        return is_entrylk;
++        if (afr_is_inodelk_transaction (trans_type))
++                return _gf_false;
++        return _gf_true;
+ }
+ 
+ static gf_boolean_t
+@@ -1092,7 +690,7 @@ is_blocking_locks_count_sufficient (call_frame_t *frame, xlator_t *this)
+         priv = this->private;
+         int_lock = &local->internal_lock;
+         lockee_count = int_lock->lockee_count;
+-        is_entrylk = afr_is_entrylk (int_lock, local->transaction.type);
++        is_entrylk = afr_is_entrylk (local->transaction.type);
+ 
+         if (!is_entrylk) {
+                 if (int_lock->lock_count == 0) {
+@@ -1150,7 +748,7 @@ afr_lock_blocking (call_frame_t *frame, xlator_t *this, int cookie)
+         priv          = this->private;
+         child_index   = cookie % priv->child_count;
+         lockee_no     = cookie / priv->child_count;
+-        is_entrylk    = afr_is_entrylk (int_lock, local->transaction.type);
++        is_entrylk    = afr_is_entrylk (local->transaction.type);
+ 
+ 
+         if (!is_entrylk) {
+@@ -1217,10 +815,6 @@ afr_lock_blocking (call_frame_t *frame, xlator_t *this, int cookie)
+         case AFR_METADATA_TRANSACTION:
+ 
+                 if (local->fd) {
+-                        AFR_TRACE_INODELK_IN (frame, this,
+-                                              AFR_INODELK_TRANSACTION,
+-                                              AFR_LOCK_OP, &flock, F_SETLKW,
+-                                              child_index);
+ 
+                         STACK_WIND_COOKIE (frame, afr_blocking_inodelk_cbk,
+                                            (void *) (long) child_index,
+@@ -1230,10 +824,6 @@ afr_lock_blocking (call_frame_t *frame, xlator_t *this, int cookie)
+                                            F_SETLKW, &flock, NULL);
+ 
+                 } else {
+-                        AFR_TRACE_INODELK_IN (frame, this,
+-                                              AFR_INODELK_TRANSACTION,
+-                                              AFR_LOCK_OP, &flock, F_SETLKW,
+-                                              child_index);
+ 
+                         STACK_WIND_COOKIE (frame, afr_blocking_inodelk_cbk,
+                                            (void *) (long) child_index,
+@@ -1251,10 +841,6 @@ afr_lock_blocking (call_frame_t *frame, xlator_t *this, int cookie)
+                  *and 'fd-less' children */
+ 
+                 if (local->fd) {
+-                        AFR_TRACE_ENTRYLK_IN (frame, this, AFR_ENTRYLK_TRANSACTION,
+-                                              AFR_LOCK_OP,
+-                                              int_lock->lockee[lockee_no].basename,
+-                                              cookie);
+ 
+                         STACK_WIND_COOKIE (frame, afr_blocking_entrylk_cbk,
+                                            (void *) (long) cookie,
+@@ -1264,10 +850,6 @@ afr_lock_blocking (call_frame_t *frame, xlator_t *this, int cookie)
+                                            int_lock->lockee[lockee_no].basename,
+                                            ENTRYLK_LOCK, ENTRYLK_WRLCK, NULL);
+                 } else {
+-                        AFR_TRACE_ENTRYLK_IN (frame, this,
+-                                              AFR_ENTRYLK_TRANSACTION,
+-                                              AFR_LOCK_OP, local->transaction.basename,
+-                                              child_index);
+ 
+                         STACK_WIND_COOKIE (frame, afr_blocking_entrylk_cbk,
+                                            (void *) (long) cookie,
+@@ -1340,10 +922,6 @@ afr_nonblocking_entrylk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         local    = frame->local;
+         int_lock = &local->internal_lock;
+ 
+-        AFR_TRACE_ENTRYLK_OUT (frame, this, AFR_ENTRYLK_TRANSACTION,
+-                               AFR_LOCK_OP,
+-                               int_lock->lockee[lockee_no].basename, op_ret,
+-                               op_errno, (long) cookie);
+ 
+ 	LOCK (&frame->lock);
+ 	{
+@@ -1453,10 +1031,6 @@ afr_nonblocking_entrylk (call_frame_t *frame, xlator_t *this)
+                         index = i%copies;
+                         lockee_no = i/copies;
+                         if (local->child_up[index]) {
+-                                AFR_TRACE_ENTRYLK_IN (frame, this, AFR_ENTRYLK_NB_TRANSACTION,
+-                                                      AFR_LOCK_OP,
+-                                                      int_lock->lockee[lockee_no].basename,
+-                                                      i);
+ 
+                                 STACK_WIND_COOKIE (frame, afr_nonblocking_entrylk_cbk,
+                                                    (void *) (long) i,
+@@ -1479,10 +1053,6 @@ afr_nonblocking_entrylk (call_frame_t *frame, xlator_t *this)
+                         index = i%copies;
+                         lockee_no = i/copies;
+                         if (local->child_up[index]) {
+-                                AFR_TRACE_ENTRYLK_IN (frame, this, AFR_ENTRYLK_NB_TRANSACTION,
+-                                                      AFR_LOCK_OP,
+-                                                      int_lock->lockee[lockee_no].basename,
+-                                                      i);
+ 
+                                 STACK_WIND_COOKIE (frame, afr_nonblocking_entrylk_cbk,
+                                                    (void *) (long) i,
+@@ -1517,10 +1087,6 @@ afr_nonblocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         int_lock = &local->internal_lock;
+         inodelk = afr_get_inodelk (int_lock, int_lock->domain);
+ 
+-        AFR_TRACE_INODELK_OUT (frame, this, AFR_INODELK_NB_TRANSACTION,
+-                               AFR_LOCK_OP, NULL, op_ret,
+-                               op_errno, (long) cookie);
+-
+ 	if (local->fd)
+ 		fd_ctx = afr_fd_ctx_get (local->fd, this);
+ 
+@@ -1691,9 +1257,6 @@ afr_nonblocking_inodelk (call_frame_t *frame, xlator_t *this)
+                         }
+                         flock_use = &full_flock;
+                 wind:
+-                        AFR_TRACE_INODELK_IN (frame, this,
+-                                              AFR_INODELK_NB_TRANSACTION,
+-                                              AFR_LOCK_OP, flock_use, F_SETLK, i);
+ 
+                         STACK_WIND_COOKIE (frame, afr_nonblocking_inodelk_cbk,
+                                            (void *) (long) i,
+@@ -1713,9 +1276,6 @@ afr_nonblocking_inodelk (call_frame_t *frame, xlator_t *this)
+                 for (i = 0; i < priv->child_count; i++) {
+                         if (!local->child_up[i])
+                                 continue;
+-                        AFR_TRACE_INODELK_IN (frame, this,
+-                                              AFR_INODELK_NB_TRANSACTION,
+-                                              AFR_LOCK_OP, &flock, F_SETLK, i);
+ 
+                         STACK_WIND_COOKIE (frame, afr_nonblocking_inodelk_cbk,
+                                            (void *) (long) i,
+@@ -1739,54 +1299,10 @@ afr_unlock (call_frame_t *frame, xlator_t *this)
+ 
+         local = frame->local;
+ 
+-        if (transaction_lk_op (local)) {
+-                if (afr_is_inodelk_transaction(local))
+-                        afr_unlock_inodelk (frame, this);
+-                else
+-                        afr_unlock_entrylk (frame, this);
+-
+-        } else {
+-                if (is_afr_lock_selfheal (local))
+-                        afr_unlock_inodelk (frame, this);
+-                else
+-                        afr_unlock_entrylk (frame, this);
+-        }
++        if (afr_is_inodelk_transaction(local->transaction.type))
++                afr_unlock_inodelk (frame, this);
++        else
++                afr_unlock_entrylk (frame, this);
+ 
+         return 0;
+ }
+-
+-int
+-afr_lk_transfer_datalock (call_frame_t *dst, call_frame_t *src, char *dom,
+-                          unsigned int child_count)
+-{
+-        afr_local_t         *dst_local   = NULL;
+-        afr_local_t         *src_local   = NULL;
+-        afr_internal_lock_t *dst_lock    = NULL;
+-        afr_internal_lock_t *src_lock    = NULL;
+-        afr_inodelk_t       *dst_inodelk = NULL;
+-        afr_inodelk_t       *src_inodelk = NULL;
+-        int                 ret = -1;
+-
+-        src_local = src->local;
+-        src_lock  = &src_local->internal_lock;
+-        src_inodelk = afr_get_inodelk (src_lock, dom);
+-        dst_local = dst->local;
+-        dst_lock  = &dst_local->internal_lock;
+-        dst_inodelk = afr_get_inodelk (dst_lock, dom);
+-        if (!dst_inodelk || !src_inodelk)
+-                goto out;
+-        if (src_inodelk->locked_nodes) {
+-                memcpy (dst_inodelk->locked_nodes, src_inodelk->locked_nodes,
+-                        sizeof (*dst_inodelk->locked_nodes) * child_count);
+-                memset (src_inodelk->locked_nodes, 0,
+-                        sizeof (*src_inodelk->locked_nodes) * child_count);
+-        }
+-
+-        dst_lock->transaction_lk_type = src_lock->transaction_lk_type;
+-        dst_lock->selfheal_lk_type    = src_lock->selfheal_lk_type;
+-        dst_inodelk->lock_count = src_inodelk->lock_count;
+-        src_inodelk->lock_count = 0;
+-        ret = 0;
+-out:
+-        return ret;
+-}
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 02fb10a..acbfe1a 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -133,7 +133,7 @@ afr_needs_changelog_update (afr_local_t *local)
+ }
+ 
+ int
+-__afr_txn_write_fop (call_frame_t *frame, xlator_t *this)
++afr_transaction_fop (call_frame_t *frame, xlator_t *this)
+ {
+         afr_local_t *local = NULL;
+         afr_private_t *priv = NULL;
+@@ -150,7 +150,7 @@ __afr_txn_write_fop (call_frame_t *frame, xlator_t *this)
+                                                     priv->child_count);
+ 
+         if (call_count == 0) {
+-                local->transaction.resume (frame, this);
++                afr_transaction_resume (frame, this);
+                 return 0;
+         }
+ 
+@@ -170,7 +170,7 @@ __afr_txn_write_fop (call_frame_t *frame, xlator_t *this)
+ 
+ 
+ int
+-__afr_txn_write_done (call_frame_t *frame, xlator_t *this)
++afr_transaction_done (call_frame_t *frame, xlator_t *this)
+ {
+         afr_local_t *local = NULL;
+         afr_private_t *priv = NULL;
+@@ -345,13 +345,13 @@ afr_txn_arbitrate_fop (call_frame_t *frame, xlator_t *this)
+         /* If arbiter is the only source, do not proceed. */
+         if (pre_op_sources_count < 2 &&
+             local->transaction.pre_op_sources[ARBITER_BRICK_INDEX]) {
+-                local->internal_lock.lock_cbk = local->transaction.done;
++                local->internal_lock.lock_cbk = afr_transaction_done;
+                 local->op_ret = -1;
+                 local->op_errno =  ENOTCONN;
+                 afr_restore_lk_owner (frame);
+                 afr_unlock (frame, this);
+         } else {
+-                local->transaction.fop (frame, this);
++                afr_transaction_fop (frame, this);
+         }
+ 
+         return;
+@@ -407,75 +407,12 @@ afr_transaction_perform_fop (call_frame_t *frame, xlator_t *this)
+         if (priv->arbiter_count == 1) {
+                 afr_txn_arbitrate_fop (frame, this);
+         } else {
+-                local->transaction.fop (frame, this);
++                afr_transaction_fop (frame, this);
+         }
+ 
+ 	return 0;
+ }
+ 
+-static int
+-__changelog_enabled (afr_private_t *priv, afr_transaction_type type)
+-{
+-        int ret = 0;
+-
+-        switch (type) {
+-        case AFR_DATA_TRANSACTION:
+-                if (priv->data_change_log)
+-                        ret = 1;
+-
+-                break;
+-
+-        case AFR_METADATA_TRANSACTION:
+-                if (priv->metadata_change_log)
+-                        ret = 1;
+-
+-                break;
+-
+-        case AFR_ENTRY_TRANSACTION:
+-        case AFR_ENTRY_RENAME_TRANSACTION:
+-                if (priv->entry_change_log)
+-                        ret = 1;
+-
+-                break;
+-        }
+-
+-        return ret;
+-}
+-
+-
+-static int
+-__fop_changelog_needed (call_frame_t *frame, xlator_t *this)
+-{
+-        afr_private_t * priv  = NULL;
+-        afr_local_t   * local = NULL;
+-        int op_ret = 0;
+-        afr_transaction_type type = -1;
+-
+-        priv  = this->private;
+-        local = frame->local;
+-        type  = local->transaction.type;
+-
+-        if (__changelog_enabled (priv, type)) {
+-                switch (local->op) {
+-
+-                case GF_FOP_WRITE:
+-                case GF_FOP_FTRUNCATE:
+-                        op_ret = 1;
+-                        break;
+-
+-                case GF_FOP_FLUSH:
+-                        op_ret = 0;
+-                        break;
+-
+-                default:
+-                        op_ret = 1;
+-                }
+-        }
+-
+-        return op_ret;
+-}
+-
+-
+ int
+ afr_set_pending_dict (afr_private_t *priv, dict_t *xattr, int **pending)
+ {
+@@ -496,29 +433,6 @@ afr_set_pending_dict (afr_private_t *priv, dict_t *xattr, int **pending)
+         return ret;
+ }
+ 
+-int
+-afr_lock_server_count (afr_private_t *priv, afr_transaction_type type)
+-{
+-        int ret = 0;
+-
+-        switch (type) {
+-        case AFR_DATA_TRANSACTION:
+-                ret = priv->child_count;
+-                break;
+-
+-        case AFR_METADATA_TRANSACTION:
+-                ret = priv->child_count;
+-                break;
+-
+-        case AFR_ENTRY_TRANSACTION:
+-        case AFR_ENTRY_RENAME_TRANSACTION:
+-                ret = priv->child_count;
+-                break;
+-        }
+-
+-        return ret;
+-}
+-
+ /* {{{ pending */
+ 
+ 
+@@ -552,11 +466,9 @@ int
+ afr_changelog_post_op_done (call_frame_t *frame, xlator_t *this)
+ {
+ 	afr_local_t *local = NULL;
+-	afr_private_t *priv = NULL;
+         afr_internal_lock_t *int_lock = NULL;
+ 
+ 	local = frame->local;
+-	priv = this->private;
+         int_lock = &local->internal_lock;
+ 
+         /* Fail the FOP if post-op did not succeed on quorum no. of bricks. */
+@@ -567,12 +479,8 @@ afr_changelog_post_op_done (call_frame_t *frame, xlator_t *this)
+ 		local->transaction.resume_stub = NULL;
+ 	}
+ 
+-	if (afr_lock_server_count (priv, local->transaction.type) == 0) {
+-		local->transaction.done (frame, this);
+-	} else {
+-		int_lock->lock_cbk = local->transaction.done;
+-		afr_unlock (frame, this);
+-	}
++        int_lock->lock_cbk = afr_transaction_done;
++        afr_unlock (frame, this);
+ 
+ 	return 0;
+ }
+@@ -1496,7 +1404,7 @@ next:
+ 
+         return 0;
+ err:
+-	local->internal_lock.lock_cbk = local->transaction.done;
++	local->internal_lock.lock_cbk = afr_transaction_done;
+ 	local->op_ret = -1;
+ 	local->op_errno = op_errno;
+ 
+@@ -1522,7 +1430,7 @@ afr_post_blocking_inodelk_cbk (call_frame_t *frame, xlator_t *this)
+                 gf_msg (this->name, GF_LOG_INFO,
+                         0, AFR_MSG_BLOCKING_LKS_FAILED,
+                         "Blocking inodelks failed.");
+-                local->transaction.done (frame, this);
++                afr_transaction_done (frame, this);
+         } else {
+ 
+                 gf_msg_debug (this->name, 0,
+@@ -1573,7 +1481,7 @@ afr_post_blocking_entrylk_cbk (call_frame_t *frame, xlator_t *this)
+                 gf_msg (this->name, GF_LOG_INFO, 0,
+                         AFR_MSG_BLOCKING_LKS_FAILED,
+                         "Blocking entrylks failed.");
+-                local->transaction.done (frame, this);
++                afr_transaction_done (frame, this);
+         } else {
+ 
+                 gf_msg_debug (this->name, 0,
+@@ -1626,7 +1534,7 @@ afr_post_blocking_rename_cbk (call_frame_t *frame, xlator_t *this)
+                         AFR_MSG_BLOCKING_LKS_FAILED,
+                         "Blocking entrylks failed.");
+ 
+-                local->transaction.done (frame, this);
++                afr_transaction_done (frame, this);
+         } else {
+ 
+                 gf_msg_debug (this->name, 0,
+@@ -1689,7 +1597,6 @@ afr_lock_rec (call_frame_t *frame, xlator_t *this)
+         local    = frame->local;
+         int_lock = &local->internal_lock;
+ 
+-        int_lock->transaction_lk_type = AFR_TRANSACTION_LK;
+         int_lock->domain = this->name;
+ 
+         switch (local->transaction.type) {
+@@ -1738,11 +1645,7 @@ afr_lock (call_frame_t *frame, xlator_t *this)
+ int
+ afr_internal_lock_finish (call_frame_t *frame, xlator_t *this)
+ {
+-        if (__fop_changelog_needed (frame, this)) {
+-                afr_changelog_pre_op (frame, this);
+-        } else {
+-                afr_transaction_perform_fop (frame, this);
+-        }
++        afr_changelog_pre_op (frame, this);
+ 
+         return 0;
+ }
+@@ -2152,11 +2055,7 @@ afr_transaction_resume (call_frame_t *frame, xlator_t *this)
+ 		   with OP */
+ 		afr_changelog_pre_op_update (frame, this);
+ 
+-        if (__fop_changelog_needed (frame, this)) {
+-                afr_changelog_post_op (frame, this);
+-        } else {
+-		afr_changelog_post_op_done (frame, this);
+-        }
++        afr_changelog_post_op (frame, this);
+ 
+         return 0;
+ }
+@@ -2263,7 +2162,6 @@ void
+ afr_transaction_start (call_frame_t *frame, xlator_t *this)
+ {
+         afr_local_t   *local = frame->local;
+-        afr_private_t *priv  = this->private;
+         fd_t          *fd    = NULL;
+ 
+         afr_transaction_eager_lock_init (local, this);
+@@ -2285,11 +2183,7 @@ afr_transaction_start (call_frame_t *frame, xlator_t *this)
+                 }
+         }
+ 
+-        if (afr_lock_server_count (priv, local->transaction.type) == 0) {
+-                afr_internal_lock_finish (frame, this);
+-        } else {
+-                afr_lock (frame, this);
+-        }
++        afr_lock (frame, this);
+ }
+ 
+ int
+@@ -2321,7 +2215,6 @@ afr_transaction (call_frame_t *frame, xlator_t *this, afr_transaction_type type)
+         local = frame->local;
+         priv  = this->private;
+ 
+-        local->transaction.resume = afr_transaction_resume;
+         local->transaction.type   = type;
+ 
+         if (!afr_is_consistent_io_possible (local, priv, &ret)) {
+diff --git a/xlators/cluster/afr/src/afr-transaction.h b/xlators/cluster/afr/src/afr-transaction.h
+index d01e144..ddcb1eb 100644
+--- a/xlators/cluster/afr/src/afr-transaction.h
++++ b/xlators/cluster/afr/src/afr-transaction.h
+@@ -46,8 +46,6 @@ int afr_read_txn (call_frame_t *frame, xlator_t *this, inode_t *inode,
+ 
+ int afr_read_txn_continue (call_frame_t *frame, xlator_t *this, int subvol);
+ 
+-int __afr_txn_write_fop (call_frame_t *frame, xlator_t *this);
+-int __afr_txn_write_done (call_frame_t *frame, xlator_t *this);
+ call_frame_t *afr_transaction_detach_fop_frame (call_frame_t *frame);
+ gf_boolean_t afr_has_quorum (unsigned char *subvols, xlator_t *this);
+ gf_boolean_t afr_needs_changelog_update (afr_local_t *local);
+diff --git a/xlators/cluster/afr/src/afr.c b/xlators/cluster/afr/src/afr.c
+index 9ed0481..dec6e60 100644
+--- a/xlators/cluster/afr/src/afr.c
++++ b/xlators/cluster/afr/src/afr.c
+@@ -168,15 +168,6 @@ reconfigure (xlator_t *this, dict_t *options)
+                           priv->data_self_heal_window_size, options,
+                           uint32, out);
+ 
+-        GF_OPTION_RECONF ("data-change-log", priv->data_change_log, options,
+-                          bool, out);
+-
+-        GF_OPTION_RECONF ("metadata-change-log",
+-                          priv->metadata_change_log, options, bool, out);
+-
+-        GF_OPTION_RECONF ("entry-change-log", priv->entry_change_log, options,
+-                          bool, out);
+-
+         GF_OPTION_RECONF ("data-self-heal-algorithm",
+                           priv->data_self_heal_algorithm, options, str, out);
+ 
+@@ -516,20 +507,9 @@ init (xlator_t *this)
+ 
+         GF_OPTION_INIT ("iam-nfs-daemon", priv->nfsd.iamnfsd, bool, out);
+ 
+-        GF_OPTION_INIT ("data-change-log", priv->data_change_log, bool, out);
+-
+-        GF_OPTION_INIT ("metadata-change-log", priv->metadata_change_log, bool,
+-                        out);
+-
+-        GF_OPTION_INIT ("entry-change-log", priv->entry_change_log, bool, out);
+-
+         GF_OPTION_INIT ("optimistic-change-log", priv->optimistic_change_log,
+                         bool, out);
+ 
+-        GF_OPTION_INIT ("inodelk-trace", priv->inodelk_trace, bool, out);
+-
+-        GF_OPTION_INIT ("entrylk-trace", priv->entrylk_trace, bool, out);
+-
+         GF_OPTION_INIT ("pre-op-compat", priv->pre_op_compat, bool, out);
+         GF_OPTION_INIT ("locking-scheme", priv->locking_scheme, str, out);
+         GF_OPTION_INIT ("full-lock", priv->full_lock, bool, out);
+@@ -878,23 +858,20 @@ struct volume_options options[] = {
+         { .key  = {"data-change-log"},
+           .type = GF_OPTION_TYPE_BOOL,
+           .default_value = "on",
+-          .description = "Data fops like write/truncate will not perform "
+-                         "pre/post fop changelog operations in afr transaction "
+-                         "if this option is disabled"
++          .description = "This option exists only for backward compatibility "
++                         "and configuring it doesn't have any effect"
+         },
+         { .key  = {"metadata-change-log"},
+           .type = GF_OPTION_TYPE_BOOL,
+           .default_value = "on",
+-          .description = "Metadata fops like setattr/setxattr will not perform "
+-                         "pre/post fop changelog operations in afr transaction "
+-                         "if this option is disabled"
++          .description = "This option exists only for backward compatibility "
++                         "and configuring it doesn't have any effect"
+         },
+         { .key  = {"entry-change-log"},
+           .type = GF_OPTION_TYPE_BOOL,
+           .default_value = "on",
+-          .description = "Entry fops like create/unlink will not perform "
+-                         "pre/post fop changelog operations in afr transaction "
+-                         "if this option is disabled"
++          .description = "This option exists only for backward compatibility "
++                         "and configuring it doesn't have any effect"
+         },
+         { .key  = {"optimistic-change-log"},
+           .type = GF_OPTION_TYPE_BOOL,
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index a5b0d3b..5ff57c0 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -110,10 +110,6 @@ typedef struct _afr_private {
+         gf_boolean_t metadata_self_heal;   /* on/off */
+         gf_boolean_t entry_self_heal;      /* on/off */
+ 
+-        gf_boolean_t data_change_log;       /* on/off */
+-        gf_boolean_t metadata_change_log;   /* on/off */
+-        gf_boolean_t entry_change_log;      /* on/off */
+-
+ 	gf_boolean_t metadata_splitbrain_forced_heal; /* on/off */
+         int read_child;               /* read-subvolume */
+         unsigned int hash_mode;       /* for when read_child is not set */
+@@ -123,9 +119,6 @@ typedef struct _afr_private {
+         afr_favorite_child_policy fav_child_policy;/*Policy to use for automatic
+                                                  resolution of split-brains.*/
+ 
+-        gf_boolean_t inodelk_trace;
+-        gf_boolean_t entrylk_trace;
+-
+         unsigned int wait_count;      /* # of servers to wait for success */
+ 
+         gf_timer_t *timer;      /* launched when parent up is received */
+@@ -187,33 +180,6 @@ typedef enum {
+         AFR_ENTRY_RENAME_TRANSACTION,  /* rename */
+ } afr_transaction_type;
+ 
+-typedef enum {
+-        AFR_TRANSACTION_LK,
+-        AFR_SELFHEAL_LK,
+-} transaction_lk_type_t;
+-
+-typedef enum {
+-        AFR_LOCK_OP,
+-        AFR_UNLOCK_OP,
+-} afr_lock_op_type_t;
+-
+-typedef enum {
+-        AFR_DATA_SELF_HEAL_LK,
+-        AFR_METADATA_SELF_HEAL_LK,
+-        AFR_ENTRY_SELF_HEAL_LK,
+-}selfheal_lk_type_t;
+-
+-typedef enum {
+-        AFR_INODELK_TRANSACTION,
+-        AFR_INODELK_NB_TRANSACTION,
+-        AFR_ENTRYLK_TRANSACTION,
+-        AFR_ENTRYLK_NB_TRANSACTION,
+-        AFR_INODELK_SELFHEAL,
+-        AFR_INODELK_NB_SELFHEAL,
+-        AFR_ENTRYLK_SELFHEAL,
+-        AFR_ENTRYLK_NB_SELFHEAL,
+-} afr_lock_call_type_t;
+-
+ /*
+   xattr format: trusted.afr.volume = [x y z]
+   x - data pending
+@@ -286,9 +252,6 @@ typedef struct {
+         unsigned char *locked_nodes;
+         unsigned char *lower_locked_nodes;
+ 
+-        selfheal_lk_type_t selfheal_lk_type;
+-        transaction_lk_type_t transaction_lk_type;
+-
+         int32_t lock_count;
+         int32_t entrylk_lock_count;
+ 
+@@ -809,12 +772,6 @@ typedef struct _afr_local {
+ 
+                 int (*wind) (call_frame_t *frame, xlator_t *this, int subvol);
+ 
+-                int (*fop) (call_frame_t *frame, xlator_t *this);
+-
+-                int (*done) (call_frame_t *frame, xlator_t *this);
+-
+-                int (*resume) (call_frame_t *frame, xlator_t *this);
+-
+                 int (*unwind) (call_frame_t *frame, xlator_t *this);
+ 
+                 /* post-op hook */
+@@ -973,10 +930,6 @@ int
+ afr_internal_lock_finish (call_frame_t *frame, xlator_t *this);
+ 
+ int
+-afr_lk_transfer_datalock (call_frame_t *dst, call_frame_t *src, char *dom,
+-                          unsigned int child_count);
+-
+-int
+ __afr_fd_ctx_set (xlator_t *this, fd_t *fd);
+ 
+ afr_fd_ctx_t *
+@@ -1100,8 +1053,7 @@ int
+ afr_local_init (afr_local_t *local, afr_private_t *priv, int32_t *op_errno);
+ 
+ int
+-afr_internal_lock_init (afr_internal_lock_t *lk, size_t child_count,
+-                        transaction_lk_type_t lk_type);
++afr_internal_lock_init (afr_internal_lock_t *lk, size_t child_count);
+ 
+ int
+ afr_higher_errno (int32_t old_errno, int32_t new_errno);
+@@ -1246,7 +1198,7 @@ void
+ afr_update_uninodelk (afr_local_t *local, afr_internal_lock_t *int_lock,
+                     int32_t child_index);
+ int
+-afr_is_inodelk_transaction(afr_local_t *local);
++afr_is_inodelk_transaction(afr_transaction_type type);
+ 
+ afr_fd_ctx_t *
+ __afr_fd_ctx_get (fd_t *fd, xlator_t *this);
+-- 
+1.8.3.1
+

@@ -1,0 +1,69 @@
+From 8fb2496f67b1170595144eecb9a3b8f3be35044e Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Mon, 30 Oct 2017 15:55:32 +0530
+Subject: [PATCH 40/74] glusterd: delete source brick only once in reset-brick
+ commit force
+
+While stopping the brick which is to be reset and replaced delete_brick
+flag was passed as true which resulted glusterd to free up to source
+brick before the actual operation. This results commit force to fail
+failing to find the source brickinfo.
+
+>upstream patch : https://review.gluster.org/#/c/18581
+
+Change-Id: I1aa7508eff7cc9c9b5d6f5163f3bb92736d6df44
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/121876
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ .../bug-1507466-reset-brick-commit-force.t         | 24 ++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-reset-brick.c   |  2 +-
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+ create mode 100644 tests/bugs/glusterd/bug-1507466-reset-brick-commit-force.t
+
+diff --git a/tests/bugs/glusterd/bug-1507466-reset-brick-commit-force.t b/tests/bugs/glusterd/bug-1507466-reset-brick-commit-force.t
+new file mode 100644
+index 0000000..764399d
+--- /dev/null
++++ b/tests/bugs/glusterd/bug-1507466-reset-brick-commit-force.t
+@@ -0,0 +1,24 @@
++#!/bin/bash
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../cluster.rc
++cleanup;
++
++function check_peers {
++        $CLI_1 peer status | grep 'Peer in Cluster (Connected)' | wc -l
++}
++
++TEST launch_cluster 3
++TEST $CLI_1 peer probe $H2;
++EXPECT_WITHIN $PROBE_TIMEOUT 1 check_peers
++
++TEST $CLI_1 volume create $V0 replica 2 $H1:$B0/${V0} $H2:$B0/${V0}
++TEST $CLI_1 volume start $V0
++
++# Negative case with brick not killed && volume-id xattrs present
++TEST ! $CLI_1 volume reset-brick $V0 $H1:$B0/${V0} $H1:$B0/${V0} commit force
++
++TEST $CLI_1 volume reset-brick $V0 $H1:$B0/${V0} start
++# Now test if reset-brick commit force works
++TEST $CLI_1 volume reset-brick $V0 $H1:$B0/${V0} $H1:$B0/${V0} commit force
++
++cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-reset-brick.c b/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
+index c127d64..abb44e0 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-reset-brick.c
+@@ -343,7 +343,7 @@ glusterd_op_reset_brick (dict_t *dict, dict_t *rsp_dict)
+                         gf_msg_debug (this->name, 0, "I AM THE DESTINATION HOST");
+                         ret = glusterd_volume_stop_glusterfs (volinfo,
+                                                               src_brickinfo,
+-                                                              _gf_true);
++                                                              _gf_false);
+                         if (ret) {
+                                 gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                                         GD_MSG_BRICK_STOP_FAIL,
+-- 
+1.8.3.1
+

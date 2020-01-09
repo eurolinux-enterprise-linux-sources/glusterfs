@@ -1,0 +1,353 @@
+From ea20e0a38c9f150d9e96076e04f4b77109e41663 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Wed, 27 Sep 2017 11:37:28 +0530
+Subject: [PATCH 091/128] extras: scripts to control CPU/MEMORY for any gluster
+ daemon during runtime
+
+Problem: Sometime gluster daemons like glustershd can consume a lot of cpu and/
+or memory if there is a large amount of data/ entries to be healed.
+
+Solution: Until we have some form of throttling/ QoS mechanisms built into
+gluster, we can use control groups for regulating cpu and memory of any gluster
+daemon using control-cpu-load.sh and control-mem.sh scripts respectively.
+
+Test:    To test the control-cpu-load.sh script follow below procedure:
+         1) Setup distribute replica environment
+         2) Selfheal daemon off
+         3) Down one node from replica nodes
+         4) Create millions of files from mount point
+         5) Start down node
+         6) Check cpu usage for shd process in top command
+         7) Run script after provide shd pid with CPU quota value
+         8) Check again cpu usage for shd process in top command
+
+Note: control-mem.sh script can cap the memory usage of the process to the set
+limit, beyond which the process gets blocked. It resumes either when the memory
+usage comes down or if the limit is increased.
+
+> BUG: 1496335
+> Change-Id: Id73c36b73ca600fa9f7905d84053d1e8633c996f
+> Reviewed on https://review.gluster.org/#/c/18404
+> (cherry picked from commit 2c066c4c365e77421d1009851144efae0b028628
+
+BUG: 1484446
+Change-Id: Id73c36b73ca600fa9f7905d84053d1e8633c996f
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124875
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ extras/Makefile.am         |   6 ++-
+ extras/control-cpu-load.sh | 116 ++++++++++++++++++++++++++++++++++++++++
+ extras/control-mem.sh      | 128 +++++++++++++++++++++++++++++++++++++++++++++
+ glusterfs.spec.in          |   5 ++
+ 4 files changed, 254 insertions(+), 1 deletion(-)
+ create mode 100755 extras/control-cpu-load.sh
+ create mode 100755 extras/control-mem.sh
+
+diff --git a/extras/Makefile.am b/extras/Makefile.am
+index 2812a4c..d9572ac 100644
+--- a/extras/Makefile.am
++++ b/extras/Makefile.am
+@@ -19,6 +19,10 @@ vol_DATA = glusterd.vol
+ scriptsdir = $(datadir)/glusterfs/scripts
+ scripts_SCRIPTS = post-upgrade-script-for-quota.sh \
+ 	pre-upgrade-script-for-quota.sh stop-all-gluster-processes.sh
++if USE_SYSTEMD
++scripts_SCRIPTS += control-cpu-load.sh
++scripts_SCRIPTS += control-mem.sh
++endif
+ 
+ EXTRA_DIST = $(conf_DATA) specgen.scm glusterfs-mode.el glusterfs.vim \
+ 	migrate-unify-to-distribute.sh backend-xattr-sanitize.sh backend-cleanup.sh \
+@@ -26,7 +30,7 @@ EXTRA_DIST = $(conf_DATA) specgen.scm glusterfs-mode.el glusterfs.vim \
+ 	post-upgrade-script-for-quota.sh pre-upgrade-script-for-quota.sh \
+ 	command-completion/gluster.bash command-completion/Makefile \
+ 	command-completion/README stop-all-gluster-processes.sh clang-checker.sh \
+-	mount-shared-storage.sh
++	mount-shared-storage.sh control-cpu-load.sh control-mem.sh
+ 
+ install-data-local:
+ 	if [ -n "$(tmpfilesdir)" ]; then \
+diff --git a/extras/control-cpu-load.sh b/extras/control-cpu-load.sh
+new file mode 100755
+index 0000000..b739c82
+--- /dev/null
++++ b/extras/control-cpu-load.sh
+@@ -0,0 +1,116 @@
++#!/bin/bash
++
++USAGE="This script provides a utility to control CPU utilization for any
++gluster daemon.In this, we use cgroup framework to configure CPU quota
++for a process(like selfheal daemon). Before running this script, make
++sure that daemon is running.Every time daemon restarts, it is required
++to rerun this command to set CPU quota on new daemon process id.
++User can enter any value between 10 to 100 for CPU quota.
++Recommended value of quota period is 25. 25 means, kernel will allocate
++25 ms period to this group of tasks in every 100 ms period. This 25ms
++could be considered as the maximum percentage of CPU quota daemon can take.
++This value will be reflected on CPU usage of "top" command.If provided pid
++is the only process and no other process is in competition to get CPU, more
++ than 25% could be allocated to daemon to speed up the process."
++
++if [  $# -ge 1 ]; then
++  case $1 in
++    -h|--help) echo " " "$USAGE" | sed -r -e 's/^[ ]+//g'
++               exit 0;
++               ;;
++  *) echo "Please Provide correct input for script."
++     echo "For help correct options are -h or --help."
++     exit 1;
++               ;;
++  esac
++fi
++
++DIR_EXIST=0
++LOC="/sys/fs/cgroup/cpu,cpuacct/system.slice/glusterd.service"
++echo "Enter gluster daemon pid for which you want to control CPU."
++read daemon_pid
++
++if expr ${daemon_pid} + 0 > /dev/null 2>&1 ;then
++  CHECK_PID=$(pgrep -f gluster | grep ${daemon_pid})
++  if [ -z "${CHECK_PID}" ]; then
++    echo "No daemon is running or pid ${daemon_pid} does not match."
++    echo "with running gluster processes."
++    exit 1
++  fi
++else
++  echo "Entered daemon_pid is not numeric so Rerun the script."
++  exit 1
++fi
++
++
++if [ -f ${LOC}/tasks ];then
++  CHECK_CGROUP=$(grep ${daemon_pid} ${LOC}/tasks)
++  if [ ${CHECK_CGROUP} ]; then
++    echo "pid ${daemon_pid} is attached with glusterd.service cgroup."
++  fi
++fi
++
++cgroup_name=cgroup_gluster_${daemon_pid}
++if [ -f ${LOC}/${cgroup_name}/tasks ]; then
++  CHECK_CGROUP=$(grep ${daemon_pid} ${LOC}/${cgroup_name}/tasks)
++  if [ ${CHECK_CGROUP} ]; then
++    val=`cat ${LOC}/${cgroup_name}/cpu.cfs_quota_us`
++    qval=$((val / 1000))
++    echo "pid ${daemon_pid} is already attached ${cgroup_name} with quota value ${qval}."
++    echo "Press n if you don't want to reassign ${daemon_pid} with new quota value."
++    DIR_EXIST=1
++  else
++    echo "pid ${daemon_pid} is not attached with ${cgroup_name}."
++  fi
++fi
++
++read -p "If you want to continue the script to attach ${daemon_pid} with new ${cgroup_name} cgroup Press (y/n)?" choice
++case "$choice" in
++  y|Y ) echo "yes";;
++  n|N ) echo "no";exit;;
++  * ) echo "invalid";exit;;
++esac
++
++systemctl set-property glusterd.service CPUShares=1024
++
++if [ ${DIR_EXIST} -eq 0 ];then
++  echo "Creating child cgroup directory '${cgroup_name} cgroup' for glusterd.service."
++  mkdir -p ${LOC}/${cgroup_name}
++  if [ ! -f ${LOC}/${cgroup_name}/tasks ];then
++    echo "Not able to create ${cgroup_name} directory so exit."
++    exit 1
++  fi
++fi
++
++echo "Enter quota value in range [10,100]:  "
++
++read quota_value
++if expr ${quota_value} + 0 > /dev/null 2>&1 ;then
++  if [ ${quota_value} -lt 10 ] || [ ${quota_value} -gt 100 ]; then
++    echo "Entered quota value is not correct,it should be in the range ."
++    echo "10-100. Ideal value is 25."
++    echo "Rerun the sript with correct value."
++    exit 1
++  else
++    echo "Entered quota value is $quota_value"
++  fi
++else
++  echo "Entered quota value is not numeric so Rerun the script."
++  exit 1
++fi
++
++quota_value=$((quota_value * 1000))
++echo "Setting $quota_value to cpu.cfs_quota_us for gluster_cgroup."
++echo ${quota_value} > ${LOC}/${cgroup_name}/cpu.cfs_quota_us
++
++if ps -T -p ${daemon_pid} | grep gluster > /dev/null; then
++  for thid in `ps -T -p ${daemon_pid} | grep gluster | awk -F " " '{print $2}'`;
++    do
++      echo ${thid} > ${LOC}/${cgroup_name}/tasks ;
++    done
++  if cat /proc/${daemon_pid}/cgroup | grep -w ${cgroup_name} > /dev/null; then
++    echo "Tasks are attached successfully specific to ${daemon_pid} to ${cgroup_name}."
++  else
++    echo "Tasks are not attached successfully."
++  fi
++fi
+diff --git a/extras/control-mem.sh b/extras/control-mem.sh
+new file mode 100755
+index 0000000..38aa2a0
+--- /dev/null
++++ b/extras/control-mem.sh
+@@ -0,0 +1,128 @@
++#!/bin/bash
++
++USAGE="This commands provides a utility to control MEMORY utilization for any
++gluster daemon.In this, we use cgroup framework to configure MEMORY limit for
++a process. Before running this script, make sure that daemon is running.Every
++time daemon restarts, it is required to rerun this command to set memory limit
++(in bytes) on new daemon process id.User can enter any value between 100
++(in Mega bytes) to 8000000000000 for Memory limit in Mega bytes.
++Memory limit value is depends on how much maximum memory user wants to restrict
++for specific daemon process.If a process will try to consume memore more than
++configured value then cgroup will hang/sleep this task and to resume the task
++rerun the script with new increase memory limit value ."
++
++if [  $# -ge 1 ]; then
++  case $1 in
++    -h|--help) echo " " "$USAGE" | sed -r -e 's/^[ ]+//g'
++               exit 0;
++               ;;
++    *) echo "Please Provide correct input for script."
++       echo "For help correct options are -h of --help."
++       exit 1;
++               ;;
++  esac
++fi
++
++DIR_EXIST=0
++LOC="/sys/fs/cgroup/memory/system.slice/glusterd.service"
++echo "Enter Any gluster daemon pid for that you want to control MEMORY."
++read daemon_pid
++
++if expr ${daemon_pid} + 0 > /dev/null 2>&1 ;then
++  CHECK_PID=$(pgrep -f gluster | grep ${daemon_pid})
++  if [ -z "${CHECK_PID}" ]; then
++    echo "No daemon is running or pid ${daemon_pid} does not match."
++    echo "with running gluster processes."
++    exit 1
++  fi
++else
++  echo "Entered daemon_pid is not numeric so Rerun the script."
++  exit 1
++fi
++
++
++if [ -f ${LOC}/tasks ]; then
++  CHECK_CGROUP=$(grep ${daemon_pid} ${LOC}/tasks)
++  if [ ${CHECK_CGROUP} ] ;then
++    echo "pid ${daemon_pid} is attached with default glusterd.service cgroup."
++  fi
++fi
++
++cgroup_name=cgroup_gluster_${daemon_pid}
++if [ -f ${LOC}/${cgroup_name}/tasks ];then
++  CHECK_CGROUP=$(grep ${daemon_pid} ${LOC}/${cgroup_name}/tasks)
++  if [ ${CHECK_CGROUP} ]; then
++    val=`cat ${LOC}/${cgroup_name}/memory.limit_in_bytes`
++    mval=$((val / 1024 / 1024))
++    echo "pid ${daemon_pid} is already attached ${cgroup_name} with mem value ${mval}."
++    echo "Press n if you don't want to reassign ${daemon_pid} with new mem value."
++    DIR_EXIST=1
++  else
++    echo "pid ${daemon_pid} is not attached with ${cgroup_name}."
++  fi
++fi
++
++read -p "If you want to continue the script to attach daeomon with new cgroup. Press (y/n)?" choice
++case "$choice" in
++  y|Y ) echo "yes";;
++  n|N ) echo "no";exit;;
++  * ) echo "invalid";exit;;
++esac
++
++systemctl set-property glusterd.service CPUShares=1024
++
++if [ ${DIR_EXIST} -eq 0 ];then
++  echo "Creating child cgroup directory '${cgroup_name} cgroup' for glusterd.service."
++  mkdir -p ${LOC}/${cgroup_name}
++  if [ ! -f ${LOC}/${cgroup_name}/tasks ];then
++    echo "Not able to create ${LOC}/${cgroup_name} directory so exit."
++    exit 1
++  fi
++fi
++
++echo "Enter Memory value in Mega bytes [100,8000000000000]:  "
++
++read mem_value
++if expr ${mem_value} + 0 > /dev/null 2>&1 ;then
++  if [ ${mem_value} -lt 100 ] || [ ${mem_value} -gt 8000000000000 ]; then
++    echo "Entered memory value is not correct,it should be in the range ."
++    echo "100-8000000000000, Rerun the script with correct value ."
++    exit 1
++  else
++    echo "Entered memory limit value is ${mem_value}."
++  fi
++else
++  echo "Entered memory value is not numeric so Rerun the script."
++  exit 1
++fi
++
++mem_value=$(($mem_value * 1024 * 1024))
++if [ ${DIR_EXIST} -eq 0 ];then
++  echo "Setting ${mem_value} to memory.limit_in_bytes for ${LOC}/${cgroup_name}."
++  echo ${mem_value} > ${LOC}/${cgroup_name}/memory.limit_in_bytes
++  #Set memory value to memory.memsw.limit_in_bytes
++  echo ${mem_value} > ${LOC}/${cgroup_name}/memory.memsw.limit_in_bytes
++  # disable oom_control so that kernel will not send kill signal to the
++  # task once limit has reached
++  echo 1 > ${LOC}/${cgroup_name}/memory.oom_control
++else
++  #Increase mem_value to memory.memsw.limit_in_bytes
++  echo ${mem_value} > ${LOC}/${cgroup_name}/memory.memsw.limit_in_bytes
++  echo "Increase ${mem_value} to memory.limit_in_bytes for ${LOC}/${cgroup_name}."
++  echo ${mem_value} > ${LOC}/${cgroup_name}/memory.limit_in_bytes
++  # disable oom_control so that kernel will not send kill signal to the
++  # task once limit has reached
++  echo 1 > ${LOC}/${cgroup_name}/memory.oom_control
++fi
++
++if ps -T -p ${daemon_pid} | grep gluster > /dev/null; then
++  for thid in `ps -T -p ${daemon_pid} | grep gluster | awk -F " " '{print $2}'`;
++    do
++      echo ${thid} > ${LOC}/${cgroup_name}/tasks ;
++    done
++  if cat /proc/${daemon_pid}/cgroup | grep -iw ${cgroup_name} > /dev/null; then
++    echo "Tasks are attached successfully specific to ${daemon_pid} to ${cgroup_name}."
++  else
++    echo "Tasks are not attached successfully."
++  fi
++fi
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index da8a3e5..56a62a9 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1553,6 +1553,8 @@ exit 0
+      %{_datadir}/glusterfs/scripts/stop-all-gluster-processes.sh
+ %if ( 0%{?_with_systemd:1} )
+      %{_libexecdir}/glusterfs/mount-shared-storage.sh
++     %{_datadir}/glusterfs/scripts/control-cpu-load.sh
++     %{_datadir}/glusterfs/scripts/control-mem.sh
+ %endif
+ 
+ # Incrementalapi
+@@ -2178,6 +2180,9 @@ fi
+ %endif
+ 
+ %changelog
++* Fri Dec 01 2017 Mohit Agrawal <moagrawa@redhat.com>
++- Added control-cpu-load.sh and control-mem.sh scripts to glusterfs-server section(#1484446)
++
+ * Mon Nov 13 2017 Jiffin Tony Thottan <jthottan@redhat.com>
+ - Adding ganesha bits back in gluster repository #1499784
+ 
+-- 
+1.8.3.1
+

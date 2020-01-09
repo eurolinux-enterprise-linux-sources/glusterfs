@@ -1,0 +1,96 @@
+From bc7cc384c82ba8c0bc083ff70b5f2506acfd2b43 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Mon, 13 Aug 2018 20:30:04 +0530
+Subject: [PATCH 341/351] Revert "glusterd: enable brick multiplexing by
+ default"
+
+This reverts commit 2a80ccb39ea7f4ef5c801ad78b43e4bdc23a3c64.
+
+brick multiplexing at stand alone RHGS has been decided to be turned
+off.
+
+Label: DOWNSTREAM ONLY
+
+BUG: 1615440
+Change-Id: Iaf8bd8a637ec16c66952ef8947e835174279c9a2
+Signed-off-by: Atin Mukherjee  <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146881
+Reviewed-by: Mohit Agrawal <moagrawa@redhat.com>
+---
+ cli/src/cli-cmd-parser.c                        | 18 ++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c      |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c      |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |  2 +-
+ 4 files changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index e071b7d..7917d66 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -1739,6 +1739,24 @@ cli_cmd_volume_set_parse (struct cli_state *state, const char **words,
+                                 goto out;
+                         }
+                 }
++
++                if ((strcmp (key, "cluster.brick-multiplex") == 0)) {
++                        question = "Brick-multiplexing is supported only for "
++                                   "container workloads (CNS/CRS). Also it is "
++                                   "advised to make sure that either all "
++                                   "volumes are in stopped state or no bricks "
++                                   "are running before this option is modified."
++                                   "Do you still want to continue?";
++
++                        answer = cli_cmd_get_confirmation (state, question);
++                        if (GF_ANSWER_NO == answer) {
++                                gf_log ("cli", GF_LOG_ERROR, "Operation "
++                                        "cancelled, exiting");
++                                *op_errstr = gf_strdup ("Aborted by user.");
++                                ret = -1;
++                                goto out;
++                        }
++                }
+         }
+ 
+         ret = dict_set_int32 (dict, "count", wordcount-3);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index d022532..6dfd819 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -78,7 +78,7 @@ glusterd_all_vol_opts valid_all_vol_opts[] = {
+          * TBD: add a dynamic handler to set the appropriate value
+          */
+         { GLUSTERD_MAX_OP_VERSION_KEY,          "BUG_NO_MAX_OP_VERSION"},
+-        { GLUSTERD_BRICK_MULTIPLEX_KEY,         "enable"},
++        { GLUSTERD_BRICK_MULTIPLEX_KEY,         "disable"},
+         /* Set this value to 0 by default implying brick-multiplexing
+          * behaviour with no limit set on the number of brick instances that
+          * can be attached per process.
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 80204e4..372d5f4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -111,7 +111,7 @@ is_brick_mx_enabled (void)
+         if (!ret)
+                 ret = gf_string2boolean (value, &enabled);
+ 
+-        return ret ? _gf_true : enabled;
++        return ret ? _gf_false : enabled;
+ }
+ 
+ int
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 8cc756a..474587a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -3506,7 +3506,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         /* Brick multiplexing options */
+         { .key         = GLUSTERD_BRICK_MULTIPLEX_KEY,
+           .voltype     = "mgmt/glusterd",
+-          .value       = "on",
++          .value       = "off",
+           .op_version  = GD_OP_VERSION_3_10_0,
+           .validate_fn = validate_boolean,
+           .type        = GLOBAL_DOC,
+-- 
+1.8.3.1
+

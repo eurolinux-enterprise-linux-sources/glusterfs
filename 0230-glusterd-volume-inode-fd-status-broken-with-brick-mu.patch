@@ -1,0 +1,392 @@
+From a661f617d22ab7555a039841c1959019af3e80a3 Mon Sep 17 00:00:00 2001
+From: hari gowtham <hgowtham@redhat.com>
+Date: Thu, 19 Apr 2018 12:22:07 +0530
+Subject: [PATCH 230/236] glusterd: volume inode/fd status broken with brick
+ mux
+
+        backport of:https://review.gluster.org/#/c/19846/6
+
+Problem:
+The values for inode/fd was populated from the ctx received
+from the server xlator.
+Without brickmux, every brick from a volume belonged to a
+single brick from the volume.
+So searching the server and populating it worked.
+
+With brickmux, a number of bricks can be confined to a single
+process. These bricks can be from different volumes too (if
+we use the max-bricks-per-process option).
+If they are from different volumes, using the server xlator
+to populate causes problem.
+
+Fix:
+Use the brick to validate and populate the inode/fd status.
+
+>Signed-off-by: hari gowtham <hgowtham@redhat.com>
+>Change-Id: I2543fa5397ea095f8338b518460037bba3dfdbfd
+>fixes: bz#1566067
+
+Signed-off-by: hari gowtham <hgowtham@redhat.com>
+Change-Id: I2543fa5397ea095f8338b518460037bba3dfdbfd
+BUG: 1559452
+Reviewed-on: https://code.engineering.redhat.com/gerrit/136219
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ glusterfsd/src/glusterfsd-mgmt.c             | 34 ++++++------
+ libglusterfs/src/client_t.c                  | 54 ++++++++++---------
+ libglusterfs/src/xlator.h                    |  3 +-
+ tests/basic/volume-status.t                  | 12 +++++
+ xlators/mgmt/glusterd/src/glusterd-handler.c |  4 ++
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c   |  3 ++
+ xlators/nfs/server/src/nfs.c                 |  2 +-
+ xlators/protocol/server/src/server.c         | 77 ++++++++++++++++------------
+ 8 files changed, 111 insertions(+), 78 deletions(-)
+
+diff --git a/glusterfsd/src/glusterfsd-mgmt.c b/glusterfsd/src/glusterfsd-mgmt.c
+index fdf403c..3b9671c 100644
+--- a/glusterfsd/src/glusterfsd-mgmt.c
++++ b/glusterfsd/src/glusterfsd-mgmt.c
+@@ -1111,14 +1111,14 @@ glusterfs_handle_brick_status (rpcsvc_request_t *req)
+         glusterfs_ctx_t         *ctx = NULL;
+         glusterfs_graph_t       *active = NULL;
+         xlator_t                *this = NULL;
+-        xlator_t                *any = NULL;
+-        xlator_t                *xlator = NULL;
++        xlator_t                *server_xl = NULL;
++        xlator_t                *brick_xl = NULL;
+         dict_t                  *dict = NULL;
+         dict_t                  *output = NULL;
+-        char                    *volname = NULL;
+         char                    *xname = NULL;
+         uint32_t                cmd = 0;
+         char                    *msg = NULL;
++        char                    *brickname = NULL;
+ 
+         GF_ASSERT (req);
+         this = THIS;
+@@ -1146,32 +1146,26 @@ glusterfs_handle_brick_status (rpcsvc_request_t *req)
+                 goto out;
+         }
+ 
+-        ret = dict_get_str (dict, "volname", &volname);
++        ret = dict_get_str (dict, "brick-name", &brickname);
+         if (ret) {
+-                gf_log (this->name, GF_LOG_ERROR, "Couldn't get volname");
++                gf_log (this->name, GF_LOG_ERROR, "Couldn't get brickname from"
++                        " dict");
+                 goto out;
+         }
+ 
+         ctx = glusterfsd_ctx;
+         GF_ASSERT (ctx);
+         active = ctx->active;
+-        any = active->first;
++        server_xl = active->first;
+ 
+-        ret = gf_asprintf (&xname, "%s-server", volname);
+-        if (-1 == ret) {
+-                gf_log (this->name, GF_LOG_ERROR, "Out of memory");
+-                goto out;
+-        }
+-
+-        xlator = xlator_search_by_name (any, xname);
+-        if (!xlator) {
++        brick_xl = get_xlator_by_name (server_xl, brickname);
++        if (!brick_xl) {
+                 gf_log (this->name, GF_LOG_ERROR, "xlator %s is not loaded",
+                         xname);
+                 ret = -1;
+                 goto out;
+         }
+ 
+-
+         output = dict_new ();
+         switch (cmd & GF_CLI_STATUS_MASK) {
+                 case GF_CLI_STATUS_MEM:
+@@ -1181,15 +1175,17 @@ glusterfs_handle_brick_status (rpcsvc_request_t *req)
+                         break;
+ 
+                 case GF_CLI_STATUS_CLIENTS:
+-                        ret = xlator->dumpops->priv_to_dict (xlator, output);
++                        ret = server_xl->dumpops->priv_to_dict (server_xl,
++                                        output, brickname);
+                         break;
+ 
+                 case GF_CLI_STATUS_INODE:
+-                        ret = xlator->dumpops->inode_to_dict (xlator, output);
++                        ret = server_xl->dumpops->inode_to_dict (brick_xl,
++                                                                 output);
+                         break;
+ 
+                 case GF_CLI_STATUS_FD:
+-                        ret = xlator->dumpops->fd_to_dict (xlator, output);
++                        ret = server_xl->dumpops->fd_to_dict (brick_xl, output);
+                         break;
+ 
+                 case GF_CLI_STATUS_CALLPOOL:
+@@ -1365,7 +1361,7 @@ glusterfs_handle_node_status (rpcsvc_request_t *req)
+                                         "Error setting volname to dict");
+                                 goto out;
+                         }
+-                        ret = node->dumpops->priv_to_dict (node, output);
++                        ret = node->dumpops->priv_to_dict (node, output, NULL);
+                         break;
+ 
+                 case GF_CLI_STATUS_INODE:
+diff --git a/libglusterfs/src/client_t.c b/libglusterfs/src/client_t.c
+index 55d891f..dc153cc 100644
+--- a/libglusterfs/src/client_t.c
++++ b/libglusterfs/src/client_t.c
+@@ -743,10 +743,13 @@ gf_client_dump_fdtables_to_dict (xlator_t *this, dict_t *dict)
+                             clienttable->cliententries[count].next_free)
+                                 continue;
+                         client = clienttable->cliententries[count].client;
+-                        memset(key, 0, sizeof key);
+-                        snprintf (key, sizeof key, "conn%d", count++);
+-                        fdtable_dump_to_dict (client->server_ctx.fdtable,
+-                                              key, dict);
++                        if (!strcmp (client->bound_xl->name, this->name)) {
++                                memset(key, 0, sizeof (key));
++                                snprintf (key, sizeof (key), "conn%d", count++);
++                                fdtable_dump_to_dict (client->server_ctx.
++                                                      fdtable,
++                                                      key, dict);
++                        }
+                 }
+         }
+         UNLOCK(&clienttable->lock);
+@@ -859,25 +862,30 @@ gf_client_dump_inodes_to_dict (xlator_t *this, dict_t *dict)
+                             clienttable->cliententries[count].next_free)
+                                 continue;
+                         client = clienttable->cliententries[count].client;
+-                        memset(key, 0, sizeof key);
+-                        if (client->bound_xl && client->bound_xl->itable) {
+-                                /* Presently every brick contains only
+-                                 * one bound_xl for all connections.
+-                                 * This will lead to duplicating of
+-                                 *  the inode lists, if listing is
+-                                 * done for every connection. This
+-                                 * simple check prevents duplication
+-                                 * in the present case. If need arises
+-                                 * the check can be improved.
+-                                 */
+-                                if (client->bound_xl == prev_bound_xl)
+-                                        continue;
+-                                prev_bound_xl = client->bound_xl;
+-
+-                                memset (key, 0, sizeof (key));
+-                                snprintf (key, sizeof (key), "conn%d", count);
+-                                inode_table_dump_to_dict (client->bound_xl->itable,
+-                                                          key, dict);
++                        if (!strcmp (client->bound_xl->name, this->name)) {
++                                memset(key, 0, sizeof (key));
++                                if (client->bound_xl && client->bound_xl->
++                                                itable) {
++                                        /* Presently every brick contains only
++                                         * one bound_xl for all connections.
++                                         * This will lead to duplicating of
++                                         *  the inode lists, if listing is
++                                         * done for every connection. This
++                                         * simple check prevents duplication
++                                         * in the present case. If need arises
++                                         * the check can be improved.
++                                         */
++                                        if (client->bound_xl == prev_bound_xl)
++                                                continue;
++                                        prev_bound_xl = client->bound_xl;
++
++                                        memset (key, 0, sizeof (key));
++                                        snprintf (key, sizeof (key), "conn%d",
++                                                        count);
++                                        inode_table_dump_to_dict (client->
++                                                        bound_xl->itable,
++                                                        key, dict);
++                                }
+                         }
+                 }
+         }
+diff --git a/libglusterfs/src/xlator.h b/libglusterfs/src/xlator.h
+index 5ed8646..7434da8 100644
+--- a/libglusterfs/src/xlator.h
++++ b/libglusterfs/src/xlator.h
+@@ -873,7 +873,8 @@ typedef int32_t (*dumpop_inodectx_t) (xlator_t *this, inode_t *ino);
+ 
+ typedef int32_t (*dumpop_fdctx_t) (xlator_t *this, fd_t *fd);
+ 
+-typedef int32_t (*dumpop_priv_to_dict_t) (xlator_t *this, dict_t *dict);
++typedef int32_t (*dumpop_priv_to_dict_t) (xlator_t *this, dict_t *dict,
++                 char *brickname);
+ 
+ typedef int32_t (*dumpop_inode_to_dict_t) (xlator_t *this, dict_t *dict);
+ 
+diff --git a/tests/basic/volume-status.t b/tests/basic/volume-status.t
+index f87b0a9..d3a79c9 100644
+--- a/tests/basic/volume-status.t
++++ b/tests/basic/volume-status.t
+@@ -6,6 +6,14 @@
+ 
+ cleanup;
+ 
++function gluster_fd_status () {
++        gluster volume status $V0 fd | sed -n '/Brick :/ p' | wc -l
++}
++
++function gluster_inode_status () {
++        gluster volume status $V0 inode | sed -n '/Connection / p' | wc -l
++}
++
+ TEST glusterd
+ TEST pidof glusterd
+ TEST $CLI volume info;
+@@ -21,6 +29,10 @@ EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" nfs_up_status
+ ## Mount FUSE
+ TEST $GFS -s $H0 --volfile-id $V0 $M0;
+ 
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "8" gluster_fd_status
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1024" gluster_inode_status
++
+ ##Wait for connection establishment between nfs server and brick process
+ EXPECT_WITHIN $NFS_EXPORT_TIMEOUT "1" is_nfs_export_available;
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index cb19321..30adb99 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -5304,6 +5304,10 @@ glusterd_print_client_details (FILE *fp, dict_t *dict,
+         brick_req->op = GLUSTERD_BRICK_STATUS;
+         brick_req->name = "";
+ 
++        ret = dict_set_str (dict, "brick-name", brickinfo->path);
++        if (ret)
++                goto out;
++
+         ret = dict_set_int32 (dict, "cmd", GF_CLI_STATUS_CLIENTS);
+         if (ret)
+                 goto out;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index d479ed4..7107a46 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -612,6 +612,9 @@ glusterd_brick_op_build_payload (glusterd_op_t op, glusterd_brickinfo_t *brickin
+                         goto out;
+                 brick_req->op = GLUSTERD_BRICK_STATUS;
+                 brick_req->name = "";
++                ret = dict_set_str (dict, "brick-name", brickinfo->path);
++                if (ret)
++                        goto out;
+         }
+                 break;
+         case GD_OP_REBALANCE:
+diff --git a/xlators/nfs/server/src/nfs.c b/xlators/nfs/server/src/nfs.c
+index c2c3c86..10502c2 100644
+--- a/xlators/nfs/server/src/nfs.c
++++ b/xlators/nfs/server/src/nfs.c
+@@ -1604,7 +1604,7 @@ _nfs_export_is_for_vol (char *exname, char *volname)
+ }
+ 
+ int
+-nfs_priv_to_dict (xlator_t *this, dict_t *dict)
++nfs_priv_to_dict (xlator_t *this, dict_t *dict, char *brickname)
+ {
+         int                     ret = -1;
+         struct nfs_state        *priv = NULL;
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index 792dfb3..eed4295 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -225,7 +225,7 @@ ret:
+ 
+ 
+ int
+-server_priv_to_dict (xlator_t *this, dict_t *dict)
++server_priv_to_dict (xlator_t *this, dict_t *dict, char *brickname)
+ {
+         server_conf_t   *conf = NULL;
+         rpc_transport_t *xprt = NULL;
+@@ -245,39 +245,48 @@ server_priv_to_dict (xlator_t *this, dict_t *dict)
+         pthread_mutex_lock (&conf->mutex);
+         {
+                 list_for_each_entry (xprt, &conf->xprt_list, list) {
+-                        peerinfo = &xprt->peerinfo;
+-                        memset (key, 0, sizeof (key));
+-                        snprintf (key, sizeof (key), "client%d.hostname",
+-                                  count);
+-                        ret = dict_set_str (dict, key, peerinfo->identifier);
+-                        if (ret)
+-                                goto unlock;
+-
+-                        memset (key, 0, sizeof (key));
+-                        snprintf (key, sizeof (key), "client%d.bytesread",
+-                                  count);
+-                        ret = dict_set_uint64 (dict, key,
+-                                               xprt->total_bytes_read);
+-                        if (ret)
+-                                goto unlock;
+-
+-                        memset (key, 0, sizeof (key));
+-                        snprintf (key, sizeof (key), "client%d.byteswrite",
+-                                  count);
+-                        ret = dict_set_uint64 (dict, key,
+-                                               xprt->total_bytes_write);
+-                        if (ret)
+-                                goto unlock;
+-
+-                        memset (key, 0, sizeof (key));
+-                        snprintf (key, sizeof (key), "client%d.opversion",
+-                                  count);
+-                        ret = dict_set_uint32 (dict, key,
+-                                               peerinfo->max_op_version);
+-                        if (ret)
+-                                goto unlock;
+-
+-                        count++;
++                        if (!strcmp (brickname,
++                                     xprt->xl_private->bound_xl->name)) {
++                                peerinfo = &xprt->peerinfo;
++                                memset (key, 0, sizeof (key));
++                                snprintf (key, sizeof (key),
++                                          "client%d.hostname",
++                                          count);
++                                ret = dict_set_str (dict, key,
++                                                    peerinfo->identifier);
++                                if (ret)
++                                        goto unlock;
++
++                                memset (key, 0, sizeof (key));
++                                snprintf (key, sizeof (key),
++                                          "client%d.bytesread",
++                                          count);
++                                ret = dict_set_uint64 (dict, key,
++                                                xprt->total_bytes_read);
++                                if (ret)
++                                        goto unlock;
++
++                                memset (key, 0, sizeof (key));
++                                snprintf (key, sizeof (key),
++                                          "client%d.byteswrite",
++                                          count);
++                                ret = dict_set_uint64 (dict, key,
++                                                xprt->total_bytes_write);
++                                if (ret)
++                                        goto unlock;
++
++                                memset (key, 0, sizeof (key));
++                                snprintf (key, sizeof (key),
++                                          "client%d.opversion",
++                                          count);
++                                ret = dict_set_uint32 (dict, key,
++                                                peerinfo->max_op_version);
++                                if (ret)
++                                        goto unlock;
++
++
++                                count++;
++                        }
+                 }
+         }
+ unlock:
+-- 
+1.8.3.1
+

@@ -1,0 +1,55 @@
+From 9c31bcd6c4234b6a9e4e04410caf98d2cd3d4946 Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Fri, 17 Nov 2017 18:23:23 +0530
+Subject: [PATCH 083/128] cluster/afr: Print heal info split-brain output in
+ stream fashion
+
+Problem:
+When we trigger the heal info split-brain command the o/p is not
+streamed as it is received, but dumped at the end for all the bricks
+together. This gives a perception that the command is hung.
+
+Fix:
+When we get a split brain entry while crawling throught the pending
+heal entries, flush that immediately so that it prints the output
+in a stream fashion and doesn't look like the cli is hung.
+
+Upstream patch: https://review.gluster.org/#/c/18570/
+
+> Change-Id: I7547e86b83202d66616749b8b31d4d0dff0abf07
+> BUG: 1506104
+> Signed-off-by: karthik-us <ksubrahm@redhat.com>
+
+Change-Id: I7547e86b83202d66616749b8b31d4d0dff0abf07
+BUG: 1419438
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/123563
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ heal/src/glfs-heal.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/heal/src/glfs-heal.c b/heal/src/glfs-heal.c
+index 22c9395..532b6f9 100644
+--- a/heal/src/glfs-heal.c
++++ b/heal/src/glfs-heal.c
+@@ -120,6 +120,7 @@ void
+ glfsh_print_hr_spb_status (char *path, uuid_t gfid, char *status)
+ {
+         printf ("%s\n", path);
++        fflush (stdout);
+         return;
+ }
+ 
+@@ -133,6 +134,7 @@ void
+ glfsh_print_hr_heal_status (char *path, uuid_t gfid, char *status)
+ {
+         printf ("%s%s\n", path, status);
++        fflush (stdout);
+ }
+ 
+ #if (HAVE_LIB_XML)
+-- 
+1.8.3.1
+

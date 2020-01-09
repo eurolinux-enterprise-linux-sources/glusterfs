@@ -51,6 +51,9 @@ Server to get the volume from.  This option overrides \fB\-\-volfile option
 .PP
 .TP
 
+\fB\-L, \fB\-\-localtime\-logging=on|off\fR
+Enable or disable localtime log timestamps. Valid options are on and off (the default is off).
+.TP
 \fB\-\-debug\fR
 Run in debug mode.  This option sets \fB\-\-no\-daemon\fR, \fB\-\-log\-level\fR to DEBUG
 and \fB\-\-log\-file\fR to console
@@ -103,7 +106,7 @@ Set entry timeout to SECONDS in fuse kernel module [default: 1]
 Enable/Disable direct-io mode in fuse module [default: enable]
 .TP
 \fB\-\-resolve-gids\fR
-Resolve all auxilary groups in fuse translator (max 32 otherwise)
+Resolve all auxiliary groups in fuse translator (max 32 otherwise)
 
 .SS "Miscellaneous Options"
 .PP

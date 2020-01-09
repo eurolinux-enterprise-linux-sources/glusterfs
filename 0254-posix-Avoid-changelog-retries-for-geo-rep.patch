@@ -1,0 +1,99 @@
+From 2de9ac218241648f1ec86b73aac728d713862a30 Mon Sep 17 00:00:00 2001
+From: moagrawa <moagrawa@redhat.com>
+Date: Fri, 4 May 2018 16:17:42 +0530
+Subject: [PATCH 254/260] posix: Avoid changelog retries for geo-rep
+
+Problem: georep is slowdown to migrate directory
+         from master volume to slave volume due to lot
+         of changelog retries
+
+Solution: Update the condition in posix_getxattr to
+          ignore MDS_INTERNAL_XATTR as it(posix) ignored
+          other internal xattrs
+
+> BUG: 1571069
+> Change-Id: I4d91ec73e5b1ca1cb3ecf0825ab9f49e261da70e
+> fixes: bz#1571069
+> Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+> (cherry picked from commit f46047ea0f36084f4456887673552a01b926382d)
+> (Reviewed on: https://review.gluster.org/#/c/19930/)
+
+BUG: 1565577
+Change-Id: I85b2e8ed4adcbe34ee5a03acd068693978e9cfe4
+Signed-off-by: moagrawa <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/137779
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/storage/posix/src/posix.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index c680e3f..416d9e4 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -27,6 +27,7 @@
+ #include <sys/uio.h>
+ #include <unistd.h>
+ #include <ftw.h>
++#include <regex.h>
+ 
+ #ifndef GF_BSD_HOST_OS
+ #include <alloca.h>
+@@ -4625,6 +4626,27 @@ out:
+         return ret;
+ }
+ 
++gf_boolean_t
++posix_is_mds_xattr (const char *name)
++{
++        regex_t regcmpl;
++        char *key = {"trusted.glusterfs.*.mds$"};
++        regmatch_t result[1] = {{0} };
++        gf_boolean_t status = _gf_false;
++
++        if (regcomp (&regcmpl, key, REG_EXTENDED)) {
++                goto out;
++        }
++        if (!regexec (&regcmpl, name, 1, result, 0)) {
++                status = _gf_true;
++                goto out;
++        }
++out:
++        regfree(&regcmpl);
++        return status;
++}
++
++
+ /**
+  * posix_getxattr - this function returns a dictionary with all the
+  *                  key:value pair present as xattr. used for
+@@ -4680,6 +4702,13 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
+                 goto out;
+         }
+ 
++        if (name && posix_is_mds_xattr (name)) {
++                op_ret = -1;
++                op_errno = ENOATTR;
++                goto out;
++        }
++
++
+         if (loc->inode && IA_ISDIR(loc->inode->ia_type) && name &&
+             ZR_FILE_CONTENT_REQUEST(name)) {
+                 ret = posix_get_file_contents (this, loc->gfid, &name[15],
+@@ -5049,6 +5078,10 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
+                         goto ignore;
+                 }
+ 
++                if (posix_is_mds_xattr (keybuffer)) {
++                        goto ignore;
++                }
++
+                 memset (value_buf, '\0', sizeof(value_buf));
+                 have_val = _gf_false;
+                 size = sys_lgetxattr (real_path, keybuffer, value_buf,
+-- 
+1.8.3.1
+

@@ -11,12 +11,13 @@
 #include "xlator.h"
 #include "defaults.h"
 
+#include "ec.h"
+#include "ec-messages.h"
 #include "ec-helpers.h"
 #include "ec-common.h"
 #include "ec-combine.h"
 #include "ec-method.h"
 #include "ec-fops.h"
-#include "ec-messages.h"
 
 /* FOP: access */
 
@@ -486,7 +487,14 @@ ec_getxattr (call_frame_t *frame, xlator_t *this, uintptr_t target,
         }
     }
     if (name != NULL) {
-        fop->str[0] = gf_strdup(name);
+        /* In case of list-node-uuids xattr, set flag to indicate
+         * the same and use node-uuid xattr for winding fop */
+        if (XATTR_IS_NODE_UUID_LIST(name)) {
+                fop->int32 = 1;
+                fop->str[0] = gf_strdup(GF_XATTR_NODE_UUID_KEY);
+        } else {
+                fop->str[0] = gf_strdup(name);
+        }
         if (fop->str[0] == NULL) {
             gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
                     EC_MSG_NO_MEMORY,
@@ -1140,12 +1148,12 @@ out:
 
 int32_t ec_readv_rebuild(ec_t * ec, ec_fop_data_t * fop, ec_cbk_data_t * cbk)
 {
-    ec_cbk_data_t * ans = NULL;
-    struct iobref * iobref = NULL;
-    struct iobuf * iobuf = NULL;
-    uint8_t * buff = NULL, * ptr;
+    struct iovec vector[1];
+    ec_cbk_data_t *ans = NULL;
+    struct iobref *iobref = NULL;
+    void *ptr;
     size_t fsize = 0, size = 0, max = 0;
-    int32_t i = 0, err = -ENOMEM;
+    int32_t pos, err = -ENOMEM;
 
     if (cbk->op_ret < 0) {
         err = -cbk->op_errno;
@@ -1157,47 +1165,42 @@ int32_t ec_readv_rebuild(ec_t * ec, ec_fop_data_t * fop, ec_cbk_data_t * cbk)
     GF_ASSERT(ec_get_inode_size(fop, fop->fd->inode, &cbk->iatt[0].ia_size));
 
     if (cbk->op_ret > 0) {
-        struct iovec vector[1];
-        uint8_t * blocks[cbk->count];
+        void *blocks[cbk->count];
         uint32_t values[cbk->count];
 
         fsize = cbk->op_ret;
         size = fsize * ec->fragments;
-        buff = GF_MALLOC(size, gf_common_mt_char);
-        if (buff == NULL) {
-            goto out;
-        }
-        ptr = buff;
-        for (i = 0, ans = cbk; ans != NULL; i++, ans = ans->next) {
-            values[i] = ans->idx;
-            blocks[i] = ptr;
-            ptr += ec_iov_copy_to(ptr, ans->vector, ans->int32, 0, fsize);
+        for (ans = cbk; ans != NULL; ans = ans->next) {
+            pos = gf_bits_count(cbk->mask & ((1 << ans->idx) - 1));
+            values[pos] = ans->idx + 1;
+            blocks[pos] = ans->vector[0].iov_base;
+            if ((ans->int32 != 1) ||
+                !EC_ALIGN_CHECK(blocks[pos], EC_METHOD_WORD_SIZE)) {
+                if (iobref == NULL) {
+                    err = ec_buffer_alloc(ec->xl, size, &iobref, &ptr);
+                    if (err != 0) {
+                        goto out;
+                    }
+                }
+                ec_iov_copy_to(ptr, ans->vector, ans->int32, 0, fsize);
+                blocks[pos] = ptr;
+                ptr += fsize;
+            }
         }
 
-        iobref = iobref_new();
-        if (iobref == NULL) {
-            goto out;
-        }
-        iobuf = iobuf_get2(fop->xl->ctx->iobuf_pool, size);
-        if (iobuf == NULL) {
-            goto out;
-        }
-        err = iobref_add(iobref, iobuf);
+        err = ec_buffer_alloc(ec->xl, size, &iobref, &ptr);
         if (err != 0) {
             goto out;
         }
 
-        vector[0].iov_base = iobuf->ptr;
-        vector[0].iov_len = ec_method_decode(fsize, ec->fragments, values,
-                                             blocks, iobuf->ptr);
+        err = ec_method_decode(&ec->matrix, fsize, cbk->mask, values, blocks,
+                               ptr);
+        if (err != 0) {
+            goto out;
+        }
 
-        iobuf_unref(iobuf);
-
-        GF_FREE(buff);
-        buff = NULL;
-
-        vector[0].iov_base += fop->head;
-        vector[0].iov_len -= fop->head;
+        vector[0].iov_base = ptr + fop->head;
+        vector[0].iov_len = size - fop->head;
 
         max = fop->offset * ec->fragments + size;
         if (max > cbk->iatt[0].ia_size) {
@@ -1229,13 +1232,9 @@ int32_t ec_readv_rebuild(ec_t * ec, ec_fop_data_t * fop, ec_cbk_data_t * cbk)
     return 0;
 
 out:
-    if (iobuf != NULL) {
-        iobuf_unref(iobuf);
-    }
     if (iobref != NULL) {
         iobref_unref(iobref);
     }
-    GF_FREE(buff);
 
     return err;
 }
@@ -1495,6 +1494,207 @@ out:
         ec_manager(fop, error);
     } else {
         func(frame, NULL, this, -1, error, NULL, 0, NULL, NULL, NULL);
+    }
+}
+
+/* FOP: seek */
+
+int32_t ec_seek_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+                    int32_t op_ret, int32_t op_errno, off_t offset,
+                    dict_t *xdata)
+{
+    ec_fop_data_t *fop = NULL;
+    ec_cbk_data_t *cbk = NULL;
+    ec_t *ec = this->private;
+    int32_t idx = (int32_t)(uintptr_t)cookie;
+
+    VALIDATE_OR_GOTO(this, out);
+    GF_VALIDATE_OR_GOTO(this->name, frame, out);
+    GF_VALIDATE_OR_GOTO(this->name, frame->local, out);
+    GF_VALIDATE_OR_GOTO(this->name, this->private, out);
+
+    fop = frame->local;
+
+    ec_trace("CBK", fop, "idx=%d, frame=%p, op_ret=%d, op_errno=%d", idx,
+             frame, op_ret, op_errno);
+
+    cbk = ec_cbk_data_allocate(frame, this, fop, GF_FOP_SEEK, idx, op_ret,
+                               op_errno);
+    if (cbk != NULL) {
+        if (op_ret >= 0) {
+            cbk->offset = offset;
+        }
+        if (xdata != NULL) {
+            cbk->xdata = dict_ref(xdata);
+        }
+
+        if ((op_ret > 0) && ((cbk->offset % ec->fragment_size) != 0)) {
+            cbk->op_ret = -1;
+            cbk->op_errno = EIO;
+        }
+
+        ec_combine(cbk, NULL);
+    }
+
+out:
+    if (fop != NULL) {
+        ec_complete(fop);
+    }
+
+    return 0;
+}
+
+void ec_wind_seek(ec_t *ec, ec_fop_data_t *fop, int32_t idx)
+{
+    ec_trace("WIND", fop, "idx=%d", idx);
+
+    STACK_WIND_COOKIE(fop->frame, ec_seek_cbk, (void *)(uintptr_t)idx,
+                      ec->xl_list[idx], ec->xl_list[idx]->fops->seek, fop->fd,
+                      fop->offset, fop->seek, fop->xdata);
+}
+
+int32_t ec_manager_seek(ec_fop_data_t *fop, int32_t state)
+{
+    ec_cbk_data_t *cbk;
+    size_t size;
+
+    switch (state) {
+    case EC_STATE_INIT:
+        fop->user_size = fop->offset;
+        fop->head = ec_adjust_offset(fop->xl->private, &fop->offset, 1);
+
+    /* Fall through */
+
+    case EC_STATE_LOCK:
+        ec_lock_prepare_fd(fop, fop->fd, EC_QUERY_INFO);
+        ec_lock(fop);
+
+        return EC_STATE_DISPATCH;
+
+    case EC_STATE_DISPATCH:
+        /* This shouldn't fail because we have the inode locked. */
+        GF_ASSERT(ec_get_inode_size(fop, fop->locks[0].lock->loc.inode,
+                                    &size));
+
+        if (fop->user_size >= size) {
+            ec_fop_set_error(fop, ENXIO);
+
+            return EC_STATE_REPORT;
+        }
+
+        ec_dispatch_one(fop);
+
+        return EC_STATE_PREPARE_ANSWER;
+
+    case EC_STATE_PREPARE_ANSWER:
+        if (ec_dispatch_one_retry(fop, &cbk)) {
+            return EC_STATE_DISPATCH;
+        }
+        if ((cbk != NULL) && (cbk->op_ret >= 0)) {
+            ec_t *ec = fop->xl->private;
+
+            /* This shouldn't fail because we have the inode locked. */
+            GF_ASSERT(ec_get_inode_size(fop, fop->locks[0].lock->loc.inode,
+                                        &size));
+
+            cbk->offset *= ec->fragments;
+            if (cbk->offset < fop->user_size) {
+                cbk->offset = fop->user_size;
+            }
+            if (cbk->offset > size) {
+                cbk->offset = size;
+            }
+        }
+
+        return EC_STATE_REPORT;
+
+    case EC_STATE_REPORT:
+        cbk = fop->answer;
+
+        GF_ASSERT(cbk != NULL);
+
+        if (fop->cbks.seek != NULL) {
+            fop->cbks.seek(fop->req_frame, fop, fop->xl, cbk->op_ret,
+                           cbk->op_errno, cbk->offset, cbk->xdata);
+        }
+
+        return EC_STATE_LOCK_REUSE;
+
+    case -EC_STATE_INIT:
+    case -EC_STATE_LOCK:
+    case -EC_STATE_DISPATCH:
+    case -EC_STATE_PREPARE_ANSWER:
+    case -EC_STATE_REPORT:
+        GF_ASSERT(fop->error != 0);
+
+        if (fop->cbks.seek != NULL) {
+            fop->cbks.seek(fop->req_frame, fop, fop->xl, -1, fop->error, 0,
+                           NULL);
+        }
+
+        return EC_STATE_LOCK_REUSE;
+
+    case -EC_STATE_LOCK_REUSE:
+    case EC_STATE_LOCK_REUSE:
+        ec_lock_reuse(fop);
+
+        return EC_STATE_UNLOCK;
+
+    case -EC_STATE_UNLOCK:
+    case EC_STATE_UNLOCK:
+        ec_unlock(fop);
+
+        return EC_STATE_END;
+
+    default:
+        gf_msg (fop->xl->name, GF_LOG_ERROR, 0,
+                EC_MSG_UNHANDLED_STATE, "Unhandled state %d for %s", state,
+                ec_fop_name(fop->id));
+
+        return EC_STATE_END;
+    }
+}
+
+void ec_seek(call_frame_t *frame, xlator_t *this, uintptr_t target,
+              int32_t minimum, fop_seek_cbk_t func, void *data, fd_t *fd,
+              off_t offset, gf_seek_what_t what, dict_t *xdata)
+{
+    ec_cbk_t callback = { .seek = func };
+    ec_fop_data_t *fop = NULL;
+    int32_t error = EIO;
+
+    gf_msg_trace ("ec", 0, "EC(SEEK) %p", frame);
+
+    VALIDATE_OR_GOTO(this, out);
+    GF_VALIDATE_OR_GOTO(this->name, frame, out);
+    GF_VALIDATE_OR_GOTO(this->name, this->private, out);
+
+    fop = ec_fop_data_allocate(frame, this, GF_FOP_SEEK, EC_FLAG_LOCK_SHARED,
+                               target, minimum, ec_wind_seek,
+                               ec_manager_seek, callback, data);
+    if (fop == NULL) {
+        goto out;
+    }
+
+    fop->use_fd = 1;
+
+    fop->offset = offset;
+    fop->seek = what;
+
+    if (fd != NULL) {
+        fop->fd = fd_ref(fd);
+    }
+    if (xdata != NULL) {
+        fop->xdata = dict_ref(xdata);
+    }
+
+    error = 0;
+
+out:
+    if (fop != NULL) {
+        ec_manager(fop, error);
+    } else {
+        func(frame, NULL, this, -1, EIO, 0, NULL);
     }
 }
 

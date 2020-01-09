@@ -1,0 +1,116 @@
+From 975e18d864b0b5c9158abae8752271e4a7fe6299 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 27 Mar 2018 16:53:33 +0530
+Subject: [PATCH 213/236] glusterd: mark port_registered to true for all
+ running bricks with brick mux
+
+glusterd maintains a boolean flag 'port_registered' which is used to determine
+if a brick has completed its portmap sign in process. This flag is (re)set in
+pmap_sigin and pmap_signout events. In case of brick multiplexing this flag is
+the identifier to determine if the very first brick with which the process is
+spawned up has completed its sign in process. However in case of glusterd
+restart when a brick is already identified as running, glusterd does a
+pmap_registry_bind to ensure its portmap table is updated but this flag isn't
+which is fine in case of non brick multiplex case but causes an issue if
+the very first brick which came as part of process is replaced and then
+the subsequent brick attach will fail. One of the way to validate this
+is to create and start a volume, remove the first brick and then
+add-brick a new one. Add-brick operation will take a very long time and
+post that the volume status will show all other brick status apart from
+the new brick as down.
+
+Solution is to set brickinfo->port_registered to true for all the
+running bricks when brick multiplexing is enabled.
+
+>upstream mainline patch : https://review.gluster.org/#/c/19800/
+
+>Change-Id: Ib0662d99d0fa66b1538947fd96b43f1cbc04e4ff
+>Fixes: bz#1560957
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: Ib0662d99d0fa66b1538947fd96b43f1cbc04e4ff
+BUG: 1560955
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134827
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sanju Rakonde <srakonde@redhat.com>
+---
+ .../bug-1560955-brick-mux-port-registered-issue.t  | 39 ++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-handler.c       |  2 ++
+ xlators/mgmt/glusterd/src/glusterd-utils.c         |  1 +
+ 3 files changed, 42 insertions(+)
+ create mode 100644 tests/bugs/glusterd/bug-1560955-brick-mux-port-registered-issue.t
+
+diff --git a/tests/bugs/glusterd/bug-1560955-brick-mux-port-registered-issue.t b/tests/bugs/glusterd/bug-1560955-brick-mux-port-registered-issue.t
+new file mode 100644
+index 0000000..d1b8f06
+--- /dev/null
++++ b/tests/bugs/glusterd/bug-1560955-brick-mux-port-registered-issue.t
+@@ -0,0 +1,39 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../traps.rc
++. $(dirname $0)/../../volume.rc
++
++function count_brick_processes {
++        pgrep glusterfsd | wc -l
++}
++
++function count_brick_pids {
++        $CLI --xml volume status all | sed -n '/.*<pid>\([^<]*\).*/s//\1/p' \
++                                     | grep -v "N/A" | sort | uniq | wc -l
++}
++
++cleanup;
++
++#bug-1560955 - brick status goes offline after remove-brick followed by add-brick
++TEST glusterd
++TEST $CLI volume set all cluster.brick-multiplex on
++push_trapfunc "$CLI volume set all cluster.brick-multiplex off"
++push_trapfunc "cleanup"
++
++TEST $CLI volume create $V0 $H0:$B0/${V0}{1..3}
++TEST $CLI volume start $V0
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 1 count_brick_processes
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 1 count_brick_pids
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 3 online_brick_count
++
++
++pkill glusterd
++TEST glusterd
++TEST $CLI volume remove-brick $V0 $H0:$B0/${V0}1 force
++TEST $CLI volume add-brick $V0 $H0:$B0/${V0}1_new force
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 1 count_brick_processes
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 1 count_brick_pids
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 3 online_brick_count
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index dbf80a1..cb19321 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -5721,6 +5721,8 @@ glusterd_get_state (rpcsvc_request_t *req, dict_t *dict)
+                                  count, brickinfo->port);
+                         fprintf (fp, "Volume%d.Brick%d.rdma_port: %d\n", count_bkp,
+                                  count, brickinfo->rdma_port);
++                        fprintf (fp, "Volume%d.Brick%d.port_registered: %d\n",
++                                 count_bkp, count, brickinfo->port_registered);
+                         fprintf (fp, "Volume%d.Brick%d.status: %s\n", count_bkp,
+                                  count, brickinfo->status ? "Started" : "Stopped");
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 49605cc..5e9213c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -5976,6 +5976,7 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                          * TBD: re-use RPC connection across bricks
+                          */
+                         if (is_brick_mx_enabled ()) {
++                                brickinfo->port_registered = _gf_true;
+                                 ret = glusterd_get_sock_from_brick_pid (pid, socketpath,
+                                                                         sizeof(socketpath));
+                                 if (ret) {
+-- 
+1.8.3.1
+

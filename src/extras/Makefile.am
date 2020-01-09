@@ -1,15 +1,18 @@
-addonexecdir = $(libexecdir)/glusterfs
+addonexecdir = $(GLUSTERFS_LIBEXECDIR)
 addonexec_SCRIPTS = peer_add_secret_pub
+if USE_SYSTEMD
+addonexec_SCRIPTS += mount-shared-storage.sh
+endif
 
 EditorModedir = $(docdir)
 EditorMode_DATA = glusterfs-mode.el glusterfs.vim
 
 SUBDIRS = init.d systemd benchmarking hook-scripts $(OCF_SUBDIR) LinuxRPM \
-          $(GEOREP_EXTRAS_SUBDIR) ganesha snap_scheduler firewalld
+          $(GEOREP_EXTRAS_SUBDIR) snap_scheduler firewalld cliutils
 
 confdir = $(sysconfdir)/glusterfs
 conf_DATA = glusterfs-logrotate gluster-rsyslog-7.2.conf gluster-rsyslog-5.8.conf \
-	logger.conf.example glusterfs-georep-logrotate group-virt.example
+	logger.conf.example glusterfs-georep-logrotate group-virt.example group-metadata-cache group-gluster-block group-nl-cache
 
 voldir = $(sysconfdir)/glusterfs
 vol_DATA = glusterd.vol
@@ -22,14 +25,21 @@ EXTRA_DIST = $(conf_DATA) specgen.scm glusterfs-mode.el glusterfs.vim \
 	disk_usage_sync.sh clear_xattrs.sh glusterd-sysconfig glusterd.vol \
 	post-upgrade-script-for-quota.sh pre-upgrade-script-for-quota.sh \
 	command-completion/gluster.bash command-completion/Makefile \
-	command-completion/README stop-all-gluster-processes.sh
+	command-completion/README stop-all-gluster-processes.sh clang-checker.sh \
+	mount-shared-storage.sh
 
 install-data-local:
 	if [ -n "$(tmpfilesdir)" ]; then \
-		$(MKDIR_P) $(DESTDIR)$(tmpfilesdir); \
+		$(mkdir_p) $(DESTDIR)$(tmpfilesdir); \
 		$(INSTALL_DATA) run-gluster.tmpfiles \
 			$(DESTDIR)$(tmpfilesdir)/gluster.conf; \
 	fi
-	$(MKDIR_P) $(DESTDIR)$(GLUSTERD_WORKDIR)/groups
+	$(mkdir_p) $(DESTDIR)$(GLUSTERD_WORKDIR)/groups
 	$(INSTALL_DATA) $(top_srcdir)/extras/group-virt.example \
 		$(DESTDIR)$(GLUSTERD_WORKDIR)/groups/virt
+	$(INSTALL_DATA) $(top_srcdir)/extras/group-metadata-cache \
+		$(DESTDIR)$(GLUSTERD_WORKDIR)/groups/metadata-cache
+	$(INSTALL_DATA) $(top_srcdir)/extras/group-gluster-block \
+		$(DESTDIR)$(GLUSTERD_WORKDIR)/groups/gluster-block
+	$(INSTALL_DATA) $(top_srcdir)/extras/group-nl-cache \
+		$(DESTDIR)$(GLUSTERD_WORKDIR)/groups/nl-cache

@@ -8,17 +8,15 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "client.h"
 #include "rpc-common-xdr.h"
 #include "glusterfs3-xdr.h"
 #include "glusterfs3.h"
 #include "compat-errno.h"
 #include "client-messages.h"
+#include "defaults.h"
+#include "client-common.h"
+#include "compound-fop-utils.h"
 
 int32_t client3_getspec (call_frame_t *frame, xlator_t *this, void *data);
 rpc_clnt_prog_t clnt3_3_fop_prog;
@@ -154,16 +152,8 @@ client3_3_symlink_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &stbuf);
-
-                gf_stat_to_iatt (&rsp.preparent, &preparent);
-                gf_stat_to_iatt (&rsp.postparent, &postparent);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_symlink (this, &rsp, &stbuf, &preparent,
+                             &postparent, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -229,16 +219,8 @@ client3_3_mknod_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &stbuf);
-
-                gf_stat_to_iatt (&rsp.preparent, &preparent);
-                gf_stat_to_iatt (&rsp.postparent, &postparent);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_mknod (this, &rsp, &stbuf, &preparent, &postparent,
+                           &xdata);
 
 out:
         if (rsp.op_ret == -1 &&
@@ -299,16 +281,8 @@ client3_3_mkdir_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &stbuf);
-
-                gf_stat_to_iatt (&rsp.preparent, &preparent);
-                gf_stat_to_iatt (&rsp.postparent, &postparent);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_mkdir (this, &rsp, &stbuf, &preparent, &postparent,
+                           &xdata);
 
 out:
         if (rsp.op_ret == -1 &&
@@ -411,7 +385,6 @@ client3_3_open_cbk (struct rpc_req *req, struct iovec *iov, int count,
                     void *myframe)
 {
         clnt_local_t  *local = NULL;
-        clnt_conf_t   *conf  = NULL;
         call_frame_t  *frame = NULL;
         fd_t          *fd    = NULL;
         int            ret   = 0;
@@ -425,7 +398,6 @@ client3_3_open_cbk (struct rpc_req *req, struct iovec *iov, int count,
         frame = myframe;
         local = frame->local;
 
-        conf  = frame->this->private;
         fd    = local->fd;
 
         if (-1 == req->rpc_status) {
@@ -452,10 +424,7 @@ client3_3_open_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 }
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_open (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, fop_log_level (GF_FOP_OPEN,
@@ -507,14 +476,7 @@ client3_3_stat_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &iatt);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_stat (this, &rsp, &iatt, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 /* stale filehandles are possible during normal operations, no
@@ -573,13 +535,7 @@ client3_3_readlink_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.buf, &iatt);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_readlink (this, &rsp, &iatt, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -642,14 +598,8 @@ client3_3_unlink_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.preparent, &preparent);
-                gf_stat_to_iatt (&rsp.postparent, &postparent);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_unlink (this, &rsp, &preparent, &postparent,
+                                  &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -708,14 +658,8 @@ client3_3_rmdir_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.preparent, &preparent);
-                gf_stat_to_iatt (&rsp.postparent, &postparent);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_rmdir (this, &rsp, &preparent, &postparent,
+                                 &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -770,14 +714,8 @@ client3_3_truncate_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.prestat, &prestat);
-                gf_stat_to_iatt (&rsp.poststat, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_truncate (this, &rsp, &prestat, &poststat,
+                                    &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -829,13 +767,7 @@ client3_3_statfs_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_statfs_to_statfs (&rsp.statfs, &statfs);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_statfs (this, &rsp, &statfs, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -890,15 +822,9 @@ client3_3_writev_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.prestat, &prestat);
-                gf_stat_to_iatt (&rsp.poststat, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_writev (this, &rsp, &prestat, &poststat, &xdata);
+        if (ret < 0)
+                goto out;
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, GF_LOG_WARNING,
@@ -959,10 +885,9 @@ client3_3_flush_cbk (struct rpc_req *req, struct iovec *iov, int count,
                               lkowner_utoa (&local->owner), ret);
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_flush (this, &rsp, &xdata);
+        if (ret < 0)
+                goto out;
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, fop_log_level (GF_FOP_FLUSH,
@@ -1014,14 +939,10 @@ client3_3_fsync_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.prestat, &prestat);
-                gf_stat_to_iatt (&rsp.poststat, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_fsync (this, &rsp, &prestat, &poststat,
+                                 &xdata);
+        if (ret < 0)
+                goto out;
 
 out:
         if (rsp.op_ret == -1) {
@@ -1072,9 +993,9 @@ client3_3_setxattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_setxattr (this, &rsp, &xdata);
+        if (ret < 0)
+                goto out;
 
 out:
         op_errno = gf_error_to_errno (rsp.op_errno);
@@ -1134,16 +1055,11 @@ client3_3_getxattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
         }
 
         op_errno = gf_error_to_errno (rsp.op_errno);
-        if (-1 != rsp.op_ret) {
-                GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, dict,
-                                              (rsp.dict.dict_val),
-                                              (rsp.dict.dict_len), rsp.op_ret,
-                                              op_errno, out);
+        ret = client_post_getxattr (this, &rsp, &dict, &xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto out;
         }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      op_errno, out);
 
 out:
         if (rsp.op_ret == -1) {
@@ -1190,7 +1106,6 @@ client3_3_fgetxattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
         gfs3_fgetxattr_rsp  rsp      = {0,};
         int                 ret      = 0;
         int                 op_errno = EINVAL;
-        clnt_local_t     *local    = NULL;
         xlator_t *this       = NULL;
         dict_t  *xdata       = NULL;
 
@@ -1198,7 +1113,6 @@ client3_3_fgetxattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
         this = THIS;
 
         frame = myframe;
-        local = frame->local;
 
         if (-1 == req->rpc_status) {
                 rsp.op_ret = -1;
@@ -1215,16 +1129,11 @@ client3_3_fgetxattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
         }
 
         op_errno = gf_error_to_errno (rsp.op_errno);
-        if (-1 != rsp.op_ret) {
-                GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, dict,
-                                              (rsp.dict.dict_val),
-                                              (rsp.dict.dict_len), rsp.op_ret,
-                                              op_errno, out);
+        ret = client_post_fgetxattr (this, &rsp, &dict, &xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto out;
         }
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      op_errno, out);
-
 out:
         if (rsp.op_ret == -1) {
                 if ((op_errno == ENOTSUP) || (op_errno == ERANGE) ||
@@ -1284,10 +1193,7 @@ client3_3_removexattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_removexattr (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 if ((ENODATA == rsp.op_errno) || (ENOATTR == rsp.op_errno))
@@ -1342,10 +1248,7 @@ client3_3_fremovexattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_fremovexattr (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, GF_LOG_WARNING,
@@ -1393,9 +1296,7 @@ client3_3_fsyncdir_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_fsyncdir (this, &rsp, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -1444,9 +1345,7 @@ client3_3_access_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_access (this, &rsp, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -1498,14 +1397,8 @@ client3_3_ftruncate_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.prestat, &prestat);
-                gf_stat_to_iatt (&rsp.poststat, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_ftruncate (this, &rsp, &prestat, &poststat,
+                                     &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -1556,13 +1449,7 @@ client3_3_fstat_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &stat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_fstat (this, &rsp, &stat, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -1612,10 +1499,7 @@ client3_3_inodelk_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_inodelk (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, fop_log_level (GF_FOP_INODELK,
@@ -1664,10 +1548,7 @@ client3_3_finodelk_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_finodelk (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, fop_log_level (GF_FOP_FINODELK,
@@ -1718,10 +1599,7 @@ client3_3_entrylk_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_entrylk (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, fop_log_level (GF_FOP_ENTRYLK,
@@ -1770,9 +1648,7 @@ client3_3_fentrylk_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_fentrylk (this, &rsp, &xdata);
 
 out:
         if ((rsp.op_ret == -1) &&
@@ -1828,20 +1704,14 @@ client3_3_xattrop_cbk (struct rpc_req *req, struct iovec *iov, int count,
         }
 
         op_errno = rsp.op_errno;
-        if (-1 != rsp.op_ret) {
-                GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, dict,
-                                              (rsp.dict.dict_val),
-                                              (rsp.dict.dict_len), rsp.op_ret,
-                                              op_errno, out);
+        ret = client_post_xattrop (this, &rsp, &dict, &xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto out;
         }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      op_errno, out);
-
 out:
         if (rsp.op_ret == -1) {
-                gf_msg (this->name, GF_LOG_WARNING,
+                gf_msg (this->name, fop_log_level (GF_FOP_XATTROP, op_errno),
                         gf_error_to_errno (rsp.op_errno),
                         PC_MSG_REMOTE_OP_FAILED, "remote operation failed. "
                         "Path: %s (%s)",
@@ -1897,17 +1767,12 @@ client3_3_fxattrop_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
         op_errno = rsp.op_errno;
-        if (-1 != rsp.op_ret) {
-                GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, dict,
-                                              (rsp.dict.dict_val),
-                                              (rsp.dict.dict_len), rsp.op_ret,
-                                              op_errno, out);
+        ret = client_post_fxattrop (this, &rsp, &dict, &xdata);
+        if (ret) {
+                rsp.op_ret = -1;
+                op_errno = -ret;
+                goto out;
         }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, xdata,
-                                      (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), rsp.op_ret,
-                                      op_errno, out);
 out:
 
         if (rsp.op_ret == -1) {
@@ -1964,9 +1829,7 @@ client3_3_fsetxattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_setxattr (this, &rsp, &xdata);
 
 out:
         op_errno = gf_error_to_errno (rsp.op_errno);
@@ -2022,15 +1885,7 @@ client3_3_fsetattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.statpre, &prestat);
-                gf_stat_to_iatt (&rsp.statpost, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_fsetattr (this, &rsp, &prestat, &poststat, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, GF_LOG_WARNING,
@@ -2081,10 +1936,9 @@ client3_3_fallocate_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.statpre, &prestat);
-                gf_stat_to_iatt (&rsp.statpost, &poststat);
-        }
+        ret = client_post_fallocate (this, &rsp, &prestat, &poststat, &xdata);
+        if (ret < 0)
+                goto out;
 
         GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
                                       (rsp.xdata.xdata_len), ret,
@@ -2139,14 +1993,7 @@ client3_3_discard_cbk(struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.statpre, &prestat);
-                gf_stat_to_iatt (&rsp.statpost, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_discard (this, &rsp, &prestat, &poststat, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -2197,15 +2044,7 @@ client3_3_zerofill_cbk(struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.statpre, &prestat);
-                gf_stat_to_iatt (&rsp.statpost, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_zerofill (this, &rsp, &prestat, &poststat, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, GF_LOG_WARNING,
@@ -2253,10 +2092,7 @@ client3_3_ipc_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_ipc (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, GF_LOG_WARNING,
@@ -2267,6 +2103,56 @@ out:
         CLIENT_STACK_UNWIND (ipc, frame,
                              rsp.op_ret, gf_error_to_errno (rsp.op_errno),
                              xdata);
+
+        free (rsp.xdata.xdata_val);
+
+        if (xdata)
+                dict_unref (xdata);
+
+        return 0;
+}
+
+
+int
+client3_3_seek_cbk (struct rpc_req *req, struct iovec *iov, int count,
+                    void *myframe)
+{
+        call_frame_t          *frame     = NULL;
+        struct gfs3_seek_rsp   rsp       = {0,};
+        int                    ret       = 0;
+        xlator_t              *this      = NULL;
+        dict_t                *xdata     = NULL;
+
+        this = THIS;
+
+        frame = myframe;
+
+        if (-1 == req->rpc_status) {
+                rsp.op_ret   = -1;
+                rsp.op_errno = ENOTCONN;
+                goto out;
+        }
+        ret = xdr_to_generic(*iov, &rsp, (xdrproc_t) xdr_gfs3_seek_rsp);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        PC_MSG_XDR_DECODING_FAILED, "XDR decoding failed");
+                rsp.op_ret   = -1;
+                rsp.op_errno = EINVAL;
+                goto out;
+        }
+
+        ret = client_post_seek (this, &rsp, &xdata);
+
+out:
+        if (rsp.op_ret == -1) {
+                gf_msg (this->name, GF_LOG_WARNING,
+                        gf_error_to_errno (rsp.op_errno),
+                        PC_MSG_REMOTE_OP_FAILED,
+                        "remote operation failed");
+        }
+        CLIENT_STACK_UNWIND (seek, frame,
+                             rsp.op_ret, gf_error_to_errno (rsp.op_errno),
+                             rsp.offset, xdata);
 
         free (rsp.xdata.xdata_val);
 
@@ -2308,14 +2194,7 @@ client3_3_setattr_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.statpre, &prestat);
-                gf_stat_to_iatt (&rsp.statpost, &poststat);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_setattr (this, &rsp, &prestat, &poststat, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -2375,11 +2254,11 @@ client3_3_create_cbk (struct rpc_req *req, struct iovec *iov, int count,
         }
 
         if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &stbuf);
-
-                gf_stat_to_iatt (&rsp.preparent, &preparent);
-                gf_stat_to_iatt (&rsp.postparent, &postparent);
-                gf_uuid_copy (local->loc.gfid, stbuf.ia_gfid);
+                ret = client_post_create (this, &rsp, &stbuf,
+                                          &preparent, &postparent,
+                                          local, &xdata);
+                if (ret < 0)
+                        goto out;
                 ret = client_add_fd_to_saved_fds (frame->this, fd, &local->loc,
                                                   local->flags, rsp.fd, 0);
                 if (ret) {
@@ -2389,9 +2268,6 @@ client3_3_create_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 }
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
 
 out:
         if (rsp.op_ret == -1) {
@@ -2413,7 +2289,6 @@ out:
 
         return 0;
 }
-
 
 int
 client3_3_rchecksum_cbk (struct rpc_req *req, struct iovec *iov, int count,
@@ -2445,9 +2320,7 @@ client3_3_rchecksum_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_rchecksum (this, &rsp, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -2477,11 +2350,63 @@ out:
 }
 
 int
+client3_3_lease_cbk (struct rpc_req *req, struct iovec *iov, int count,
+                     void *myframe)
+{
+        call_frame_t     *frame      = NULL;
+        struct gf_lease   lease      = {0,};
+        gfs3_lease_rsp    rsp        = {0,};
+        int               ret        = 0;
+        xlator_t         *this       = NULL;
+        dict_t           *xdata      = NULL;
+
+        this = THIS;
+
+        frame = myframe;
+
+        if (-1 == req->rpc_status) {
+                gf_msg (this->name, GF_LOG_ERROR, ENOTCONN,
+                        PC_MSG_REMOTE_OP_FAILED, "Lease fop failed");
+                rsp.op_ret   = -1;
+                rsp.op_errno = ENOTCONN;
+                goto out;
+        }
+
+        ret = xdr_to_generic (*iov, &rsp, (xdrproc_t)xdr_gfs3_lease_rsp);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        PC_MSG_XDR_DECODING_FAILED, "XDR decoding failed");
+                rsp.op_ret   = -1;
+                rsp.op_errno = EINVAL;
+                goto out;
+        }
+
+        ret = client_post_lease (this, &rsp, &lease, &xdata);
+
+out:
+        if (rsp.op_ret == -1) {
+                gf_msg (this->name, GF_LOG_WARNING,
+                        gf_error_to_errno (rsp.op_errno),
+                        PC_MSG_REMOTE_OP_FAILED,
+                        "remote operation failed");
+        }
+
+        CLIENT_STACK_UNWIND (lease, frame, rsp.op_ret,
+                             gf_error_to_errno (rsp.op_errno), &lease, xdata);
+
+        free (rsp.xdata.xdata_val);
+
+        if (xdata)
+                dict_unref (xdata);
+
+        return 0;
+}
+
+int
 client3_3_lk_cbk (struct rpc_req *req, struct iovec *iov, int count,
                   void *myframe)
 {
         call_frame_t    *frame      = NULL;
-        clnt_local_t  *local      = NULL;
         struct gf_flock     lock       = {0,};
         gfs3_lk_rsp      rsp        = {0,};
         int              ret        = 0;
@@ -2491,7 +2416,6 @@ client3_3_lk_cbk (struct rpc_req *req, struct iovec *iov, int count,
         this = THIS;
 
         frame = myframe;
-        local = frame->local;
 
         if (-1 == req->rpc_status) {
                 rsp.op_ret   = -1;
@@ -2509,7 +2433,9 @@ client3_3_lk_cbk (struct rpc_req *req, struct iovec *iov, int count,
         }
 
         if (rsp.op_ret >= 0) {
-                gf_proto_flock_to_flock (&rsp.flock, &lock);
+                ret = client_post_lk (this, &rsp, &lock, &xdata);
+                if (ret < 0)
+                        goto out;
         }
 
         /* Save the lock to the client lock cache to be able
@@ -2525,10 +2451,6 @@ client3_3_lk_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 }
         }
         */
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
 
 out:
         if ((rsp.op_ret == -1) &&
@@ -2569,6 +2491,8 @@ client3_3_readdir_cbk (struct rpc_req *req, struct iovec *iov, int count,
         frame = myframe;
         local = frame->local;
 
+        INIT_LIST_HEAD (&entries.list);
+
         if (-1 == req->rpc_status) {
                 rsp.op_ret   = -1;
                 rsp.op_errno = ENOTCONN;
@@ -2584,15 +2508,7 @@ client3_3_readdir_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        INIT_LIST_HEAD (&entries.list);
-        if (rsp.op_ret > 0) {
-                unserialize_rsp_dirent (this, &rsp, &entries);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, xdata,
-                                      (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_readdir (this, &rsp, &entries, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -2619,7 +2535,6 @@ out:
         return 0;
 }
 
-
 int
 client3_3_readdirp_cbk (struct rpc_req *req, struct iovec *iov, int count,
                         void *myframe)
@@ -2637,6 +2552,8 @@ client3_3_readdirp_cbk (struct rpc_req *req, struct iovec *iov, int count,
         frame = myframe;
         local = frame->local;
 
+        INIT_LIST_HEAD (&entries.list);
+
         if (-1 == req->rpc_status) {
                 rsp.op_ret   = -1;
                 rsp.op_errno = ENOTCONN;
@@ -2652,15 +2569,7 @@ client3_3_readdirp_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        INIT_LIST_HEAD (&entries.list);
-        if (rsp.op_ret > 0) {
-                unserialize_rsp_direntp (this, local->fd, &rsp, &entries);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_readdirp (this, &rsp, local->fd, &entries, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, GF_LOG_WARNING,
@@ -2683,7 +2592,6 @@ out:
 
         return 0;
 }
-
 
 int
 client3_3_rename_cbk (struct rpc_req *req, struct iovec *iov, int count,
@@ -2719,19 +2627,9 @@ client3_3_rename_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &stbuf);
-
-                gf_stat_to_iatt (&rsp.preoldparent, &preoldparent);
-                gf_stat_to_iatt (&rsp.postoldparent, &postoldparent);
-
-                gf_stat_to_iatt (&rsp.prenewparent, &prenewparent);
-                gf_stat_to_iatt (&rsp.postnewparent, &postnewparent);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
+        ret = client_post_rename (this, &rsp, &stbuf, &preoldparent,
+                            &postoldparent, &prenewparent,
+                            &postnewparent, &xdata);
 
 out:
         if (rsp.op_ret == -1) {
@@ -2791,17 +2689,8 @@ client3_3_link_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (-1 != rsp.op_ret) {
-                gf_stat_to_iatt (&rsp.stat, &stbuf);
-
-                gf_stat_to_iatt (&rsp.preparent, &preparent);
-                gf_stat_to_iatt (&rsp.postparent, &postparent);
-        }
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_link (this, &rsp, &stbuf, &preparent,
+                                &postparent, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 if (GF_IGNORE_IF_GSYNCD_SAFE_ERROR(frame, rsp.op_errno)) {
@@ -2825,13 +2714,11 @@ out:
         return 0;
 }
 
-
 int
 client3_3_opendir_cbk (struct rpc_req *req, struct iovec *iov, int count,
                        void *myframe)
 {
         clnt_local_t      *local = NULL;
-        clnt_conf_t       *conf = NULL;
         call_frame_t      *frame = NULL;
         fd_t              *fd = NULL;
         int ret = 0;
@@ -2844,7 +2731,6 @@ client3_3_opendir_cbk (struct rpc_req *req, struct iovec *iov, int count,
         frame = myframe;
         local = frame->local;
 
-        conf  = frame->this->private;
         fd    = local->fd;
 
         if (-1 == req->rpc_status) {
@@ -2872,10 +2758,7 @@ client3_3_opendir_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 }
         }
 
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
+        ret = client_post_opendir (this, &rsp, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, fop_log_level (GF_FOP_OPENDIR,
@@ -2933,18 +2816,20 @@ client3_3_lookup_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
+        /* Preserve the op_errno received from the server */
         op_errno = gf_error_to_errno (rsp.op_errno);
-        gf_stat_to_iatt (&rsp.postparent, &postparent);
 
-        if (rsp.op_ret == -1)
+        ret = client_post_lookup (this, &rsp, &stbuf, &postparent, &xdata);
+        if (ret < 0) {
+                /* Don't change the op_errno if the fop failed on server */
+                if (rsp.op_ret == 0)
+                        op_errno = rsp.op_errno;
+                rsp.op_ret = -1;
                 goto out;
+        }
 
-        rsp.op_ret = -1;
-        gf_stat_to_iatt (&rsp.stat, &stbuf);
-
-        GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), rsp.op_ret,
-                                      op_errno, out);
+        if (rsp.op_ret < 0)
+                goto out;
 
         if ((!gf_uuid_is_null (inode->gfid))
             && (gf_uuid_compare (stbuf.ia_gfid, inode->gfid) != 0)) {
@@ -2962,6 +2847,7 @@ client3_3_lookup_cbk (struct rpc_req *req, struct iovec *iov, int count,
         rsp.op_ret = 0;
 
 out:
+        /* Restore the correct op_errno to rsp.op_errno */
         rsp.op_errno = op_errno;
         if (rsp.op_ret == -1) {
                 /* any error other than ENOENT */
@@ -3025,23 +2911,9 @@ client3_3_readv_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 goto out;
         }
 
-        if (rsp.op_ret != -1) {
-                iobref = req->rsp_iobref;
-                gf_stat_to_iatt (&rsp.stat, &stat);
-
-                vector[0].iov_len = rsp.op_ret;
-                if (rsp.op_ret > 0)
-                        vector[0].iov_base = req->rsp[1].iov_base;
-                rspcount = 1;
-        }
-        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), ret,
-                                      rsp.op_errno, out);
-
-#ifdef GF_TESTING_IO_XDATA
-        dict_dump_to_log (xdata);
-#endif
-
+        ret = client_post_readv (this, &rsp, &iobref, req->rsp_iobref,
+                                 &stat, vector, &req->rsp[1],
+                                 &rspcount, &xdata);
 out:
         if (rsp.op_ret == -1) {
                 gf_msg (this->name, GF_LOG_WARNING,
@@ -3082,6 +2954,200 @@ client3_3_releasedir_cbk (struct rpc_req *req, struct iovec *iov, int count,
 
         frame = myframe;
         STACK_DESTROY (frame->root);
+        return 0;
+}
+
+static int
+client3_3_getactivelk_cbk (struct rpc_req *req, struct iovec *iov, int count,
+                           void *myframe)
+{
+        call_frame_t            *frame = NULL;
+        gfs3_getactivelk_rsp   rsp   = {0,};
+        int32_t                 ret   = 0;
+        lock_migration_info_t   locklist;
+        xlator_t                *this  = NULL;
+        dict_t                  *xdata = NULL;
+
+        this = THIS;
+
+        frame = myframe;
+
+        if (-1 == req->rpc_status) {
+                rsp.op_ret   = -1;
+                rsp.op_errno = ENOTCONN;
+                goto out;
+        }
+
+        ret = xdr_to_generic (*iov, &rsp, (xdrproc_t)xdr_gfs3_getactivelk_rsp);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        PC_MSG_XDR_DECODING_FAILED, "XDR decoding failed");
+                rsp.op_ret   = -1;
+                rsp.op_errno = EINVAL;
+                goto out;
+        }
+
+        INIT_LIST_HEAD (&locklist.list);
+
+        if (rsp.op_ret > 0) {
+                clnt_unserialize_rsp_locklist (this, &rsp, &locklist);
+        }
+
+        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
+                                      (rsp.xdata.xdata_len), ret,
+                                      rsp.op_errno, out);
+
+out:
+        if (rsp.op_ret == -1) {
+                gf_msg (this->name, GF_LOG_WARNING,
+                        gf_error_to_errno (rsp.op_errno),
+                        PC_MSG_REMOTE_OP_FAILED,
+                        "remote operation failed");
+        }
+
+        CLIENT_STACK_UNWIND (getactivelk, frame, rsp.op_ret,
+                             gf_error_to_errno (rsp.op_errno), &locklist,
+                             xdata);
+
+        free (rsp.xdata.xdata_val);
+
+        if (xdata)
+                dict_unref (xdata);
+
+        clnt_getactivelk_rsp_cleanup (&rsp);
+
+        return 0;
+}
+
+static int
+client3_3_setactivelk_cbk (struct rpc_req *req, struct iovec *iov, int count,
+                             void *myframe)
+{
+        call_frame_t            *frame = NULL;
+        gfs3_getactivelk_rsp     rsp   = {0,};
+        int32_t                  ret   = 0;
+        xlator_t                *this  = NULL;
+        dict_t                  *xdata = NULL;
+
+        this = THIS;
+
+        frame = myframe;
+
+        if (-1 == req->rpc_status) {
+                rsp.op_ret   = -1;
+                rsp.op_errno = ENOTCONN;
+                goto out;
+        }
+
+        ret = xdr_to_generic (*iov, &rsp, (xdrproc_t)xdr_gfs3_setactivelk_rsp);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        PC_MSG_XDR_DECODING_FAILED, "XDR decoding failed");
+                rsp.op_ret   = -1;
+                rsp.op_errno = EINVAL;
+                goto out;
+        }
+
+        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
+                                      (rsp.xdata.xdata_len), ret,
+                                      rsp.op_errno, out);
+
+out:
+        if (rsp.op_ret == -1) {
+                gf_msg (this->name, GF_LOG_WARNING,
+                        gf_error_to_errno (rsp.op_errno),
+                        PC_MSG_REMOTE_OP_FAILED,
+                        "remote operation failed");
+        }
+
+        CLIENT_STACK_UNWIND (setactivelk, frame, rsp.op_ret,
+                             gf_error_to_errno (rsp.op_errno), xdata);
+
+        free (rsp.xdata.xdata_val);
+
+        if (xdata)
+                dict_unref (xdata);
+
+        return 0;
+}
+
+int
+client3_3_compound_cbk (struct rpc_req *req, struct iovec *iov, int count,
+                        void *myframe)
+{
+        gfs3_compound_rsp       rsp              = {0,};
+        compound_args_cbk_t     *args_cbk        = NULL;
+        call_frame_t            *frame           = NULL;
+        xlator_t                *this            = NULL;
+        dict_t                  *xdata           = NULL;
+        clnt_local_t            *local           = NULL;
+        int                     i                = 0;
+        int                     length           = 0;
+        int                     ret              = -1;
+
+        this = THIS;
+
+        frame = myframe;
+        local = frame->local;
+
+        if (-1 == req->rpc_status) {
+                rsp.op_ret   = -1;
+                rsp.op_errno = ENOTCONN;
+                goto out;
+        }
+
+        ret = xdr_to_generic (*iov, &rsp, (xdrproc_t)xdr_gfs3_compound_rsp);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        PC_MSG_XDR_DECODING_FAILED, "XDR decoding failed");
+                rsp.op_ret   = -1;
+                rsp.op_errno = EINVAL;
+                goto out;
+        }
+
+        length =  local->length;
+
+        GF_PROTOCOL_DICT_UNSERIALIZE (this, xdata, (rsp.xdata.xdata_val),
+                                      (rsp.xdata.xdata_len), rsp.op_ret,
+                                       rsp.op_errno, out);
+
+        args_cbk = compound_args_cbk_alloc (length, xdata);
+        if (!args_cbk) {
+                rsp.op_ret   = -1;
+                rsp.op_errno = ENOMEM;
+                goto out;
+        }
+
+        /* TODO: see https://bugzilla.redhat.com/show_bug.cgi?id=1376328 */
+        for (i = 0; i < args_cbk->fop_length; i++) {
+                ret = client_process_response (frame, this, req, &rsp,
+                                               args_cbk, i);
+                if (ret) {
+                        rsp.op_ret   = -1;
+                        rsp.op_errno = -ret;
+                        goto out;
+                }
+
+        }
+        rsp.op_ret = 0;
+out:
+        if (rsp.op_ret == -1) {
+                gf_msg (this->name, GF_LOG_WARNING,
+                        gf_error_to_errno (rsp.op_errno),
+                        PC_MSG_REMOTE_OP_FAILED,
+                        "remote operation failed");
+        }
+        CLIENT_STACK_UNWIND (compound, frame, rsp.op_ret,
+                             gf_error_to_errno (rsp.op_errno), args_cbk, xdata);
+
+        free (rsp.xdata.xdata_val);
+        client_compound_rsp_cleanup (&rsp, length);
+        free (rsp.compound_rsp_array.compound_rsp_array_val);
+
+        if (xdata)
+                dict_unref (xdata);
+
+        compound_args_cbk_cleanup (args_cbk);
         return 0;
 }
 
@@ -3129,6 +3195,7 @@ client_fdctx_destroy (xlator_t *this, clnt_fd_ctx_t *fdctx)
 
         if (fdctx->is_dir) {
                 gfs3_releasedir_req  req = {{0,},};
+                memcpy (req.gfid, fdctx->gfid, 16);
                 req.fd = fdctx->remote_fd;
                 gf_msg_trace (this->name, 0, "sending releasedir on fd");
                 client_submit_request (this, &req, fr, &clnt3_3_fop_prog,
@@ -3138,6 +3205,7 @@ client_fdctx_destroy (xlator_t *this, clnt_fd_ctx_t *fdctx)
                                        (xdrproc_t)xdr_gfs3_releasedir_req);
         } else {
                 gfs3_release_req  req = {{0,},};
+                memcpy (req.gfid, fdctx->gfid, 16);
                 req.fd = fdctx->remote_fd;
                 gf_msg_trace (this->name, 0, "sending release on fd");
                 client_submit_request (this, &req, fr, &clnt3_3_fop_prog,
@@ -3165,6 +3233,7 @@ client3_3_releasedir (call_frame_t *frame, xlator_t *this,
         clnt_fd_ctx_t       *fdctx       = NULL;
         clnt_args_t         *args        = NULL;
         int64_t              remote_fd   = -1;
+        gf_boolean_t         destroy     = _gf_false;
 
         if (!this || !data)
                 goto out;
@@ -3183,16 +3252,19 @@ client3_3_releasedir (call_frame_t *frame, xlator_t *this,
                            reopen_cbk handle releasing
                         */
 
-                        if (remote_fd != -1)
+                        if (remote_fd == -1) {
+                                fdctx->released = 1;
+                        } else {
                                 list_del_init (&fdctx->sfd_pos);
-
-                        fdctx->released = 1;
+                                destroy = _gf_true;
+                        }
                 }
         }
         pthread_mutex_unlock (&conf->lock);
 
-        if (remote_fd != -1)
+        if (destroy)
                 client_fdctx_destroy (this, fdctx);
+
 out:
 
         return 0;
@@ -3207,6 +3279,7 @@ client3_3_release (call_frame_t *frame, xlator_t *this,
         clnt_fd_ctx_t    *fdctx         = NULL;
         clnt_args_t      *args          = NULL;
         lk_heal_state_t   lk_heal_state = GF_LK_HEAL_DONE;
+        gf_boolean_t      destroy       = _gf_false;
 
         if (!this || !data)
                 goto out;
@@ -3225,17 +3298,17 @@ client3_3_release (call_frame_t *frame, xlator_t *this,
                            in progress. Just mark ->released = 1 and let
                            reopen_cbk handle releasing
                         */
-
-                        if (remote_fd != -1 &&
-                            lk_heal_state == GF_LK_HEAL_DONE)
+                        if (remote_fd == -1) {
+                                fdctx->released = 1;
+                        } else if (lk_heal_state == GF_LK_HEAL_DONE) {
                                 list_del_init (&fdctx->sfd_pos);
-
-                        fdctx->released = 1;
+                                destroy = _gf_true;
+                        }
                 }
         }
         pthread_mutex_unlock (&conf->lock);
 
-        if (remote_fd != -1 && lk_heal_state == GF_LK_HEAL_DONE)
+        if (destroy)
                 client_fdctx_destroy (this, fdctx);
 out:
         return 0;
@@ -3279,18 +3352,6 @@ client3_3_lookup (call_frame_t *frame, xlator_t *this,
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
 
-        if (args->loc->parent) {
-                if (!gf_uuid_is_null (args->loc->parent->gfid))
-                        memcpy (req.pargfid, args->loc->parent->gfid, 16);
-                else
-                        memcpy (req.pargfid, args->loc->pargfid, 16);
-        } else {
-                if (!gf_uuid_is_null (args->loc->inode->gfid))
-                        memcpy (req.gfid, args->loc->inode->gfid, 16);
-                else
-                        memcpy (req.gfid, args->loc->gfid, 16);
-        }
-
         if (args->xdata) {
                 content = dict_get (args->xdata, GF_CONTENT_KEY);
                 if (content != NULL) {
@@ -3318,17 +3379,13 @@ client3_3_lookup (call_frame_t *frame, xlator_t *this,
                         rsp_iobref = NULL;
                 }
 
-                GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata,
-                                            (&req.xdata.xdata_val),
-                                            req.xdata.xdata_len,
-                                            op_errno, unwind);
         }
 
-        if (args->loc->name)
-                req.bname = (char *)args->loc->name;
-        else
-                req.bname = "";
-
+        ret = client_pre_lookup (this, &req, args->loc, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_LOOKUP, client3_3_lookup_cbk,
                                      NULL, rsphdr, count,
@@ -3373,22 +3430,13 @@ client3_3_stat (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_stat (this, &req, args->loc, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_STAT, client3_3_stat_cbk, NULL,
                                      NULL, 0, NULL, 0, NULL,
@@ -3424,25 +3472,14 @@ client3_3_truncate (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.offset = args->offset;
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_truncate (this, &req, args->loc, args->offset,
+                                   args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_TRUNCATE,
                                      client3_3_truncate_cbk, NULL,
@@ -3469,7 +3506,6 @@ client3_3_ftruncate (call_frame_t *frame, xlator_t *this,
                      void *data)
 {
         clnt_args_t        *args     = NULL;
-        int64_t             remote_fd = -1;
         clnt_conf_t        *conf     = NULL;
         gfs3_ftruncate_req  req      = {{0,},};
         int                 op_errno = EINVAL;
@@ -3482,16 +3518,12 @@ client3_3_ftruncate (call_frame_t *frame, xlator_t *this,
 
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.offset = args->offset;
-        req.fd     = remote_fd;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_ftruncate (this, &req, args->fd, args->offset,
+                                     args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FTRUNCATE,
                                      client3_3_ftruncate_cbk, NULL,
@@ -3513,7 +3545,6 @@ unwind:
 }
 
 
-
 int32_t
 client3_3_access (call_frame_t *frame, xlator_t *this,
                   void *data)
@@ -3529,24 +3560,15 @@ client3_3_access (call_frame_t *frame, xlator_t *this,
 
         args = data;
 
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.mask = args->mask;
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
 
+        ret = client_pre_access (this, &req, args->loc, args->mask,
+                                 args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_ACCESS,
                                      client3_3_access_cbk, NULL,
@@ -3588,18 +3610,6 @@ client3_3_readlink (call_frame_t *frame, xlator_t *this,
 
         args = data;
 
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.size = args->size;
         conf = this->private;
 
         local = mem_get0 (this->local_pool);
@@ -3610,8 +3620,12 @@ client3_3_readlink (call_frame_t *frame, xlator_t *this,
 
         frame->local = local;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        ret = client_pre_readlink (this, &req, args->loc, args->size,
+                                   args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         rsp_iobref = iobref_new ();
         if (rsp_iobref == NULL) {
@@ -3658,9 +3672,6 @@ unwind:
         return 0;
 }
 
-
-
-
 int32_t
 client3_3_unlink (call_frame_t *frame, xlator_t *this,
                   void *data)
@@ -3675,25 +3686,14 @@ client3_3_unlink (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-
-        if (!(args->loc && args->loc->parent))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->parent->gfid))
-                memcpy (req.pargfid,  args->loc->parent->gfid, 16);
-        else
-                memcpy (req.pargfid, args->loc->pargfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.pargfid)),
-                                       unwind, op_errno, EINVAL);
-        req.bname = (char *)args->loc->name;
-        req.xflags = args->flags;
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_unlink (this, &req, args->loc, args->flags,
+                                 args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_UNLINK,
                                      client3_3_unlink_cbk, NULL,
@@ -3730,25 +3730,15 @@ client3_3_rmdir (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-
-        if (!(args->loc && args->loc->parent))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->parent->gfid))
-                memcpy (req.pargfid,  args->loc->parent->gfid, 16);
-        else
-                memcpy (req.pargfid, args->loc->pargfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.pargfid)),
-                                       unwind, op_errno, EINVAL);
-        req.bname = (char *)args->loc->name;
-        req.xflags = args->flags;
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        ret = client_pre_rmdir (this, &req, args->loc, args->flags,
+                                args->xdata);
 
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_RMDIR, client3_3_rmdir_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -3784,6 +3774,8 @@ client3_3_symlink (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
+        conf = this->private;
+
         local = mem_get0 (this->local_pool);
         if (!local) {
                 op_errno = ENOMEM;
@@ -3798,24 +3790,14 @@ client3_3_symlink (call_frame_t *frame, xlator_t *this,
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
 
-        if (!gf_uuid_is_null (args->loc->parent->gfid))
-                memcpy (req.pargfid,  args->loc->parent->gfid, 16);
-        else
-                memcpy (req.pargfid, args->loc->pargfid, 16);
+        local->loc2.path = gf_strdup (args->linkname);
 
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.pargfid)),
-                                       unwind, op_errno, EINVAL);
-        req.linkname = (char *)args->linkname;
-        req.bname    = (char *)args->loc->name;
-        req.umask = args->umask;
-        local->loc2.path = gf_strdup (req.linkname);
-
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_symlink (this, &req, args->loc,
+                                  args->linkname, args->umask, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_SYMLINK, client3_3_symlink_cbk,
                                      NULL,  NULL, 0, NULL,
@@ -3839,7 +3821,6 @@ unwind:
 }
 
 
-
 int32_t
 client3_3_rename (call_frame_t *frame, xlator_t *this,
                   void *data)
@@ -3854,34 +3835,14 @@ client3_3_rename (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-
-        if (!(args->oldloc && args->newloc && args->oldloc->parent &&
-              args->newloc->parent))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->oldloc->parent->gfid))
-                memcpy (req.oldgfid,  args->oldloc->parent->gfid, 16);
-        else
-                memcpy (req.oldgfid, args->oldloc->pargfid, 16);
-
-        if (!gf_uuid_is_null (args->newloc->parent->gfid))
-                memcpy (req.newgfid, args->newloc->parent->gfid, 16);
-        else
-                memcpy (req.newgfid, args->newloc->pargfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.oldgfid)),
-                                       unwind, op_errno, EINVAL);
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.newgfid)),
-                                       unwind, op_errno, EINVAL);
-        req.oldbname =  (char *)args->oldloc->name;
-        req.newbname = (char *)args->newloc->name;
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_rename (this, &req, args->oldloc, args->newloc,
+                                 args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_RENAME, client3_3_rename_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -3904,7 +3865,6 @@ unwind:
 }
 
 
-
 int32_t
 client3_3_link (call_frame_t *frame, xlator_t *this,
                 void *data)
@@ -3920,30 +3880,20 @@ client3_3_link (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
+        conf = this->private;
 
-        if (!(args->oldloc && args->oldloc->inode && args->newloc &&
-              args->newloc->parent))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->oldloc->inode->gfid))
-                memcpy (req.oldgfid,  args->oldloc->inode->gfid, 16);
-        else
-                memcpy (req.oldgfid, args->oldloc->gfid, 16);
-
-        if (!gf_uuid_is_null (args->newloc->parent->gfid))
-                memcpy (req.newgfid, args->newloc->parent->gfid, 16);
-        else
-                memcpy (req.newgfid, args->newloc->pargfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.oldgfid)),
-                                       unwind, op_errno, EINVAL);
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.newgfid)),
-                                       unwind, op_errno, EINVAL);
         local = mem_get0 (this->local_pool);
         if (!local) {
                 op_errno = ENOMEM;
+                goto unwind;
+        }
+
+        frame->local = local;
+
+        ret = client_pre_link (this, &req, args->oldloc, args->newloc,
+                               args->xdata);
+        if (ret) {
+                op_errno = -ret;
                 goto unwind;
         }
 
@@ -3951,13 +3901,6 @@ client3_3_link (call_frame_t *frame, xlator_t *this,
         loc_path (&local->loc, NULL);
         loc_copy (&local->loc2, args->newloc);
         loc_path (&local->loc2, NULL);
-        frame->local = local;
-
-        req.newbname = (char *)args->newloc->name;
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_LINK, client3_3_link_cbk, NULL,
@@ -3995,6 +3938,7 @@ client3_3_mknod (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
+        conf = this->private;
 
         local = mem_get0 (this->local_pool);
         if (!local) {
@@ -4003,30 +3947,16 @@ client3_3_mknod (call_frame_t *frame, xlator_t *this,
         }
         frame->local = local;
 
-        if (!(args->loc && args->loc->parent))
-                goto unwind;
-
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
 
-        if (!gf_uuid_is_null (args->loc->parent->gfid))
-                memcpy (req.pargfid,  args->loc->parent->gfid, 16);
-        else
-                memcpy (req.pargfid, args->loc->pargfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.pargfid)),
-                                       unwind, op_errno, EINVAL);
-        req.bname  = (char *)args->loc->name;
-        req.mode   = args->mode;
-        req.dev    = args->rdev;
-        req.umask = args->umask;
-
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_mknod (this, &req, args->loc,
+                                args->mode, args->rdev, args->umask,
+                                args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_MKNOD, client3_3_mknod_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -4064,6 +3994,16 @@ client3_3_mkdir (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
+        conf = this->private;
+
+        if (!args->xdata || !dict_get (args->xdata, "gfid-req")) {
+                op_errno = EPERM;
+                gf_msg_callingfn (this->name, GF_LOG_WARNING, op_errno,
+                                  PC_MSG_GFID_NULL, "mkdir: %s is received "
+                                  "without gfid-req %p", args->loc->path,
+                                  args->xdata);
+                goto unwind;
+        }
 
         local = mem_get0 (this->local_pool);
         if (!local) {
@@ -4078,24 +4018,12 @@ client3_3_mkdir (call_frame_t *frame, xlator_t *this,
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
 
-        if (!gf_uuid_is_null (args->loc->parent->gfid))
-                memcpy (req.pargfid,  args->loc->parent->gfid, 16);
-        else
-                memcpy (req.pargfid, args->loc->pargfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.pargfid)),
-                                       unwind, op_errno, EINVAL);
-
-        req.bname = (char *)args->loc->name;
-        req.mode  = args->mode;
-        req.umask = args->umask;
-
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_mkdir (this, &req, args->loc, args->mode,
+                                 args->umask, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_MKDIR, client3_3_mkdir_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -4132,6 +4060,7 @@ client3_3_create (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
+        conf = this->private;
 
         local = mem_get0 (this->local_pool);
         if (!local) {
@@ -4140,33 +4069,19 @@ client3_3_create (call_frame_t *frame, xlator_t *this,
         }
         frame->local = local;
 
-        if (!(args->loc && args->loc->parent))
-                goto unwind;
-
         local->fd = fd_ref (args->fd);
         local->flags = args->flags;
 
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
 
-        if (!gf_uuid_is_null (args->loc->parent->gfid))
-                memcpy (req.pargfid,  args->loc->parent->gfid, 16);
-        else
-                memcpy (req.pargfid, args->loc->pargfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.pargfid)),
-                                       unwind, op_errno, EINVAL);
-        req.bname = (char *)args->loc->name;
-        req.mode  = args->mode;
-        req.flags = gf_flags_from_flags (args->flags);
-        req.umask = args->umask;
-
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_create (this, &req, args->loc,
+                                 args->fd, args->mode,
+                                 args->flags, args->umask, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_CREATE, client3_3_create_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -4206,6 +4121,8 @@ client3_3_open (call_frame_t *frame, xlator_t *this,
 
         args = data;
 
+        conf = this->private;
+
         local = mem_get0 (this->local_pool);
         if (!local) {
                 op_errno = ENOMEM;
@@ -4213,29 +4130,19 @@ client3_3_open (call_frame_t *frame, xlator_t *this,
         }
         frame->local = local;
 
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
+        local->flags = args->flags;
 
         local->fd = fd_ref (args->fd);
-        local->flags = args->flags;
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
 
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
+        ret = client_pre_open (this, &req, args->loc, args->fd, args->flags,
+                               args->xdata);
 
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.flags = gf_flags_from_flags (args->flags);
-
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_OPEN, client3_3_open_cbk, NULL,
                                      NULL, 0, NULL, 0, NULL,
@@ -4257,13 +4164,11 @@ unwind:
 }
 
 
-
 int32_t
 client3_3_readv (call_frame_t *frame, xlator_t *this,
                  void *data)
 {
         clnt_args_t    *args       = NULL;
-        int64_t         remote_fd  = -1;
         clnt_conf_t    *conf       = NULL;
         clnt_local_t   *local      = NULL;
         int             op_errno   = ESTALE;
@@ -4279,21 +4184,19 @@ client3_3_readv (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, FALLBACK_TO_ANON_FD,
-                              remote_fd, op_errno, unwind);
-        ret = client_fd_fop_prepare_local (frame, args->fd, remote_fd);
+        ret = client_pre_readv (this, &req, args->fd, args->size,
+                                args->offset, args->flags, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
+
+        ret = client_fd_fop_prepare_local (frame, args->fd, req.fd);
         if (ret) {
                 op_errno = -ret;
                 goto unwind;
         }
         local = frame->local;
-
-        req.size   = args->size;
-        req.offset = args->offset;
-        req.fd     = remote_fd;
-        req.flag   = args->flags;
-
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
 
         rsp_iobuf = iobuf_get2 (this->ctx->iobuf_pool, args->size);
         if (rsp_iobuf == NULL) {
@@ -4327,9 +4230,6 @@ client3_3_readv (call_frame_t *frame, xlator_t *this,
         local->iobref = rsp_iobref;
         rsp_iobref = NULL;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_READ, client3_3_readv_cbk, NULL,
                                      NULL, 0, &rsp_vec, 1,
@@ -4362,7 +4262,6 @@ int32_t
 client3_3_writev (call_frame_t *frame, xlator_t *this, void *data)
 {
         clnt_args_t    *args     = NULL;
-        int64_t         remote_fd = -1;
         clnt_conf_t    *conf     = NULL;
         gfs3_write_req  req      = {{0,},};
         int             op_errno = ESTALE;
@@ -4374,32 +4273,19 @@ client3_3_writev (call_frame_t *frame, xlator_t *this, void *data)
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, FALLBACK_TO_ANON_FD,
-                              remote_fd, op_errno, unwind);
-        ret = client_fd_fop_prepare_local (frame, args->fd, remote_fd);
+        ret = client_pre_writev (this, &req, args->fd, args->size,
+                                 args->offset, args->flags, &args->xdata);
+
         if (ret) {
                 op_errno = -ret;
                 goto unwind;
         }
 
-        req.size   = args->size;
-        req.offset = args->offset;
-        req.fd     = remote_fd;
-        req.flag   = args->flags;
-
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-#ifdef GF_TESTING_IO_XDATA
-        if (!args->xdata)
-                args->xdata = dict_new ();
-
-        ret = dict_set_str (args->xdata, "testing-the-xdata-key",
-                            "testing-the-xdata-value");
-#endif
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_fd_fop_prepare_local (frame, args->fd, req.fd);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_vec_request (this, &req, frame, conf->fops,
                                          GFS3_OP_WRITE, client3_3_writev_cbk,
                                          args->vector, args->count,
@@ -4433,7 +4319,6 @@ client3_3_flush (call_frame_t *frame, xlator_t *this,
 {
         clnt_args_t    *args     = NULL;
         gfs3_flush_req  req      = {{0,},};
-        int64_t         remote_fd = -1;
         clnt_conf_t    *conf     = NULL;
         clnt_local_t   *local    = NULL;
         int             op_errno = ESTALE;
@@ -4445,27 +4330,21 @@ client3_3_flush (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        conf = this->private;
-
         local = mem_get0 (this->local_pool);
         if (!local) {
                 op_errno = ENOMEM;
                 goto unwind;
         }
 
-        local->fd = fd_ref (args->fd);
-        local->owner = frame->root->lk_owner;
         frame->local = local;
 
-        req.fd = remote_fd;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        local->fd = fd_ref (args->fd);
+        local->owner = frame->root->lk_owner;
+        ret = client_pre_flush (this, &req, args->fd, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FLUSH, client3_3_flush_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -4495,7 +4374,6 @@ client3_3_fsync (call_frame_t *frame, xlator_t *this,
 {
         clnt_args_t    *args      = NULL;
         gfs3_fsync_req  req       = {{0,},};
-        int64_t         remote_fd = -1;
         clnt_conf_t    *conf      = NULL;
         int             op_errno  = 0;
         int             ret       = 0;
@@ -4506,16 +4384,12 @@ client3_3_fsync (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.fd   = remote_fd;
-        req.data = args->flags;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_fsync (this, &req, args->fd, args->flags,
+                                 args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FSYNC, client3_3_fsync_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -4545,7 +4419,6 @@ client3_3_fstat (call_frame_t *frame, xlator_t *this,
 {
         clnt_args_t    *args     = NULL;
         gfs3_fstat_req  req      = {{0,},};
-        int64_t         remote_fd = -1;
         clnt_conf_t    *conf     = NULL;
         int             op_errno = ESTALE;
         int           ret        = 0;
@@ -4556,14 +4429,12 @@ client3_3_fstat (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
+        ret = client_pre_fstat (this, &req, args->fd, args->xdata);
 
-        req.fd = remote_fd;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FSTAT, client3_3_fstat_cbk, NULL,
@@ -4602,6 +4473,7 @@ client3_3_opendir (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
+        conf = this->private;
 
         local = mem_get0 (this->local_pool);
         if (!local) {
@@ -4610,27 +4482,16 @@ client3_3_opendir (call_frame_t *frame, xlator_t *this,
         }
         frame->local = local;
 
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
         local->fd = fd_ref (args->fd);
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
 
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_opendir (this, &req, args->loc, args->fd,
+                                  args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_OPENDIR, client3_3_opendir_cbk,
                                      NULL, NULL, 0, NULL, 0, NULL,
@@ -4658,7 +4519,6 @@ int32_t
 client3_3_fsyncdir (call_frame_t *frame, xlator_t *this, void *data)
 {
         clnt_args_t       *args      = NULL;
-        int64_t            remote_fd = -1;
         clnt_conf_t       *conf      = NULL;
         gfs3_fsyncdir_req  req       = {{0,},};
         int                ret       = 0;
@@ -4670,18 +4530,12 @@ client3_3_fsyncdir (call_frame_t *frame, xlator_t *this, void *data)
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.fd   = remote_fd;
-        req.data = args->flags;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        conf = this->private;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_fsyncdir (this, &req, args->fd, args->flags,
+                                   args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FSYNCDIR, client3_3_fsyncdir_cbk,
                                      NULL, NULL, 0,
@@ -4720,26 +4574,13 @@ client3_3_statfs (call_frame_t *frame, xlator_t *this,
 
         args = data;
 
-        if (!args->loc)
-                goto unwind;
-
-        if (args->loc->inode) {
-                if (!gf_uuid_is_null (args->loc->inode->gfid))
-                        memcpy (req.gfid,  args->loc->inode->gfid, 16);
-                else
-                        memcpy (req.gfid, args->loc->gfid, 16);
-        } else
-                req.gfid[15] = 1;
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_statfs (this, &req, args->loc, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_STATFS, client3_3_statfs_cbk, NULL,
                                      NULL, 0, NULL, 0,
@@ -4776,32 +4617,14 @@ client3_3_setxattr (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        if (args->xattr) {
-                GF_PROTOCOL_DICT_SERIALIZE (this, args->xattr,
-                                            (&req.dict.dict_val),
-                                            req.dict.dict_len,
-                                            op_errno, unwind);
-        }
-
-        req.flags = args->flags;
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_setxattr (this, &req, args->loc, args->xattr,
+                                    args->flags, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_SETXATTR, client3_3_setxattr_cbk,
                                      NULL, NULL, 0, NULL, 0, NULL,
@@ -4831,7 +4654,6 @@ client3_3_fsetxattr (call_frame_t *frame, xlator_t *this,
                      void *data)
 {
         clnt_args_t        *args     = NULL;
-        int64_t             remote_fd = -1;
         clnt_conf_t        *conf     = NULL;
         gfs3_fsetxattr_req  req      = {{0,},};
         int                 op_errno = ESTALE;
@@ -4843,23 +4665,12 @@ client3_3_fsetxattr (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.fd    = remote_fd;
-        req.flags = args->flags;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        if (args->xattr) {
-                GF_PROTOCOL_DICT_SERIALIZE (this, args->xattr,
-                                            (&req.dict.dict_val),
-                                            req.dict.dict_len,
-                                            op_errno, unwind);
+        ret = client_pre_fsetxattr (this, &req, args->fd, args->flags,
+                                     args->xattr, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
         }
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FSETXATTR, client3_3_fsetxattr_cbk,
                                      NULL, NULL, 0, NULL, 0, NULL,
@@ -4883,15 +4694,11 @@ unwind:
         return 0;
 }
 
-
-
-
 int32_t
 client3_3_fgetxattr (call_frame_t *frame, xlator_t *this,
                      void *data)
 {
         clnt_args_t        *args       = NULL;
-        int64_t             remote_fd  = -1;
         clnt_conf_t        *conf       = NULL;
         gfs3_fgetxattr_req  req        = {{0,},};
         int                 op_errno   = ESTALE;
@@ -4908,9 +4715,6 @@ client3_3_fgetxattr (call_frame_t *frame, xlator_t *this,
 
         args = data;
         conf = this->private;
-
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
 
         local = mem_get0 (this->local_pool);
         if (!local) {
@@ -4943,18 +4747,12 @@ client3_3_fgetxattr (call_frame_t *frame, xlator_t *this,
         rsp_iobuf = NULL;
         rsp_iobref = NULL;
 
-        req.namelen = 1; /* Use it as a flag */
-        req.fd   = remote_fd;
-        req.name = (char *)args->name;
-        if (!req.name) {
-                req.name = "";
-                req.namelen = 0;
+        ret = client_pre_fgetxattr (this, &req, args->fd, args->name,
+                                    args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
         }
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FGETXATTR,
                                      client3_3_fgetxattr_cbk, NULL,
@@ -5009,23 +4807,19 @@ client3_3_getxattr (call_frame_t *frame, xlator_t *this,
         }
         args = data;
 
-        if (!args->loc) {
-                op_errno = EINVAL;
-                goto unwind;
-        }
-
         local = mem_get0 (this->local_pool);
         if (!local) {
                 op_errno = ENOMEM;
                 goto unwind;
         }
 
+        frame->local = local;
+
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
+
         if (args->name)
                 local->name = gf_strdup (args->name);
-
-        frame->local = local;
 
         rsp_iobref = iobref_new ();
         if (rsp_iobref == NULL) {
@@ -5051,22 +4845,6 @@ client3_3_getxattr (call_frame_t *frame, xlator_t *this,
         rsp_iobuf = NULL;
         rsp_iobref = NULL;
 
-        if (args->loc->inode && !gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.namelen = 1; /* Use it as a flag */
-
-        req.name = (char *)args->name;
-        if (!req.name) {
-                req.name = "";
-                req.namelen = 0;
-        }
-
         conf = this->private;
 
         if (args && args->name) {
@@ -5089,9 +4867,12 @@ client3_3_getxattr (call_frame_t *frame, xlator_t *this,
                 }
         }
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_getxattr (this, &req, args->loc, args->name,
+                                   args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_GETXATTR,
                                      client3_3_getxattr_cbk, NULL,
@@ -5177,30 +4958,16 @@ client3_3_xattrop (call_frame_t *frame, xlator_t *this,
         rsp_iobuf = NULL;
         rsp_iobref = NULL;
 
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
         loc_copy (&local->loc, args->loc);
         loc_path (&local->loc, NULL);
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        if (args->xattr) {
-                GF_PROTOCOL_DICT_SERIALIZE (this, args->xattr,
-                                            (&req.dict.dict_val),
-                                            req.dict.dict_len,
-                                            op_errno, unwind);
-        }
-
-        req.flags = args->flags;
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_xattrop (this, &req, args->loc, args->xattr,
+                                  args->flags, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_XATTROP,
                                      client3_3_xattrop_cbk, NULL,
@@ -5240,7 +5007,6 @@ client3_3_fxattrop (call_frame_t *frame, xlator_t *this,
                     void *data)
 {
         clnt_args_t       *args       = NULL;
-        int64_t            remote_fd  = -1;
         clnt_conf_t       *conf       = NULL;
         clnt_local_t      *local      = NULL;
         gfs3_fxattrop_req  req        = {{0,},};
@@ -5258,19 +5024,19 @@ client3_3_fxattrop (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, FALLBACK_TO_ANON_FD,
-                              remote_fd, op_errno, unwind);
-        ret = client_fd_fop_prepare_local (frame, args->fd, remote_fd);
+        ret = client_pre_fxattrop (this, &req, args->fd, args->xattr,
+                                   args->flags, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
+        ret = client_fd_fop_prepare_local (frame, args->fd, req.fd);
         if (ret) {
                 op_errno = -ret;
                 goto unwind;
         }
 
         local = frame->local;
-
-        req.fd     = remote_fd;
-        req.flags  = args->flags;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
 
         rsp_iobref = iobref_new ();
         if (rsp_iobref == NULL) {
@@ -5294,16 +5060,6 @@ client3_3_fxattrop (call_frame_t *frame, xlator_t *this,
         local->iobref = rsp_iobref;
         rsp_iobuf = NULL;
         rsp_iobref = NULL;
-
-        if (args->xattr) {
-                GF_PROTOCOL_DICT_SERIALIZE (this, args->xattr,
-                                            (&req.dict.dict_val),
-                                            req.dict.dict_len,
-                                            op_errno, unwind);
-        }
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FXATTROP,
@@ -5352,25 +5108,14 @@ client3_3_removexattr (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.name = (char *)args->name;
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_removexattr (this, &req, args->loc, args->name,
+                                       args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_REMOVEXATTR,
                                      client3_3_removexattr_cbk, NULL,
@@ -5399,7 +5144,6 @@ client3_3_fremovexattr (call_frame_t *frame, xlator_t *this,
         clnt_args_t           *args     = NULL;
         gfs3_fremovexattr_req  req      = {{0,},};
         int                    ret      = 0;
-        int64_t                remote_fd = -1;
         int                    op_errno = ESTALE;
 
         if (!frame || !this || !data)
@@ -5407,21 +5151,14 @@ client3_3_fremovexattr (call_frame_t *frame, xlator_t *this,
 
         args = data;
 
-        if (!(args->fd && args->fd->inode))
-                goto unwind;
-
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        memcpy (req.gfid,  args->fd->inode->gfid, 16);
-        req.name = (char *)args->name;
-        req.fd = remote_fd;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_fremovexattr (this, &req, args->fd, args->name,
+                                        args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FREMOVEXATTR,
                                      client3_3_fremovexattr_cbk, NULL,
@@ -5443,14 +5180,54 @@ unwind:
 }
 
 int32_t
+client3_3_lease (call_frame_t *frame, xlator_t *this,
+                 void *data)
+{
+        clnt_args_t     *args       = NULL;
+        gfs3_lease_req   req        = {{0,},};
+        clnt_conf_t     *conf       = NULL;
+        int              op_errno   = ESTALE;
+        int              ret        = 0;
+
+        GF_VALIDATE_OR_GOTO ("client", this, unwind);
+        GF_VALIDATE_OR_GOTO (this->name, frame, unwind);
+        GF_VALIDATE_OR_GOTO (this->name, data, unwind);
+
+        args = data;
+        conf = this->private;
+
+        ret = client_pre_lease (this, &req, args->loc, args->lease,
+                                args->xdata);
+        if (ret < 0) {
+                op_errno = -ret;
+                goto unwind;
+        }
+        ret = client_submit_request (this, &req, frame, conf->fops, GFS3_OP_LEASE,
+                                     client3_3_lease_cbk, NULL,
+                                     NULL, 0, NULL, 0, NULL,
+                                     (xdrproc_t)xdr_gfs3_lease_req);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_WARNING, 0, PC_MSG_FOP_SEND_FAILED,
+                        "failed to send the fop");
+        }
+
+        GF_FREE (req.xdata.xdata_val);
+
+        return 0;
+unwind:
+        CLIENT_STACK_UNWIND (lease, frame, -1, op_errno, NULL, NULL);
+        GF_FREE (req.xdata.xdata_val);
+
+        return 0;
+}
+
+int32_t
 client3_3_lk (call_frame_t *frame, xlator_t *this,
               void *data)
 {
         clnt_args_t     *args       = NULL;
         gfs3_lk_req      req        = {{0,},};
         int32_t          gf_cmd     = 0;
-        int32_t          gf_type    = 0;
-        int64_t          remote_fd  = -1;
         clnt_local_t    *local      = NULL;
         clnt_conf_t     *conf       = NULL;
         int              op_errno   = ESTALE;
@@ -5468,9 +5245,6 @@ client3_3_lk (call_frame_t *frame, xlator_t *this,
         }
         frame->local = local;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
         ret = client_cmd_to_gf_cmd (args->cmd, &gf_cmd);
         if (ret) {
                 op_errno = EINVAL;
@@ -5479,32 +5253,16 @@ client3_3_lk (call_frame_t *frame, xlator_t *this,
                 goto unwind;
         }
 
-        switch (args->flock->l_type) {
-        case F_RDLCK:
-                gf_type = GF_LK_F_RDLCK;
-                break;
-        case F_WRLCK:
-                gf_type = GF_LK_F_WRLCK;
-                break;
-        case F_UNLCK:
-                gf_type = GF_LK_F_UNLCK;
-                break;
-        }
-
         local->owner = frame->root->lk_owner;
         local->cmd   = args->cmd;
         local->fd    = fd_ref (args->fd);
 
-        req.fd    = remote_fd;
-        req.cmd   = gf_cmd;
-        req.type  = gf_type;
-        gf_proto_flock_from_flock (&req.flock, args->flock);
-
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_lk (this, &req, args->cmd, args->flock,
+                             args->fd, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops, GFS3_OP_LK,
                                      client3_3_lk_cbk, NULL,
                                      NULL, 0, NULL, 0, NULL,
@@ -5533,60 +5291,20 @@ client3_3_inodelk (call_frame_t *frame, xlator_t *this,
         clnt_args_t      *args    = NULL;
         gfs3_inodelk_req  req     = {{0,},};
         int               ret     = 0;
-        int32_t           gf_cmd  = 0;
-        int32_t           gf_type = 0;
         int               op_errno = ESTALE;
 
         if (!frame || !this || !data)
                 goto unwind;
 
         args = data;
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->gfid))
-                memcpy (req.gfid,  args->loc->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->inode->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        if (args->cmd == F_GETLK || args->cmd == F_GETLK64)
-                gf_cmd = GF_LK_GETLK;
-        else if (args->cmd == F_SETLK || args->cmd == F_SETLK64)
-                gf_cmd = GF_LK_SETLK;
-        else if (args->cmd == F_SETLKW || args->cmd == F_SETLKW64)
-                gf_cmd = GF_LK_SETLKW;
-        else {
-                gf_msg (this->name, GF_LOG_WARNING, EINVAL,
-                        PC_MSG_INVALID_ENTRY, "Unknown cmd (%d)!", gf_cmd);
-                op_errno = EINVAL;
-                goto unwind;
-        }
-
-        switch (args->flock->l_type) {
-        case F_RDLCK:
-                gf_type = GF_LK_F_RDLCK;
-                break;
-        case F_WRLCK:
-                gf_type = GF_LK_F_WRLCK;
-                break;
-        case F_UNLCK:
-                gf_type = GF_LK_F_UNLCK;
-                break;
-        }
-
-        req.volume = (char *)args->volume;
-        req.cmd    = gf_cmd;
-        req.type   = gf_type;
-        gf_proto_flock_from_flock (&req.flock, args->flock);
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_inodelk (this, &req, args->loc, args->cmd,
+                                   args->flock, args->volume, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_INODELK,
                                      client3_3_inodelk_cbk, NULL,
@@ -5615,9 +5333,6 @@ client3_3_finodelk (call_frame_t *frame, xlator_t *this,
 {
         clnt_args_t       *args     = NULL;
         gfs3_finodelk_req  req      = {{0,},};
-        int32_t            gf_cmd   = 0;
-        int32_t            gf_type  = 0;
-        int64_t            remote_fd = -1;
         clnt_conf_t       *conf     = NULL;
         int                op_errno = ESTALE;
         int                ret      = 0;
@@ -5627,47 +5342,20 @@ client3_3_finodelk (call_frame_t *frame, xlator_t *this,
 
         args = data;
         conf = this->private;
-        CLIENT_GET_REMOTE_FD (this, args->fd, FALLBACK_TO_ANON_FD,
-                              remote_fd, op_errno, unwind);
-        ret = client_fd_fop_prepare_local (frame, args->fd, remote_fd);
+
+        ret = client_pre_finodelk (this, &req, args->fd,
+                                    args->cmd, args->flock, args->volume,
+                                    args->xdata);
         if (ret) {
                 op_errno = -ret;
                 goto unwind;
         }
 
-        if (args->cmd == F_GETLK || args->cmd == F_GETLK64)
-                gf_cmd = GF_LK_GETLK;
-        else if (args->cmd == F_SETLK || args->cmd == F_SETLK64)
-                gf_cmd = GF_LK_SETLK;
-        else if (args->cmd == F_SETLKW || args->cmd == F_SETLKW64)
-                gf_cmd = GF_LK_SETLKW;
-        else {
-                gf_msg (this->name, GF_LOG_WARNING, EINVAL,
-                        PC_MSG_INVALID_ENTRY, "Unknown cmd (%d)!", gf_cmd);
+        ret = client_fd_fop_prepare_local (frame, args->fd, req.fd);
+        if (ret) {
+                op_errno = -ret;
                 goto unwind;
         }
-
-        switch (args->flock->l_type) {
-        case F_RDLCK:
-                gf_type = GF_LK_F_RDLCK;
-                break;
-        case F_WRLCK:
-                gf_type = GF_LK_F_WRLCK;
-                break;
-        case F_UNLCK:
-                gf_type = GF_LK_F_UNLCK;
-                break;
-        }
-
-        req.volume = (char *)args->volume;
-        req.fd    = remote_fd;
-        req.cmd   = gf_cmd;
-        req.type  = gf_type;
-        gf_proto_flock_from_flock (&req.flock, args->flock);
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FINODELK,
@@ -5704,30 +5392,15 @@ client3_3_entrylk (call_frame_t *frame, xlator_t *this,
 
         args = data;
 
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->gfid))
-                memcpy (req.gfid,  args->loc->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->inode->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.cmd = args->cmd_entrylk;
-        req.type = args->type;
-        req.volume = (char *)args->volume;
-        req.name = "";
-        if (args->basename) {
-                req.name = (char *)args->basename;
-                req.namelen = 1;
-        }
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        ret = client_pre_entrylk (this, &req, args->loc, args->cmd_entrylk,
+                                   args->type, args->volume, args->basename,
+                                   args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_ENTRYLK,
@@ -5757,7 +5430,6 @@ client3_3_fentrylk (call_frame_t *frame, xlator_t *this,
 {
         clnt_args_t       *args     = NULL;
         gfs3_fentrylk_req  req      = {{0,},};
-        int64_t            remote_fd = -1;
         clnt_conf_t       *conf     = NULL;
         int                op_errno = ESTALE;
         int           ret        = 0;
@@ -5768,23 +5440,13 @@ client3_3_fentrylk (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.fd  = remote_fd;
-        req.cmd = args->cmd_entrylk;
-        req.type = args->type;
-        req.volume = (char *)args->volume;
-        req.name = "";
-        if (args->basename) {
-                req.name = (char *)args->basename;
-                req.namelen = 1;
+        ret = client_pre_fentrylk (this, &req, args->fd, args->cmd_entrylk,
+                                    args->type, args->volume, args->basename,
+                                    args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
         }
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FENTRYLK,
                                      client3_3_fentrylk_cbk, NULL,
@@ -5811,7 +5473,6 @@ client3_3_rchecksum (call_frame_t *frame, xlator_t *this,
                      void *data)
 {
         clnt_args_t        *args     = NULL;
-        int64_t             remote_fd = -1;
         clnt_conf_t        *conf     = NULL;
         gfs3_rchecksum_req  req      = {0,};
         int                 op_errno = ESTALE;
@@ -5823,16 +5484,12 @@ client3_3_rchecksum (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.len    = args->len;
-        req.offset = args->offset;
-        req.fd     = remote_fd;
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        ret = client_pre_rchecksum (this, &req, args->fd, args->len,
+                                     args->offset, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_RCHECKSUM,
                                      client3_3_rchecksum_cbk, NULL,
@@ -5853,8 +5510,6 @@ unwind:
 
         return 0;
 }
-
-
 
 int32_t
 client3_3_readdir (call_frame_t *frame, xlator_t *this,
@@ -5881,9 +5536,6 @@ client3_3_readdir (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
         readdir_rsp_size = xdr_sizeof ((xdrproc_t) xdr_gfs3_readdir_rsp, &rsp)
                 + args->size;
 
@@ -5893,6 +5545,8 @@ client3_3_readdir (call_frame_t *frame, xlator_t *this,
                 goto unwind;
         }
         frame->local = local;
+
+        local->cmd = remote_fd;
 
         if ((readdir_rsp_size + GLUSTERFS_RPC_REPLY_SIZE + GLUSTERFS_RDMA_MAX_HEADER_SIZE)
             > (GLUSTERFS_RDMA_INLINE_THRESHOLD)) {
@@ -5921,15 +5575,12 @@ client3_3_readdir (call_frame_t *frame, xlator_t *this,
                 rsp_iobref = NULL;
         }
 
-        req.size = args->size;
-        req.offset = args->offset;
-        req.fd = remote_fd;
-
-        local->cmd = remote_fd;
-
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        ret = client_pre_readdir (this, &req, args->fd, args->size,
+                                  args->offset, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_READDIR,
@@ -5968,7 +5619,6 @@ client3_3_readdirp (call_frame_t *frame, xlator_t *this,
         clnt_args_t      *args              = NULL;
         gfs3_readdirp_req req               = {{0,},};
         gfs3_readdirp_rsp rsp               = {0,};
-        int64_t           remote_fd         = -1;
         clnt_conf_t      *conf              = NULL;
         int               op_errno          = ESTALE;
         int               ret               = 0;
@@ -5986,18 +5636,23 @@ client3_3_readdirp (call_frame_t *frame, xlator_t *this,
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        readdirp_rsp_size = xdr_sizeof ((xdrproc_t) xdr_gfs3_readdirp_rsp, &rsp)
-                + args->size;
-
         local = mem_get0 (this->local_pool);
         if (!local) {
                 op_errno = ENOMEM;
                 goto unwind;
         }
         frame->local = local;
+
+        ret = client_pre_readdirp (this, &req, args->fd, args->size,
+                                   args->offset, args->xdata);
+
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
+
+        readdirp_rsp_size = xdr_sizeof ((xdrproc_t) xdr_gfs3_readdirp_rsp, &rsp)
+                + args->size;
 
         if ((readdirp_rsp_size + GLUSTERFS_RPC_REPLY_SIZE
              + GLUSTERFS_RDMA_MAX_HEADER_SIZE)
@@ -6028,15 +5683,6 @@ client3_3_readdirp (call_frame_t *frame, xlator_t *this,
         }
 
         local->fd = fd_ref (args->fd);
-
-        req.size = args->size;
-        req.offset = args->offset;
-        req.fd = remote_fd;
-        memcpy (req.gfid, args->fd->inode->gfid, 16);
-
-        /* dict itself is 'xdata' here */
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.dict.dict_val),
-                                    req.dict.dict_len, op_errno, unwind);
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_READDIRP,
@@ -6080,25 +5726,15 @@ client3_3_setattr (call_frame_t *frame, xlator_t *this,
                 goto unwind;
 
         args = data;
-
-        if (!(args->loc && args->loc->inode))
-                goto unwind;
-
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid, args->loc->inode->gfid, 16);
-        else
-                memcpy (req.gfid, args->loc->gfid, 16);
-
-        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
-                                       !gf_uuid_is_null (*((uuid_t*)req.gfid)),
-                                       unwind, op_errno, EINVAL);
-        req.valid = args->valid;
-        gf_stat_from_iatt (&req.stbuf, args->stbuf);
-
         conf = this->private;
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        ret = client_pre_setattr (this, &req, args->loc, args->valid,
+                                  args->stbuf, args->xdata);
+
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_SETATTR,
@@ -6124,7 +5760,6 @@ int32_t
 client3_3_fsetattr (call_frame_t *frame, xlator_t *this, void *data)
 {
         clnt_args_t       *args     = NULL;
-        int64_t            remote_fd = -1;
         clnt_conf_t       *conf     = NULL;
         gfs3_fsetattr_req  req      = {0,};
         int                op_errno = ESTALE;
@@ -6136,16 +5771,13 @@ client3_3_fsetattr (call_frame_t *frame, xlator_t *this, void *data)
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
+        ret = client_pre_fsetattr (this, &req, args->fd, args->valid,
+                                   args->stbuf, args->xdata);
 
-        req.fd = remote_fd;
-        req.valid = args->valid;
-        gf_stat_from_iatt (&req.stbuf, args->stbuf);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
-
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FSETATTR,
                                      client3_3_fsetattr_cbk, NULL,
@@ -6170,7 +5802,6 @@ int32_t
 client3_3_fallocate(call_frame_t *frame, xlator_t *this, void *data)
 {
         clnt_args_t       *args     = NULL;
-        int64_t            remote_fd = -1;
         clnt_conf_t       *conf     = NULL;
 	gfs3_fallocate_req req	    = {{0},};
         int                op_errno = ESTALE;
@@ -6182,17 +5813,12 @@ client3_3_fallocate(call_frame_t *frame, xlator_t *this, void *data)
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.fd = remote_fd;
-	req.flags = args->flags;
-	req.offset = args->offset;
-	req.size = args->size;
-	memcpy(req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        ret = client_pre_fallocate (this, &req, args->fd, args->flags,
+                                     args->offset, args->size, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         ret = client_submit_request (this, &req, frame, conf->fops,
                                      GFS3_OP_FALLOCATE,
@@ -6218,7 +5844,6 @@ int32_t
 client3_3_discard(call_frame_t *frame, xlator_t *this, void *data)
 {
         clnt_args_t       *args     = NULL;
-        int64_t            remote_fd = -1;
         clnt_conf_t       *conf     = NULL;
 	gfs3_discard_req   req	    = {{0},};
         int                op_errno = ESTALE;
@@ -6230,16 +5855,13 @@ client3_3_discard(call_frame_t *frame, xlator_t *this, void *data)
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
+        ret = client_pre_discard (this, &req, args->fd, args->offset,
+                                  args->size, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
-        req.fd = remote_fd;
-	req.offset = args->offset;
-	req.size = args->size;
-	memcpy(req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
 
         ret = client_submit_request(this, &req, frame, conf->fops,
                                     GFS3_OP_DISCARD, client3_3_discard_cbk,
@@ -6263,7 +5885,6 @@ int32_t
 client3_3_zerofill(call_frame_t *frame, xlator_t *this, void *data)
 {
         clnt_args_t       *args        = NULL;
-        int64_t            remote_fd   = -1;
         clnt_conf_t       *conf        = NULL;
         gfs3_zerofill_req   req        = {{0},};
         int                op_errno    = ESTALE;
@@ -6277,16 +5898,12 @@ client3_3_zerofill(call_frame_t *frame, xlator_t *this, void *data)
         args = data;
         conf = this->private;
 
-        CLIENT_GET_REMOTE_FD (this, args->fd, DEFAULT_REMOTE_FD,
-                              remote_fd, op_errno, unwind);
-
-        req.fd = remote_fd;
-        req.offset = args->offset;
-        req.size = args->size;
-        memcpy(req.gfid, args->fd->inode->gfid, 16);
-
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        ret = client_pre_zerofill (this, &req, args->fd, args->offset,
+                                   args->size, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         ret = client_submit_request(this, &req, frame, conf->fops,
                                     GFS3_OP_ZEROFILL, client3_3_zerofill_cbk,
@@ -6323,10 +5940,12 @@ client3_3_ipc (call_frame_t *frame, xlator_t *this, void *data)
         args = data;
         conf = this->private;
 
-        req.op = args->cmd;
+        ret = client_pre_ipc (this, &req, args->cmd, args->xdata);
 
-        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
-                                    req.xdata.xdata_len, op_errno, unwind);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
 
         ret = client_submit_request(this, &req, frame, conf->fops,
                                     GFS3_OP_IPC, client3_3_ipc_cbk,
@@ -6346,9 +5965,302 @@ unwind:
         return 0;
 }
 
+int32_t
+client3_3_seek (call_frame_t *frame, xlator_t *this, void *data)
+{
+        clnt_args_t            *args        = NULL;
+        clnt_conf_t            *conf        = NULL;
+        struct gfs3_seek_req    req         = {{0,},};
+        int                     op_errno    = ESTALE;
+        int                     ret         = 0;
+
+        GF_ASSERT (frame);
+
+        if (!this || !data)
+                goto unwind;
+
+        args = data;
+        conf = this->private;
+
+        ret = client_pre_seek (this, &req, args->fd,
+                               args->offset, args->what, args->xdata);
+        if (ret) {
+                op_errno = -ret;
+                goto unwind;
+        }
+
+        ret = client_submit_request(this, &req, frame, conf->fops,
+                                    GFS3_OP_SEEK, client3_3_seek_cbk,
+                                    NULL, NULL, 0, NULL, 0, NULL,
+                                    (xdrproc_t) xdr_gfs3_seek_req);
+        if (ret)
+                gf_msg (this->name, GF_LOG_WARNING, 0, PC_MSG_FOP_SEND_FAILED,
+                        "failed to send the fop");
+
+        GF_FREE (req.xdata.xdata_val);
+
+        return 0;
+unwind:
+        CLIENT_STACK_UNWIND(ipc, frame, -1, op_errno, NULL);
+        GF_FREE (req.xdata.xdata_val);
+
+        return 0;
+}
+
+/* Brief explanation of gfs3_compound_req structure :
+ * 1) It consists of version of compounding.
+ * 2) A compound-fop enum, new enum for compound fops
+ * 3) A 'compound_req_arrray' structure that has
+ *      a) array len - based on the number of fops compounded
+ *      b) compound_req_array_val - pointer to an array of compound_req's
+ * 4) compound_req - structure that contains:
+ *      a) fop enum of type glusterfs_fop_t
+ *      b) union of structures of xdr requests of all fops.
+ */
+
+int32_t
+client3_3_compound (call_frame_t *frame, xlator_t *this, void *data)
+{
+        clnt_conf_t             *conf              = NULL;
+        compound_args_t         *c_args            = data;
+        gfs3_compound_req       req                = {0,};
+        clnt_local_t            *local             = NULL;
+        int                     op_errno           = ENOMEM;
+        int                     ret                = 0;
+        int                     i                  = 0;
+        int                     rsp_count          = 0;
+        struct iovec            rsp_vector[MAX_IOVEC] = {{0}, };
+        struct iovec            req_vector[MAX_IOVEC] = {{0}, };
+        struct iovec            vector[MAX_IOVEC] = {{0}, };
+        struct iovec            *rsphdr             = NULL;
+        struct iobref           *req_iobref         = NULL;
+        struct iobref           *rsp_iobref         = NULL;
+        struct iobref           *rsphdr_iobref      = NULL;
+        struct iobuf            *rsphdr_iobuf       = NULL;
+        int                     rsphdr_count        = 0;
+        int                     req_count           = 0;
+        dict_t                  *xdata              = c_args->xdata;
+
+        GF_ASSERT (frame);
+
+        if (!this || !data)
+                goto unwind;
+
+        memset (req_vector, 0, sizeof (req_vector));
+        memset (rsp_vector, 0, sizeof (rsp_vector));
+
+        conf = this->private;
+
+        local = mem_get0 (this->local_pool);
+        if (!local) {
+                op_errno = ENOMEM;
+                goto unwind;
+        }
+        frame->local = local;
+
+        local->length = c_args->fop_length;
+        local->compound_args = c_args;
+
+        rsphdr_iobref = iobref_new ();
+        if (rsphdr_iobref == NULL) {
+                goto unwind;
+        }
+
+        /* TODO: what is the size we should send ? */
+        rsphdr_iobuf = iobuf_get (this->ctx->iobuf_pool);
+        if (rsphdr_iobuf == NULL) {
+                goto unwind;
+        }
+
+        iobref_add (rsphdr_iobref, rsphdr_iobuf);
+        iobuf_unref (rsphdr_iobuf);
+        rsphdr = &vector[0];
+        rsphdr->iov_base = iobuf_ptr (rsphdr_iobuf);
+        rsphdr->iov_len = iobuf_pagesize (rsphdr_iobuf);
+        rsphdr_count = 1;
+        rsphdr_iobuf = NULL;
+
+        req.compound_fop_enum = c_args->fop_enum;
+        req.compound_req_array.compound_req_array_len = c_args->fop_length;
+        req.compound_version = 0;
+        if (xdata) {
+                GF_PROTOCOL_DICT_SERIALIZE (this, xdata,
+                                            (&req.xdata.xdata_val),
+                                            req.xdata.xdata_len,
+                                            op_errno, unwind);
+        }
+
+        req.compound_req_array.compound_req_array_val = GF_CALLOC (local->length,
+                                                        sizeof (compound_req),
+                                                        gf_client_mt_compound_req_t);
+
+        if (!req.compound_req_array.compound_req_array_val) {
+                op_errno = ENOMEM;
+                goto unwind;
+        }
+
+        for (i = 0; i < local->length; i++) {
+                ret = client_handle_fop_requirements (this, frame,
+                                                      &req, local,
+                                                      &req_iobref, &rsp_iobref,
+                                                      req_vector,
+                                                      rsp_vector, &req_count,
+                                                      &rsp_count,
+                                                      &c_args->req_list[i],
+                                                      c_args->enum_list[i],
+                                                      i);
+                if (ret) {
+                        op_errno = ret;
+                        goto unwind;
+                }
+        }
+
+        local->iobref = rsp_iobref;
+        rsp_iobref     = NULL;
+
+        ret = client_submit_compound_request (this, &req, frame, conf->fops,
+                                     GFS3_OP_COMPOUND, client3_3_compound_cbk,
+                                     req_vector, req_count, req_iobref,
+                                     rsphdr, rsphdr_count,
+                                     rsp_vector, rsp_count,
+                                     local->iobref,
+                                     (xdrproc_t) xdr_gfs3_compound_req);
+
+        GF_FREE (req.xdata.xdata_val);
+
+        iobref_unref (rsphdr_iobref);
+
+        compound_request_cleanup (&req);
+        return 0;
+unwind:
+        CLIENT_STACK_UNWIND (compound, frame, -1, op_errno, NULL, NULL);
+
+        if (rsp_iobref)
+                iobref_unref (rsp_iobref);
+
+        if (rsphdr_iobref)
+                iobref_unref (rsphdr_iobref);
+
+        GF_FREE (req.xdata.xdata_val);
+
+        compound_request_cleanup (&req);
+        return 0;
+}
+
+static int32_t
+client3_3_getactivelk (call_frame_t *frame, xlator_t *this,
+                        void *data)
+{
+        clnt_conf_t   *conf             = NULL;
+        clnt_args_t   *args             = NULL;
+        gfs3_getactivelk_req  req      = {{0,},};
+        int            ret              = 0;
+        int            op_errno         = ESTALE;
+
+        if (!frame || !this || !data)
+                goto unwind;
+
+        args = data;
+        if (!(args->loc && args->loc->inode))
+                goto unwind;
+
+        if (!gf_uuid_is_null (args->loc->inode->gfid))
+                memcpy (req.gfid,  args->loc->inode->gfid, 16);
+        else
+                memcpy (req.gfid, args->loc->gfid, 16);
+
+        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
+                                       !gf_uuid_is_null (*((uuid_t *)req.gfid)),
+                                       unwind, op_errno, EINVAL);
+        conf = this->private;
+
+        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
+                                    req.xdata.xdata_len, op_errno, unwind);
+
+        ret = client_submit_request (this, &req, frame, conf->fops,
+                                     GFS3_OP_GETACTIVELK,
+                                     client3_3_getactivelk_cbk, NULL,
+                                     NULL, 0, NULL, 0, NULL,
+                                     (xdrproc_t)xdr_gfs3_getactivelk_req);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_WARNING, 0, PC_MSG_FOP_SEND_FAILED,
+                        "failed to send the fop");
+        }
+
+        GF_FREE (req.xdata.xdata_val);
+
+        return 0;
+unwind:
+        CLIENT_STACK_UNWIND (getactivelk, frame, -1, op_errno, NULL, NULL);
+
+        GF_FREE (req.xdata.xdata_val);
+
+        return 0;
+}
+
+static int32_t
+client3_3_setactivelk (call_frame_t *frame, xlator_t *this,
+                        void *data)
+{
+        clnt_conf_t   *conf             = NULL;
+        clnt_args_t   *args             = NULL;
+        gfs3_setactivelk_req  req      = {{0,},};
+        int            ret              = 0;
+        int            op_errno         = ESTALE;
+
+        if (!frame || !this || !data)
+                goto unwind;
+
+        args = data;
+        if (!(args->loc && args->loc->inode && args->locklist))
+                goto unwind;
+
+        if (!gf_uuid_is_null (args->loc->inode->gfid))
+                memcpy (req.gfid,  args->loc->inode->gfid, 16);
+        else
+                memcpy (req.gfid, args->loc->gfid, 16);
+
+        GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
+                                       !gf_uuid_is_null (*((uuid_t *)req.gfid)),
+                                       unwind, op_errno, EINVAL);
+        conf = this->private;
+
+        GF_PROTOCOL_DICT_SERIALIZE (this, args->xdata, (&req.xdata.xdata_val),
+                                    req.xdata.xdata_len, op_errno, unwind);
+
+        ret = serialize_req_locklist (args->locklist, &req);
+
+        if (ret)
+                goto unwind;
+
+        ret = client_submit_request (this, &req, frame, conf->fops,
+                                     GFS3_OP_SETACTIVELK, client3_3_setactivelk_cbk, NULL,
+                                     NULL, 0, NULL, 0, NULL,
+                                     (xdrproc_t)xdr_gfs3_setactivelk_req);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_WARNING, 0, PC_MSG_FOP_SEND_FAILED,
+                        "failed to send the fop");
+        }
+
+
+        clnt_setactivelk_req_cleanup (&req);
+
+        GF_FREE (req.xdata.xdata_val);
+
+        return 0;
+
+unwind:
+
+        CLIENT_STACK_UNWIND (setactivelk, frame, -1, op_errno, NULL);
+
+        GF_FREE (req.xdata.xdata_val);
+
+        clnt_setactivelk_req_cleanup (&req);
+
+        return 0;
+}
+
 /* Table Specific to FOPS */
-
-
 rpc_clnt_procedure_t clnt3_3_fop_actors[GF_FOP_MAXVALUE] = {
         [GF_FOP_NULL]         = { "NULL",         NULL},
         [GF_FOP_STAT]         = { "STAT",         client3_3_stat },
@@ -6399,6 +6311,11 @@ rpc_clnt_procedure_t clnt3_3_fop_actors[GF_FOP_MAXVALUE] = {
         [GF_FOP_GETSPEC]      = { "GETSPEC",      client3_getspec },
         [GF_FOP_FREMOVEXATTR] = { "FREMOVEXATTR", client3_3_fremovexattr },
         [GF_FOP_IPC]          = { "IPC",          client3_3_ipc },
+        [GF_FOP_SEEK]         = { "SEEK",         client3_3_seek },
+        [GF_FOP_LEASE]        = { "LEASE",        client3_3_lease },
+        [GF_FOP_GETACTIVELK]  = { "GETACTIVELK", client3_3_getactivelk},
+        [GF_FOP_SETACTIVELK]  = { "SETACTIVELK", client3_3_setactivelk},
+        [GF_FOP_COMPOUND]     = { "COMPOUND",     client3_3_compound },
 };
 
 /* Used From RPC-CLNT library to log proper name of procedure based on number */
@@ -6451,7 +6368,11 @@ char *clnt3_3_fop_names[GFS3_OP_MAXVALUE] = {
 	[GFS3_OP_DISCARD]     = "DISCARD",
         [GFS3_OP_ZEROFILL]    = "ZEROFILL",
         [GFS3_OP_IPC]         = "IPC",
-
+        [GFS3_OP_SEEK]        = "SEEK",
+        [GFS3_OP_LEASE]       = "LEASE",
+        [GFS3_OP_GETACTIVELK] = "GETACTIVELK",
+        [GFS3_OP_SETACTIVELK] = "SETACTIVELK",
+        [GFS3_OP_COMPOUND]    = "COMPOUND",
 };
 
 rpc_clnt_prog_t clnt3_3_fop_prog = {

@@ -1,0 +1,34 @@
+From 7dd54e4e500a41105f375b2aa3620fcd619d5148 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Mon, 13 Nov 2017 18:43:00 +0530
+Subject: [PATCH 47/74] Revert "glusterd: skip nfs svc reconfigure if nfs
+ xlator is not installed"
+
+This reverts commit 316e3300cfaa646b7fa45fcc7f57b81c7bb15a0e.
+---
+ xlators/mgmt/glusterd/src/glusterd-nfs-svc.c | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c b/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c
+index eab9746..da34342 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c
++++ b/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c
+@@ -154,15 +154,6 @@ glusterd_nfssvc_reconfigure ()
+         priv = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, priv, out);
+ 
+-       /* not an error, or a (very) soft error at best */
+-        if (sys_access (XLATORDIR "/nfs/server.so", R_OK) != 0) {
+-                gf_msg (THIS->name, GF_LOG_INFO, 0,
+-                        GD_MSG_GNFS_XLATOR_NOT_INSTALLED,
+-                        "nfs/server.so xlator is not installed");
+-                ret = 0;
+-                goto out;
+-        }
+-
+         cds_list_for_each_entry (volinfo, &priv->volumes, vol_list) {
+                 if (GLUSTERD_STATUS_STARTED == volinfo->status) {
+                         vol_started = _gf_true;
+-- 
+1.8.3.1
+

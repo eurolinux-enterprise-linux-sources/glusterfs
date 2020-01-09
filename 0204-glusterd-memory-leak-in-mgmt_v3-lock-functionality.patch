@@ -1,0 +1,73 @@
+From 9b001e38b21d433580d55e68225f2cd5af058dbf Mon Sep 17 00:00:00 2001
+From: Gaurav Yadav <gyadav@redhat.com>
+Date: Thu, 1 Mar 2018 14:44:34 +0530
+Subject: [PATCH 204/212] glusterd : memory leak in mgmt_v3 lock functionality
+
+In order to take care of stale lock issue, a timer was intrduced
+in mgmt_v3 lock. This timer is not freeing the memory due to
+which this leak got introduced
+
+With this fix now memory cleanup in locking is handled properly
+
+>upstream patch: https://review.gluster.org/#/c/19651/
+>                https://review.gluster.org/#/c/19723/
+
+>Change-Id: I2e1ce3ebba3520f7660321f3d97554080e4e22f4
+>BUG: 1550339
+>Signed-off-by: Gaurav Yadav <gyadav@redhat.com>
+
+Change-Id: I2e1ce3ebba3520f7660321f3d97554080e4e22f4
+BUG: 1529451
+Signed-off-by: Gaurav Yadav <gyadav@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134218
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-locks.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-locks.c b/xlators/mgmt/glusterd/src/glusterd-locks.c
+index bd73b37..a19d688 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-locks.c
++++ b/xlators/mgmt/glusterd/src/glusterd-locks.c
+@@ -719,6 +719,7 @@ gd_mgmt_v3_unlock_timer_cbk (void *data)
+         int32_t                         ret                 = -1;
+         glusterfs_ctx_t                *mgmt_lock_timer_ctx = NULL;
+         xlator_t                       *mgmt_lock_timer_xl  = NULL;
++        gf_timer_t                     *timer               = NULL;
+ 
+         this = THIS;
+         GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+@@ -766,9 +767,10 @@ out:
+                 GF_VALIDATE_OR_GOTO (this->name, mgmt_lock_timer_ctx,
+                                      ret_function);
+ 
++                timer = mgmt_lock_timer->timer;
++                GF_FREE (timer->data);
+                 gf_timer_call_cancel (mgmt_lock_timer_ctx,
+                                       mgmt_lock_timer->timer);
+-                GF_FREE(key);
+                 dict_del (conf->mgmt_v3_lock_timer, bt_key);
+                 mgmt_lock_timer->timer = NULL;
+         }
+@@ -791,6 +793,7 @@ glusterd_mgmt_v3_unlock (const char *name, uuid_t uuid, char *type)
+         xlator_t                        *this               = NULL;
+         glusterfs_ctx_t                *mgmt_lock_timer_ctx = NULL;
+         xlator_t                       *mgmt_lock_timer_xl  = NULL;
++        gf_timer_t                     *timer               = NULL;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -893,6 +896,9 @@ glusterd_mgmt_v3_unlock (const char *name, uuid_t uuid, char *type)
+                 mgmt_lock_timer_ctx = mgmt_lock_timer_xl->ctx;
+                 GF_VALIDATE_OR_GOTO (this->name, mgmt_lock_timer_ctx, out);
+                 ret = 0;
++
++                timer = mgmt_lock_timer->timer;
++                GF_FREE (timer->data);
+                 gf_timer_call_cancel (mgmt_lock_timer_ctx,
+                                       mgmt_lock_timer->timer);
+                 dict_del (priv->mgmt_v3_lock_timer, key_dup);
+-- 
+1.8.3.1
+

@@ -15,11 +15,6 @@
 #include <inttypes.h>
 #include <limits.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "xlator.h"
 #include "glusterfs.h"
 
@@ -45,7 +40,8 @@ graph_setup (struct glfs *fs, glusterfs_graph_t *graph)
 	{
 		if (new_subvol->switched ||
 		    new_subvol == fs->active_subvol ||
-		    new_subvol == fs->next_subvol) {
+		    new_subvol == fs->next_subvol ||
+                    new_subvol == fs->mip_subvol) {
 			/* Spurious CHILD_UP event on old graph */
 			ret = 0;
 			goto unlock;
@@ -110,7 +106,6 @@ notify (xlator_t *this, int event, void *data, ...)
                         pthread_cond_broadcast (&fs->child_down_cond);
                 }
                 pthread_mutex_unlock (&fs->mutex);
-		graph_setup (fs, graph);
 		glfs_init_done (fs, 1);
 		break;
 	case GF_EVENT_CHILD_CONNECTING:
@@ -164,19 +159,19 @@ fini (xlator_t *this)
 int
 glfs_forget (xlator_t *this, inode_t *inode)
 {
-        return 0;
+	return 0;
 }
 
 int
 glfs_release (xlator_t *this, fd_t *fd)
 {
-        return 0;
+	return 0;
 }
 
 int
 glfs_releasedir (xlator_t *this, fd_t *fd)
 {
-        return 0;
+	return 0;
 }
 
 struct xlator_dumpops dumpops;
@@ -186,7 +181,7 @@ struct xlator_fops fops;
 
 
 struct xlator_cbks cbks = {
-        .forget     = glfs_forget,
-        .release    = glfs_release,
-        .releasedir = glfs_releasedir
+	.forget	    = glfs_forget,
+	.release    = glfs_release,
+	.releasedir = glfs_releasedir
 };

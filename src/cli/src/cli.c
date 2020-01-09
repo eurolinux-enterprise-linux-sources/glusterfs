@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2010-2012 Red Hat, Inc. <http://www.redhat.com>
+   Copyright (c) 2010-2016 Red Hat, Inc. <http://www.redhat.com>
    This file is part of GlusterFS.
 
    This file is licensed to you under your choice of the GNU Lesser
@@ -28,11 +28,6 @@
 #include <time.h>
 #include <semaphore.h>
 #include <errno.h>
-
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 
 #ifdef HAVE_MALLOC_H
 #include <malloc.h>
@@ -70,18 +65,17 @@
 extern int connected;
 /* using argp for command line parsing */
 
-const char *argp_program_version = ""                                 \
-        PACKAGE_NAME" "PACKAGE_VERSION" built on "__DATE__" "__TIME__ \
-        "\nRepository revision: " GLUSTERFS_REPOSITORY_REVISION "\n"  \
-        "Copyright (c) 2006-2011 Gluster Inc. "                       \
-        "<http://www.gluster.com>\n"                                  \
-        "GlusterFS comes with ABSOLUTELY NO WARRANTY.\n"              \
-        "You may redistribute copies of GlusterFS under the terms of "\
-        "the GNU General Public License.";
-
+const char *argp_program_version = ""                                         \
+        PACKAGE_NAME" "PACKAGE_VERSION                                        \
+        "\nRepository revision: " GLUSTERFS_REPOSITORY_REVISION "\n"          \
+        "Copyright (c) 2006-2016 Red Hat, Inc. "                              \
+        "<https://www.gluster.org/>\n"                                        \
+        "GlusterFS comes with ABSOLUTELY NO WARRANTY.\n"                      \
+        "It is licensed to you under your choice of the GNU Lesser\n"         \
+        "General Public License, version 3 or any later version (LGPLv3\n"    \
+        "or later), or the GNU General Public License, version 2 (GPLv2),\n"  \
+        "in all cases as published by the Free Software Foundation.";
 const char *argp_program_bug_address = "<" PACKAGE_BUGREPORT ">";
-
-
 
 struct rpc_clnt *global_quotad_rpc;
 struct rpc_clnt *global_rpc;
@@ -158,8 +152,6 @@ glusterfs_ctx_defaults_init (glusterfs_ctx_t *ctx)
         INIT_LIST_HEAD (&pool->all_frames);
         LOCK_INIT (&pool->lock);
         ctx->pool = pool;
-
-        pthread_mutex_init (&(ctx->lock), NULL);
 
         cmd_args = &ctx->cmd_args;
 
@@ -297,11 +289,31 @@ cli_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
         return ret;
 }
 
+static gf_boolean_t
+is_valid_int (char *str)
+{
+        if (*str == '-')
+                ++str;
+
+        /* Handle empty string or just "-".*/
+        if (!*str)
+                return _gf_false;
+
+        /* Check for non-digit chars in the rest of the string */
+        while (*str) {
+                if (!isdigit(*str))
+                        return _gf_false;
+        else
+                ++str;
+        }
+        return _gf_true;
+}
 
 /*
  * ret: 0: option successfully processed
  *      1: signalling end of option list
- *     -1: unknown option or other issue
+ *     -1: unknown option
+ *     -2: parsing issue (avoid unknown option error)
  */
 int
 cli_opt_parse (char *opt, struct cli_state *state)
@@ -336,6 +348,11 @@ cli_opt_parse (char *opt, struct cli_state *state)
                 return 0;
         }
 
+        if (strcmp (opt, "wignore-partition") == 0) {
+                state->mode |= GLUSTER_MODE_WIGNORE_PARTITION;
+                return 0;
+        }
+
         if (strcmp (opt, "wignore") == 0) {
                 state->mode |= GLUSTER_MODE_WIGNORE;
                 return 0;
@@ -365,12 +382,23 @@ cli_opt_parse (char *opt, struct cli_state *state)
                 state->log_file = oarg;
                 return 0;
         }
+        oarg = strtail (opt, "timeout=");
+        if (oarg) {
+                if (!is_valid_int (oarg) || atoi(oarg) <= 0) {
+                        cli_err ("timeout value should be a positive integer");
+                        return -2; /* -2 instead of -1 to avoid unknown option
+                                      error */
+                }
+                cli_default_conn_timeout = atoi(oarg);
+                return 0;
+        }
 
         oarg = strtail (opt, "log-level=");
         if (oarg) {
-                state->log_level = glusterd_check_log_level(oarg);
-                if (state->log_level == -1)
+                int log_level = glusterd_check_log_level(oarg);
+                if (log_level == -1)
                         return -1;
+                state->log_level = (gf_loglevel_t) log_level;
                 return 0;
         }
 
@@ -410,7 +438,7 @@ parse_cmdline (int argc, char *argv[], struct cli_state *state)
         state->argv=&argv[1];
 
         /* Do this first so that an option can override. */
-        if (access(SECURE_ACCESS_FILE,F_OK) == 0) {
+        if (sys_access (SECURE_ACCESS_FILE, F_OK) == 0) {
                 state->ctx->secure_mgmt = 1;
         }
 
@@ -425,6 +453,8 @@ parse_cmdline (int argc, char *argv[], struct cli_state *state)
                         ret = cli_opt_parse (opt, state);
                         if (ret == -1) {
                                 cli_out ("unrecognized option --%s", opt);
+                                return ret;
+                        } else if (ret == -2) {
                                 return ret;
                         }
                         for (j = i; j < state->argc - 1; j++)
@@ -492,17 +522,20 @@ cli_usage_out (const char *usage)
 int
 _cli_err (const char *fmt, ...)
 {
-        struct cli_state *state = NULL;
         va_list           ap;
         int               ret = 0;
-
-        state = global_state;
+#ifdef HAVE_READLINE
+        struct cli_state *state = global_state;
+#endif
 
         va_start (ap, fmt);
 
 #ifdef HAVE_READLINE
-        if (state->rl_enabled && !state->rl_processing)
-                return cli_rl_err(state, fmt, ap);
+        if (state->rl_enabled && !state->rl_processing) {
+                ret = cli_rl_err (state, fmt, ap);
+                va_end (ap);
+                return ret;
+        }
 #endif
 
         ret = vfprintf (stderr, fmt, ap);
@@ -516,17 +549,19 @@ _cli_err (const char *fmt, ...)
 int
 _cli_out (const char *fmt, ...)
 {
-        struct cli_state *state = NULL;
         va_list           ap;
         int               ret = 0;
-
-        state = global_state;
+#ifdef HAVE_READLINE
+        struct cli_state *state = global_state;
+#endif
 
         va_start (ap, fmt);
-
 #ifdef HAVE_READLINE
-        if (state->rl_enabled && !state->rl_processing)
-                return cli_rl_out(state, fmt, ap);
+        if (state->rl_enabled && !state->rl_processing) {
+                ret = cli_rl_out (state, fmt, ap);
+                va_end (ap);
+                return ret;
+        }
 #endif
 
         ret = vprintf (fmt, ap);
@@ -570,7 +605,7 @@ cli_quotad_clnt_rpc_init (void)
 out:
         if (ret) {
                 if (rpc_opts)
-                        dict_destroy(rpc_opts);
+                        dict_unref(rpc_opts);
         }
         return rpc;
 }
@@ -583,6 +618,7 @@ cli_rpc_init (struct cli_state *state)
         int                     ret = -1;
         int                     port = CLI_GLUSTERD_PORT;
         xlator_t                *this = NULL;
+        char                    *addr_family = "inet";
 
         this = THIS;
         cli_rpc_prog = &cli_prog;
@@ -618,7 +654,8 @@ cli_rpc_init (struct cli_state *state)
                         goto out;
 
                 ret = dict_set_str (options, "transport.address-family",
-                                    "inet");
+                                        addr_family);
+
                 if (ret)
                         goto out;
         }
@@ -658,6 +695,7 @@ cli_local_get ()
 
         local = GF_CALLOC (1, sizeof (*local), cli_mt_cli_local_t);
         LOCK_INIT (&local->lock);
+        INIT_LIST_HEAD (&local->dict_list);
 
         return local;
 }
@@ -684,6 +722,9 @@ main (int argc, char *argv[])
         int                ret = -1;
         glusterfs_ctx_t   *ctx = NULL;
 
+       mem_pools_init_early ();
+       mem_pools_init_late ();
+
         ctx = glusterfs_ctx_new ();
         if (!ctx)
                 return ENOMEM;
@@ -701,6 +742,9 @@ main (int argc, char *argv[])
         ret = glusterfs_ctx_defaults_init (ctx);
         if (ret)
                 goto out;
+
+        cli_default_conn_timeout = 120;
+        cli_ten_minutes_timeout = 600;
 
         ret = cli_state_init (&state);
         if (ret)
@@ -744,6 +788,8 @@ main (int argc, char *argv[])
 
 out:
 //        glusterfs_ctx_destroy (ctx);
+
+        mem_pools_fini ();
 
         return ret;
 }

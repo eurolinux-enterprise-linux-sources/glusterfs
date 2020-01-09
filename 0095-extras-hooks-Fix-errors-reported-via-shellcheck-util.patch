@@ -1,0 +1,309 @@
+From 5c8fd80edb0133cad6ae10c2a6dc23b660b9fa38 Mon Sep 17 00:00:00 2001
+From: Anoop C S <anoopcs@redhat.com>
+Date: Wed, 11 Oct 2017 13:29:13 +0530
+Subject: [PATCH 095/128] extras/hooks: Fix errors reported via shellcheck
+ utility
+
+> Change-Id: I217c6b2a39955f1709bb3452b00d33c2dcb60faa
+> BUG: 1500649
+> Upstream: https://review.gluster.org/#/c/18485/
+
+Change-Id: I217c6b2a39955f1709bb3452b00d33c2dcb60faa
+BUG: 1444820
+Signed-off-by: Anoop C S <anoopcs@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124640
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ .../add-brick/post/disabled-quota-root-xattr-heal.sh         |  2 +-
+ .../add-brick/pre/S28Quota-enable-root-xattr-heal.sh         |  8 ++++----
+ extras/hook-scripts/create/post/S10selinux-label-brick.sh    |  4 ++--
+ extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh    |  7 ++-----
+ extras/hook-scripts/set/post/S30samba-set.sh                 | 12 ++++++------
+ .../set/post/S32gluster_enable_shared_storage.sh             |  4 ++--
+ extras/hook-scripts/start/post/S29CTDBsetup.sh               |  4 ++--
+ extras/hook-scripts/start/post/S30samba-start.sh             | 10 +++++-----
+ extras/hook-scripts/stop/pre/S29CTDB-teardown.sh             |  4 ++--
+ extras/hook-scripts/stop/pre/S30samba-stop.sh                |  8 ++++----
+ 10 files changed, 30 insertions(+), 33 deletions(-)
+
+diff --git a/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh b/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
+index bde7249..ce81816 100755
+--- a/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
++++ b/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
+@@ -71,7 +71,7 @@ get_and_set_xattr ()
+ ##------------------------------------------
+ ## Parse the arguments
+ ##------------------------------------------
+-ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+ eval set -- "$ARGS"
+ 
+ while true;
+diff --git a/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh b/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
+index 348f34e..38af73f 100755
+--- a/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
++++ b/extras/hook-scripts/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
+@@ -29,7 +29,7 @@ VERSION=
+ ENABLED_NAME="S28Quota-root-xattr-heal.sh"
+ DISABLED_NAME="disabled-quota-root-xattr-heal.sh"
+ 
+-enable ()
++activate ()
+ {
+         ln -sf $DISABLED_STATE $1;
+ }
+@@ -37,7 +37,7 @@ enable ()
+ ##------------------------------------------
+ ## Parse the arguments
+ ##------------------------------------------
+-ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+ eval set -- "$ARGS"
+ 
+ while true;
+@@ -92,9 +92,9 @@ FLAG=`cat $GLUSTERD_WORKDIR/vols/$VOL_NAME/info | grep "^status=" \
+       | awk -F'=' '{print $NF}'`;
+ if [ "$FLAG" != "1" ]
+ then
+-        enable $ENABLED_STATE_START;
++        activate $ENABLED_STATE_START;
+         exit $?
+ fi
+ 
+-enable $ENABLED_STATE_ADD_BRICK;
++activate $ENABLED_STATE_ADD_BRICK;
+ exit $?
+diff --git a/extras/hook-scripts/create/post/S10selinux-label-brick.sh b/extras/hook-scripts/create/post/S10selinux-label-brick.sh
+index f38555c..94c624d 100755
+--- a/extras/hook-scripts/create/post/S10selinux-label-brick.sh
++++ b/extras/hook-scripts/create/post/S10selinux-label-brick.sh
+@@ -14,7 +14,7 @@ OPTSPEC="volname:"
+ VOL=
+ 
+ parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -53,7 +53,7 @@ set_brick_labels()
+ SELINUX_STATE=$(which getenforce && getenforce)
+ [ "${SELINUX_STATE}" = 'Disabled' ] && exit 0
+ 
+-parse_args $@
++parse_args "$@"
+ [ -z "$VOL" ] && exit 1
+ 
+ set_brick_labels $VOL
+diff --git a/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh b/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh
+index 2c83331..7851e70 100755
+--- a/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh
++++ b/extras/hook-scripts/delete/pre/S10selinux-del-fcontext.sh
+@@ -13,12 +13,9 @@
+ PROGNAME="Sselinux"
+ OPTSPEC="volname:"
+ VOL=
+-CONFIGFILE=
+-LOGFILEBASE=
+-PIDDIR=
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -53,7 +50,7 @@ function delete_brick_fcontext()
+ SELINUX_STATE=$(which getenforce && getenforce)
+ [ "${SELINUX_STATE}" = 'Disabled' ] && exit 0
+ 
+-parse_args $@
++parse_args "$@"
+ [ -z "$VOL" ] && exit 1
+ 
+ delete_brick_fcontext $VOL
+diff --git a/extras/hook-scripts/set/post/S30samba-set.sh b/extras/hook-scripts/set/post/S30samba-set.sh
+index 97d067f..c21cfb5 100755
+--- a/extras/hook-scripts/set/post/S30samba-set.sh
++++ b/extras/hook-scripts/set/post/S30samba-set.sh
+@@ -28,7 +28,7 @@ USERSMB_SET=""
+ USERCIFS_SET=""
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  --name $PROGNAME -o "o:" -- $@)
++        ARGS=$(getopt -l $OPTSPEC  --name $PROGNAME -o "o:" -- "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -123,23 +123,23 @@ function get_smb () {
+         usersmbvalue=$(grep user.smb $GLUSTERD_WORKDIR/vols/"$volname"/info |\
+                        cut -d"=" -f2)
+ 
+-        if [[ $usercifsvalue = "disable" || $usersmbvalue = "disable" ]]; then
++        if [ $usercifsvalue = "disable" ] || [ $usersmbvalue = "disable" ]; then
+                 uservalue="disable"
+         fi
+         echo "$uservalue"
+ }
+ 
+-parse_args $@
+-if [ "0" = $(is_volume_started "$VOL") ]; then
++parse_args "$@"
++if [ "0" = "$(is_volume_started "$VOL")" ]; then
+     exit 0
+ fi
+ 
+ 
+-if [[ "$USERCIFS_SET" = "YES" || "$USERSMB_SET" = "YES" ]]; then
++if [ "$USERCIFS_SET" = "YES" ] || [ "$USERSMB_SET" = "YES" ]; then
+     #Find smb.conf, smbd pid directory and smbd logfile path
+     find_config_info
+ 
+-    if [ $(get_smb "$VOL") = "disable" ]; then
++    if [ "$(get_smb "$VOL")" = "disable" ]; then
+         del_samba_share $VOL
+         sighup_samba
+     else
+diff --git a/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh b/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh
+index c0aa735..885ed03 100755
+--- a/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh
++++ b/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh
+@@ -104,7 +104,7 @@ function check_volume_status()
+     echo $status
+ }
+ 
+-mount_cmd="mount -t glusterfs "$local_node_hostname":/gluster_shared_storage \
++mount_cmd="mount -t glusterfs $local_node_hostname:/gluster_shared_storage \
+            /var/run/gluster/shared_storage"
+ 
+ if [ "$option" == "enable" ]; then
+@@ -117,7 +117,7 @@ if [ "$option" == "enable" ]; then
+         if [ "$retry" == 3 ]; then
+             break;
+         fi
+-        status = check_volume_status;
++        status=$(check_volume_status)
+     done
+     # Mount the volume on all the nodes
+     umount /var/run/gluster/shared_storage
+diff --git a/extras/hook-scripts/start/post/S29CTDBsetup.sh b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+index 4265cba..330ce74 100755
+--- a/extras/hook-scripts/start/post/S29CTDBsetup.sh
++++ b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+@@ -21,7 +21,7 @@ VOL=
+ META="all"
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -55,7 +55,7 @@ function add_fstab_entry () {
+         fi
+ }
+ 
+-parse_args $@
++parse_args "$@"
+ if [ "$META" = "$VOL" ]
+ then
+         mkdir -p $CTDB_MNT
+diff --git a/extras/hook-scripts/start/post/S30samba-start.sh b/extras/hook-scripts/start/post/S30samba-start.sh
+index 3e0f257..d6b94e6 100755
+--- a/extras/hook-scripts/start/post/S30samba-start.sh
++++ b/extras/hook-scripts/start/post/S30samba-start.sh
+@@ -29,7 +29,7 @@ PIDDIR=
+ GLUSTERD_WORKDIR=
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -57,8 +57,8 @@ function find_config_info () {
+                 echo "Samba is not installed"
+                 exit 1
+         fi
+-        CONFIGFILE=`echo $cmdout | awk {'print $2'}`
+-        PIDDIR=`smbd -b | grep PIDDIR | awk {'print $2'}`
++        CONFIGFILE=`echo $cmdout | awk '{print $2}'`
++        PIDDIR=`smbd -b | grep PIDDIR | awk '{print $2}'`
+         LOGFILEBASE=`smbd -b | grep 'LOGFILEBASE' | awk '{print $2}'`
+ }
+ 
+@@ -95,13 +95,13 @@ function get_smb () {
+         usersmbvalue=$(grep user.smb $GLUSTERD_WORKDIR/vols/"$volname"/info |\
+                        cut -d"=" -f2)
+ 
+-        if [[ $usercifsvalue = "disable" || $usersmbvalue = "disable" ]]; then
++        if [ $usercifsvalue = "disable" ] || [ $usersmbvalue = "disable" ]; then
+                 uservalue="disable"
+         fi
+         echo "$uservalue"
+ }
+ 
+-parse_args $@
++parse_args "$@"
+ if [ "$(get_smb "$VOL")" = "disable" ]; then
+         exit 0
+ fi
+diff --git a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+index 5fb49bd..e9116c8 100755
+--- a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
++++ b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+@@ -12,7 +12,7 @@ VOL=
+ META="all"
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -51,7 +51,7 @@ function remove_fstab_entry () {
+         fi
+ }
+ 
+-parse_args $@
++parse_args "$@"
+ if [ "$META" = "$VOL" ]
+ then
+         umount "$CTDB_MNT"
+diff --git a/extras/hook-scripts/stop/pre/S30samba-stop.sh b/extras/hook-scripts/stop/pre/S30samba-stop.sh
+index 62cf7d1..6e542da 100755
+--- a/extras/hook-scripts/stop/pre/S30samba-stop.sh
++++ b/extras/hook-scripts/stop/pre/S30samba-stop.sh
+@@ -22,7 +22,7 @@ CONFIGFILE=
+ PIDDIR=
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++        ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -46,8 +46,8 @@ function find_config_info () {
+                 echo "Samba is not installed"
+                 exit 1
+         fi
+-        CONFIGFILE=`echo $cmdout | awk {'print $2'}`
+-        PIDDIR=`smbd -b | grep PIDDIR | awk {'print $2'}`
++        CONFIGFILE=`echo $cmdout | awk '{print $2}'`
++        PIDDIR=`smbd -b | grep PIDDIR | awk '{print $2}'`
+ }
+ 
+ function del_samba_share () {
+@@ -65,7 +65,7 @@ function sighup_samba () {
+         fi
+ }
+ 
+-parse_args $@
++parse_args "$@"
+ find_config_info
+ del_samba_share $VOL
+ sighup_samba
+-- 
+1.8.3.1
+

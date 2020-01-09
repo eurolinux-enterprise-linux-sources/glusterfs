@@ -1,0 +1,225 @@
+From 281f33b36d3ac39869c313e5c6ba4909ae2d74e0 Mon Sep 17 00:00:00 2001
+From: Anoop C S <anoopcs@redhat.com>
+Date: Wed, 25 Oct 2017 12:21:12 +0530
+Subject: [PATCH 096/128] extras/hooks: Honour all input arguments to scripts
+
+Some of the hook scripts were not honouring the arguments with which
+they are invoked during various volume operations. So make sure that
+we consider everything while parsing the command line arguments to
+avoid following warnings:
+
+. . .
+ame: unrecognized option '--first=no'
+ame: unrecognized option '--version=1'
+ame: unrecognized option '--volume-op=start'
+. . .
+
+> Change-Id: I5b08e5e7f32908c8509e97098a042096b507783e
+> BUG: 1503983
+> Upstream: https://review.gluster.org/#/c/18569/
+
+Change-Id: I5b08e5e7f32908c8509e97098a042096b507783e
+BUG: 1444820
+Signed-off-by: Anoop C S <anoopcs@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124642
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ extras/hook-scripts/start/post/S29CTDBsetup.sh   | 32 ++++++++++++++++++------
+ extras/hook-scripts/start/post/S30samba-start.sh | 18 ++++++++++++-
+ extras/hook-scripts/stop/pre/S29CTDB-teardown.sh | 18 +++++++------
+ extras/hook-scripts/stop/pre/S30samba-stop.sh    | 30 +++++++++++++---------
+ 4 files changed, 70 insertions(+), 28 deletions(-)
+
+diff --git a/extras/hook-scripts/start/post/S29CTDBsetup.sh b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+index 330ce74..54a4c0c 100755
+--- a/extras/hook-scripts/start/post/S29CTDBsetup.sh
++++ b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+@@ -9,10 +9,14 @@ CTDB_MNT=/gluster/lock
+ # Make sure ping-timeout is not default for CTDB volume
+ PING_TIMEOUT_SECS=10
+ PROGNAME="ctdb"
+-OPTSPEC="volname:"
++OPTSPEC="volname:,gd-workdir:,version:,volume-op:,first:"
+ HOSTNAME=`hostname`
+ MNTOPTS="_netdev,transport=tcp,xlator-option=*client*.ping-timeout=${PING_TIMEOUT_SECS}"
+ VOL=
++GLUSTERD_WORKDIR=
++VERSION=
++VOLUME_OP=
++FIRST=
+ # $META is the volume that will be used by CTDB as a shared filesystem.
+ # It is not desirable to use this volume for storing 'data' as well.
+ # META is set to 'all' (viz. a keyword and hence not a legal volume name)
+@@ -29,13 +33,27 @@ function parse_args () {
+                 --volname)
+                     shift
+                     VOL=$1
+-                ;;
+-
++                    ;;
++                --gd-workdir)
++                    shift
++                    GLUSTERD_WORKDIR=$1
++                    ;;
++                --version)
++                    shift
++                    VERSION=$1
++                    ;;
++                --volume-op)
++                    shift
++                    VOLUME_OP=$1
++                    ;;
++                --first)
++                    shift
++                    FIRST=$1
++                    ;;
+                 *)
+-                     shift
+-                     break
+-                ;;
+-
++                    shift
++                    break
++                    ;;
+             esac
+ 
+             shift
+diff --git a/extras/hook-scripts/start/post/S30samba-start.sh b/extras/hook-scripts/start/post/S30samba-start.sh
+index d6b94e6..a448dbd 100755
+--- a/extras/hook-scripts/start/post/S30samba-start.sh
++++ b/extras/hook-scripts/start/post/S30samba-start.sh
+@@ -21,12 +21,15 @@
+ #volume.
+ 
+ PROGNAME="Ssamba-start"
+-OPTSPEC="volname:,gd-workdir:"
++OPTSPEC="volname:,gd-workdir:,version:,volume-op:,first:"
+ VOL=
+ CONFIGFILE=
+ LOGFILEBASE=
+ PIDDIR=
+ GLUSTERD_WORKDIR=
++VERSION=
++VOLUME_OP=
++FIRST=
+ 
+ function parse_args () {
+         ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+@@ -42,11 +45,24 @@ function parse_args () {
+                     shift
+                     GLUSTERD_WORKDIR=$1
+                     ;;
++                --version)
++                    shift
++                    VERSION=$1
++                    ;;
++                --volume-op)
++                    shift
++                    VOLUME_OP=$1
++                    ;;
++                --first)
++                    shift
++                    FIRST=$1
++                    ;;
+                 *)
+                     shift
+                     break
+                     ;;
+             esac
++
+             shift
+         done
+ }
+diff --git a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+index e9116c8..12f49da 100755
+--- a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
++++ b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+@@ -2,8 +2,9 @@
+ 
+ CTDB_MNT=/gluster/lock
+ PROGNAME="ctdb"
+-OPTSPEC="volname:"
++OPTSPEC="volname:,last:"
+ VOL=
++LAST=
+ # $META is the volume that will be used by CTDB as a shared filesystem.
+ # It is not desirable to use this volume for storing 'data' as well.
+ # META is set to 'all' (viz. a keyword and hence not a legal volume name)
+@@ -20,15 +21,16 @@ function parse_args () {
+                 --volname)
+                     shift
+                     VOL=$1
+-                ;;
+-
++                    ;;
++                --last)
++                    shift
++                    LAST=$1
++                    ;;
+                 *)
+-                     shift
+-                     break
+-                ;;
+-
++                    shift
++                    break
++                    ;;
+             esac
+-
+             shift
+         done
+ }
+diff --git a/extras/hook-scripts/stop/pre/S30samba-stop.sh b/extras/hook-scripts/stop/pre/S30samba-stop.sh
+index 6e542da..a5c8dd5 100755
+--- a/extras/hook-scripts/stop/pre/S30samba-stop.sh
++++ b/extras/hook-scripts/stop/pre/S30samba-stop.sh
+@@ -16,27 +16,33 @@
+ #event by removing the volume related entries(if any) in smb.conf file.
+ 
+ PROGNAME="Ssamba-stop"
+-OPTSPEC="volname:"
++OPTSPEC="volname:,last:"
+ VOL=
+ CONFIGFILE=
+ PIDDIR=
++LAST=
+ 
+ function parse_args () {
+         ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME "$@")
+         eval set -- "$ARGS"
+ 
+         while true; do
+-        case $1 in
+-        --volname)
+-         shift
+-         VOL=$1
+-         ;;
+-        *)
+-         shift
+-         break
+-         ;;
+-        esac
+-        shift
++            case $1 in
++                --volname)
++                    shift
++                    VOL=$1
++                    ;;
++                --last)
++                    shift
++                    LAST=$1
++                    ;;
++                *)
++                    shift
++                    break
++                    ;;
++            esac
++
++            shift
+         done
+ }
+ 
+-- 
+1.8.3.1
+

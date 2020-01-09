@@ -1,0 +1,226 @@
+From 0ce89d9d2bb0b162ecd4dc47c663569815acdb7b Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 19 Mar 2018 15:12:14 +0530
+Subject: [PATCH 195/201] storage/posix: Add active-fd-count option in gluster
+
+Problem:
+when dd happens on sharded replicate volume all the writes on shards happen
+through anon-fd. When the writes don't come quick enough, old anon-fd closes
+and new fd gets created to serve the new writes. open-fd-count is decremented
+only after the fd is closed as part of fd_destroy(). So even when one fd is on
+the way to be closed a new fd will be created and during this short period it
+appears as though there are multiple fds opened on the file. AFR thinks another
+application opened the same file and switches off eager-lock leading to
+extra latency.
+
+Fix:
+Have a different option called active-fd whose life cycle starts at
+fd_bind() and ends just before fd_destroy()
+
+ >BUG: 1557932
+
+Upstream-patch: https://review.gluster.org/19740
+BUG: 1491785
+Change-Id: I2e221f6030feeedf29fbb3bd6554673b8a5b9c94
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/133659
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ libglusterfs/src/fd.c                     |  2 ++
+ libglusterfs/src/glusterfs.h              |  1 +
+ libglusterfs/src/inode.c                  |  2 ++
+ libglusterfs/src/inode.h                  |  1 +
+ tests/volume.rc                           | 14 ++++++++-
+ xlators/storage/posix/src/posix-helpers.c | 52 ++++++++++++-------------------
+ xlators/storage/posix/src/posix.c         | 12 +++++++
+ 7 files changed, 51 insertions(+), 33 deletions(-)
+
+diff --git a/libglusterfs/src/fd.c b/libglusterfs/src/fd.c
+index a824db7..45b0d32 100644
+--- a/libglusterfs/src/fd.c
++++ b/libglusterfs/src/fd.c
+@@ -557,6 +557,7 @@ fd_unref (fd_t *fd)
+                 if (refcount == 0) {
+                         if (!list_empty (&fd->inode_list)) {
+                                 list_del_init (&fd->inode_list);
++                                fd->inode->active_fd_count--;
+                                 bound = _gf_true;
+                         }
+                 }
+@@ -578,6 +579,7 @@ __fd_bind (fd_t *fd)
+         list_del_init (&fd->inode_list);
+         list_add (&fd->inode_list, &fd->inode->fd_list);
+         fd->inode->fd_count++;
++        fd->inode->active_fd_count++;
+ 
+         return fd;
+ }
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index c8835d9..5abfafa 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -164,6 +164,7 @@
+ #define GLUSTERFS_WRITE_IS_APPEND "glusterfs.write-is-append"
+ #define GLUSTERFS_WRITE_UPDATE_ATOMIC "glusterfs.write-update-atomic"
+ #define GLUSTERFS_OPEN_FD_COUNT "glusterfs.open-fd-count"
++#define GLUSTERFS_ACTIVE_FD_COUNT "glusterfs.open-active-fd-count"
+ #define GLUSTERFS_INODELK_COUNT "glusterfs.inodelk-count"
+ #define GLUSTERFS_ENTRYLK_COUNT "glusterfs.entrylk-count"
+ #define GLUSTERFS_POSIXLK_COUNT "glusterfs.posixlk-count"
+diff --git a/libglusterfs/src/inode.c b/libglusterfs/src/inode.c
+index b7b5ac6..ffba1bf 100644
+--- a/libglusterfs/src/inode.c
++++ b/libglusterfs/src/inode.c
+@@ -2344,6 +2344,8 @@ inode_dump (inode_t *inode, char *prefix)
+                 gf_proc_dump_write("gfid", "%s", uuid_utoa (inode->gfid));
+                 gf_proc_dump_write("nlookup", "%ld", inode->nlookup);
+                 gf_proc_dump_write("fd-count", "%u", inode->fd_count);
++                gf_proc_dump_write("active-fd-count", "%u",
++                                   inode->active_fd_count);
+                 gf_proc_dump_write("ref", "%u", inode->ref);
+                 gf_proc_dump_write("ia_type", "%d", inode->ia_type);
+                 if (inode->_ctx) {
+diff --git a/libglusterfs/src/inode.h b/libglusterfs/src/inode.h
+index b82b6ba..7a87748 100644
+--- a/libglusterfs/src/inode.h
++++ b/libglusterfs/src/inode.h
+@@ -93,6 +93,7 @@ struct _inode {
+         gf_lock_t            lock;
+         uint64_t             nlookup;
+         uint32_t             fd_count;      /* Open fd count */
++        uint32_t             active_fd_count;      /* Active open fd count */
+         uint32_t             ref;           /* reference count on this inode */
+         ia_type_t            ia_type;       /* what kind of file */
+         struct list_head     fd_list;       /* list of open files on this inode */
+diff --git a/tests/volume.rc b/tests/volume.rc
+index a15c8e5..d57aa93 100644
+--- a/tests/volume.rc
++++ b/tests/volume.rc
+@@ -804,7 +804,19 @@ function get_fd_count {
+         local fname=$4
+         local gfid_str=$(gf_gfid_xattr_to_str $(gf_get_gfid_xattr $brick/$fname))
+         local statedump=$(generate_brick_statedump $vol $host $brick)
+-        local count=$(grep "gfid=$gfid_str" $statedump -A2 | grep fd-count | cut -f2 -d'=' | tail -1)
++        local count=$(grep "gfid=$gfid_str" $statedump -A2 -B1 | grep $brick -A3 | grep -w fd-count | cut -f2 -d'=' | tail -1)
++        rm -f $statedump
++        echo $count
++}
++
++function get_active_fd_count {
++        local vol=$1
++        local host=$2
++        local brick=$3
++        local fname=$4
++        local gfid_str=$(gf_gfid_xattr_to_str $(gf_get_gfid_xattr $brick/$fname))
++        local statedump=$(generate_brick_statedump $vol $host $brick)
++        local count=$(grep "gfid=$gfid_str" $statedump -A2 -B1 | grep $brick -A3 | grep -w active-fd-count | cut -f2 -d'=' | tail -1)
+         rm -f $statedump
+         echo $count
+ }
+diff --git a/xlators/storage/posix/src/posix-helpers.c b/xlators/storage/posix/src/posix-helpers.c
+index bc97206..ba1d8c3 100644
+--- a/xlators/storage/posix/src/posix-helpers.c
++++ b/xlators/storage/posix/src/posix-helpers.c
+@@ -388,27 +388,6 @@ _get_filler_inode (posix_xattr_filler_t *filler)
+ }
+ 
+ static int
+-_posix_filler_get_openfd_count (posix_xattr_filler_t *filler, char *key)
+-{
+-        inode_t  *inode            = NULL;
+-        int      ret               = -1;
+-
+-        inode = _get_filler_inode (filler);
+-        if (!inode || gf_uuid_is_null (inode->gfid))
+-                        goto out;
+-
+-        ret = dict_set_uint32 (filler->xattr, key, inode->fd_count);
+-        if (ret < 0) {
+-                gf_msg (filler->this->name, GF_LOG_WARNING, 0,
+-                        P_MSG_DICT_SET_FAILED,
+-                        "Failed to set dictionary value for %s", key);
+-                goto out;
+-        }
+-out:
+-        return ret;
+-}
+-
+-static int
+ _posix_xattr_get_set (dict_t *xattr_req, char *key, data_t *data,
+                       void *xattrargs)
+ {
+@@ -416,11 +395,11 @@ _posix_xattr_get_set (dict_t *xattr_req, char *key, data_t *data,
+         int       ret      = -1;
+         char     *databuf  = NULL;
+         int       _fd      = -1;
+-        loc_t    *loc      = NULL;
+         ssize_t  req_size  = 0;
+         int32_t  list_offset = 0;
+         ssize_t  remaining_size = 0;
+         char     *xattr    = NULL;
++        inode_t  *inode    = NULL;
+ 
+         if (posix_xattr_ignorable (key))
+                 goto out;
+@@ -496,16 +475,25 @@ _posix_xattr_get_set (dict_t *xattr_req, char *key, data_t *data,
+                         GF_FREE (databuf);
+                 }
+         } else if (!strcmp (key, GLUSTERFS_OPEN_FD_COUNT)) {
+-                ret = _posix_filler_get_openfd_count (filler, key);
+-                loc = filler->loc;
+-                if (loc) {
+-                        ret = dict_set_uint32 (filler->xattr, key,
+-                                               loc->inode->fd_count);
+-                        if (ret < 0)
+-                                gf_msg (filler->this->name, GF_LOG_WARNING, 0,
+-                                        P_MSG_XDATA_GETXATTR,
+-                                        "Failed to set dictionary value for %s",
+-                                        key);
++                inode = _get_filler_inode (filler);
++                if (!inode || gf_uuid_is_null (inode->gfid))
++                                goto out;
++                ret = dict_set_uint32 (filler->xattr, key, inode->fd_count);
++                if (ret < 0) {
++                        gf_msg (filler->this->name, GF_LOG_WARNING, 0,
++                                P_MSG_DICT_SET_FAILED,
++                                "Failed to set dictionary value for %s", key);
++                }
++        } else if (!strcmp (key, GLUSTERFS_ACTIVE_FD_COUNT)) {
++                inode = _get_filler_inode (filler);
++                if (!inode || gf_uuid_is_null (inode->gfid))
++                                goto out;
++                ret = dict_set_uint32 (filler->xattr, key,
++                                       inode->active_fd_count);
++                if (ret < 0) {
++                        gf_msg (filler->this->name, GF_LOG_WARNING, 0,
++                                P_MSG_DICT_SET_FAILED,
++                                "Failed to set dictionary value for %s", key);
+                 }
+         } else if (!strcmp (key, GET_ANCESTRY_PATH_KEY)) {
+                 /* As of now, the only consumers of POSIX_ANCESTRY_PATH attempt
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index a412e6d..6856e5e 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -3554,6 +3554,18 @@ _fill_writev_xdata (fd_t *fd, dict_t *xdata, xlator_t *this, int is_append)
+                 }
+         }
+ 
++        if (dict_get (xdata, GLUSTERFS_ACTIVE_FD_COUNT)) {
++                ret = dict_set_uint32 (rsp_xdata, GLUSTERFS_ACTIVE_FD_COUNT,
++                                       fd->inode->active_fd_count);
++                if (ret < 0) {
++                        gf_msg (this->name, GF_LOG_WARNING, 0,
++                                P_MSG_DICT_SET_FAILED, "%s: Failed to set "
++                                "dictionary value for %s",
++                                uuid_utoa (fd->inode->gfid),
++                                GLUSTERFS_ACTIVE_FD_COUNT);
++                }
++        }
++
+         if (dict_get (xdata, GLUSTERFS_WRITE_IS_APPEND)) {
+                 ret = dict_set_uint32 (rsp_xdata, GLUSTERFS_WRITE_IS_APPEND,
+                                        is_append);
+-- 
+1.8.3.1
+

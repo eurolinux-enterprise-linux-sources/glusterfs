@@ -1,0 +1,67 @@
+From 9656e92cfcd3db351c149e78ca36a4f3cf4c37f3 Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Fri, 10 Aug 2018 15:28:35 +0530
+Subject: [PATCH 338/351] posix: prevent crash when SEEK_DATA/HOLE is not
+ supported
+
+Instead of not defining the 'seek' fop when it's not supported on the
+compilation platform, we simply return EINVAL when it's used.
+
+Upstream reference:
+> URL: https://review.gluster.org/20625
+> Fixes: bz#1611834
+> Signed-off-by: Xavi Hernandez <xhernandez@redhat.com>
+
+BUG: 1610825
+Change-Id: I253666d8910c5e2fffa3a3ba37085e5c1c058a8e
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146682
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/storage/posix/src/posix.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index c3b7120..5203068 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -1184,11 +1184,11 @@ posix_ipc (call_frame_t *frame, xlator_t *this, int32_t op, dict_t *xdata)
+ 
+ }
+ 
+-#ifdef HAVE_SEEK_HOLE
+ static int32_t
+ posix_seek (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+             gf_seek_what_t what, dict_t *xdata)
+ {
++#ifdef HAVE_SEEK_HOLE
+         struct posix_fd *pfd       = NULL;
+         off_t            ret       = -1;
+         int              err       = 0;
+@@ -1236,9 +1236,11 @@ out:
+ 
+         STACK_UNWIND_STRICT (seek, frame, (ret == -1 ? -1 : 0), err,
+                              (ret == -1 ? -1 : ret), xdata);
++#else
++        STACK_UNWIND_STRICT (seek, frame, -1, EINVAL, 0, NULL);
++#endif
+         return 0;
+ }
+-#endif
+ 
+ int32_t
+ posix_opendir (call_frame_t *frame, xlator_t *this,
+@@ -8018,9 +8020,7 @@ struct xlator_fops fops = {
+ 	.discard     = posix_discard,
+         .zerofill    = posix_zerofill,
+         .ipc         = posix_ipc,
+-#ifdef HAVE_SEEK_HOLE
+         .seek        = posix_seek,
+-#endif
+         .lease       = posix_lease,
+ };
+ 
+-- 
+1.8.3.1
+

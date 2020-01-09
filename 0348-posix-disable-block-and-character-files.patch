@@ -1,0 +1,50 @@
+From d542543faf4eca04737ddfe215e8988a700caf42 Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Thu, 9 Aug 2018 10:17:56 +0530
+Subject: [PATCH 348/351] posix: disable block and character files
+
+The special files (block and character) needn't be supported on
+n/w filesystem. As each of these files are used closely with the
+host machine, instead of client data, we would be tied to server.
+
+BUG: 1610966
+Change-Id: Id65f1a6c51876a84c56cf691bb44a3e85ae73d70
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146526
+Reviewed-by: FNU Raghavendra Manjunath <raghavendra@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/storage/posix/src/posix.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 49b272f..28d2e6f 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -1452,6 +1452,23 @@ posix_mknod (call_frame_t *frame, xlator_t *this,
+         }
+ 
+ 
++        if (((mode & S_IFMT) == S_IFBLK) || ((mode & S_IFMT) == S_IFCHR)) {
++                /* Man page 'man 2 mknod':
++                    EPERM  mode  requested  creation  of something other than
++                    a regular file, FIFO (named pipe), or UNIX domain socket,
++                    and the caller is not privileged (Linux: does not have the
++                    CAP_MKNOD capability); also returned  if  the  filesystem
++                    containing pathname does not support the type of node
++                    requested.
++                */
++                op_ret = -1;
++                op_errno = EPERM;
++                gf_msg (this->name, GF_LOG_ERROR, op_errno, P_MSG_MKNOD_FAILED,
++                        "%s: mknod failed as Block and Character devices "
++                        "are not supported on GlusterFS", real_path);
++                goto out;
++        }
++
+         op_ret = posix_pstat (this, loc->pargfid, par_path, &preparent);
+         if (op_ret == -1) {
+                 op_errno = errno;
+-- 
+1.8.3.1
+

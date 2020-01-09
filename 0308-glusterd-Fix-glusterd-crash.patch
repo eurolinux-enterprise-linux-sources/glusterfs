@@ -1,0 +1,58 @@
+From 4fb594e8d54bad70ddd1e195af422bbd0b9fd4a8 Mon Sep 17 00:00:00 2001
+From: Sanju Rakonde <srakonde@redhat.com>
+Date: Wed, 4 Jul 2018 14:45:51 +0530
+Subject: [PATCH 308/325] glusterd: Fix glusterd crash
+
+Problem: gluster get-state command is crashing glusterd process, when
+geo-replication session is configured.
+
+Cause: Crash is happening due to the double free of memory. In
+glusterd_print_gsync_status_by_vol we are calling dict_unref(), which
+will free all the keys and values in the dictionary. Before calling
+dict_unref(), glusterd_print_gsync_status_by_vol is calling
+glusterd_print_gsync_status(). glusterd_print_gsync_status is freeing
+up values in the dictionary and again when dict_unref() is called, it
+tries to free up the values which are already freed.
+
+Solution: Remove the code which will free the memory in
+glusterd_print_gsync_status function.
+
+>Fixes: bz#1598345
+>Change-Id: Id3d8aae109f377b462bbbdb96a8e3c5f6b0be752
+>Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/20461/
+
+Change-Id: Id3d8aae109f377b462bbbdb96a8e3c5f6b0be752
+BUG: 1578716
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/143323
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handler.c | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index c0c3e25..395b342 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -5155,15 +5155,6 @@ glusterd_print_gsync_status (FILE *fp, dict_t *gsync_dict)
+                          volcount, i+1, get_struct_variable(15, status_vals[i]));
+         }
+ out:
+-        for (i = 0; i < gsync_count; i++) {
+-                if (status_vals[i]) {
+-                        GF_FREE (status_vals[i]);
+-                }
+-        }
+-
+-        if (status_vals)
+-                GF_FREE (status_vals);
+-
+         return ret;
+ }
+ 
+-- 
+1.8.3.1
+

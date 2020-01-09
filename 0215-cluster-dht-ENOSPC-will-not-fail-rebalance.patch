@@ -1,0 +1,59 @@
+From d6da0e0874de04c184c54147d0ee0e0370e55ff2 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Mon, 2 Apr 2018 09:11:06 +0530
+Subject: [PATCH 215/236] cluster/dht: ENOSPC will not fail rebalance
+
+ENOSPC returned by a file migration is no longer
+considered a rebalance failure.
+
+upstream: https://review.gluster.org/#/c/19806/
+
+> Change-Id: I21cf3a8acdc827bc478e138d6cb5db649d53a28c
+> BUG: 1555161
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I22f90194507331e981fbcd10b2cafced6fc05cc2
+BUG: 1546941
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134252
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c | 12 +++---------
+ 1 file changed, 3 insertions(+), 9 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 9e31ff8..bba44b9 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -2392,10 +2392,11 @@ dht_build_root_loc (inode_t *inode, loc_t *loc)
+ int32_t
+ gf_defrag_handle_migrate_error (int32_t op_errno, gf_defrag_info_t *defrag)
+ {
+-        /* if errno is not ENOSPC or ENOTCONN, we can still continue
++        /* if errno is not ENOTCONN, we can still continue
+            with rebalance process */
+-        if ((op_errno != ENOSPC) && (op_errno != ENOTCONN))
++        if (op_errno != ENOTCONN) {
+                 return 1;
++        }
+ 
+         if (op_errno == ENOTCONN) {
+                 /* Most probably mount point went missing (mostly due
+@@ -2405,13 +2406,6 @@ gf_defrag_handle_migrate_error (int32_t op_errno, gf_defrag_info_t *defrag)
+                 return -1;
+         }
+ 
+-        if (op_errno == ENOSPC) {
+-                /* rebalance process itself failed, may be
+-                   remote brick went down, or write failed due to
+-                   disk full etc etc.. */
+-                return 0;
+-        }
+-
+         return 0;
+ }
+ 
+-- 
+1.8.3.1
+

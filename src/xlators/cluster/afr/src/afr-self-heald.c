@@ -9,11 +9,6 @@
 */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "afr.h"
 #include "afr-self-heal.h"
 #include "afr-self-heald.h"
@@ -158,31 +153,41 @@ unlock:
 inode_t *
 afr_shd_inode_find (xlator_t *this, xlator_t *subvol, uuid_t gfid)
 {
-	inode_t *inode = NULL;
-	int ret = 0;
-	loc_t loc = {0, };
-	struct iatt iatt = {0, };
+        int          ret       = 0;
+        uint64_t     val       = IA_INVAL;
+        dict_t       *xdata    = NULL;
+        dict_t       *rsp_dict = NULL;
+        inode_t      *inode    = NULL;
 
-	inode = inode_find (this->itable, gfid);
-	if (inode) {
-                inode_lookup (inode);
-		goto out;
-        }
+        xdata = dict_new ();
+        if (!xdata)
+                goto out;
 
-	loc.inode = inode_new (this->itable);
-	if (!loc.inode)
-		goto out;
-	gf_uuid_copy (loc.gfid, gfid);
+        ret = dict_set_int8 (xdata, GF_INDEX_IA_TYPE_GET_REQ, 1);
+        if (ret)
+                goto out;
 
-	ret = syncop_lookup (subvol, &loc, &iatt, NULL, NULL, NULL);
+	ret = syncop_inode_find (this, subvol, gfid, &inode,
+                                 xdata, &rsp_dict);
 	if (ret < 0)
 		goto out;
 
-	inode = inode_link (loc.inode, NULL, NULL, &iatt);
-	if (inode)
-		inode_lookup (inode);
+        if (rsp_dict) {
+                ret = dict_get_uint64 (rsp_dict, GF_INDEX_IA_TYPE_GET_RSP,
+                                       &val);
+                if (ret)
+                        goto out;
+        }
+        ret = inode_ctx_set2 (inode, subvol, 0, &val);
 out:
-	loc_wipe (&loc);
+        if (ret && inode) {
+                inode_unref (inode);
+                inode = NULL;
+        }
+        if (xdata)
+                dict_unref (xdata);
+        if (rsp_dict)
+                dict_unref (rsp_dict);
 	return inode;
 }
 
@@ -224,15 +229,19 @@ out:
 }
 
 int
-afr_shd_index_purge (xlator_t *subvol, inode_t *inode, char *name)
+afr_shd_index_purge (xlator_t *subvol, inode_t *inode, char *name,
+                     ia_type_t type)
 {
-	loc_t loc = {0, };
-	int ret = 0;
+	int    ret = 0;
+	loc_t  loc = {0,};
 
 	loc.parent = inode_ref (inode);
 	loc.name = name;
 
-	ret = syncop_unlink (subvol, &loc, NULL, NULL);
+        if (IA_ISDIR (type))
+                ret = syncop_rmdir (subvol, &loc, 1, NULL, NULL);
+        else
+                ret = syncop_unlink (subvol, &loc, NULL, NULL);
 
 	loc_wipe (&loc);
 	return ret;
@@ -274,7 +283,7 @@ afr_shd_zero_xattrop (xlator_t *this, uuid_t gfid)
         /*Send xattrop to all bricks. Doing a lookup to see if bricks are up or
         * has valid repies for this gfid seems a bit of an overkill.*/
         for (i = 0; i < priv->child_count; i++)
-                afr_selfheal_post_op (frame, this, inode, i, xattr);
+                afr_selfheal_post_op (frame, this, inode, i, xattr, NULL);
 
 out:
         if (frame)
@@ -292,7 +301,7 @@ afr_shd_selfheal_name (struct subvol_healer *healer, int child, uuid_t parent,
 {
 	int ret = -1;
 
-	ret = afr_selfheal_name (THIS, parent, bname, NULL);
+	ret = afr_selfheal_name (THIS, parent, bname, NULL, NULL);
 
 	return ret;
 }
@@ -324,14 +333,18 @@ afr_shd_selfheal (struct subvol_healer *healer, int child, uuid_t gfid)
 
 	ret = afr_selfheal (this, gfid);
 
-	if (ret == -EIO) {
-		eh = shd->split_brain;
-		crawl_event->split_brain_count++;
-	} else if (ret < 0) {
-		crawl_event->heal_failed_count++;
-	} else if (ret == 0) {
-		crawl_event->healed_count++;
-	}
+        LOCK (&priv->lock);
+        {
+                if (ret == -EIO) {
+                        eh = shd->split_brain;
+                        crawl_event->split_brain_count++;
+                } else if (ret < 0) {
+                        crawl_event->heal_failed_count++;
+                } else if (ret == 0) {
+                        crawl_event->healed_count++;
+                }
+        }
+        UNLOCK (&priv->lock);
 
 	if (eh) {
 		shd_event = GF_CALLOC (1, sizeof(*shd_event),
@@ -400,22 +413,26 @@ afr_shd_index_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
         afr_private_t        *priv   = NULL;
         uuid_t               gfid    = {0};
         int                  ret     = 0;
+        uint64_t             val     = IA_INVAL;
 
         priv = healer->this->private;
         if (!priv->shd.enabled)
                 return -EBUSY;
 
-        gf_msg_debug (healer->this->name, 0, "got entry: %s",
-                      entry->d_name);
+        gf_msg_debug (healer->this->name, 0, "got entry: %s from %s",
+                      entry->d_name, priv->children[healer->subvol]->name);
 
         ret = gf_uuid_parse (entry->d_name, gfid);
         if (ret)
                 return 0;
 
+        inode_ctx_get2 (parent->inode, subvol, NULL, &val);
+
         ret = afr_shd_selfheal (healer, healer->subvol, gfid);
 
         if (ret == -ENOENT || ret == -ESTALE)
-                afr_shd_index_purge (subvol, parent->inode, entry->d_name);
+                afr_shd_index_purge (subvol, parent->inode, entry->d_name, val);
+
         if (ret == 2)
                 /* If bricks crashed in pre-op after creating indices/xattrop
                  * link but before setting afr changelogs, we end up with stale
@@ -434,27 +451,47 @@ afr_shd_index_sweep (struct subvol_healer *healer, char *vgfid)
 	afr_private_t *priv   = NULL;
 	int           ret     = 0;
 	xlator_t      *subvol = NULL;
+	dict_t        *xdata  = NULL;
+        call_frame_t  *frame  = NULL;
 
 	priv = healer->this->private;
 	subvol = priv->children[healer->subvol];
+
+        frame = afr_frame_create (healer->this);
+        if (!frame) {
+                ret = -ENOMEM;
+                goto out;
+        }
 
 	loc.inode = afr_shd_index_inode (healer->this, subvol, vgfid);
 	if (!loc.inode) {
 	        gf_msg (healer->this->name, GF_LOG_WARNING,
                         0, AFR_MSG_INDEX_DIR_GET_FAILED,
 		        "unable to get index-dir on %s", subvol->name);
-		return -errno;
+		ret = -errno;
+	        goto out;
 	}
 
-        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
-                               healer, afr_shd_index_heal);
+        xdata = dict_new ();
+        if (!xdata || dict_set_int32 (xdata, "get-gfid-type", 1)) {
+                ret = -ENOMEM;
+                goto out;
+        }
 
-        inode_forget (loc.inode, 1);
-        loc_wipe (&loc);
+        ret = syncop_mt_dir_scan (frame, subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+                                  healer, afr_shd_index_heal, xdata,
+                                 priv->shd.max_threads, priv->shd.wait_qlength);
 
         if (ret == 0)
                 ret = healer->crawl_event.healed_count;
 
+out:
+        loc_wipe (&loc);
+
+        if (xdata)
+                dict_unref (xdata);
+        if (frame)
+                AFR_STACK_DESTROY (frame);
 	return ret;
 }
 
@@ -474,6 +511,10 @@ afr_shd_index_sweep_all (struct subvol_healer *healer)
                 goto out;
         count += ret;
 
+        ret = afr_shd_index_sweep (healer, GF_XATTROP_ENTRY_CHANGES_GFID);
+        if (ret < 0)
+                goto out;
+        count += ret;
 out:
         if (ret < 0)
                 return ret;
@@ -521,14 +562,17 @@ afr_shd_index_healer (void *data)
 	struct subvol_healer *healer = NULL;
 	xlator_t *this = NULL;
 	int ret = 0;
+	afr_private_t *priv = NULL;
 
 	healer = data;
 	THIS = this = healer->this;
+	priv = this->private;
 
 	for (;;) {
 		afr_shd_healer_wait (healer);
 
 		ASSERT_LOCAL(this, healer);
+		priv->local[healer->subvol] = healer->local;
 
 		do {
 		        gf_msg_debug (this->name, 0,
@@ -641,7 +685,7 @@ afr_shd_healer_spawn (xlator_t *this, struct subvol_healer *healer,
 			pthread_cond_signal (&healer->cond);
 		} else {
 			ret = gf_thread_create (&healer->thread, NULL,
-						threadfn, healer);
+						threadfn, healer, "shdheal");
 			if (ret)
 				goto unlock;
 			healer->running = 1;
@@ -720,7 +764,7 @@ afr_shd_dict_add_crawl_event (xlator_t *this, dict_t *output,
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR,
                         -ret, AFR_MSG_DICT_SET_FAILED,
-		        "Could not add statistics_healed_count to outout");
+		        "Could not add statistics_healed_count to output");
                 goto out;
 	}
 
@@ -730,7 +774,7 @@ afr_shd_dict_add_crawl_event (xlator_t *this, dict_t *output,
 	if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR,
                         -ret, AFR_MSG_DICT_SET_FAILED,
-		        "Could not add statistics_split_brain_count to outout");
+		        "Could not add statistics_split_brain_count to output");
                 goto out;
         }
 
@@ -750,7 +794,7 @@ afr_shd_dict_add_crawl_event (xlator_t *this, dict_t *output,
 	if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR,
                         -ret, AFR_MSG_DICT_SET_FAILED,
-	                "Could not add statistics_healed_failed_count to outout");
+	                "Could not add statistics_healed_failed_count to output");
                 goto out;
         }
 
@@ -760,7 +804,7 @@ afr_shd_dict_add_crawl_event (xlator_t *this, dict_t *output,
 	if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR,
                         -ret, AFR_MSG_DICT_SET_FAILED,
-		        "Could not add statistics_crawl_start_time to outout");
+		        "Could not add statistics_crawl_start_time to output");
                 goto out;
         } else {
 		start_time_str = NULL;
@@ -779,7 +823,7 @@ afr_shd_dict_add_crawl_event (xlator_t *this, dict_t *output,
 	if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR,
                         -ret, AFR_MSG_DICT_SET_FAILED,
-		        "Could not add statistics_crawl_end_time to outout");
+		        "Could not add statistics_crawl_end_time to output");
                 goto out;
         } else {
 		end_time_str = NULL;
@@ -792,7 +836,7 @@ afr_shd_dict_add_crawl_event (xlator_t *this, dict_t *output,
 	if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR,
                         -ret, AFR_MSG_DICT_SET_FAILED,
-		        "Could not add statistics_inprogress to outout");
+		        "Could not add statistics_inprogress to output");
                 goto out;
         }
 

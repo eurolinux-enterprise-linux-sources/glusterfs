@@ -83,8 +83,8 @@ glusterd_proc_stop (glusterd_proc_t *proc, int sig, int flags)
                         proc->name);
                 goto out;
         }
-        gf_msg_debug (this->name, 0, "Stopping %s daemon running in pid: "
-                "%d", proc->name, pid);
+        gf_msg (this->name, GF_LOG_INFO, 0, GD_MSG_SVC_STOP_SUCCESS,
+                "Stopping %s daemon running in pid: " "%d", proc->name, pid);
 
         ret = kill (pid, sig);
         if (ret) {
@@ -105,7 +105,7 @@ glusterd_proc_stop (glusterd_proc_t *proc, int sig, int flags)
                 goto out;
 
         sleep (1);
-        if (gf_is_service_running (proc->pidfile, NULL)) {
+        if (gf_is_service_running (proc->pidfile, &pid)) {
                 ret = kill (pid, SIGKILL);
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, errno,
@@ -131,5 +131,7 @@ glusterd_proc_get_pid (glusterd_proc_t *proc)
 int
 glusterd_proc_is_running (glusterd_proc_t *proc)
 {
-        return gf_is_service_running (proc->pidfile, NULL);
+        int pid = -1;
+
+        return gf_is_service_running (proc->pidfile, &pid);
 }

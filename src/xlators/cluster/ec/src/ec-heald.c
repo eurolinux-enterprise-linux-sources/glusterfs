@@ -126,46 +126,6 @@ unlock:
         return ret;
 }
 
-
-int
-ec_shd_inode_find (xlator_t *this, xlator_t *subvol,
-                   uuid_t gfid, inode_t **inode)
-{
-        int         ret    = 0;
-        loc_t       loc    = {0, };
-        struct iatt iatt   = {0, };
-	*inode =  NULL;
-
-        *inode = inode_find (this->itable, gfid);
-        if (*inode) {
-                inode_lookup (*inode);
-                goto out;
-        }
-
-        loc.inode = inode_new (this->itable);
-        if (!loc.inode) {
-                ret = -ENOMEM;
-                goto out;
-        }
-        gf_uuid_copy (loc.gfid, gfid);
-
-        ret = syncop_lookup (subvol, &loc, &iatt, NULL, NULL, NULL);
-        if (ret < 0)
-                goto out;
-
-        *inode = inode_link (loc.inode, NULL, NULL, &iatt);
-        if (!*inode) {
-                ret = -ENOMEM;
-                goto out;
-        } else {
-                inode_lookup (*inode);
-        }
-out:
-        loc_wipe (&loc);
-        return ret;
-}
-
-
 int
 ec_shd_index_inode (xlator_t *this, xlator_t *subvol, inode_t **inode)
 {
@@ -194,7 +154,8 @@ ec_shd_index_inode (xlator_t *this, xlator_t *subvol, inode_t **inode)
         gf_msg_debug (this->name, 0, "index-dir gfid for %s: %s",
                 subvol->name, uuid_utoa (index_gfid));
 
-        ret = ec_shd_inode_find (this, subvol, index_gfid, inode);
+        ret = syncop_inode_find (this, subvol, index_gfid,
+                                 inode, NULL, NULL);
 
 out:
         loc_wipe (&rootloc);
@@ -238,6 +199,9 @@ ec_shd_index_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
         int                  ret     = 0;
 
         ec = healer->this->private;
+        if (ec->xl_up_count <= ec->fragments) {
+                return -ENOTCONN;
+        }
         if (!ec->shd.enabled)
                 return -EBUSY;
 
@@ -254,8 +218,8 @@ ec_shd_index_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
         if (ret < 0)
                 goto out;
 
-        ret = ec_shd_inode_find (healer->this, healer->this, loc.gfid,
-                                  &loc.inode);
+        ret = syncop_inode_find (healer->this, healer->this, loc.gfid,
+                                 &loc.inode, NULL, NULL);
         if (ret < 0)
                 goto out;
 
@@ -267,8 +231,6 @@ out:
                         uuid_utoa(loc.gfid));
                 ec_shd_index_purge (subvol, parent->inode, entry->d_name);
         }
-        if (loc.inode)
-                inode_forget (loc.inode, 0);
         loc_wipe (&loc);
 
         return 0;
@@ -281,6 +243,7 @@ ec_shd_index_sweep (struct subvol_healer *healer)
         ec_t          *ec     = NULL;
         int           ret     = 0;
         xlator_t      *subvol = NULL;
+        dict_t        *xdata  = NULL;
 
         ec = healer->this->private;
         subvol = ec->xl_list[healer->subvol];
@@ -293,11 +256,18 @@ ec_shd_index_sweep (struct subvol_healer *healer)
                 goto out;
         }
 
-        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
-                               healer, ec_shd_index_heal);
+        xdata = dict_new ();
+        if (!xdata || dict_set_int32 (xdata, "get-gfid-type", 1)) {
+                ret = -ENOMEM;
+                goto out;
+        }
+
+        ret = syncop_mt_dir_scan (NULL, subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+                                  healer, ec_shd_index_heal, xdata,
+                                  ec->shd.max_threads, ec->shd.wait_qlength);
 out:
-        if (loc.inode)
-                inode_forget (loc.inode, 0);
+        if (xdata)
+                dict_unref (xdata);
         loc_wipe (&loc);
 
         return ret;
@@ -314,6 +284,9 @@ ec_shd_full_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
         int                  ret    = 0;
 
         ec = this->private;
+        if (ec->xl_up_count <= ec->fragments) {
+                return -ENOTCONN;
+        }
         if (!ec->shd.enabled)
                 return -EBUSY;
 
@@ -327,7 +300,8 @@ ec_shd_full_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
         if (ret < 0)
                 goto out;
 
-        ret = ec_shd_inode_find (this, this, loc.gfid, &loc.inode);
+        ret = syncop_inode_find (this, this, loc.gfid,
+                                 &loc.inode, NULL, NULL);
         if (ret < 0)
                 goto out;
 
@@ -336,8 +310,6 @@ ec_shd_full_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
         ret = 0;
 
 out:
-        if (loc.inode)
-                inode_forget (loc.inode, 0);
         loc_wipe (&loc);
         return ret;
 }
@@ -364,18 +336,20 @@ ec_shd_index_healer (void *data)
 
         healer = data;
         THIS = this = healer->this;
+        ec_t *ec = this->private;
 
         for (;;) {
                 ec_shd_healer_wait (healer);
 
                 ASSERT_LOCAL(this, healer);
 
-                gf_msg_debug (this->name, 0,
-                        "starting index sweep on subvol %s",
-                        ec_subvol_name (this, healer->subvol));
 
-                ec_shd_index_sweep (healer);
-
+                if (ec->xl_up_count > ec->fragments) {
+                        gf_msg_debug (this->name, 0,
+                                "starting index sweep on subvol %s",
+                                ec_subvol_name (this, healer->subvol));
+                        ec_shd_index_sweep (healer);
+                }
                 gf_msg_debug (this->name, 0,
                         "finished index sweep on subvol %s",
                         ec_subvol_name (this, healer->subvol));
@@ -396,6 +370,7 @@ ec_shd_full_healer (void *data)
 
         healer = data;
         THIS = this = healer->this;
+        ec_t *ec = this->private;
 
         rootloc.inode = this->itable->root;
         for (;;) {
@@ -412,13 +387,16 @@ ec_shd_full_healer (void *data)
 
                 ASSERT_LOCAL(this, healer);
 
-                gf_msg (this->name, GF_LOG_INFO, 0,
-                        EC_MSG_FULL_SWEEP_START,
-                        "starting full sweep on subvol %s",
-                        ec_subvol_name (this, healer->subvol));
 
-                ec_shd_selfheal (healer, healer->subvol, &rootloc);
-                ec_shd_full_sweep (healer, this->itable->root);
+                if (ec->xl_up_count > ec->fragments) {
+                        gf_msg (this->name, GF_LOG_INFO, 0,
+                                EC_MSG_FULL_SWEEP_START,
+                                "starting full sweep on subvol %s",
+                                ec_subvol_name (this, healer->subvol));
+
+                        ec_shd_selfheal (healer, healer->subvol, &rootloc);
+                        ec_shd_full_sweep (healer, this->itable->root);
+                }
 
                 gf_msg (this->name, GF_LOG_INFO, 0,
                         EC_MSG_FULL_SWEEP_STOP,
@@ -464,7 +442,7 @@ ec_shd_healer_spawn (xlator_t *this, struct subvol_healer *healer,
                         pthread_cond_signal (&healer->cond);
                 } else {
                         ret = gf_thread_create (&healer->thread, NULL,
-                                                threadfn, healer);
+                                                threadfn, healer, "ecshd");
                         if (ret)
                                 goto unlock;
                         healer->running = 1;

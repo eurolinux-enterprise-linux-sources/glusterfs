@@ -1,0 +1,53 @@
+From 53649d22deea97c1604f5688ecab303eb46104d9 Mon Sep 17 00:00:00 2001
+From: Xavi Hernandez <xhernandez@redhat.com>
+Date: Wed, 28 Mar 2018 11:34:49 +0200
+Subject: [PATCH 210/212] cluster/ec: send list-node-uuids request to all
+ subvolumes
+
+The xattr trusted.glusterfs.list-node-uuids was only sent to a single
+subvolume. This was returning null uuids from the other subvolumes as
+if they were down.
+
+This fix forces that xattr to be requested from all subvolumes.
+
+> Upstream patch: https://review.gluster.org/19784
+
+Change-Id: If62eb39a6857258923ba625e153d4ad79018ea2f
+BUG: 1561733
+Signed-off-by: Xavi Hernandez <xhernandez@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/134066
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Ashish Pandey <aspandey@redhat.com>
+---
+ tests/basic/ec/ec-rebalance.t | 1 +
+ xlators/cluster/ec/src/ec.c   | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tests/basic/ec/ec-rebalance.t b/tests/basic/ec/ec-rebalance.t
+index b5c3072..6cda3a3 100644
+--- a/tests/basic/ec/ec-rebalance.t
++++ b/tests/basic/ec/ec-rebalance.t
+@@ -14,6 +14,7 @@ cleanup
+ TEST glusterd
+ TEST pidof glusterd
+ TEST $CLI volume create $V0 disperse 3 redundancy 1 $H0:$B0/${V0}{0..2}
++TEST $CLI volume set $V0 lookup-optimize on
+ TEST $CLI volume start $V0
+ 
+ #Mount the volume
+diff --git a/xlators/cluster/ec/src/ec.c b/xlators/cluster/ec/src/ec.c
+index 956b45b..eb91c4a 100644
+--- a/xlators/cluster/ec/src/ec.c
++++ b/xlators/cluster/ec/src/ec.c
+@@ -881,7 +881,7 @@ ec_gf_getxattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
+ 
+         if (name &&
+             ((fnmatch (GF_XATTR_STIME_PATTERN, name, 0) == 0) ||
+-             (XATTR_IS_NODE_UUID(name)))) {
++             XATTR_IS_NODE_UUID(name) || XATTR_IS_NODE_UUID_LIST(name))) {
+                 minimum = EC_MINIMUM_ALL;
+         }
+ 
+-- 
+1.8.3.1
+

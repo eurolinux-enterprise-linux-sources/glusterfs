@@ -9,11 +9,7 @@
 */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
+#include "events.h"
 #include "afr.h"
 #include "afr-self-heal.h"
 #include "afr-messages.h"
@@ -22,46 +18,17 @@ int
 __afr_selfheal_assign_gfid (xlator_t *this, inode_t *parent, uuid_t pargfid,
                             const char *bname, inode_t *inode,
                             struct afr_reply *replies, void *gfid,
-                            unsigned char *locked_on,
+                            unsigned char *locked_on, int source,
                             gf_boolean_t is_gfid_absent)
 {
 	int             ret          = 0;
         int             up_count     = 0;
         int             locked_count = 0;
 	afr_private_t  *priv         = NULL;
-	dict_t         *xdata        = NULL;
-	loc_t           loc          = {0, };
-        call_frame_t   *new_frame    = NULL;
-        afr_local_t    *new_local    = NULL;
 
 	priv = this->private;
 
-        new_frame = afr_frame_create (this);
-        if (!new_frame) {
-                ret = -ENOMEM;
-                goto out;
-        }
-
-        new_local = new_frame->local;
-
 	gf_uuid_copy (parent->gfid, pargfid);
-
-	xdata = dict_new ();
-	if (!xdata) {
-                ret = -ENOMEM;
-		goto out;
-	}
-
-	ret = dict_set_static_bin (xdata, "gfid-req", gfid, 16);
-	if (ret) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	loc.parent = inode_ref (parent);
-	loc.inode = inode_ref (inode);
-	gf_uuid_copy (loc.pargfid, pargfid);
-	loc.name = bname;
 
         if (is_gfid_absent) {
                 /* Ensure all children of AFR are up before performing gfid heal, to
@@ -80,28 +47,10 @@ __afr_selfheal_assign_gfid (xlator_t *this, inode_t *parent, uuid_t pargfid,
                 }
         }
 
-        /* Clear out old replies here and wind lookup on all locked
-         * subvolumes to achieve two things:
-         *   a. gfid heal on those subvolumes that do not have gfid associated
-         *      with the inode, and
-         *   b. refresh replies, which can be consumed by
-         *      __afr_selfheal_name_impunge().
-         */
-
-        afr_replies_wipe (replies, priv->child_count);
-
-        AFR_ONLIST (locked_on, new_frame, afr_selfheal_discover_cbk, lookup,
-                    &loc, xdata);
-
-        afr_replies_copy (replies, new_local->replies, priv->child_count);
+        afr_lookup_and_heal_gfid (this, parent, bname, inode, replies, source,
+                                  gfid);
 
 out:
-	loc_wipe (&loc);
-        if (xdata)
-                dict_unref (xdata);
-        if (new_frame)
-                AFR_STACK_DESTROY (new_frame);
-
 	return ret;
 }
 
@@ -114,18 +63,16 @@ __afr_selfheal_name_impunge (call_frame_t *frame, xlator_t *this,
 	int i = 0;
 	afr_private_t *priv = NULL;
         int ret = 0;
-        unsigned char *newentry = NULL;
         unsigned char *sources = NULL;
 
         priv = this->private;
 
-	newentry = alloca0 (priv->child_count);
 	sources = alloca0 (priv->child_count);
 
 	gf_uuid_copy (parent->gfid, pargfid);
 
 	for (i = 0; i < priv->child_count; i++) {
-		if (!replies[i].valid)
+                if (!replies[i].valid || replies[i].op_ret != 0)
 			continue;
 
 		if (gf_uuid_compare (replies[i].poststat.ia_gfid,
@@ -133,15 +80,17 @@ __afr_selfheal_name_impunge (call_frame_t *frame, xlator_t *this,
                         sources[i] = 1;
 			continue;
                 }
+        }
 
-		ret |= afr_selfheal_recreate_entry (this, i, gfid_idx, parent,
-                                                    bname, inode, replies,
-                                                    newentry);
+        for (i = 0; i < priv->child_count; i++) {
+                if (sources[i])
+                        continue;
+
+		ret |= afr_selfheal_recreate_entry (frame, i, gfid_idx, sources,
+                                                    parent, bname, inode,
+                                                    replies);
 	}
 
-	if (AFR_COUNT (newentry, priv->child_count))
-		afr_selfheal_newentry_mark (frame, this, inode, gfid_idx, replies,
-					    sources, newentry);
 	return ret;
 }
 
@@ -217,7 +166,7 @@ afr_selfheal_gfid_idx_get (xlator_t *this, struct afr_reply *replies,
         priv = this->private;
 
         for (i = 0; i < priv->child_count; i++) {
-                if (!replies[i].valid)
+                if (!replies[i].valid || replies[i].op_ret != 0)
                         continue;
 
                 if (!sources[i])
@@ -279,12 +228,13 @@ afr_selfheal_name_type_mismatch_check (xlator_t *this, struct afr_reply *replies
         int             i           = 0;
         int             type_idx    = -1;
         ia_type_t       inode_type  = IA_INVAL;
+        ia_type_t       inode_type1 = IA_INVAL;
         afr_private_t  *priv        = NULL;
 
         priv = this->private;
 
         for (i = 0; i < priv->child_count; i++) {
-                if (!replies[i].valid)
+                if (!replies[i].valid || replies[i].op_ret != 0)
                         continue;
 
                 if (replies[i].poststat.ia_type == IA_INVAL)
@@ -295,21 +245,32 @@ afr_selfheal_name_type_mismatch_check (xlator_t *this, struct afr_reply *replies
                         type_idx = i;
                         continue;
                 }
-
+                inode_type1 = replies[i].poststat.ia_type;
                 if (sources[i] || source == -1) {
                         if ((sources[type_idx] || source == -1) &&
-                            (inode_type != replies[i].poststat.ia_type)) {
+                            (inode_type != inode_type1)) {
                                 gf_msg (this->name, GF_LOG_WARNING, 0,
                                         AFR_MSG_SPLIT_BRAIN,
                                         "Type mismatch for <gfid:%s>/%s: "
-                                        "%d on %s and %d on %s",
+                                        "%s on %s and %s on %s",
                                         uuid_utoa(pargfid), bname,
-                                        replies[i].poststat.ia_type,
+                                        gf_inode_type_to_str (inode_type1),
                                         priv->children[i]->name,
-                                        replies[type_idx].poststat.ia_type,
+                                        gf_inode_type_to_str (inode_type),
                                         priv->children[type_idx]->name);
-
-                                    return -EIO;
+                                gf_event (EVENT_AFR_SPLIT_BRAIN,
+                                         "subvol=%s;type=file;"
+                                         "file=<gfid:%s>/%s;count=2;"
+                                         "child-%d=%s;type-%d=%s;child-%d=%s;"
+                                         "type-%d=%s", this->name,
+                                         uuid_utoa (pargfid), bname, i,
+                                         priv->children[i]->name, i,
+                                         gf_inode_type_to_str (inode_type1),
+                                         type_idx,
+                                         priv->children[type_idx]->name,
+                                         type_idx,
+                                         gf_inode_type_to_str (inode_type));
+                                return -EIO;
                         }
                         inode_type = replies[i].poststat.ia_type;
                         type_idx = i;
@@ -322,19 +283,21 @@ static int
 afr_selfheal_name_gfid_mismatch_check (xlator_t *this, struct afr_reply *replies,
                                        int source, unsigned char *sources,
                                        int *gfid_idx, uuid_t pargfid,
-                                       const char *bname)
+                                       const char *bname, inode_t *inode,
+                                       unsigned char *locked_on, dict_t *xdata)
 {
         int             i             = 0;
 	int             gfid_idx_iter = -1;
+        int             ret           = -1;
         void           *gfid          = NULL;
+        void           *gfid1         = NULL;
         afr_private_t  *priv          = NULL;
-	char g1[64], g2[64];
 
         priv = this->private;
 
 	for (i = 0; i < priv->child_count; i++) {
-		if (!replies[i].valid)
-			continue;
+                if (!replies[i].valid || replies[i].op_ret != 0)
+                        continue;
 
 		if (gf_uuid_is_null (replies[i].poststat.ia_gfid))
 			continue;
@@ -345,22 +308,33 @@ afr_selfheal_name_gfid_mismatch_check (xlator_t *this, struct afr_reply *replies
 			continue;
 		}
 
+                gfid1 = &replies[i].poststat.ia_gfid;
 		if (sources[i] || source == -1) {
 			if ((sources[gfid_idx_iter] || source == -1) &&
-			    gf_uuid_compare (gfid, replies[i].poststat.ia_gfid)) {
-			        gf_msg (this->name, GF_LOG_WARNING, 0,
-                                        AFR_MSG_SPLIT_BRAIN,
-					"GFID mismatch for <gfid:%s>/%s "
-					"%s on %s and %s on %s",
-					uuid_utoa (pargfid), bname,
-					uuid_utoa_r (replies[i].poststat.ia_gfid, g1),
-					priv->children[i]->name,
-					uuid_utoa_r (replies[gfid_idx_iter].poststat.ia_gfid, g2),
-					priv->children[gfid_idx_iter]->name);
-
-				return -EIO;
+			    gf_uuid_compare (gfid, gfid1)) {
+                                ret = afr_gfid_split_brain_source (this,
+                                                                   replies,
+                                                                   inode,
+                                                                   pargfid,
+                                                                   bname,
+                                                                   gfid_idx_iter,
+                                                                   i, locked_on,
+                                                                   gfid_idx,
+                                                                   xdata);
+                                if (!ret && *gfid_idx >= 0) {
+                                        ret = dict_set_str (xdata,
+                                                             "gfid-heal-msg",
+                                                             "GFID split-brain "
+                                                             "resolved");
+                                        if (ret)
+                                                gf_msg (this->name,
+                                                        GF_LOG_ERROR, 0,
+                                                        AFR_MSG_DICT_SET_FAILED,
+                                                        "Error setting gfid-"
+                                                        "heal-msg dict");
+                                }
+                                return ret;
 			}
-
                         gfid = &replies[i].poststat.ia_gfid;
 			gfid_idx_iter = i;
 		}
@@ -405,7 +379,7 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
                         unsigned char *sources, unsigned char *sinks,
 			unsigned char *healed_sinks, int source,
 			unsigned char *locked_on, struct afr_reply *replies,
-                        void *gfid_req)
+                        void *gfid_req, dict_t *xdata)
 {
 	int             gfid_idx        = -1;
         int             ret             = -1;
@@ -436,7 +410,8 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 
         ret = afr_selfheal_name_gfid_mismatch_check (this, replies, source,
                                                      sources, &gfid_idx,
-                                                     pargfid, bname);
+                                                     pargfid, bname, inode,
+                                                     locked_on, xdata);
         if (ret)
                 return ret;
 
@@ -450,7 +425,7 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 
         is_gfid_absent = (gfid_idx == -1) ? _gf_true : _gf_false;
 	ret = __afr_selfheal_assign_gfid (this, parent, pargfid, bname, inode,
-                                          replies, gfid, locked_on,
+                                          replies, gfid, locked_on, source,
                                           is_gfid_absent);
         if (ret)
                 return ret;
@@ -462,8 +437,7 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
         }
 
 	ret = __afr_selfheal_name_impunge (frame, this, parent, pargfid,
-                                           bname, inode,
-                                           replies, gfid_idx);
+                                           bname, inode, replies, gfid_idx);
         if (ret == -EIO)
                 ret = -1;
 
@@ -475,7 +449,6 @@ int
 __afr_selfheal_name_finalize_source (xlator_t *this, unsigned char *sources,
 				     unsigned char *healed_sinks,
 				     unsigned char *locked_on,
-				     struct afr_reply *replies,
                                      uint64_t *witness)
 {
 	int i = 0;
@@ -544,8 +517,7 @@ __afr_selfheal_name_prepare (call_frame_t *frame, xlator_t *this, inode_t *paren
 
 	source = __afr_selfheal_name_finalize_source (this, sources,
                                                       healed_sinks,
-						      locked_on, replies,
-                                                      witness);
+						      locked_on, witness);
 	if (source < 0) {
 		/* If source is < 0 (typically split-brain), we perform a
 		   conservative merge of entries rather than erroring out */
@@ -562,7 +534,8 @@ out:
 
 int
 afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
-		      uuid_t pargfid, const char *bname, void *gfid_req)
+		      uuid_t pargfid, const char *bname, void *gfid_req,
+                      dict_t *xdata)
 {
 	afr_private_t *priv = NULL;
 	unsigned char *sources = NULL;
@@ -581,7 +554,7 @@ afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 
         ret = dict_set_int32 (xattr, GF_GFIDLESS_LOOKUP, 1);
         if (ret) {
-                dict_destroy (xattr);
+                dict_unref (xattr);
                 return -1;
         }
 
@@ -619,11 +592,11 @@ afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
 		ret = __afr_selfheal_name_do (frame, this, parent, pargfid,
                                               bname, inode, sources, sinks,
                                               healed_sinks, source, locked_on,
-                                              replies, gfid_req);
+                                              replies, gfid_req, xdata);
 	}
 unlock:
 	afr_selfheal_unentrylk (frame, this, parent, this->name, bname,
-				locked_on);
+				locked_on, NULL);
 	if (inode)
 		inode_unref (inode);
 
@@ -686,7 +659,7 @@ afr_selfheal_name_unlocked_inspect (call_frame_t *frame, xlator_t *this,
 
 int
 afr_selfheal_name (xlator_t *this, uuid_t pargfid, const char *bname,
-                   void *gfid_req)
+                   void *gfid_req, dict_t *xdata)
 {
 	inode_t *parent = NULL;
 	call_frame_t *frame = NULL;
@@ -708,7 +681,7 @@ afr_selfheal_name (xlator_t *this, uuid_t pargfid, const char *bname,
 
 	if (need_heal) {
 		ret = afr_selfheal_name_do (frame, this, parent, pargfid, bname,
-                                            gfid_req);
+                                            gfid_req, xdata);
                 if (ret)
                         goto out;
         }

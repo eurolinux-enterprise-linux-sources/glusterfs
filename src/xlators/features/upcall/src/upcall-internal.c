@@ -12,11 +12,6 @@
 #include <fcntl.h>
 #include <limits.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "compat.h"
 #include "xlator.h"
@@ -36,29 +31,9 @@
 /*
  * Check if any of the upcall options are enabled:
  *     - cache_invalidation
- *     - XXX: lease_lk
  */
 gf_boolean_t
 is_upcall_enabled(xlator_t *this) {
-        upcall_private_t *priv      = NULL;
-        gf_boolean_t     is_enabled = _gf_false;
-
-        if (this->private) {
-                priv = (upcall_private_t *)this->private;
-
-                if (priv->cache_invalidation_enabled) {
-                        is_enabled = _gf_true;
-                }
-        }
-
-        return is_enabled;
-}
-
-/*
- * Check if any of cache_invalidation is enabled
- */
-gf_boolean_t
-is_cache_invalidation_enabled(xlator_t *this) {
         upcall_private_t *priv      = NULL;
         gf_boolean_t     is_enabled = _gf_false;
 
@@ -147,7 +122,6 @@ __get_upcall_client (call_frame_t *frame, client_t *client,
                      upcall_inode_ctx_t *up_inode_ctx)
 {
         upcall_client_t *up_client_entry = NULL;
-        upcall_client_t *up_client       = NULL;
         upcall_client_t *tmp             = NULL;
         gf_boolean_t    found_client     = _gf_false;
 
@@ -209,6 +183,7 @@ __upcall_inode_ctx_set (inode_t *inode, xlator_t *this)
         if (ret) {
                 gf_log (this->name, GF_LOG_DEBUG,
                         "failed to set inode ctx (%p)", inode);
+                GF_FREE (inode_ctx);
                 goto out;
         }
 
@@ -284,6 +259,11 @@ upcall_cleanup_expired_clients (xlator_t *this,
                                          up_client->access_time;
 
                         if (t_expired > (2*timeout)) {
+
+                                gf_log (THIS->name, GF_LOG_TRACE,
+                                        "Cleaning up client_entry(%s)",
+                                        up_client->client_uid);
+
                                 ret =
                                   __upcall_cleanup_client_entry (up_client);
 
@@ -294,9 +274,6 @@ upcall_cleanup_expired_clients (xlator_t *this,
                                                 up_client);
                                         goto out;
                                 }
-                                gf_log (THIS->name, GF_LOG_TRACE,
-                                        "Cleaned up client_entry(%s)",
-                                        up_client->client_uid);
                         }
                 }
         }
@@ -454,11 +431,83 @@ upcall_reaper_thread_init (xlator_t *this)
         priv = this->private;
         GF_ASSERT (priv);
 
-        ret = pthread_create (&priv->reaper_thr, NULL,
-                              upcall_reaper_thread, this);
+        ret = gf_thread_create (&priv->reaper_thr, NULL,
+                                upcall_reaper_thread, this, "upreaper");
 
         return ret;
 }
+
+
+int
+up_compare_afr_xattr (dict_t *d, char *k, data_t *v, void *tmp)
+{
+        dict_t *dict = tmp;
+
+        if (!strncmp (k, AFR_XATTR_PREFIX, strlen (AFR_XATTR_PREFIX))
+            && (!is_data_equal (v, dict_get (dict, k))))
+                return -1;
+
+        return 0;
+}
+
+
+static void
+up_filter_afr_xattr (dict_t *xattrs, char *xattr, data_t *v)
+{
+        /* Filter the afr pending xattrs, with value 0. Ideally this should
+         * be executed only in case of xattrop and not in set and removexattr,
+         * butset and remove xattr fops do not come with keys AFR_XATTR_PREFIX
+         */
+        if (!strncmp (xattr, AFR_XATTR_PREFIX, strlen (AFR_XATTR_PREFIX))
+            && (mem_0filled (v->data, v->len) == 0)) {
+                dict_del (xattrs, xattr);
+        }
+        return;
+}
+
+
+static int
+up_filter_unregd_xattr (dict_t *xattrs, char *xattr, data_t *v,
+                        void *regd_xattrs)
+{
+        if (dict_get ((dict_t *)regd_xattrs, xattr) == NULL) {
+                /* xattr was not found in the registered xattr, hence do not
+                 * send notification for its change
+                 */
+                dict_del (xattrs, xattr);
+                goto out;
+        }
+        up_filter_afr_xattr (xattrs, xattr, v);
+out:
+        return 0;
+}
+
+
+int
+up_filter_xattr (dict_t *xattr, dict_t *regd_xattrs)
+{
+        int ret = 0;
+
+        /* Remove the xattrs from the dict, if they are not registered for
+         * cache invalidation */
+        ret = dict_foreach (xattr, up_filter_unregd_xattr, regd_xattrs);
+        return ret;
+}
+
+
+gf_boolean_t
+up_invalidate_needed (dict_t *xattrs)
+{
+        if (dict_key_count (xattrs) == 0) {
+                gf_msg_trace ("upcall", 0, "None of xattrs requested for"
+                              " invalidation, were changed. Nothing to "
+                              "invalidate");
+                return _gf_false;
+        }
+
+        return _gf_true;
+}
+
 
 /*
  * Given a client, first fetch upcall_entry_t from the inode_ctx client list.
@@ -473,15 +522,15 @@ upcall_reaper_thread_init (xlator_t *this)
 void
 upcall_cache_invalidate (call_frame_t *frame, xlator_t *this, client_t *client,
                          inode_t *inode, uint32_t flags, struct iatt *stbuf,
-                         struct iatt *p_stbuf, struct iatt *oldp_stbuf)
+                         struct iatt *p_stbuf, struct iatt *oldp_stbuf,
+                         dict_t *xattr)
 {
-        upcall_client_t *up_client       = NULL;
         upcall_client_t *up_client_entry = NULL;
         upcall_client_t *tmp             = NULL;
         upcall_inode_ctx_t *up_inode_ctx = NULL;
         gf_boolean_t     found           = _gf_false;
 
-        if (!is_cache_invalidation_enabled(this))
+        if (!is_upcall_enabled(this))
                 return;
 
         /* server-side generated fops like quota/marker will not have any
@@ -492,9 +541,7 @@ upcall_cache_invalidate (call_frame_t *frame, xlator_t *this, client_t *client,
                 return;
         }
 
-        up_inode_ctx = ((upcall_local_t *)frame->local)->upcall_inode_ctx;
-
-        if (!up_inode_ctx)
+        if (inode)
                 up_inode_ctx = upcall_inode_ctx_get (inode, this);
 
         if (!up_inode_ctx) {
@@ -509,15 +556,20 @@ upcall_cache_invalidate (call_frame_t *frame, xlator_t *this, client_t *client,
          * invalid till it gets linked to inode table. Read gfid from
          * the stat returned in such cases.
          */
-        if (gf_uuid_is_null (up_inode_ctx->gfid)) {
+        if (gf_uuid_is_null (up_inode_ctx->gfid) && stbuf) {
                 /* That means inode must have been invalid when this inode_ctx
                  * is created. Copy the gfid value from stbuf instead.
                  */
                 gf_uuid_copy (up_inode_ctx->gfid, stbuf->ia_gfid);
         }
 
-        GF_VALIDATE_OR_GOTO ("upcall_cache_invalidate",
-                             !(gf_uuid_is_null (up_inode_ctx->gfid)), out);
+        if (gf_uuid_is_null (up_inode_ctx->gfid)) {
+                gf_msg_debug (this->name, 0, "up_inode_ctx->gfid and "
+                              "stbuf->ia_gfid is NULL, fop:%s",
+                              gf_fop_list[frame->root->op]);
+                goto out;
+        }
+
         pthread_mutex_lock (&up_inode_ctx->client_list_lock);
         {
                 list_for_each_entry_safe (up_client_entry, tmp,
@@ -549,11 +601,12 @@ upcall_cache_invalidate (call_frame_t *frame, xlator_t *this, client_t *client,
                          *  Also if the file is frequently accessed, set
                          *  expire_time_attr to 0.
                          */
-                        upcall_client_cache_invalidate(this,
+                        upcall_client_cache_invalidate (this,
                                                        up_inode_ctx->gfid,
                                                        up_client_entry,
                                                        flags, stbuf,
-                                                       p_stbuf, oldp_stbuf);
+                                                       p_stbuf, oldp_stbuf,
+                                                       xattr);
                 }
 
                 if (!found) {
@@ -576,7 +629,7 @@ upcall_client_cache_invalidate (xlator_t *this, uuid_t gfid,
                                 upcall_client_t *up_client_entry,
                                 uint32_t flags, struct iatt *stbuf,
                                 struct iatt *p_stbuf,
-                                struct iatt *oldp_stbuf)
+                                struct iatt *oldp_stbuf, dict_t *xattr)
 {
         struct gf_upcall                    up_req  = {0,};
         struct gf_upcall_cache_invalidation ca_req  = {0,};
@@ -602,6 +655,7 @@ upcall_client_cache_invalidate (xlator_t *this, uuid_t gfid,
                         ca_req.p_stat = *p_stbuf;
                 if (oldp_stbuf)
                         ca_req.oldp_stat = *oldp_stbuf;
+                ca_req.dict = xattr;
 
                 up_req.data = &ca_req;
                 up_req.event_type = GF_UPCALL_CACHE_INVALIDATION;
@@ -621,14 +675,14 @@ upcall_client_cache_invalidate (xlator_t *this, uuid_t gfid,
                         __upcall_cleanup_client_entry (up_client_entry);
 
         } else {
+                gf_log (THIS->name, GF_LOG_TRACE,
+                        "Cache invalidation notification NOT sent to %s",
+                        up_client_entry->client_uid);
+
                 if (t_expired > (2*timeout)) {
                         /* Cleanup the entry */
                         __upcall_cleanup_client_entry (up_client_entry);
                 }
-
-                gf_log (THIS->name, GF_LOG_TRACE,
-                        "Cache invalidation notification NOT sent to %s",
-                        up_client_entry->client_uid);
         }
 out:
         return;
@@ -642,7 +696,6 @@ out:
 void
 upcall_cache_forget (xlator_t *this, inode_t *inode, upcall_inode_ctx_t *up_inode_ctx)
 {
-        upcall_client_t *up_client       = NULL;
         upcall_client_t *up_client_entry = NULL;
         upcall_client_t *tmp             = NULL;
         uint32_t        flags            = 0;
@@ -666,7 +719,7 @@ upcall_cache_forget (xlator_t *this, inode_t *inode, upcall_inode_ctx_t *up_inod
                                                        up_inode_ctx->gfid,
                                                        up_client_entry,
                                                        flags, NULL,
-                                                       NULL, NULL);
+                                                       NULL, NULL, NULL);
                 }
 
         }

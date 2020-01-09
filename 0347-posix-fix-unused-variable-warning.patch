@@ -1,0 +1,30 @@
+From bb613405be0392269bb661e6f24338c2c664d21d Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Tue, 14 Aug 2018 13:37:05 +0530
+Subject: [PATCH 347/351] posix: fix unused variable warning
+
+Change-Id: I42ece5c8903f5af7b5a4d6b7ab10516f987327c9
+BUG: 1608363
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/146964
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/storage/posix/src/posix.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 5c6e103..49b272f 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -4680,7 +4680,6 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
+         char                 *value                 = NULL;
+         char                 *real_path             = NULL;
+         dict_t               *dict                  = NULL;
+-        char                 *file_contents         = NULL;
+         int                   ret                   = -1;
+         char                 *path                  = NULL;
+         char                 *rpath                 = NULL;
+-- 
+1.8.3.1
+

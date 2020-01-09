@@ -1,0 +1,625 @@
+From cbdc0b38c18583852fc9b2ca79ea5fdfa92c6ed5 Mon Sep 17 00:00:00 2001
+From: Sunny Kumar <sunkumar@redhat.com>
+Date: Mon, 27 Nov 2017 14:24:55 +0530
+Subject: [PATCH 085/128] snapshot: Issue with other processes accessing the
+ mounted brick
+
+Added code for unmount of activated snapshot brick during snapshot
+deactivation process which make sense as mount point for deactivated
+bricks should not exist.
+
+Removed code for mounting newly created snapshot, as newly created
+snapshots should not mount until it is activated.
+
+Added code for mount point creation and snapshot mount during snapshot
+activation.
+
+Added validation during glusterd init for mounting only those snapshot
+whose status is either STARTED or RESTORED.
+
+During snapshot restore, mount point for stopped snap should exist as
+it is required to set extended attribute.
+
+During handshake, after getting updates from friend mount point for
+activated snapshot should exist and should not for deactivated
+snapshot.
+
+While getting snap status we should show relevent information for
+deactivated snapshots, after this pathch 'gluster snap status' command
+will show output like-
+
+Snap Name : snap1
+Snap UUID : snap-uuid
+
+	Brick Path        :   server1:/run/gluster/snaps/snap-vol-name/brick
+	Volume Group      :   N/A (Deactivated Snapshot)
+	Brick Running     :   No
+	Brick PID         :   N/A
+	Data Percentage   :   N/A
+	LV Size           :   N/A
+
+Fixes: #276
+
+>BUG: 1482023
+>Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+upstream patch : https://review.gluster.org/18047
+
+Change-Id: I65783488e35fac43632615ce1b8ff7b8e84834dc
+BUG: 1464150
+Signed-off-by: Sunny Kumar <sunkumar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124305
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ .../bug-1322772-real-path-fix-for-snapshot.t       |   1 +
+ ...e-with-other-processes-accessing-mounted-path.t | 114 ++++++++++++++++
+ .../mgmt/glusterd/src/glusterd-snapshot-utils.c    |  85 ++++++++++++
+ .../mgmt/glusterd/src/glusterd-snapshot-utils.h    |   3 +
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c      | 145 ++++++++++++++++-----
+ xlators/mgmt/glusterd/src/glusterd-store.c         |  25 ++--
+ xlators/mgmt/glusterd/src/glusterd-store.h         |   4 +
+ 7 files changed, 333 insertions(+), 44 deletions(-)
+ create mode 100644 tests/bugs/snapshot/bug-1482023-snpashot-issue-with-other-processes-accessing-mounted-path.t
+
+diff --git a/tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t b/tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t
+index bf625ec..488bd46 100644
+--- a/tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t
++++ b/tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t
+@@ -26,6 +26,7 @@ EXPECT 'Started' volinfo_field $V0 'Status'
+ TEST $CLI volume start $V1
+ EXPECT 'Started' volinfo_field $V1 'Status'
+ 
++TEST $CLI snapshot config activate-on-create enable
+ TEST $CLI snapshot create ${V0}_snap $V0 no-timestamp
+ TEST $CLI snapshot create ${V1}_snap $V1 no-timestamp
+ 
+diff --git a/tests/bugs/snapshot/bug-1482023-snpashot-issue-with-other-processes-accessing-mounted-path.t b/tests/bugs/snapshot/bug-1482023-snpashot-issue-with-other-processes-accessing-mounted-path.t
+new file mode 100644
+index 0000000..c5a0088
+--- /dev/null
++++ b/tests/bugs/snapshot/bug-1482023-snpashot-issue-with-other-processes-accessing-mounted-path.t
+@@ -0,0 +1,114 @@
++#!/bin/bash
++
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../snapshot.rc
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../cluster.rc
++
++function create_snapshots() {
++        $CLI_1 snapshot create ${V0}_snap ${V0} no-timestamp &
++        PID_1=$!
++
++        $CLI_1 snapshot create ${V1}_snap ${V1} no-timestamp &
++        PID_2=$!
++
++        wait $PID_1 $PID_2
++}
++
++function activate_snapshots() {
++        $CLI_1 snapshot activate ${V0}_snap &
++        PID_1=$!
++
++        $CLI_1 snapshot activate ${V1}_snap &
++        PID_2=$!
++
++        wait $PID_1 $PID_2
++}
++
++function deactivate_snapshots() {
++        $CLI_1 snapshot deactivate ${V0}_snap &
++        PID_1=$!
++
++        $CLI_1 snapshot deactivate ${V1}_snap &
++        PID_2=$!
++
++        wait $PID_1 $PID_2
++}
++cleanup;
++
++TEST verify_lvm_version;
++# Create cluster with 3 nodes
++TEST launch_cluster 3;
++TEST setup_lvm 3
++
++TEST $CLI_1 peer probe $H2;
++TEST $CLI_1 peer probe $H3;
++EXPECT_WITHIN $PROBE_TIMEOUT 2 peer_count;
++
++# Create volumes
++TEST $CLI_1 volume create $V0 $H1:$L1
++TEST $CLI_2 volume create $V1 $H2:$L2 $H3:$L3
++
++# Start volumes
++TEST $CLI_1 volume start $V0
++TEST $CLI_2 volume start $V1
++
++TEST $CLI_1 snapshot config activate-on-create enable
++
++# Snapshot Operations
++create_snapshots
++
++EXPECT 'Started' snapshot_status ${V0}_snap;
++EXPECT 'Started' snapshot_status ${V1}_snap;
++
++deactivate_snapshots
++
++EXPECT 'Stopped' snapshot_status ${V0}_snap;
++EXPECT 'Stopped' snapshot_status ${V1}_snap;
++
++activate_snapshots
++
++EXPECT 'Started' snapshot_status ${V0}_snap;
++EXPECT 'Started' snapshot_status ${V1}_snap;
++
++# This Function will get snap id form snap info command and will
++# check for mount point in system against snap id.
++function mounted_snaps
++{
++        snap_id=`$CLI_1 snap info $1_snap | grep "Snap Volume Name" |
++                  awk -F ":" '{print $2}'`
++        echo `mount | grep $snap_id | wc -l`
++}
++
++EXPECT "1" mounted_snaps ${V0}
++EXPECT "2" mounted_snaps ${V1}
++
++deactivate_snapshots
++
++EXPECT "0" mounted_snaps ${V0}
++EXPECT "0" mounted_snaps ${V1}
++
++# This part of test is designed to validate that updates are properly being
++# handled during handshake.
++
++activate_snapshots
++kill_glusterd 2
++deactivate_snapshots
++TEST start_glusterd 2
++
++# Updates form friend should reflect as snap was deactivated while glusterd
++# process was inactive and mount point should also not exist.
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "0" mounted_snaps ${V0}
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "0" mounted_snaps ${V1}
++
++kill_glusterd 2
++activate_snapshots
++TEST start_glusterd 2
++
++# Updates form friend should reflect as snap was activated while glusterd
++# process was inactive and mount point should exist.
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" mounted_snaps ${V0}
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" mounted_snaps ${V1}
++
++cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+index 2a0d321..3f03d2b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+@@ -1678,7 +1678,21 @@ glusterd_import_friend_snap (dict_t *peer_data, int32_t snap_count,
+                                 "for snap %s", peer_snap_name);
+                         goto out;
+                 }
++                /* During handshake, after getting updates from friend mount
++                 * point for activated snapshot should exist and should not
++                 * for deactivated snapshot.
++                 */
+                 if (glusterd_is_volume_started (snap_vol)) {
++                        ret = glusterd_recreate_vol_brick_mounts (this,
++                                                                  snap_vol);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_BRK_MNT_RECREATE_FAIL,
++                                        "Failed to recreate brick mounts"
++                                        " for %s", snap->snapname);
++                                goto out;
++                        }
++
+                         (void) glusterd_start_bricks (snap_vol);
+                         ret = glusterd_store_volinfo
+                                                (snap_vol,
+@@ -1692,6 +1706,13 @@ glusterd_import_friend_snap (dict_t *peer_data, int32_t snap_count,
+                         }
+                 } else {
+                         (void) glusterd_stop_bricks(snap_vol);
++                        ret = glusterd_snap_unmount(this, snap_vol);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_GLUSTERD_UMOUNT_FAIL,
++                                        "Failed to unmounts for %s",
++                                        snap->snapname);
++                        }
+                 }
+ 
+                 ret = glusterd_import_quota_conf (peer_data, i,
+@@ -3347,6 +3368,70 @@ out:
+         return ret;
+ }
+ 
++/* This function will do unmount for snaps.
++ */
++int32_t
++glusterd_snap_unmount (xlator_t  *this, glusterd_volinfo_t *volinfo)
++{
++        char                    *brick_mount_path    = NULL;
++        glusterd_brickinfo_t    *brickinfo           = NULL;
++        int32_t                  ret                 = -1;
++        int                      retry_count         = 0;
++
++        GF_ASSERT (this);
++        GF_ASSERT (volinfo);
++
++        cds_list_for_each_entry (brickinfo, &volinfo->bricks, brick_list) {
++                /* If the brick is not of this node, we continue */
++                if (gf_uuid_compare (brickinfo->uuid, MY_UUID)) {
++                        continue;
++                }
++                /* If snapshot is pending, we continue */
++                if  (brickinfo->snap_status == -1) {
++                        continue;
++                }
++
++                /* Fetch the brick mount path from the brickinfo->path */
++                ret = glusterd_get_brick_root (brickinfo->path,
++                                               &brick_mount_path);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_INFO, 0,
++                                GD_MSG_BRICK_PATH_UNMOUNTED,
++                                "Failed to find brick_mount_path for %s",
++                                brickinfo->path);
++                        /* There is chance that brick path is already
++                         * unmounted. */
++                        ret = 0;
++                        goto out;
++                }
++                /* unmount cannot be done when the brick process is still in
++                 * the process of shutdown, so give three re-tries
++                 */
++                retry_count = 0;
++                while (retry_count <= 2) {
++                        retry_count++;
++                        /* umount2 system call doesn't cleanup mtab entry
++                         * after un-mount, using external umount command.
++                         */
++                        ret = glusterd_umount(brick_mount_path);
++                        if (!ret)
++                                break;
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_GLUSTERD_UMOUNT_FAIL, "umount failed "
++                                "for path %s (brick: %s): %s. Retry(%d)",
++                                 brick_mount_path, brickinfo->path,
++                                 strerror (errno), retry_count);
++                        sleep (3);
++               }
++        }
++
++out:
++        if (brick_mount_path)
++                GF_FREE(brick_mount_path);
++
++        return ret;
++}
++
+ int32_t
+ glusterd_umount (const char *path)
+ {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h
+index e050166..814bf4a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h
+@@ -76,6 +76,9 @@ int32_t
+ glusterd_umount (const char *path);
+ 
+ int32_t
++glusterd_snap_unmount (xlator_t  *this, glusterd_volinfo_t *volinfo);
++
++int32_t
+ glusterd_add_snapshots_to_export_dict (dict_t *peer_data);
+ 
+ int32_t
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index c38d2ff..275abe3 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -872,6 +872,17 @@ glusterd_snapshot_restore (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                                 goto out;
+                         }
+                 }
++                /* During snapshot restore, mount point for stopped snap
++                 * should exist as it is required to set extended attribute.
++                 */
++                ret = glusterd_recreate_vol_brick_mounts (this, snap_volinfo);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_BRK_MNT_RECREATE_FAIL,
++                                "Failed to recreate brick mounts for %s",
++                                snap->snapname);
++                                goto out;
++                }
+ 
+                 ret = gd_restore_snap_volume (dict, rsp_dict, parent_volinfo,
+                                               snap_volinfo, volcount);
+@@ -5195,13 +5206,17 @@ glusterd_take_brick_snapshot (dict_t *dict, glusterd_volinfo_t *snap_vol,
+         char                   *origin_brick_path   = NULL;
+         char                    key[PATH_MAX]       = "";
+         int32_t                 ret                 = -1;
++        gf_boolean_t            snap_activate       = _gf_false;
+         xlator_t               *this                = NULL;
++        glusterd_conf_t        *priv                = NULL;
+ 
+         this = THIS;
++        priv = this->private;
+         GF_ASSERT (this);
+         GF_ASSERT (dict);
+         GF_ASSERT (snap_vol);
+         GF_ASSERT (brickinfo);
++        GF_ASSERT (priv);
+ 
+         if (strlen(brickinfo->device_path) == 0) {
+                 gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+@@ -5245,16 +5260,23 @@ glusterd_take_brick_snapshot (dict_t *dict, glusterd_volinfo_t *snap_vol,
+                  */
+         }
+ 
+-        /* create the complete brick here */
+-        ret = glusterd_snap_brick_create (snap_vol, brickinfo,
+-                                          brick_count, clone);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                        GD_MSG_BRICK_CREATION_FAIL, "not able to"
+-                        " create the brick for the snap %s"
+-                        ", volume %s", snap_vol->snapshot->snapname,
+-                        snap_vol->volname);
+-                goto out;
++        /* create the complete brick here in case of clone and
++         * activate-on-create configuration.
++         */
++        snap_activate = dict_get_str_boolean (priv->opts,
++                                              GLUSTERD_STORE_KEY_SNAP_ACTIVATE,
++                                              _gf_false);
++        if (clone || snap_activate) {
++                ret = glusterd_snap_brick_create (snap_vol, brickinfo,
++                                                  brick_count, clone);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_BRICK_CREATION_FAIL, "not able to "
++                                "create the brick for the snap %s, volume %s",
++                                snap_vol->snapshot->snapname,
++                                snap_vol->volname);
++                        goto out;
++                }
+         }
+ 
+ out:
+@@ -6126,8 +6148,10 @@ glusterd_snapshot_activate_commit (dict_t *dict, char **op_errstr,
+         char                     *snapname             = NULL;
+         glusterd_snap_t          *snap                 = NULL;
+         glusterd_volinfo_t       *snap_volinfo         = NULL;
++        glusterd_brickinfo_t     *brickinfo            = NULL;
+         xlator_t                 *this                 = NULL;
+-        int                      flags                 = 0;
++        int                       flags                = 0;
++        int                       brick_count          = -1;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -6178,6 +6202,24 @@ glusterd_snapshot_activate_commit (dict_t *dict, char **op_errstr,
+                         goto out;
+         }
+ 
++        /* create the complete brick here */
++        cds_list_for_each_entry (brickinfo, &snap_volinfo->bricks,
++                                 brick_list) {
++                brick_count++;
++                if (gf_uuid_compare (brickinfo->uuid, MY_UUID))
++                        continue;
++                ret = glusterd_snap_brick_create (snap_volinfo, brickinfo,
++                                                  brick_count, _gf_false);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_BRICK_CREATION_FAIL, "not able to "
++                                "create the brick for the snap %s, volume %s",
++                                snap_volinfo->snapshot->snapname,
++                                snap_volinfo->volname);
++                        goto out;
++                }
++        }
++
+         ret = glusterd_start_volume (snap_volinfo, flags, _gf_true);
+ 
+         if (ret) {
+@@ -6263,6 +6305,13 @@ glusterd_snapshot_deactivate_commit (dict_t *dict, char **op_errstr,
+                 goto out;
+         }
+ 
++        ret = glusterd_snap_unmount(this, snap_volinfo);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_GLUSTERD_UMOUNT_FAIL,
++                        "Failed to unmounts for %s", snap->snapname);
++        }
++
+         ret = dict_set_dynstr_with_alloc (rsp_dict, "snapuuid",
+                                           uuid_utoa (snap->snap_id));
+         if (ret) {
+@@ -6907,6 +6956,7 @@ glusterd_snapshot_create_commit (dict_t *dict, char **op_errstr,
+         int64_t                 i                       = 0;
+         int64_t                 volcount                = 0;
+         int32_t                 snap_activate           = 0;
++        int32_t                 flags                   = 0;
+         char                    *snapname               = NULL;
+         char                    *volname                = NULL;
+         char                    *tmp_name               = NULL;
+@@ -6915,7 +6965,6 @@ glusterd_snapshot_create_commit (dict_t *dict, char **op_errstr,
+         glusterd_snap_t         *snap                   = NULL;
+         glusterd_volinfo_t      *origin_vol             = NULL;
+         glusterd_volinfo_t      *snap_vol               = NULL;
+-        glusterd_brickinfo_t    *brickinfo              = NULL;
+         glusterd_conf_t         *priv                   = NULL;
+ 
+         this = THIS;
+@@ -7054,30 +7103,21 @@ glusterd_snapshot_create_commit (dict_t *dict, char **op_errstr,
+                 goto out;
+         }
+ 
+-        cds_list_for_each_entry (snap_vol, &snap->volumes, vol_list) {
+-                cds_list_for_each_entry (brickinfo, &snap_vol->bricks,
+-                                         brick_list) {
+-                        ret = glusterd_brick_start (snap_vol, brickinfo,
+-                                                    _gf_false);
+-                        if (ret) {
+-                                gf_msg (this->name, GF_LOG_WARNING, 0,
+-                                        GD_MSG_BRICK_DISCONNECTED, "starting "
+-                                        "the brick %s:%s for the snap %s "
+-                                        "(volume: %s) failed",
+-                                        brickinfo->hostname, brickinfo->path,
+-                                        snap_vol->snapshot->snapname,
+-                                        snap_vol->volname);
+-                                goto out;
+-                        }
+-                }
++        /* Activate created bricks in case of activate-on-create config. */
++        ret = dict_get_int32 (dict, "flags", &flags);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_DICT_GET_FAILED, "Unable to get flags");
++                goto out;
++        }
+ 
+-                snap_vol->status = GLUSTERD_STATUS_STARTED;
+-                ret = glusterd_store_volinfo (snap_vol,
+-                                             GLUSTERD_VOLINFO_VER_AC_INCREMENT);
++        cds_list_for_each_entry (snap_vol, &snap->volumes, vol_list) {
++                ret = glusterd_start_volume (snap_vol, flags, _gf_true);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                GD_MSG_VOLINFO_SET_FAIL, "Failed to store "
+-                                 "snap volinfo %s", snap_vol->volname);
++                                GD_MSG_SNAP_ACTIVATE_FAIL,
++                                "Failed to activate snap volume %s of the "
++                                "snap %s", snap_vol->volname, snap->snapname);
+                         goto out;
+                 }
+         }
+@@ -7619,6 +7659,30 @@ glusterd_get_single_brick_status (char **op_errstr, dict_t *rsp_dict,
+         if (ret < 0) {
+                 goto out;
+         }
++        /* While getting snap status we should show relevent information
++         * for deactivated snaps.
++         */
++        if (snap_volinfo->status == GLUSTERD_STATUS_STOPPED) {
++                /* Setting vgname as "Deactivated Snapshot" */
++                value = gf_strdup ("N/A (Deactivated Snapshot)");
++                if (!value) {
++                        ret = -1;
++                        goto out;
++                }
++
++                snprintf (key, sizeof (key), "%s.brick%d.vgname",
++                          keyprefix, index);
++                ret = dict_set_dynstr (rsp_dict, key, value);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DICT_SET_FAILED,
++                                "Could not save vgname ");
++                        goto out;
++                }
++
++                ret = 0;
++                goto out;
++        }
+ 
+         ret = glusterd_get_brick_lvm_details (rsp_dict, brickinfo,
+                                               snap_volinfo->volname,
+@@ -9200,6 +9264,19 @@ glusterd_snapshot_restore_postop (dict_t *dict, int32_t op_ret,
+                                 snap->snapname);
+                         goto out;
+                 }
++
++                /* After restore fails, we have to remove mount point for
++                 * deactivated snaps which was created at start of restore op.
++                 */
++                if (volinfo->status == GLUSTERD_STATUS_STOPPED) {
++                        ret = glusterd_snap_unmount(this, volinfo);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_GLUSTERD_UMOUNT_FAIL,
++                                        "Failed to unmounts for %s",
++                                        snap->snapname);
++                        }
++                }
+         }
+ 
+         ret = 0;
+@@ -9965,7 +10042,7 @@ gd_restore_snap_volume (dict_t *dict, dict_t *rsp_dict,
+         glusterd_conf_t         *conf           = NULL;
+         glusterd_volinfo_t      *temp_volinfo   = NULL;
+         glusterd_volinfo_t      *voliter        = NULL;
+-        gf_boolean_t             conf_present   = _gf_false;
++        gf_boolean_t            conf_present    = _gf_false;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 42bb8ce..e35fcde 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -3519,7 +3519,7 @@ out:
+         return ret;
+ }
+ 
+-static int32_t
++int32_t
+ glusterd_recreate_vol_brick_mounts (xlator_t  *this,
+                                     glusterd_volinfo_t *volinfo)
+ {
+@@ -4501,17 +4501,22 @@ glusterd_recreate_all_snap_brick_mounts (xlator_t  *this)
+                 }
+         }
+ 
+-        /* Recreate bricks of snapshot volumes */
++        /* Recreate bricks of snapshot volumes
++         * We are not creating brick mounts for stopped snaps.
++         */
+         cds_list_for_each_entry (snap, &priv->snapshots, snap_list) {
+                 cds_list_for_each_entry (volinfo, &snap->volumes, vol_list) {
+-                        ret = glusterd_recreate_vol_brick_mounts (this,
+-                                                                  volinfo);
+-                        if (ret) {
+-                                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                        GD_MSG_BRK_MNT_RECREATE_FAIL,
+-                                        "Failed to recreate brick mounts "
+-                                        "for %s", snap->snapname);
+-                                goto out;
++                        if (volinfo->status != GLUSTERD_STATUS_STOPPED) {
++                                ret = glusterd_recreate_vol_brick_mounts
++                                                           (this, volinfo);
++                                if (ret) {
++                                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                                GD_MSG_BRK_MNT_RECREATE_FAIL,
++                                                "Failed to recreate brick "
++                                                "mounts for %s",
++                                                snap->snapname);
++                                        goto out;
++                                }
+                         }
+                 }
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.h b/xlators/mgmt/glusterd/src/glusterd-store.h
+index bf504e0..383a475 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.h
++++ b/xlators/mgmt/glusterd/src/glusterd-store.h
+@@ -203,4 +203,8 @@ glusterd_quota_conf_write_header (int fd);
+ int32_t
+ glusterd_quota_conf_write_gfid (int fd, void *buf, char type);
+ 
++int32_t
++glusterd_recreate_vol_brick_mounts (xlator_t  *this,
++                                    glusterd_volinfo_t *volinfo);
++
+ #endif
+-- 
+1.8.3.1
+

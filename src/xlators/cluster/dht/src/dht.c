@@ -9,11 +9,6 @@
 */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "statedump.h"
 #include "dht-common.h"
 
@@ -25,6 +20,7 @@ class_methods_t class_methods = {
 };
 
 struct xlator_fops fops = {
+        .ipc         = dht_ipc,
         .lookup      = dht_lookup,
         .mknod       = dht_mknod,
         .create      = dht_create,
@@ -57,6 +53,7 @@ struct xlator_fops fops = {
         .inodelk     = dht_inodelk,
         .finodelk    = dht_finodelk,
         .lk          = dht_lk,
+        .lease       = dht_lease,
 
         /* Inode write operations */
         .fremovexattr = dht_fremovexattr,

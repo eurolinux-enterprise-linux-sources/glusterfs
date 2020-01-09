@@ -1,0 +1,61 @@
+From ea71f09cd6ea45a2d1525519843fc553f0e46bec Mon Sep 17 00:00:00 2001
+From: Zhang Huan <zhanghuan@open-fs.com>
+Date: Tue, 5 Sep 2017 11:36:25 +0800
+Subject: [PATCH 104/128] cluster/dht: fix crash when deleting directories
+
+In DHT, after locks on all subvolumes are acquired, it would perform the
+following steps sequentially,
+1. send remove dir on all other subvolumes except the hashed one in a loop;
+2. wait for all pending rmdir to be done
+3. remove dir on the hashed subvolume
+
+The problem is that in step 1 there is a check to skip hashed subvolume
+in the loop. If the last subvolume to check is actually the
+hashed one, and step 3 is quickly done before the last and hashed
+subvolume is checked, by accessing shared context data be destroyed in
+step 3, would cause a crash.
+
+Fix by saving shared data in a local variable to access later in the
+loop.
+
+> BUG: 1490642
+> Signed-off-by: Zhang Huan <zhanghuan@open-fs.com>
+(cherry picked from commit 206120126d455417a81a48ae473d49be337e9463)
+Change-Id: I8db7cf7cb262d74efcb58eb00f02ea37df4be4e2
+BUG: 1519076
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124755
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index c6944b2..f611278 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -8094,6 +8094,7 @@ dht_rmdir_lock_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         dht_local_t  *local = NULL;
+         dht_conf_t   *conf  = NULL;
+         int           i     = 0;
++        xlator_t     *hashed_subvol;
+ 
+         VALIDATE_OR_GOTO (this->private, err);
+ 
+@@ -8111,9 +8112,10 @@ dht_rmdir_lock_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 goto err;
+         }
+ 
++        hashed_subvol = local->hashed_subvol;
+         for (i = 0; i < conf->subvolume_cnt; i++) {
+-                if (local->hashed_subvol &&
+-                    (local->hashed_subvol == conf->subvolumes[i]))
++                if (hashed_subvol &&
++                    (hashed_subvol == conf->subvolumes[i]))
+                         continue;
+ 
+                 STACK_WIND_COOKIE (frame, dht_rmdir_cbk, conf->subvolumes[i],
+-- 
+1.8.3.1
+

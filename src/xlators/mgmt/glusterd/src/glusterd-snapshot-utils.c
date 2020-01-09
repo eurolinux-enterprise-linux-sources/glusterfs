@@ -7,10 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
 #include <inttypes.h>
 
 #if defined(GF_LINUX_HOST_OS)
@@ -932,7 +928,8 @@ gd_import_new_brick_snap_details (dict_t *dict, char *prefix,
                                 "%s missing in payload", key);
                 goto out;
         }
-        strcpy (brickinfo->mount_dir, mount_dir);
+        strncpy (brickinfo->mount_dir, mount_dir,
+                 (sizeof (brickinfo->mount_dir) - 1));
 
 out:
         return ret;
@@ -1481,7 +1478,6 @@ glusterd_gen_snap_volfiles (glusterd_volinfo_t *snap_vol, char *peer_snap_name)
         int32_t                 ret              = -1;
         xlator_t               *this             = NULL;
         glusterd_volinfo_t     *parent_volinfo   = NULL;
-        glusterd_brickinfo_t   *brickinfo        = NULL;
 
         this = THIS;
         GF_ASSERT (this);
@@ -1591,7 +1587,7 @@ glusterd_import_friend_snap (dict_t *peer_data, int32_t snap_count,
                 goto out;
         }
 
-        strcpy (snap->snapname, peer_snap_name);
+        strncpy (snap->snapname, peer_snap_name, sizeof (snap->snapname) - 1);
         gf_uuid_parse (peer_snap_id, snap->snap_id);
 
         snprintf (buf, sizeof(buf), "%s.snapid", prefix);
@@ -1708,6 +1704,7 @@ glusterd_import_friend_snap (dict_t *peer_data, int32_t snap_count,
                         "object %s", peer_snap_name);
                 goto out;
         }
+        glusterd_fetchsnap_notify (this);
 
 out:
         if (ret)
@@ -2023,7 +2020,6 @@ glusterd_add_snapd_to_dict (glusterd_volinfo_t *volinfo,
         char            base_key[1024]        = {0};
         char            pidfile[PATH_MAX]     = {0};
         xlator_t        *this                 = NULL;
-        glusterd_conf_t *priv                 = NULL;
 
 
         GF_ASSERT (volinfo);
@@ -2031,8 +2027,6 @@ glusterd_add_snapd_to_dict (glusterd_volinfo_t *volinfo,
 
         this = THIS;
         GF_ASSERT (this);
-
-        priv = this->private;
 
         snprintf (base_key, sizeof (base_key), "brick%d", count);
         snprintf (key, sizeof (key), "%s.hostname", base_key);
@@ -2054,6 +2048,8 @@ glusterd_add_snapd_to_dict (glusterd_volinfo_t *volinfo,
         glusterd_svc_build_snapd_pidfile (volinfo, pidfile, sizeof (pidfile));
 
         brick_online = gf_is_service_running (pidfile, &pid);
+        if (brick_online == _gf_false)
+                pid = -1;
 
         memset (key, 0, sizeof (key));
         snprintf (key, sizeof (key), "%s.pid", base_key);
@@ -3012,7 +3008,6 @@ int32_t
 glusterd_snap_quorum_check_for_clone (dict_t *dict, gf_boolean_t snap_volume,
                                       char **op_errstr, uint32_t *op_errno)
 {
-        int32_t             force             = 0;
         char                err_str[PATH_MAX] = {0, };
         char                key_prefix[PATH_MAX] = {0, };
         char               *snapname          = NULL;
@@ -3387,7 +3382,7 @@ glusterd_copy_file (const char *source, const char *destination)
         GF_ASSERT (destination);
 
         /* Here is stat is made to get the file permission of source file*/
-        ret = lstat (source, &stbuf);
+        ret = sys_lstat (source, &stbuf);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, errno,
                         GD_MSG_FILE_OP_FAILED, "%s not found", source);
@@ -3405,7 +3400,7 @@ glusterd_copy_file (const char *source, const char *destination)
                 goto out;
         }
 
-        dest_fd = open (destination, O_CREAT | O_RDWR, dest_mode);
+        dest_fd = sys_creat (destination, dest_mode);
         if (dest_fd < 0) {
                 ret = -1;
                 gf_msg (this->name, GF_LOG_ERROR, 0,
@@ -3415,7 +3410,7 @@ glusterd_copy_file (const char *source, const char *destination)
         }
 
         do {
-                ret = read (src_fd, buffer, sizeof (buffer));
+                ret = sys_read (src_fd, buffer, sizeof (buffer));
                 if (ret ==  -1) {
                         gf_msg (this->name, GF_LOG_ERROR, errno,
                                 GD_MSG_FILE_OP_FAILED, "Error reading file "
@@ -3426,7 +3421,7 @@ glusterd_copy_file (const char *source, const char *destination)
                 if (read_len == 0)
                         break;
 
-                ret = write (dest_fd, buffer, read_len);
+                ret = sys_write (dest_fd, buffer, read_len);
                 if (ret != read_len) {
                         gf_msg (this->name, GF_LOG_ERROR, 0,
                                 GD_MSG_FILE_OP_FAILED, "Error writing in "
@@ -3436,22 +3431,23 @@ glusterd_copy_file (const char *source, const char *destination)
         } while (ret > 0);
 out:
         if (src_fd > 0)
-                close (src_fd);
+                sys_close (src_fd);
 
         if (dest_fd > 0)
-                close (dest_fd);
+                sys_close (dest_fd);
         return ret;
 }
 
 int32_t
 glusterd_copy_folder (const char *source, const char *destination)
 {
-        DIR             *dir_ptr                =       NULL;
-        struct dirent   *direntp                =       NULL;
-        int32_t         ret                     =       -1;
-        char            src_path[PATH_MAX]      =       "";
-        char            dest_path[PATH_MAX]     =       "";
-        xlator_t        *this                   =       NULL;
+        int32_t         ret                 = -1;
+        xlator_t       *this                = NULL;
+        DIR            *dir_ptr             = NULL;
+        struct dirent  *entry               = NULL;
+        struct dirent   scratch[2]          = {{0,},};
+        char            src_path[PATH_MAX]  = {0,};
+        char            dest_path[PATH_MAX] = {0,};
 
         this = THIS;
         GF_ASSERT (this);
@@ -3459,24 +3455,29 @@ glusterd_copy_folder (const char *source, const char *destination)
         GF_ASSERT (source);
         GF_ASSERT (destination);
 
-        dir_ptr = opendir (source);
+        dir_ptr = sys_opendir (source);
         if (!dir_ptr) {
                 gf_msg (this->name, GF_LOG_ERROR, errno,
                         GD_MSG_DIR_OP_FAILED,  "Unable to open %s", source);
                 goto out;
         }
 
-        while ((direntp = readdir (dir_ptr)) != NULL) {
-                if (strcmp (direntp->d_name, ".") == 0 ||
-                    strcmp (direntp->d_name, "..") == 0)
+        for (;;) {
+                errno = 0;
+                entry = sys_readdir (dir_ptr, scratch);
+                if (!entry || errno != 0)
+                        break;
+
+                if (strcmp (entry->d_name, ".") == 0 ||
+                    strcmp (entry->d_name, "..") == 0)
                         continue;
                 ret = snprintf (src_path, sizeof (src_path), "%s/%s",
-                                source, direntp->d_name);
+                                source, entry->d_name);
                 if (ret < 0)
                         goto out;
 
                 ret = snprintf (dest_path, sizeof (dest_path), "%s/%s",
-                                destination, direntp->d_name);
+                                destination, entry->d_name);
                 if (ret < 0)
                         goto out;
 
@@ -3490,7 +3491,7 @@ glusterd_copy_folder (const char *source, const char *destination)
         }
 out:
         if (dir_ptr)
-                closedir (dir_ptr);
+                (void) sys_closedir (dir_ptr);
 
         return ret;
 }
@@ -3501,6 +3502,7 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
                               char *slave)
 {
         int32_t         ret             =       -1;
+        int32_t         len             =       0;
         char            *token          =       NULL;
         char            *tok            =       NULL;
         char            *temp           =       NULL;
@@ -3533,6 +3535,9 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
                 goto out;
         }
 
+        /* geo-rep session string format being parsed:
+         * "master_node_uuid:ssh://slave_host::slave_vol:slave_voluuid"
+         */
         token = strtok_r (temp, "/", &save_ptr);
 
         token = strtok_r (NULL, ":", &save_ptr);
@@ -3549,12 +3554,11 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
         }
         ip_i = ip;
 
-        token = strtok_r (NULL, "\0", &save_ptr);
+        token = strtok_r (NULL, ":", &save_ptr);
         if (!token) {
                 ret = -1;
                 goto out;
         }
-        token++;
 
         slave_temp = gf_strdup (token);
         if (!slave) {
@@ -3567,8 +3571,10 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
          * 'root@' */
         ip_temp = gf_strdup (ip);
         tok = strtok_r (ip_temp, "@", &save_ptr);
-        if (tok && !strcmp (tok, "root"))
-                ip_i = ip + 5;
+        len = strlen(tok);
+        tok = strtok_r (NULL, "@", &save_ptr);
+        if (tok != NULL)
+                ip_i = ip + len + 1;
 
         ret = snprintf (session, PATH_MAX, "%s_%s_%s",
                         origin_volname, ip_i, slave_temp);
@@ -3632,7 +3638,7 @@ glusterd_copy_quota_files (glusterd_volinfo_t *src_vol,
         /* quota.conf is not present if quota is not enabled, Hence ignoring
          * the absence of this file
          */
-        ret = lstat (src_path, &stbuf);
+        ret = sys_lstat (src_path, &stbuf);
         if (ret) {
                 ret = 0;
                 gf_msg_debug (this->name, 0, "%s not found", src_path);
@@ -3652,137 +3658,38 @@ glusterd_copy_quota_files (glusterd_volinfo_t *src_vol,
                 goto out;
         }
 
+        ret = snprintf (src_path, sizeof (src_path), "%s/quota.cksum",
+                        src_dir);
+        if (ret < 0)
+                goto out;
+
+        /* if quota.conf is present, quota.cksum has to be present. *
+         * Fail snapshot operation if file is absent                *
+         */
+        ret = sys_lstat (src_path, &stbuf);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        GD_MSG_FILE_NOT_FOUND, "%s not found", src_path);
+                goto out;
+        }
+
+        ret = snprintf (dest_path, sizeof (dest_path), "%s/quota.cksum",
+                       dest_dir);
+        if (ret < 0)
+                goto out;
+
+        ret = glusterd_copy_file (src_path, dest_path);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
+                        GD_MSG_NO_MEMORY, "Failed to copy %s in %s",
+                        src_path, dest_path);
+                goto out;
+        }
+
         *conf_present = _gf_true;
 out:
         return ret;
 
-}
-
-/* *
- * Here there are two possibilities, either destination is snaphot or
- * clone. In the case of snapshot nfs_ganesha export file will be copied
- * to snapdir. If it is clone , then new export file will be created for
- * the clone in the GANESHA_EXPORT_DIRECTORY, replacing occurences of
- * volname with clonename
- */
-int
-glusterd_copy_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
-                                glusterd_volinfo_t *dest_vol)
-{
-
-        int32_t         ret                     = -1;
-        char            snap_dir[PATH_MAX]      = {0,};
-        char            src_path[PATH_MAX]      = {0,};
-        char            dest_path[PATH_MAX]     = {0,};
-        char            buffer[BUFSIZ]          = {0,};
-        char            *find_ptr               = NULL;
-        char            *buff_ptr               = NULL;
-        char            *tmp_ptr                = NULL;
-        xlator_t        *this                   = NULL;
-        glusterd_conf_t *priv                   = NULL;
-        struct  stat    stbuf                   = {0,};
-        FILE            *src                    = NULL;
-        FILE            *dest                   = NULL;
-
-
-        this = THIS;
-        GF_VALIDATE_OR_GOTO ("snapshot", this, out);
-        priv = this->private;
-        GF_VALIDATE_OR_GOTO (this->name, priv, out);
-
-        GF_VALIDATE_OR_GOTO (this->name, src_vol, out);
-        GF_VALIDATE_OR_GOTO (this->name, dest_vol, out);
-
-        if (src_vol->is_snap_volume) {
-                GLUSTERD_GET_SNAP_DIR (snap_dir, src_vol->snapshot, priv);
-                ret = snprintf (src_path, PATH_MAX, "%s/export.%s.conf",
-                                snap_dir, src_vol->snapshot->snapname);
-        } else {
-                ret = snprintf (src_path, PATH_MAX, "%s/export.%s.conf",
-                                GANESHA_EXPORT_DIRECTORY, src_vol->volname);
-        }
-        if (ret < 0 || ret >= PATH_MAX)
-                goto out;
-
-        ret = sys_lstat (src_path, &stbuf);
-        if (ret) {
-                /* *
-                * If export file is not present, volume is not exported
-                * via ganesha. So it is not necessary to copy that during
-                * snapshot.
-                */
-                if (errno == ENOENT) {
-                        ret = 0;
-                        gf_msg_debug (this->name, 0, "%s not found", src_path);
-                } else
-                        gf_msg (this->name, GF_LOG_WARNING, errno,
-                                GD_MSG_FILE_OP_FAILED,
-                                "Stat on %s failed with %s",
-                                src_path, strerror (errno));
-                goto out;
-        }
-
-        if (dest_vol->is_snap_volume) {
-                memset (snap_dir, 0 , PATH_MAX);
-                GLUSTERD_GET_SNAP_DIR (snap_dir, dest_vol->snapshot, priv);
-                ret = snprintf (dest_path, sizeof (dest_path),
-                                "%s/export.%s.conf", snap_dir,
-                                dest_vol->snapshot->snapname);
-                if (ret < 0)
-                        goto out;
-
-                ret = glusterd_copy_file (src_path, dest_path);
-                if (ret) {
-                        gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
-                                GD_MSG_NO_MEMORY, "Failed to copy %s in %s",
-                                src_path, dest_path);
-                        goto out;
-                }
-
-        } else {
-                ret = snprintf (dest_path, sizeof (dest_path),
-                                "%s/export.%s.conf", GANESHA_EXPORT_DIRECTORY,
-                                dest_vol->volname);
-                if (ret < 0)
-                        goto out;
-
-                src = fopen (src_path, "r");
-                dest = fopen (dest_path, "w");
-
-                /* *
-                 * if the source volume is snapshot, the export conf file
-                 * consists of orginal volname
-                 */
-                if (src_vol->is_snap_volume)
-                        find_ptr = gf_strdup (src_vol->parent_volname);
-                else
-                        find_ptr = gf_strdup (src_vol->volname);
-
-                if (!find_ptr)
-                        goto out;
-
-                /* Replacing volname with clonename */
-                while (fgets(buffer, BUFSIZ, src)) {
-                        buff_ptr = buffer;
-                        while ((tmp_ptr = strstr(buff_ptr, find_ptr))) {
-                                while (buff_ptr < tmp_ptr)
-                                        fputc((int)*buff_ptr++, dest);
-                                fputs(dest_vol->volname, dest);
-                                buff_ptr += strlen(find_ptr);
-                        }
-                        fputs(buff_ptr, dest);
-                        memset (buffer, 0, BUFSIZ);
-                }
-        }
-out:
-        if (src)
-                fclose (src);
-        if (dest)
-                fclose (dest);
-        if (find_ptr)
-                GF_FREE(find_ptr);
-
-        return ret;
 }
 
 int32_t
@@ -3875,62 +3782,6 @@ out:
         return ret;
 }
 
-int
-glusterd_restore_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
-                                   glusterd_snap_t *snap)
-{
-
-        int32_t         ret                     = -1;
-        char            snap_dir[PATH_MAX]      = "";
-        char            src_path[PATH_MAX]      = "";
-        char            dest_path[PATH_MAX]     = "";
-        xlator_t        *this                   = NULL;
-        glusterd_conf_t *priv                   = NULL;
-        struct  stat    stbuf                   = {0,};
-
-        this = THIS;
-        GF_VALIDATE_OR_GOTO ("snapshot", this, out);
-        priv = this->private;
-        GF_VALIDATE_OR_GOTO (this->name, priv, out);
-
-        GF_VALIDATE_OR_GOTO (this->name, src_vol, out);
-        GF_VALIDATE_OR_GOTO (this->name, snap, out);
-
-        GLUSTERD_GET_SNAP_DIR (snap_dir, snap, priv);
-
-        ret = snprintf (src_path, sizeof (src_path), "%s/export.%s.conf",
-                       snap_dir, snap->snapname);
-        if (ret < 0)
-                goto out;
-
-        ret = lstat (src_path, &stbuf);
-        if (ret) {
-                if (errno == ENOENT) {
-                        ret = 0;
-                        gf_msg_debug (this->name, 0, "%s not found", src_path);
-                } else
-                        gf_msg (this->name, GF_LOG_WARNING, errno,
-                                GD_MSG_FILE_OP_FAILED,
-                                "Stat on %s failed with %s",
-                                src_path, strerror (errno));
-                goto out;
-        }
-
-        ret = snprintf (dest_path, sizeof (dest_path), "%s/export.%s.conf",
-                        GANESHA_EXPORT_DIRECTORY, src_vol->volname);
-        if (ret < 0)
-                goto out;
-
-        ret = glusterd_copy_file (src_path, dest_path);
-        if (ret)
-                gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
-                        GD_MSG_NO_MEMORY, "Failed to copy %s in %s",
-                        src_path, dest_path);
-
-out:
-        return ret;
-
-}
 /* Snapd functions */
 int
 glusterd_is_snapd_enabled (glusterd_volinfo_t *volinfo)
@@ -4012,6 +3863,7 @@ glusterd_is_snap_soft_limit_reached (glusterd_volinfo_t *volinfo, dict_t *dict)
                                 "set soft limit exceed flag in "
                                 "response dictionary");
                 }
+
                 goto out;
         }
         ret = 0;
@@ -4058,3 +3910,39 @@ gd_get_snap_conf_values_if_present (dict_t *dict, uint64_t *sys_hard_limit,
                         GLUSTERD_STORE_KEY_SNAP_MAX_SOFT_LIMIT);
         }
 }
+
+int
+glusterd_get_snap_status_str (glusterd_snap_t *snapinfo, char *snap_status_str)
+{
+        int ret = -1;
+
+        GF_VALIDATE_OR_GOTO (THIS->name, snapinfo, out);
+        GF_VALIDATE_OR_GOTO (THIS->name, snap_status_str, out);
+
+        switch (snapinfo->snap_status) {
+        case GD_SNAP_STATUS_NONE:
+                sprintf (snap_status_str, "%s", "none");
+                break;
+        case GD_SNAP_STATUS_INIT:
+                sprintf (snap_status_str, "%s", "init");
+                break;
+        case GD_SNAP_STATUS_IN_USE:
+                sprintf (snap_status_str, "%s", "in_use");
+                break;
+        case GD_SNAP_STATUS_DECOMMISSION:
+                sprintf (snap_status_str, "%s", "decommissioned");
+                break;
+        case GD_SNAP_STATUS_UNDER_RESTORE:
+                sprintf (snap_status_str, "%s", "under_restore");
+                break;
+        case GD_SNAP_STATUS_RESTORED:
+                sprintf (snap_status_str, "%s", "restored");
+                break;
+        default:
+                goto out;
+        }
+        ret = 0;
+out:
+        return ret;
+}
+

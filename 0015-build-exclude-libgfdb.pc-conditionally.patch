@@ -1,0 +1,87 @@
+From 444324cfdcd8da750bc0ae04a3a416725489dd06 Mon Sep 17 00:00:00 2001
+From: "Bala.FA" <barumuga@redhat.com>
+Date: Fri, 19 Jun 2015 11:09:53 +0530
+Subject: [PATCH 15/74] build: exclude libgfdb.pc conditionally
+
+This patch fixes rhel-5 build failure where libgfdb.pc is not
+applicable.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Ied3978aa14ff6bd72f25eff9759e501100cb6343
+Signed-off-by: Bala.FA <barumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/51099
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60141
+Tested-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 0d1161d..f308f37 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1058,12 +1058,14 @@ fi
+ %postun libs
+ /sbin/ldconfig
+ 
++%if ( 0%{?_build_server} )
+ %postun server
+ /sbin/ldconfig
+ %if (0%{?_with_firewalld:1})
+     %firewalld_reload
+ %endif
+ exit 0
++%endif
+ 
+ ##-----------------------------------------------------------------------------
+ ## All %%files should be placed here and keep them grouped
+@@ -1249,8 +1251,10 @@ exit 0
+ %if ( 0%{!?_without_tiering:1} && 0%{?_build_server})
+ %{_libdir}/pkgconfig/libgfdb.pc
+ %else
++%if ( 0%{?rhel} && 0%{?rhel} >= 6 )
+ %exclude %{_libdir}/pkgconfig/libgfdb.pc
+ %endif
++%endif
+ 
+ %files client-xlators
+ %dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator
+@@ -1259,7 +1263,7 @@ exit 0
+ %dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/protocol
+      %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/protocol/client.so
+ 
+-+%if ( 0%{!?_without_extra_xlators:1} )
++%if ( 0%{!?_without_extra_xlators:1} )
+ %files extra-xlators
+ %dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator
+ %dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/encryption
+@@ -1378,6 +1382,7 @@ exit 0
+ %endif
+ 
+ %if ( 0%{?_build_server} )
++%if ( 0%{!?_without_regression_tests:1} )
+ %files regression-tests
+ %dir %{_datadir}/glusterfs
+      %{_datadir}/glusterfs/run-tests.sh
+@@ -1385,6 +1390,7 @@ exit 0
+ %exclude %{_datadir}/glusterfs/tests/vagrant
+ %exclude %{_datadir}/share/glusterfs/tests/basic/rpm.t
+ %endif
++%endif
+ 
+ %if ( 0%{?_build_server} )
+ %if ( 0%{!?_without_ocf:1} )
+@@ -2295,6 +2301,9 @@ end
+ * Tue Aug 18 2015 Niels de Vos <ndevos@redhat.com>
+ - Include missing directories for glusterfind hooks scripts (#1225465)
+ 
++* Fri Jun 19 2015 Bala.FA <barumuga@redhat.com>
++- exclude libgfdb.pc conditionally for rhel-5 (#1233486)
++
+ * Thu Jun 18 2015 Bala.FA <barumuga@redhat.com>
+ - add pretrans check for client-xlators, ganesha and python-gluster
+   sub-packages (#1232641)
+-- 
+1.8.3.1
+

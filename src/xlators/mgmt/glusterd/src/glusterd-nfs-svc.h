@@ -11,11 +11,6 @@
 #ifndef _GLUSTERD_NFS_SVC_H_
 #define _GLUSTERD_NFS_SVC_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterd-svc-mgmt.h"
 
 void
@@ -23,15 +18,6 @@ glusterd_nfssvc_build (glusterd_svc_t *svc);
 
 int
 glusterd_nfssvc_init (glusterd_svc_t *svc);
-
-int
-glusterd_nfssvc_manager (glusterd_svc_t *svc, void *data, int flags);
-
-int
-glusterd_nfssvc_start (glusterd_svc_t *svc, int flags);
-
-int
-glusterd_nfssvc_stop (glusterd_svc_t *svc, int sig);
 
 int
 glusterd_nfssvc_reconfigure ();

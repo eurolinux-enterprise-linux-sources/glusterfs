@@ -17,11 +17,6 @@
 #include <signal.h>
 #include <string.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "glusterfs.h"
 #include "dict.h"
 #include "xlator.h"
@@ -93,6 +88,10 @@ afr_opendir (call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd)
 	if (!local)
 		goto out;
 
+        local->op = GF_FOP_OPENDIR;
+        if (!afr_is_consistent_io_possible (local, priv, &op_errno))
+		goto out;
+
 	fd_ctx = afr_fd_ctx_get (fd, this);
 	if (!fd_ctx)
 		goto out;
@@ -158,7 +157,8 @@ afr_validate_read_subvol (inode_t *inode, xlator_t *this, int par_read_subvol)
          * -1 above due to gen being 0, which is why it is OK to pass NULL for
          *  read_subvol_args here.
          */
-        entry_read_subvol = afr_data_subvol_get (inode, this, 0, 0, NULL);
+        entry_read_subvol = afr_data_subvol_get (inode, this, NULL, NULL,
+                                                 NULL, NULL);
         if (entry_read_subvol != par_read_subvol)
                 return -1;
 

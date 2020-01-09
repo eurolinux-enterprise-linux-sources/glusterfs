@@ -11,11 +11,6 @@
 #ifndef _DICT_H
 #define _DICT_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <inttypes.h>
 #include <sys/uio.h>
 #include <pthread.h>
@@ -29,13 +24,13 @@ typedef struct _data_pair data_pair_t;
 
 
 #define GF_PROTOCOL_DICT_SERIALIZE(this,from_dict,to,len,ope,labl) do { \
-                int    ret     = 0;                                     \
+                int    _ret     = 0;                                     \
                                                                         \
                 if (!from_dict)                                         \
                         break;                                          \
                                                                         \
-                ret = dict_allocate_and_serialize (from_dict, to, &len);\
-                if (ret < 0) {                                          \
+                _ret = dict_allocate_and_serialize (from_dict, to, &len);\
+                if (_ret < 0) {                                          \
                         gf_msg (this->name, GF_LOG_WARNING, 0,          \
                                 LG_MSG_DICT_SERIAL_FAILED,            \
                                 "failed to get serialized dict (%s)",   \
@@ -68,7 +63,6 @@ typedef struct _data_pair data_pair_t;
 struct _data {
         unsigned char  is_static:1;
         unsigned char  is_const:1;
-        unsigned char  is_stdalloc:1;
         int32_t        len;
         char          *data;
         int32_t        refcount;
@@ -81,6 +75,7 @@ struct _data_pair {
         struct _data_pair *next;
         data_t            *value;
         char              *key;
+        uint32_t           key_hash;
 };
 
 struct _dict {
@@ -96,6 +91,7 @@ struct _dict {
         data_pair_t    *members_internal;
         data_pair_t     free_pair;
         gf_boolean_t    free_pair_in_use;
+        uint32_t        max_count;
 };
 
 typedef gf_boolean_t (*dict_match_t) (dict_t *d, char *k, data_t *v,
@@ -109,9 +105,12 @@ int32_t dict_set (dict_t *this, char *key, data_t *value);
 /* function to set a new key/value pair (without checking for duplicate) */
 int32_t dict_add (dict_t *this, char *key, data_t *value);
 
+int dict_get_with_ref (dict_t *this, char *key, data_t **data);
 data_t *dict_get (dict_t *this, char *key);
 void dict_del (dict_t *this, char *key);
 int dict_reset (dict_t *dict);
+
+int dict_key_count (dict_t *this);
 
 int32_t dict_serialized_length (dict_t *dict);
 int32_t dict_serialize (dict_t *dict, char *buf);
@@ -119,7 +118,6 @@ int32_t dict_unserialize (char *buf, int32_t size, dict_t **fill);
 
 int32_t dict_allocate_and_serialize (dict_t *this, char **buf, u_int *length);
 
-void dict_destroy (dict_t *dict);
 void dict_unref (dict_t *dict);
 dict_t *dict_ref (dict_t *dict);
 data_t *data_ref (data_t *data);
@@ -147,9 +145,6 @@ uint32_t data_to_uint32 (data_t *data);
 uint16_t data_to_uint16 (data_t *data);
 uint8_t data_to_uint8 (data_t *data);
 
-data_t *data_from_ptr (void *value);
-data_t *data_from_static_ptr (void *value);
-
 data_t *data_from_int64 (int64_t value);
 data_t *data_from_int32 (int32_t value);
 data_t *data_from_int16 (int16_t value);
@@ -163,11 +158,7 @@ char *data_to_str (data_t *data);
 void *data_to_bin (data_t *data);
 void *data_to_ptr (data_t *data);
 
-data_t *get_new_data ();
 data_t * data_copy (data_t *old);
-dict_t *get_new_dict_full (int size_hint);
-dict_t *get_new_dict ();
-
 int dict_foreach (dict_t *this,
                   int (*fn)(dict_t *this,
                             char *key,
@@ -200,6 +191,7 @@ int dict_null_foreach_fn (dict_t *d, char *k,
 int dict_remove_foreach_fn (dict_t *d, char *k,
                             data_t *v, void *tmp);
 dict_t *dict_copy (dict_t *this, dict_t *new);
+dict_t *get_new_dict (void);
 int dict_keys_join (void *value, int size, dict_t *dict,
                     int (*filter_fn)(char *key));
 
@@ -244,13 +236,13 @@ GF_MUST_CHECK int dict_set_bin (dict_t *this, char *key, void *ptr, size_t size)
 GF_MUST_CHECK int dict_set_static_bin (dict_t *this, char *key, void *ptr, size_t size);
 
 GF_MUST_CHECK int dict_set_str (dict_t *this, char *key, char *str);
-GF_MUST_CHECK int dict_set_dynmstr (dict_t *this, char *key, char *str);
 GF_MUST_CHECK int dict_set_dynstr (dict_t *this, char *key, char *str);
 GF_MUST_CHECK int dict_set_dynstr_with_alloc (dict_t *this, char *key, const char *str);
 GF_MUST_CHECK int dict_add_dynstr_with_alloc (dict_t *this, char *key, char *str);
 GF_MUST_CHECK int dict_get_str (dict_t *this, char *key, char **str);
 
 GF_MUST_CHECK int dict_get_str_boolean (dict_t *this, char *key, int default_val);
+GF_MUST_CHECK int dict_rename_key (dict_t *this, char *key, char *replace_key);
 GF_MUST_CHECK int dict_serialize_value_with_delim (dict_t *this, char *buf, int32_t *serz_len,
                                                     char delimiter);
 void
@@ -265,11 +257,14 @@ gf_boolean_t
 dict_match_everything (dict_t *d, char *k, data_t *v, void *data);
 
 dict_t *
-dict_for_key_value (const char *name, const char *value, size_t size);
+dict_for_key_value (const char *name, const char *value, size_t size,
+                    gf_boolean_t is_static);
 
 gf_boolean_t
 are_dicts_equal (dict_t *one, dict_t *two,
                  gf_boolean_t (*match) (dict_t *d, char *k, data_t *v,
                                         void *data),
                  gf_boolean_t (*value_ignore) (char *k));
+int
+dict_has_key_from_array (dict_t *dict, char **strings, gf_boolean_t *result);
 #endif

@@ -11,12 +11,13 @@
 #include "xlator.h"
 #include "defaults.h"
 
+#include "ec.h"
+#include "ec-messages.h"
 #include "ec-helpers.h"
 #include "ec-common.h"
 #include "ec-combine.h"
 #include "ec-method.h"
 #include "ec-fops.h"
-#include "ec-messages.h"
 
 int
 ec_dir_write_cbk (call_frame_t *frame, xlator_t *this,
@@ -46,11 +47,11 @@ ec_dir_write_cbk (call_frame_t *frame, xlator_t *this,
         if (!cbk)
                 goto out;
 
-        if (op_ret < 0)
-                goto out;
-
         if (xdata)
                 cbk->xdata = dict_ref (xdata);
+
+        if (op_ret < 0)
+                goto out;
 
         if (poststat)
                 cbk->iatt[i++] = *poststat;
@@ -177,7 +178,7 @@ int32_t ec_manager_create(ec_fop_data_t * fop, int32_t state)
         /* Fall through */
 
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[0],
+            ec_lock_prepare_parent_inode(fop, &fop->loc[0], NULL,
                                          EC_UPDATE_DATA | EC_UPDATE_META);
             ec_lock(fop);
 
@@ -355,9 +356,9 @@ int32_t ec_manager_link(ec_fop_data_t * fop, int32_t state)
     {
         case EC_STATE_INIT:
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[1], EC_UPDATE_DATA |
-                                                            EC_UPDATE_META |
-                                                            EC_INODE_SIZE);
+            ec_lock_prepare_parent_inode(fop, &fop->loc[1], &fop->loc[0],
+                                         EC_UPDATE_DATA | EC_UPDATE_META |
+                                         EC_INODE_SIZE);
             ec_lock(fop);
 
             return EC_STATE_DISPATCH;
@@ -540,7 +541,7 @@ int32_t ec_manager_mkdir(ec_fop_data_t * fop, int32_t state)
         /* Fall through */
 
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[0],
+            ec_lock_prepare_parent_inode(fop, &fop->loc[0], NULL,
                                          EC_UPDATE_DATA | EC_UPDATE_META);
             ec_lock(fop);
 
@@ -584,12 +585,14 @@ int32_t ec_manager_mkdir(ec_fop_data_t * fop, int32_t state)
         case -EC_STATE_DISPATCH:
         case -EC_STATE_PREPARE_ANSWER:
         case -EC_STATE_REPORT:
+            cbk = fop->answer;
             GF_ASSERT(fop->error != 0);
 
             if (fop->cbks.mkdir != NULL)
             {
                 fop->cbks.mkdir(fop->req_frame, fop, fop->xl, -1, fop->error,
-                                NULL, NULL, NULL, NULL, NULL);
+                                NULL, NULL, NULL, NULL,
+                                ((cbk) ? cbk->xdata : NULL));
             }
 
             return EC_STATE_LOCK_REUSE;
@@ -744,7 +747,7 @@ int32_t ec_manager_mknod(ec_fop_data_t * fop, int32_t state)
         /* Fall through */
 
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[0],
+            ec_lock_prepare_parent_inode(fop, &fop->loc[0], NULL,
                                          EC_UPDATE_DATA | EC_UPDATE_META);
             ec_lock(fop);
 
@@ -903,10 +906,10 @@ int32_t ec_manager_rename(ec_fop_data_t * fop, int32_t state)
     {
         case EC_STATE_INIT:
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[0], EC_UPDATE_DATA |
-                                                            EC_UPDATE_META |
-                                                            EC_INODE_SIZE);
-            ec_lock_prepare_parent_inode(fop, &fop->loc[1],
+            ec_lock_prepare_parent_inode(fop, &fop->loc[0], &fop->loc[0],
+                                         EC_UPDATE_DATA | EC_UPDATE_META |
+                                         EC_INODE_SIZE);
+            ec_lock_prepare_parent_inode(fop, &fop->loc[1], NULL,
                                          EC_UPDATE_DATA | EC_UPDATE_META);
             ec_lock(fop);
 
@@ -1065,7 +1068,7 @@ int32_t ec_manager_rmdir(ec_fop_data_t * fop, int32_t state)
     {
         case EC_STATE_INIT:
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[0],
+            ec_lock_prepare_parent_inode(fop, &fop->loc[0], NULL,
                                          EC_UPDATE_DATA | EC_UPDATE_META);
             ec_lock(fop);
 
@@ -1211,7 +1214,7 @@ int32_t ec_manager_symlink(ec_fop_data_t * fop, int32_t state)
     {
         case EC_STATE_INIT:
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[0],
+            ec_lock_prepare_parent_inode(fop, &fop->loc[0], NULL,
                                          EC_UPDATE_DATA | EC_UPDATE_META);
             ec_lock(fop);
 
@@ -1377,7 +1380,7 @@ int32_t ec_manager_unlink(ec_fop_data_t * fop, int32_t state)
     {
         case EC_STATE_INIT:
         case EC_STATE_LOCK:
-            ec_lock_prepare_parent_inode(fop, &fop->loc[0],
+            ec_lock_prepare_parent_inode(fop, &fop->loc[0], NULL,
                                          EC_UPDATE_DATA | EC_UPDATE_META);
             ec_lock(fop);
 

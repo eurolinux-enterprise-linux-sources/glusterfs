@@ -1,0 +1,424 @@
+From 538b92ebe180186d84e3f5288f168c404e8957d4 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Mon, 13 Nov 2017 18:41:58 +0530
+Subject: [PATCH 46/74] Revert "build: conditionally build legacy gNFS server
+ and associated sub-packaging"
+
+This reverts commit 83abcba6b42f94eb5a6495a634d4055362a9d79d.
+
+Conflicts:
+	glusterfs.spec.in
+	xlators/Makefile.am
+	xlators/mgmt/glusterd/src/glusterd-messages.h
+---
+ configure.ac                                  | 12 -----
+ extras/LinuxRPM/Makefile.am                   |  4 +-
+ glusterfs.spec.in                             | 65 +++++++--------------------
+ xlators/Makefile.am                           |  6 +--
+ xlators/mgmt/glusterd/src/Makefile.am         |  4 +-
+ xlators/mgmt/glusterd/src/glusterd-nfs-svc.c  | 28 ++++++------
+ xlators/mgmt/glusterd/src/glusterd-svc-mgmt.h |  1 +
+ xlators/mgmt/glusterd/src/glusterd-utils.c    |  7 ++-
+ xlators/mgmt/glusterd/src/glusterd.c          | 35 ++++++++++++---
+ 9 files changed, 68 insertions(+), 94 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 3841959..dfccd40 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1345,17 +1345,6 @@ if test "x$enable_glupy" = "xyes"; then
+ fi
+ dnl end glupy section
+ 
+-dnl gnfs section
+-BUILD_GNFS="no"
+-AC_ARG_ENABLE([gnfs],
+-              AC_HELP_STRING([--enable-gnfs],
+-                             [Enable legacy gnfs server xlator.]))
+-if test "x$enable_gnfs" = "xyes"; then
+-    BUILD_GNFS="yes"
+-fi
+-AM_CONDITIONAL([BUILD_GNFS], [test x$BUILD_GNFS = xyes])
+-dnl end gnfs section
+-
+ dnl Check for userspace-rcu
+ PKG_CHECK_MODULES([URCU], [liburcu-bp], [],
+   [AC_CHECK_HEADERS([urcu-bp.h],
+@@ -1590,5 +1579,4 @@ echo "Events               : $BUILD_EVENTS"
+ echo "EC dynamic support   : $EC_DYNAMIC_SUPPORT"
+ echo "Use memory pools     : $USE_MEMPOOL"
+ echo "Nanosecond m/atimes  : $BUILD_NANOSECOND_TIMESTAMPS"
+-echo "Legacy gNFS server   : $BUILD_GNFS"
+ echo
+diff --git a/extras/LinuxRPM/Makefile.am b/extras/LinuxRPM/Makefile.am
+index f028537..61fd6da 100644
+--- a/extras/LinuxRPM/Makefile.am
++++ b/extras/LinuxRPM/Makefile.am
+@@ -18,7 +18,7 @@ autogen:
+ 	cd ../.. && \
+ 	rm -rf autom4te.cache && \
+ 	./autogen.sh && \
+-	./configure --enable-gnfs --with-previous-options
++	./configure --with-previous-options
+ 
+ prep:
+ 	$(MAKE) -C ../.. dist;
+@@ -36,7 +36,7 @@ srcrpm:
+ 	mv rpmbuild/SRPMS/* .
+ 
+ rpms:
+-	rpmbuild --define '_topdir $(shell pwd)/rpmbuild' --with gnfs -bb rpmbuild/SPECS/glusterfs.spec
++	rpmbuild --define '_topdir $(shell pwd)/rpmbuild' -bb rpmbuild/SPECS/glusterfs.spec
+ 	mv rpmbuild/RPMS/*/* .
+ 
+ # EPEL-5 does not like new versions of rpmbuild and requires some
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 8c16477..10339fe 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -47,10 +47,6 @@
+ %global _without_georeplication --disable-georeplication
+ %endif
+ 
+-# if you wish to compile an rpm with the legacy gNFS server xlator
+-# rpmbuild -ta @PACKAGE_NAME@-@PACKAGE_VERSION@.tar.gz --with gnfs
+-%{?_with_gnfs:%global _with_gnfs --enable-gnfs}
+-
+ # if you wish to compile an rpm without the OCF resource agents...
+ # rpmbuild -ta @PACKAGE_NAME@-@PACKAGE_VERSION@.tar.gz --without ocf
+ %{?_without_ocf:%global _without_ocf --without-ocf}
+@@ -122,7 +118,7 @@
+ %endif
+ 
+ # From https://fedoraproject.org/wiki/Packaging:Python#Macros
+-%if ( 0%{?rhel} && 0%{?rhel} <= 6 )
++%if ( 0%{?rhel} && 0%{?rhel} <= 5 )
+ %{!?python2_sitelib: %global python2_sitelib %(python2 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")}
+ %{!?python2_sitearch: %global python2_sitearch %(python2 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")}
+ %global _rundir %{_localstatedir}/run
+@@ -461,26 +457,6 @@ This package provides support to geo-replication.
+ %endif
+ %endif
+ 
+-%if ( 0%{?_with_gnfs:1} )
+-%package gnfs
+-Summary:          GlusterFS gNFS server
+-Group:            System Environment/Daemons
+-Requires:         %{name}%{?_isa} = %{version}-%{release}
+-Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
+-Requires:         nfs-utils
+-
+-%description gnfs
+-GlusterFS is a distributed file-system capable of scaling to several
+-petabytes. It aggregates various storage bricks over Infiniband RDMA
+-or TCP/IP interconnect into one large parallel network file
+-system. GlusterFS is one of the most sophisticated file systems in
+-terms of features and extensibility.  It borrows a powerful concept
+-called Translators from GNU Hurd kernel. Much of the code in GlusterFS
+-is in user space and easily manageable.
+-
+-This package provides the glusterfs legacy gNFS server xlator
+-%endif
+-
+ %package libs
+ Summary:          GlusterFS common libraries
+ Group:            Applications/File
+@@ -621,6 +597,7 @@ Requires:         %{name}-api%{?_isa} = %{version}-%{release}
+ Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
+ # lvm2 for snapshot, and nfs-utils and rpcbind/portmap for gnfs server
+ Requires:         lvm2
++Requires:         nfs-utils
+ %if ( 0%{?_with_systemd:1} )
+ %{?systemd_requires}
+ %else
+@@ -736,19 +713,18 @@ export LDFLAGS
+ ./autogen.sh && %configure \
+         %{?_with_cmocka} \
+         %{?_with_debug} \
+-        %{?_with_firewalld} \
+-        %{?_with_gnfs} \
+-        %{?_with_tmpfilesdir} \
+         %{?_with_valgrind} \
++        %{?_with_tmpfilesdir} \
+         %{?_without_bd} \
+         %{?_without_epoll} \
+-        %{?_without_events} \
+         %{?_without_fusermount} \
+         %{?_without_georeplication} \
++        %{?_with_firewalld} \
+         %{?_without_ocf} \
+         %{?_without_rdma} \
+         %{?_without_syslog} \
+-        %{?_without_tiering}
++        %{?_without_tiering} \
++        %{?_without_events}
+ 
+ # fix hardening and remove rpath in shlibs
+ %if ( 0%{?fedora} && 0%{?fedora} > 17 ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
+@@ -1105,6 +1081,7 @@ exit 0
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/trash.so
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/upcall.so
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/mgmt*
++%exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs*
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/performance/decompounder.so
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/protocol/server*
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/storage*
+@@ -1297,19 +1274,6 @@ exit 0
+ %endif
+ 
+ %if ( 0%{?_build_server} )
+-%if ( 0%{?_with_gnfs:1} )
+-%files gnfs
+-%dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator
+-%dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs
+-     %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs/server.so
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs
+-%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/nfs-server.vol
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs/run
+-%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
+-%endif
+-%endif
+-
+-%if ( 0%{?_build_server} )
+ %files ganesha
+ %endif
+ 
+@@ -1399,11 +1363,6 @@ exit 0
+ # sysconf
+ %config(noreplace) %{_sysconfdir}/glusterfs
+ %exclude %{_sysconfdir}/glusterfs/eventsconfig.json
+-%exclude %{_sharedstatedir}/glusterd/nfs/nfs-server.vol
+-%exclude %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
+-%if ( 0%{?_with_gnfs:1} )
+-%exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs/*
+-%endif
+ %config(noreplace) %{_sysconfdir}/sysconfig/glusterd
+ %if ( 0%{_for_fedora_koji_builds} )
+ %config(noreplace) %{_sysconfdir}/sysconfig/glusterfsd
+@@ -1450,6 +1409,7 @@ exit 0
+      %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/trash.so
+      %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/upcall.so
+      %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/leases.so
++     %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs*
+ %dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/mgmt
+      %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/mgmt/glusterd.so
+ %dir %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/protocol
+@@ -1517,7 +1477,11 @@ exit 0
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre
+             %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S30samba-stop.sh
+             %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S29CTDB-teardown.sh
+-%config(noreplace) %ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/options
++%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs
++%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/nfs-server.vol
++%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs/run
++%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
++%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/options
+ %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/peers
+ %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/quotad
+ %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/scrub
+@@ -2156,6 +2120,9 @@ fi
+ %endif
+ 
+ %changelog
++* Mon Nov 13 2017 Jiffin Tony Thottan <jthottan@redhat.com>
++- DOWNSTREAM ONLY - revert of 83abcb(gnfs in an optional subpackage)
++
+ * Tue Oct 10 2017 Milind Changire <mchangir@redhat.com>
+ - DOWNSTREAM ONLY patch - launch glusterd in upgrade mode after all new bits have been installed
+ 
+diff --git a/xlators/Makefile.am b/xlators/Makefile.am
+index 29549db..c3c9cf2 100644
+--- a/xlators/Makefile.am
++++ b/xlators/Makefile.am
+@@ -1,12 +1,8 @@
+-if BUILD_GNFS
+-  GNFS_DIR = nfs
+-endif
+-
+ DIST_SUBDIRS = cluster storage protocol performance debug features encryption \
+           mount nfs mgmt system playground meta
+ 
+ SUBDIRS = cluster storage protocol performance debug features encryption \
+-          mount ${GNFS_DIR} mgmt system playground meta
++          mount nfs mgmt system playground meta
+ 
+ EXTRA_DIST = xlator.sym
+ 
+diff --git a/xlators/mgmt/glusterd/src/Makefile.am b/xlators/mgmt/glusterd/src/Makefile.am
+index b0f5a9b..4858dee 100644
+--- a/xlators/mgmt/glusterd/src/Makefile.am
++++ b/xlators/mgmt/glusterd/src/Makefile.am
+@@ -1,8 +1,6 @@
+ xlator_LTLIBRARIES = glusterd.la
+ xlatordir = $(libdir)/glusterfs/$(PACKAGE_VERSION)/xlator/mgmt
+-glusterd_la_CPPFLAGS = $(AM_CPPFLAGS) \
+-	-DFILTERDIR=\"$(libdir)/glusterfs/$(PACKAGE_VERSION)/filter\" \
+-	-DXLATORDIR=\"$(libdir)/glusterfs/$(PACKAGE_VERSION)/xlator\"
++glusterd_la_CPPFLAGS = $(AM_CPPFLAGS) "-DFILTERDIR=\"$(libdir)/glusterfs/$(PACKAGE_VERSION)/filter\""
+ glusterd_la_LDFLAGS = -module $(GF_XLATOR_DEFAULT_LDFLAGS)
+ glusterd_la_SOURCES = glusterd.c glusterd-handler.c glusterd-sm.c \
+ 	glusterd-op-sm.c glusterd-utils.c glusterd-rpc-ops.c \
+diff --git a/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c b/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c
+index 32b1064..eab9746 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c
++++ b/xlators/mgmt/glusterd/src/glusterd-nfs-svc.c
+@@ -10,7 +10,6 @@
+ 
+ #include "globals.h"
+ #include "run.h"
+-#include "syscall.h"
+ #include "glusterd.h"
+ #include "glusterd-utils.h"
+ #include "glusterd-volgen.h"
+@@ -18,6 +17,8 @@
+ #include "glusterd-messages.h"
+ #include "glusterd-svc-helper.h"
+ 
++static char *nfs_svc_name = "nfs";
++
+ static gf_boolean_t
+ glusterd_nfssvc_need_start ()
+ {
+@@ -40,13 +41,19 @@ glusterd_nfssvc_need_start ()
+         return start;
+ }
+ 
++int
++glusterd_nfssvc_init (glusterd_svc_t *svc)
++{
++        return glusterd_svc_init (svc, nfs_svc_name);
++}
++
+ static int
+ glusterd_nfssvc_create_volfile ()
+ {
+         char            filepath[PATH_MAX] = {0,};
+         glusterd_conf_t *conf = THIS->private;
+ 
+-        glusterd_svc_build_volfile_path (conf->nfs_svc.name, conf->workdir,
++        glusterd_svc_build_volfile_path (nfs_svc_name, conf->workdir,
+                                          filepath, sizeof (filepath));
+         return glusterd_create_global_volfile (build_nfs_graph,
+                                                filepath, NULL);
+@@ -58,16 +65,15 @@ glusterd_nfssvc_manager (glusterd_svc_t *svc, void *data, int flags)
+         int                 ret     = -1;
+ 
+         if (!svc->inited) {
+-                ret = glusterd_svc_init (svc, "nfs");
++                ret = glusterd_nfssvc_init (svc);
+                 if (ret) {
+                         gf_msg (THIS->name, GF_LOG_ERROR, 0,
+-                                GD_MSG_FAILED_INIT_NFSSVC,
+-                                "Failed to init nfs service");
++                                GD_MSG_FAILED_INIT_NFSSVC, "Failed to init nfs "
++                                "service");
+                         goto out;
+                 } else {
+                         svc->inited = _gf_true;
+-                        gf_msg_debug (THIS->name, 0,
+-                                      "nfs service initialized");
++                        gf_msg_debug (THIS->name, 0, "nfs service initialized");
+                 }
+         }
+ 
+@@ -75,14 +81,6 @@ glusterd_nfssvc_manager (glusterd_svc_t *svc, void *data, int flags)
+         if (ret)
+                 goto out;
+ 
+-        /* not an error, or a (very) soft error at best */
+-        if (sys_access (XLATORDIR "/nfs/server.so", R_OK) != 0) {
+-                gf_msg (THIS->name, GF_LOG_INFO, 0,
+-                        GD_MSG_GNFS_XLATOR_NOT_INSTALLED,
+-                        "nfs/server.so xlator is not installed");
+-                goto out;
+-        }
+-
+         ret = glusterd_nfssvc_create_volfile ();
+         if (ret)
+                 goto out;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.h b/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.h
+index 8b70a62..c505d1e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.h
++++ b/xlators/mgmt/glusterd/src/glusterd-svc-mgmt.h
+@@ -29,6 +29,7 @@ struct glusterd_svc_ {
+         char                      name[PATH_MAX];
+         glusterd_conn_t           conn;
+         glusterd_proc_t           proc;
++        glusterd_svc_build_t      build;
+         glusterd_svc_manager_t    manager;
+         glusterd_svc_start_t      start;
+         glusterd_svc_stop_t       stop;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 55c4fa7..f611fbb 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -668,8 +668,11 @@ glusterd_volinfo_new (glusterd_volinfo_t **volinfo)
+ 
+         new_volinfo->xl = THIS;
+ 
+-        glusterd_snapdsvc_build (&new_volinfo->snapd.svc);
+-        glusterd_tierdsvc_build (&new_volinfo->tierd.svc);
++        new_volinfo->snapd.svc.build = glusterd_snapdsvc_build;
++        new_volinfo->snapd.svc.build (&(new_volinfo->snapd.svc));
++
++        new_volinfo->tierd.svc.build = glusterd_tierdsvc_build;
++        new_volinfo->tierd.svc.build (&(new_volinfo->tierd.svc));
+ 
+         pthread_mutex_init (&new_volinfo->reflock, NULL);
+         *volinfo = glusterd_volinfo_ref (new_volinfo);
+diff --git a/xlators/mgmt/glusterd/src/glusterd.c b/xlators/mgmt/glusterd/src/glusterd.c
+index 68d3e90..6ce4156 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.c
++++ b/xlators/mgmt/glusterd/src/glusterd.c
+@@ -1330,6 +1330,34 @@ out:
+         return ret;
+ }
+ 
++static void
++glusterd_svcs_build ()
++{
++        xlator_t           *this    = NULL;
++        glusterd_conf_t    *priv    = NULL;
++
++        this = THIS;
++        GF_ASSERT (this);
++
++        priv = this->private;
++        GF_ASSERT (priv);
++
++        priv->shd_svc.build = glusterd_shdsvc_build;
++        priv->shd_svc.build (&(priv->shd_svc));
++
++        priv->nfs_svc.build = glusterd_nfssvc_build;
++        priv->nfs_svc.build (&(priv->nfs_svc));
++
++        priv->quotad_svc.build = glusterd_quotadsvc_build;
++        priv->quotad_svc.build (&(priv->quotad_svc));
++
++        priv->bitd_svc.build = glusterd_bitdsvc_build;
++        priv->bitd_svc.build (&(priv->bitd_svc));
++
++        priv->scrub_svc.build = glusterd_scrubsvc_build;
++        priv->scrub_svc.build (&(priv->scrub_svc));
++}
++
+ static int
+ is_upgrade (dict_t *options, gf_boolean_t *upgrade)
+ {
+@@ -1864,12 +1892,7 @@ init (xlator_t *this)
+         this->private = conf;
+         glusterd_mgmt_v3_lock_init ();
+         glusterd_txn_opinfo_dict_init ();
+-
+-        glusterd_shdsvc_build (&conf->shd_svc);
+-        glusterd_nfssvc_build (&conf->nfs_svc);
+-        glusterd_quotadsvc_build (&conf->quotad_svc);
+-        glusterd_bitdsvc_build (&conf->bitd_svc);
+-        glusterd_scrubsvc_build (&conf->scrub_svc);
++        glusterd_svcs_build ();
+ 
+         /* Make install copies few of the hook-scripts by creating hooks
+          * directory. Hence purposefully not doing the check for the presence of
+-- 
+1.8.3.1
+

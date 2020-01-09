@@ -9,11 +9,6 @@
 */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "client.h"
 #include "xlator.h"
 #include "defaults.h"
@@ -36,6 +31,13 @@ int client_init_rpc (xlator_t *this);
 int client_destroy_rpc (xlator_t *this);
 int client_mark_fd_bad (xlator_t *this);
 
+static void
+client_filter_o_direct (clnt_conf_t *conf, int32_t *flags)
+{
+        if (conf->filter_o_direct)
+                *flags = (*flags & ~O_DIRECT);
+}
+
 static int
 client_fini_complete (xlator_t *this)
 {
@@ -55,7 +57,7 @@ out:
         return 0;
 }
 
-static int
+int
 client_notify_dispatch_uniq (xlator_t *this, int32_t event, void *data, ...)
 {
         clnt_conf_t     *conf = this->private;
@@ -146,13 +148,10 @@ client_grace_timeout (void *data)
         int               ver  = 0;
         xlator_t         *this = NULL;
         struct clnt_conf *conf = NULL;
-        struct rpc_clnt  *rpc  = NULL;
 
         GF_VALIDATE_OR_GOTO ("client", data, out);
 
         this = THIS;
-
-        rpc = (struct rpc_clnt *) data;
 
         conf = (struct clnt_conf *) this->private;
 
@@ -182,9 +181,13 @@ int32_t
 client_register_grace_timer (xlator_t *this, clnt_conf_t *conf)
 {
         int32_t  ret = -1;
+        struct timespec grace_ts = {0, };
 
         GF_VALIDATE_OR_GOTO ("client", this, out);
         GF_VALIDATE_OR_GOTO (this->name, conf, out);
+
+        grace_ts.tv_sec = conf->grace_timeout;
+        grace_ts.tv_nsec = 0;
 
         pthread_mutex_lock (&conf->lock);
         {
@@ -201,7 +204,7 @@ client_register_grace_timer (xlator_t *this, clnt_conf_t *conf)
 
                         conf->grace_timer =
                                 gf_timer_call_after (this->ctx,
-                                                     conf->grace_ts,
+                                                     grace_ts,
                                                      client_grace_timeout,
                                                      conf->rpc);
                 }
@@ -340,11 +343,128 @@ out:
 }
 
 
+int
+client_submit_compound_request (xlator_t *this, void *req, call_frame_t *frame,
+                       rpc_clnt_prog_t *prog, int procnum, fop_cbk_fn_t cbkfn,
+                       struct iovec *req_payload, int req_count,
+                       struct iobref *iobref,  struct iovec *rsphdr,
+                       int rsphdr_count, struct iovec *rsp_payload,
+                       int rsp_payload_count, struct iobref *rsp_iobref,
+                       xdrproc_t xdrproc)
+{
+        int             ret        = -1;
+        clnt_conf_t    *conf       = NULL;
+        struct iovec    iov        = {0, };
+        struct iobuf   *iobuf      = NULL;
+        int             count      = 0;
+        struct iobref  *new_iobref = NULL;
+        ssize_t         xdr_size   = 0;
+        struct rpc_req  rpcreq     = {0, };
+
+        GF_VALIDATE_OR_GOTO ("client", this, out);
+        GF_VALIDATE_OR_GOTO (this->name, prog, out);
+        GF_VALIDATE_OR_GOTO (this->name, frame, out);
+
+        conf = this->private;
+
+        /* If 'setvolume' is not successful, we should not send frames to
+         * server
+         */
+
+        if (!conf->connected) {
+                gf_msg_debug (this->name, 0,
+                              "connection in disconnected state");
+                goto out;
+        }
+
+        if (req && xdrproc) {
+                xdr_size = xdr_sizeof (xdrproc, req);
+                iobuf = iobuf_get2 (this->ctx->iobuf_pool, xdr_size);
+                if (!iobuf) {
+                        goto out;
+                };
+
+                new_iobref = iobref_new ();
+                if (!new_iobref) {
+                        goto out;
+                }
+
+                if (iobref != NULL) {
+                        ret = iobref_merge (new_iobref, iobref);
+                        if (ret != 0) {
+                                goto out;
+                        }
+                }
+
+                ret = iobref_add (new_iobref, iobuf);
+                if (ret != 0) {
+                        goto out;
+                }
+
+                iov.iov_base = iobuf->ptr;
+                iov.iov_len  = iobuf_size (iobuf);
+
+                /* Create the xdr payload */
+                ret = xdr_serialize_generic (iov, req, xdrproc);
+                if (ret == -1) {
+                        /* callingfn so that, we can get to know which xdr
+                           function was called */
+                        gf_log_callingfn (this->name, GF_LOG_WARNING,
+                                          "XDR payload creation failed");
+                        goto out;
+                }
+                iov.iov_len = ret;
+                count = 1;
+        }
+
+        /* do not send all groups if they are resolved server-side */
+        if (!conf->send_gids) {
+                if (frame->root->ngrps <= SMALL_GROUP_COUNT) {
+                        frame->root->groups_small[0] = frame->root->gid;
+                        frame->root->groups = frame->root->groups_small;
+                }
+                frame->root->ngrps = 1;
+        }
+
+        /* Send the msg */
+        ret = rpc_clnt_submit (conf->rpc, prog, procnum, cbkfn, &iov, count,
+                               req_payload, req_count, new_iobref, frame,
+                               rsphdr, rsphdr_count,
+                               rsp_payload, rsp_payload_count, rsp_iobref);
+
+        if (ret < 0) {
+                gf_msg_debug (this->name, 0, "rpc_clnt_submit failed");
+        }
+
+        ret = 0;
+
+        if (new_iobref)
+                iobref_unref (new_iobref);
+
+        if (iobuf)
+                iobuf_unref (iobuf);
+
+        return ret;
+
+out:
+        rpcreq.rpc_status = -1;
+
+        cbkfn (&rpcreq, NULL, 0, frame);
+
+        if (new_iobref)
+                iobref_unref (new_iobref);
+
+        if (iobuf)
+                iobuf_unref (iobuf);
+
+        return 0;
+}
+
 int32_t
 client_forget (xlator_t *this, inode_t *inode)
 {
         /* Nothing here */
-	return 0;
+        return 0;
 }
 
 int32_t
@@ -422,7 +542,7 @@ out:
                 STACK_UNWIND_STRICT (lookup, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -448,7 +568,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (stat, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -477,7 +597,7 @@ out:
                 STACK_UNWIND_STRICT (truncate, frame, -1, ENOTCONN, NULL, NULL, NULL);
 
 
-	return 0;
+        return 0;
 }
 
 
@@ -505,7 +625,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (ftruncate, frame, -1, ENOTCONN, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -534,7 +654,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (access, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -564,7 +684,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (readlink, frame, -1, ENOTCONN, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -595,7 +715,7 @@ out:
                 STACK_UNWIND_STRICT (mknod, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -625,7 +745,7 @@ out:
                 STACK_UNWIND_STRICT (mkdir, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -655,7 +775,7 @@ out:
                 STACK_UNWIND_STRICT (unlink, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 int32_t
@@ -684,7 +804,7 @@ out:
                 STACK_UNWIND_STRICT (rmdir, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -714,7 +834,7 @@ out:
                 STACK_UNWIND_STRICT (symlink, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -744,7 +864,7 @@ out:
                 STACK_UNWIND_STRICT (rename, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -774,7 +894,7 @@ out:
                 STACK_UNWIND_STRICT (link, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -797,11 +917,9 @@ client_create (call_frame_t *frame, xlator_t *this, loc_t *loc,  int32_t flags,
         args.fd = fd;
         args.umask = umask;
         args.xdata = xdata;
+        args.flags = flags;
 
-        if (!conf->filter_o_direct)
-                args.flags = flags;
-        else
-                args.flags = (flags & ~O_DIRECT);
+        client_filter_o_direct (conf, &args.flags);
 
         proc = &conf->fops->proctable[GF_FOP_CREATE];
         if (proc->fn)
@@ -811,7 +929,7 @@ out:
                 STACK_UNWIND_STRICT (create, frame, -1, ENOTCONN,
                                      NULL, NULL, NULL, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -832,11 +950,9 @@ client_open (call_frame_t *frame, xlator_t *this, loc_t *loc,
         args.loc = loc;
         args.fd = fd;
         args.xdata = xdata;
+        args.flags = flags;
 
-        if (!conf->filter_o_direct)
-                args.flags = flags;
-        else
-                args.flags = (flags & ~O_DIRECT);
+        client_filter_o_direct (conf, &args.flags);
 
         proc = &conf->fops->proctable[GF_FOP_OPEN];
         if (proc->fn)
@@ -846,7 +962,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (open, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -870,6 +986,8 @@ client_readv (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
         args.flags  = flags;
         args.xdata = xdata;
 
+        client_filter_o_direct (conf, &args.flags);
+
         proc = &conf->fops->proctable[GF_FOP_READ];
         if (proc->fn)
                 ret = proc->fn (frame, this, &args);
@@ -879,7 +997,7 @@ out:
                 STACK_UNWIND_STRICT (readv, frame, -1, ENOTCONN,
                                      NULL, 0, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -908,6 +1026,8 @@ client_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         args.iobref = iobref;
         args.xdata = xdata;
 
+        client_filter_o_direct (conf, &args.flags);
+
         proc = &conf->fops->proctable[GF_FOP_WRITE];
         if (proc->fn)
                 ret = proc->fn (frame, this, &args);
@@ -915,7 +1035,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (writev, frame, -1, ENOTCONN, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -941,7 +1061,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (flush, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -970,7 +1090,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fsync, frame, -1, ENOTCONN, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -997,7 +1117,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fstat, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1026,7 +1146,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (opendir, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1054,7 +1174,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fsyncdir, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1081,7 +1201,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (statfs, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 static gf_boolean_t
@@ -1270,7 +1390,7 @@ out:
         if (need_unwind)
                 STACK_UNWIND_STRICT (setxattr, frame, op_ret, op_errno, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1300,7 +1420,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fsetxattr, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1330,7 +1450,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fgetxattr, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1359,7 +1479,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (getxattr, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1389,7 +1509,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (xattrop, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1419,7 +1539,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fxattrop, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1448,7 +1568,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (removexattr, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 int32_t
@@ -1475,8 +1595,36 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fremovexattr, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
+
+int32_t
+client_lease (call_frame_t *frame, xlator_t *this, loc_t *loc,
+              struct gf_lease *lease, dict_t *xdata)
+{
+        int                   ret  = -1;
+        clnt_conf_t          *conf = NULL;
+        rpc_clnt_procedure_t *proc = NULL;
+        clnt_args_t           args = {0,};
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+        args.loc = loc;
+        args.lease = lease;
+        args.xdata = xdata;
+
+        proc = &conf->fops->proctable[GF_FOP_LEASE];
+        if (proc->fn)
+                ret = proc->fn (frame, this, &args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT (lk, frame, -1, ENOTCONN, NULL, NULL);
+
+        return 0;
+}
+
 
 int32_t
 client_lk (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t cmd,
@@ -1503,7 +1651,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (lk, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1533,7 +1681,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (inodelk, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1564,7 +1712,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (finodelk, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1596,7 +1744,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (entrylk, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1629,7 +1777,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fentrylk, frame, -1, ENOTCONN, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1658,7 +1806,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (rchecksum, frame, -1, ENOTCONN, 0, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 int32_t
@@ -1689,7 +1837,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (readdir, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1721,7 +1869,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (readdirp, frame, -1, ENOTCONN, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 
@@ -1750,7 +1898,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (setattr, frame, -1, ENOTCONN, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 int32_t
@@ -1778,7 +1926,7 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (fsetattr, frame, -1, ENOTCONN, NULL, NULL, NULL);
 
-	return 0;
+        return 0;
 }
 
 int32_t
@@ -1895,6 +2043,90 @@ out:
 
 
 int32_t
+client_seek (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+             gf_seek_what_t what, dict_t *xdata)
+{
+        int          ret              = -1;
+        clnt_conf_t *conf             = NULL;
+        rpc_clnt_procedure_t *proc    = NULL;
+        clnt_args_t  args             = {0,};
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+        args.fd = fd;
+        args.offset = offset;
+        args.what = what;
+        args.xdata = xdata;
+
+        proc = &conf->fops->proctable[GF_FOP_SEEK];
+        if (proc->fn)
+                ret = proc->fn (frame, this, &args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT(seek, frame, -1, ENOTCONN, 0, NULL);
+
+        return 0;
+}
+
+int32_t
+client_getactivelk (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                     dict_t *xdata)
+{
+        int          ret                = -1;
+        clnt_conf_t *conf               = NULL;
+        rpc_clnt_procedure_t *proc      = NULL;
+        clnt_args_t  args               = {0,};
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+
+        args.loc = loc;
+        args.xdata = xdata;
+
+        proc = &conf->fops->proctable[GF_FOP_GETACTIVELK];
+        if (proc->fn)
+                ret = proc->fn (frame, this, &args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT (getactivelk, frame, -1, ENOTCONN, NULL,
+                                     NULL);
+
+        return 0;
+}
+
+int32_t
+client_setactivelk (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                      lock_migration_info_t *locklist, dict_t *xdata)
+{
+        int          ret  = -1;
+        clnt_conf_t *conf = NULL;
+        rpc_clnt_procedure_t *proc = NULL;
+        clnt_args_t  args = {0,};
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+
+        args.loc = loc;
+        args.xdata = xdata;
+        args.locklist = locklist;
+
+        proc = &conf->fops->proctable[GF_FOP_SETACTIVELK];
+        if (proc->fn)
+                ret = proc->fn (frame, this, &args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT (setactivelk, frame, -1, ENOTCONN, NULL);
+
+        return 0;
+}
+
+int32_t
 client_getspec (call_frame_t *frame, xlator_t *this, const char *key,
                 int32_t flags)
 {
@@ -1920,9 +2152,35 @@ out:
         if (ret)
                 STACK_UNWIND_STRICT (getspec, frame, -1, EINVAL, NULL);
 
-	return 0;
+        return 0;
 }
 
+
+int32_t
+client_compound (call_frame_t *frame, xlator_t *this,
+                 void *data, dict_t *xdata)
+{
+        int          ret  = -1;
+        clnt_conf_t *conf = NULL;
+        compound_args_t *args = data;
+        rpc_clnt_procedure_t *proc = NULL;
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+        args->xdata = xdata;
+
+        proc = &conf->fops->proctable[GF_FOP_COMPOUND];
+        if (proc->fn)
+                ret = proc->fn (frame, this, args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT (compound, frame, -1, ENOTCONN,
+                                     NULL, NULL);
+
+	return 0;
+}
 
 int
 client_mark_fd_bad (xlator_t *this)
@@ -1950,7 +2208,6 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
                    void *data)
 {
         xlator_t *this = NULL;
-        char *handshake = NULL;
         clnt_conf_t  *conf = NULL;
         int ret = 0;
 
@@ -1966,31 +2223,27 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
         conf = this->private;
 
         switch (event) {
+        case RPC_CLNT_PING:
+        {
+                ret = default_notify (this, GF_EVENT_CHILD_PING, data);
+                if (ret)
+                        gf_log (this->name, GF_LOG_INFO,
+                                "CHILD_PING notify failed");
+                conf->last_sent_event = GF_EVENT_CHILD_PING;
+                break;
+        }
         case RPC_CLNT_CONNECT:
         {
                 conf->connected = 1;
                 // connect happened, send 'get_supported_versions' mop
-                ret = dict_get_str (this->options, "disable-handshake",
-                                    &handshake);
 
                 gf_msg_debug (this->name, 0, "got RPC_CLNT_CONNECT");
 
-                if ((ret < 0) || (strcasecmp (handshake, "on"))) {
-                        ret = client_handshake (this, rpc);
-                        if (ret)
-                                gf_msg (this->name, GF_LOG_WARNING, 0,
-                                        PC_MSG_HANDSHAKE_RETURN, "handshake "
-                                        "msg returned %d", ret);
-                } else {
-                        //conf->rpc->connected = 1;
-                        ret = client_notify_dispatch_uniq (this,
-                                                           GF_EVENT_CHILD_UP,
-                                                           NULL);
-                        if (ret)
-                                gf_msg (this->name, GF_LOG_INFO, 0,
-                                        PC_MSG_CHILD_UP_NOTIFY_FAILED,
-                                        "CHILD_UP notify failed");
-                }
+                ret = client_handshake (this, rpc);
+                if (ret)
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                PC_MSG_HANDSHAKE_RETURN, "handshake "
+                                "msg returned %d", ret);
 
                 /* Cancel grace timer if set */
                 pthread_mutex_lock (&conf->lock);
@@ -2013,6 +2266,8 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
                 break;
         }
         case RPC_CLNT_DISCONNECT:
+                gf_msg_debug (this->name, 0, "got RPC_CLNT_DISCONNECT");
+
                 if (!conf->lk_heal)
                         client_mark_fd_bad (this);
                 else
@@ -2064,11 +2319,10 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
 
                 if (conf->quick_reconnect) {
                         conf->quick_reconnect = 0;
-                        rpc_clnt_start (rpc);
+                        rpc_clnt_cleanup_and_start (rpc);
 
                 } else {
                         rpc->conn.config.remote_port = 0;
-
                 }
 
                 break;
@@ -2311,36 +2565,22 @@ int
 client_init_grace_timer (xlator_t *this, dict_t *options,
                          clnt_conf_t *conf)
 {
-        char      timestr[64]    = {0,};
-        char     *lk_heal        = NULL;
         int32_t   ret            = -1;
-        int32_t   grace_timeout  = -1;
 
         GF_VALIDATE_OR_GOTO ("client", this, out);
         GF_VALIDATE_OR_GOTO (this->name, options, out);
         GF_VALIDATE_OR_GOTO (this->name, conf, out);
 
-        conf->lk_heal = _gf_false;
-
-        ret = dict_get_str (options, "lk-heal", &lk_heal);
-        if (!ret)
-                gf_string2boolean (lk_heal, &conf->lk_heal);
+        GF_OPTION_RECONF ("lk-heal", conf->lk_heal, options, bool, out);
 
         gf_msg_debug (this->name, 0, "lk-heal = %s",
                       (conf->lk_heal) ? "on" : "off");
 
-        ret = dict_get_int32 (options, "grace-timeout", &grace_timeout);
-        if (!ret)
-                conf->grace_ts.tv_sec = grace_timeout;
-        else
-                conf->grace_ts.tv_sec = 10;
+        GF_OPTION_RECONF ("grace-timeout", conf->grace_timeout,
+                                                options, uint32, out);
 
-        conf->grace_ts.tv_nsec  = 0;
-
-        gf_time_fmt (timestr, sizeof timestr, conf->grace_ts.tv_sec,
-                     gf_timefmt_s);
-        gf_msg_debug (this->name, 0, "Client grace timeout value = %s",
-                      timestr);
+        gf_msg_debug (this->name, 0, "Client grace timeout value = %d",
+                                conf->grace_timeout);
 
         ret = 0;
 out:
@@ -2434,7 +2674,7 @@ reconfigure (xlator_t *this, dict_t *options)
 
         ret = 0;
 out:
-	return ret;
+        return ret;
 
 }
 
@@ -2463,6 +2703,8 @@ init (xlator_t *this)
 
         pthread_mutex_init (&conf->lock, NULL);
         INIT_LIST_HEAD (&conf->saved_fds);
+
+        conf->child_up = _gf_false;
 
         /* Initialize parameters for lock self healing*/
         conf->lk_version         = 1;
@@ -2714,6 +2956,11 @@ struct xlator_fops fops = {
         .zerofill    = client_zerofill,
         .getspec     = client_getspec,
         .ipc         = client_ipc,
+        .seek        = client_seek,
+        .lease       = client_lease,
+        .compound    = client_compound,
+        .getactivelk = client_getactivelk,
+        .setactivelk = client_setactivelk,
 };
 
 
@@ -2791,10 +3038,11 @@ struct volume_options options[] = {
         { .key   = {"filter-O_DIRECT"},
           .type  = GF_OPTION_TYPE_BOOL,
           .default_value = "disable",
-          .description = "If enabled, in open() and creat() calls, O_DIRECT "
-          "flag will be filtered at the client protocol level so server will "
-          "still continue to cache the file. This works similar to NFS's "
-          "behavior of O_DIRECT",
+          .description = "If enabled, in open/creat/readv/writev fops, "
+          "O_DIRECT flag will be filtered at the client protocol level so "
+          "server will still continue to cache the file. This works similar to "
+          "NFS's behavior of O_DIRECT. Anon-fds can choose to readv/writev "
+          "using O_DIRECT",
         },
         { .key   = {"send-gids"},
           .type  = GF_OPTION_TYPE_BOOL,

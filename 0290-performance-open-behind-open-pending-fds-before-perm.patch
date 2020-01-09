@@ -1,0 +1,128 @@
+From 7fa60ece3fda28ca03298196374617893861a09b Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Fri, 25 May 2018 12:27:43 +0530
+Subject: [PATCH 290/305] performance/open-behind: open pending fds before
+ permission change
+
+setattr, posix-acl and selinux changes on a file can revoke permission
+to open the file after permission changes. To prevent that, make sure
+the pending fd is opened before winding down setattr or setxattr (for
+posix-acl and selinux) calls.
+
+>Change-Id: Ib0b91795d286072e445190f9a1b3b1e9cd363282
+>Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+>fixes: bz#1405147
+
+upstream patch: https://review.gluster.org/#/c/20084/
+BUG: 1580120
+Change-Id: Id6a2beef00a9adb0dcb2169d3966cd2a1c3c8456
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140095
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Xavi Hernandez <xhernandez@redhat.com>
+---
+ xlators/performance/open-behind/src/open-behind.c | 61 ++++++++++++++++++++++-
+ 1 file changed, 60 insertions(+), 1 deletion(-)
+
+diff --git a/xlators/performance/open-behind/src/open-behind.c b/xlators/performance/open-behind/src/open-behind.c
+index d6dcf6f..3be35bc 100644
+--- a/xlators/performance/open-behind/src/open-behind.c
++++ b/xlators/performance/open-behind/src/open-behind.c
+@@ -14,6 +14,7 @@
+ #include "call-stub.h"
+ #include "defaults.h"
+ #include "open-behind-messages.h"
++#include "glusterfs-acl.h"
+ 
+ typedef struct ob_conf {
+ 	gf_boolean_t  use_anonymous_fd; /* use anonymous FDs wherever safe
+@@ -811,6 +812,63 @@ err:
+ 	return 0;
+ }
+ 
++int32_t
++ob_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
++            struct iatt *stbuf, int32_t valid,	dict_t *xdata)
++{
++        fd_t        *fd   = NULL;
++	call_stub_t *stub = NULL;
++
++        stub = fop_setattr_stub (frame, default_setattr_resume, loc, stbuf,
++                                 valid, xdata);
++        if (!stub)
++                goto err;
++
++        fd = fd_lookup (loc->inode, 0);
++
++        open_and_resume (this, fd, stub);
++        if (fd)
++                fd_unref (fd);
++
++	return 0;
++err:
++        STACK_UNWIND_STRICT (setattr, frame, -1, ENOMEM, NULL, NULL, NULL);
++        return 0;
++}
++
++
++int32_t
++ob_setxattr (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *dict,
++             int32_t flags, dict_t *xdata)
++{
++        fd_t         *fd           = NULL;
++	call_stub_t  *stub         = NULL;
++        gf_boolean_t  access_xattr = _gf_false;
++
++        if (dict_get (dict, POSIX_ACL_DEFAULT_XATTR)
++            || dict_get (dict, POSIX_ACL_ACCESS_XATTR)
++            || dict_get (dict, GF_SELINUX_XATTR_KEY))
++                access_xattr = _gf_true;
++
++        if (!access_xattr)
++                return default_setxattr (frame, this, loc, dict, flags, xdata);
++
++        stub = fop_setxattr_stub (frame, default_setxattr_resume, loc, dict,
++                                  flags, xdata);
++        if (!stub)
++                goto err;
++
++        fd = fd_lookup (loc->inode, 0);
++
++        open_and_resume (this, fd, stub);
++        if (fd)
++                fd_unref (fd);
++
++	return 0;
++err:
++        STACK_UNWIND_STRICT (setxattr, frame, -1, ENOMEM, NULL);
++        return 0;
++}
+ 
+ int
+ ob_release (xlator_t *this, fd_t *fd)
+@@ -976,7 +1034,6 @@ fini (xlator_t *this)
+ 	return;
+ }
+ 
+-
+ struct xlator_fops fops = {
+         .open        = ob_open,
+         .readv       = ob_readv,
+@@ -986,12 +1043,14 @@ struct xlator_fops fops = {
+ 	.fstat       = ob_fstat,
+ 	.ftruncate   = ob_ftruncate,
+ 	.fsetxattr   = ob_fsetxattr,
++        .setxattr    = ob_setxattr,
+ 	.fgetxattr   = ob_fgetxattr,
+ 	.fremovexattr = ob_fremovexattr,
+ 	.finodelk    = ob_finodelk,
+ 	.fentrylk    = ob_fentrylk,
+ 	.fxattrop    = ob_fxattrop,
+ 	.fsetattr    = ob_fsetattr,
++        .setattr     = ob_setattr,
+ 	.fallocate   = ob_fallocate,
+ 	.discard     = ob_discard,
+         .zerofill    = ob_zerofill,
+-- 
+1.8.3.1
+

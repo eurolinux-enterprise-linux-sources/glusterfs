@@ -1,0 +1,69 @@
+From b55e9f05cb457806d08ac184de4b5651e420f11e Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawal@redhat.com>
+Date: Mon, 27 Aug 2018 12:18:21 +0530
+Subject: [PATCH 362/362] glusterd: glusterd_brick_start shouldn't cleanup
+ pidfile if only_connect is true
+
+Problem: Sometime glusterd cleanup pidfile even brick is started
+         and cli shows volume status "N/A"
+
+Solution: Update the condition in glusterd_brick_start to avoid
+          pidfile cleanup in case if only_connect flag is true
+
+> Fixes: bz#1622422
+> Change-Id: I8decb34597126b848e3a44d957e138833dd97350
+> (cherry picked from commit 1b499e9dfe63ce051a071cacc19e3161b7a32636)
+> (Reviewed on upstream link https://review.gluster.org/#/c/glusterfs/+/21007/)
+
+Change-Id: Id9145c26de15cf2354a10a482b5f8a45599e0831
+BUG: 1622452
+Signed-off-by: Mohit Agrawal <moagrawal@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/148184
+Tested-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index b9e8d8d..01345cd 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -6163,6 +6163,8 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                         brickpath = search_brick_path_from_proc
+                                                 (pid, brickinfo->path);
+                         if (!brickpath) {
++                                if (only_connect)
++                                        return 0;
+                                 gf_log (this->name, GF_LOG_INFO,
+                                         "Either pid %d is not running or brick"
+                                         " path %s is not consumed so cleanup pidfile",
+@@ -6173,14 +6175,14 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                                 if (sys_access (pidfile , R_OK) == 0) {
+                                         sys_unlink (pidfile);
+                                 }
+-                                if (only_connect)
+-                                        return 0;
+                                 goto run;
+                         }
+                         GF_FREE (brickpath);
+                         ret = glusterd_get_sock_from_brick_pid (pid, socketpath,
+                                                                 sizeof(socketpath));
+                         if (ret) {
++                                if (only_connect)
++                                        return 0;
+                                 gf_log (this->name, GF_LOG_INFO,
+                                         "Either pid %d is not running or does "
+                                         "not match with any running brick "
+@@ -6189,8 +6191,6 @@ glusterd_brick_start (glusterd_volinfo_t *volinfo,
+                                 if (sys_access (pidfile , R_OK) == 0) {
+                                         sys_unlink (pidfile);
+                                 }
+-                                if (only_connect)
+-                                        return 0;
+                                 goto run;
+                         }
+                 }
+-- 
+1.8.3.1
+

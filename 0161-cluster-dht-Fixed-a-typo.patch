@@ -1,0 +1,42 @@
+From 313b38d5d8819191b7e5adf04396251a49f0a652 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Thu, 22 Feb 2018 10:50:04 +0530
+Subject: [PATCH 161/180] cluster/dht: Fixed a typo
+
+Replaced "then" with "than"
+
+upstream patch: https://review.gluster.org/#/c/19604/
+
+> Change-Id: I73090e8c1a639befd7c5458e8d63bd173248bc7d
+> BUG: 1547128
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: Id7b1cfdcf460164b4f1bc81da4dfca306db502e8
+BUG: 1546960
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130850
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index f9a25fb..e620005 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -954,9 +954,9 @@ __dht_check_free_space (xlator_t *this, xlator_t *to, xlator_t *from, loc_t *loc
+                         gf_msg (this->name, GF_LOG_WARNING, 0,
+                                DHT_MSG_MIGRATE_FILE_FAILED,
+                                "data movement of file "
+-                               "{blocks:%"PRIu64" name:(%s) } would result in "
++                               "{blocks:%"PRIu64" name:(%s)} would result in "
+                                "dst node (%s:%"PRIu64") having lower disk "
+-                               "space then the source node (%s:%"PRIu64")"
++                               "space than the source node (%s:%"PRIu64")"
+                                ".Skipping file.", stbuf->ia_blocks, loc->path,
+                                to->name, dst_statfs_blocks, from->name,
+                                src_statfs_blocks);
+-- 
+1.8.3.1
+

@@ -11,13 +11,7 @@
 #ifndef __COMPAT_H__
 #define __COMPAT_H__
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <stdint.h>
-#include "dict.h"
 
 #ifndef LLONG_MAX
 #define LLONG_MAX __LONG_LONG_MAX__ /* compat with old gcc */
@@ -64,6 +58,12 @@
 #endif
 #ifndef FALLOC_FL_ZERO_RANGE
 #define FALLOC_FL_ZERO_RANGE    0x10 /* zeroes out range */
+#endif
+#ifndef FALLOC_FL_COLLAPSE_RANGE
+#define FALLOC_FL_COLLAPSE_RANGE  0x08 /* reduces the size */
+#endif
+#ifndef FALLOC_FL_INSERT_RANGE
+#define FALLOC_FL_INSERT_RANGE  0x20 /* expands the size */
 #endif
 
 #ifndef HAVE_LLISTXATTR
@@ -164,6 +164,10 @@ enum {
 #define s6_addr32 __u6_addr.__u6_addr32
 #endif
 
+#ifndef LOGIN_NAME_MAX
+#define LOGIN_NAME_MAX 256
+#endif
+
 /* Posix dictates NAME_MAX to be used */
 # ifndef NAME_MAX
 #  ifdef  MAXNAMLEN
@@ -179,6 +183,8 @@ enum {
 #define FALLOC_FL_KEEP_SIZE     0x01 /* default is extend size */
 #define FALLOC_FL_PUNCH_HOLE    0x02 /* de-allocates range */
 #define FALLOC_FL_ZERO_RANGE    0x10 /* zeroes out range */
+#define FALLOC_FL_INSERT_RANGE  0x20 /* Expands the size */
+#define FALLOC_FL_COLLAPSE_RANGE 0x08 /* Reduces the size */
 
 #ifndef _PATH_UMOUNT
   #define _PATH_UMOUNT "/sbin/umount"
@@ -259,10 +265,6 @@ enum {
 #ifndef FTW_CONTINUE
   #define FTW_CONTINUE 0
 #endif
-
-int32_t gf_darwin_compat_listxattr (int len, dict_t *dict, int size);
-int32_t gf_darwin_compat_getxattr (const char *key, dict_t *dict);
-int32_t gf_darwin_compat_setxattr (dict_t *dict);
 
 #ifndef _PATH_UMOUNT
   #define _PATH_UMOUNT "/sbin/umount"
@@ -447,10 +449,15 @@ char *dirname_r(char *path);
 #endif /* THREAD_UNSAFE_DIRNAME */
 
 int gf_mkostemp (char *tmpl, int suffixlen, int flags);
-#define mkostemp(tmpl, flags) gf_mkostemp(tmpl, 0, flags);
 
 #ifdef HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC
 /* Linux, Solaris, Cygwin */
+#define ST_ATIM_SEC(stbuf) ((stbuf)->st_atim.tv_sec)
+#define ST_CTIM_SEC(stbuf) ((stbuf)->st_ctim.tv_sec)
+#define ST_MTIM_SEC(stbuf) ((stbuf)->st_mtim.tv_sec)
+#define ST_ATIM_SEC_SET(stbuf, val) ((stbuf)->st_atim.tv_sec = (val))
+#define ST_MTIM_SEC_SET(stbuf, val) ((stbuf)->st_mtim.tv_sec = (val))
+#define ST_CTIM_SEC_SET(stbuf, val) ((stbuf)->st_ctim.tv_sec = (val))
 #define ST_ATIM_NSEC(stbuf) ((stbuf)->st_atim.tv_nsec)
 #define ST_CTIM_NSEC(stbuf) ((stbuf)->st_ctim.tv_nsec)
 #define ST_MTIM_NSEC(stbuf) ((stbuf)->st_mtim.tv_nsec)
@@ -459,6 +466,12 @@ int gf_mkostemp (char *tmpl, int suffixlen, int flags);
 #define ST_CTIM_NSEC_SET(stbuf, val) ((stbuf)->st_ctim.tv_nsec = (val))
 #elif defined(HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC)
 /* FreeBSD, NetBSD */
+#define ST_ATIM_SEC(stbuf) ((stbuf)->st_atimespec.tv_sec)
+#define ST_CTIM_SEC(stbuf) ((stbuf)->st_ctimespec.tv_sec)
+#define ST_MTIM_SEC(stbuf) ((stbuf)->st_mtimespec.tv_sec)
+#define ST_ATIM_SEC_SET(stbuf, val) ((stbuf)->st_atimespec.tv_sec = (val))
+#define ST_MTIM_SEC_SET(stbuf, val) ((stbuf)->st_mtimespec.tv_sec = (val))
+#define ST_CTIM_SEC_SET(stbuf, val) ((stbuf)->st_ctimespec.tv_sec = (val))
 #define ST_ATIM_NSEC(stbuf) ((stbuf)->st_atimespec.tv_nsec)
 #define ST_CTIM_NSEC(stbuf) ((stbuf)->st_ctimespec.tv_nsec)
 #define ST_MTIM_NSEC(stbuf) ((stbuf)->st_mtimespec.tv_nsec)
@@ -492,7 +505,9 @@ int gf_mkostemp (char *tmpl, int suffixlen, int flags);
 
 #if defined(__GNUC__) && !defined(RELAX_POISONING)
 /* Use run API, see run.h */
-#pragma GCC poison system popen
+#include <stdlib.h> /* system(), mkostemp() */
+#include <stdio.h> /* popen() */
+#pragma GCC poison system mkostemp popen
 #endif
 
 int gf_umount_lazy(char *xlname, char *path, int rmdir);

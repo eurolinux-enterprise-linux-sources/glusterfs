@@ -1,0 +1,40 @@
+From 72729dfb7c320880980eca6b2f0139658f259788 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Mon, 13 Aug 2018 22:17:17 +0530
+Subject: [PATCH 351/351] cluster/dht: Fixed rebalanced files
+
+An error caused skipped files to be counted as
+rebalanced files.
+
+Upstream patch: https://review.gluster.org/#/c/glusterfs/+/20724/
+
+> Change-Id: I02333f099fb8b73ba953f41a2922021a1e4da7be
+> fixes: bz#1615474
+> Signed-off-by: N Balachandran <nbalacha@redhat.com>
+
+Change-Id: I6921f92c4a784c51833ade8e1cde4744c0fd0d00
+BUG: 1615338
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147007
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index b9078e0..d0f49d2 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -2841,7 +2841,7 @@ gf_defrag_migrate_single_file (void *opaque)
+                 }
+ 
+                 ret = 0;
+-
++                goto out;
+         } else if (ret < 0) {
+                 if (fop_errno != EEXIST) {
+                         gf_msg (this->name, GF_LOG_ERROR, fop_errno,
+-- 
+1.8.3.1
+

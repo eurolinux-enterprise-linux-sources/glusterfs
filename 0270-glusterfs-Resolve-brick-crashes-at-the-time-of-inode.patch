@@ -1,0 +1,91 @@
+From aad829320132fb2399e8fd8edfa573561a7c03e1 Mon Sep 17 00:00:00 2001
+From: Mohit Agrawal <moagrawa@redhat.com>
+Date: Sun, 13 May 2018 12:01:01 +0530
+Subject: [PATCH 270/271] glusterfs: Resolve brick crashes at the time of
+ inode_unref
+
+Problem: Sometimes brick process is getting crash at the time
+         of calling inode_unref in fd_destroy
+
+Solution: Brick process is getting crash because inode is already
+          free by xlator_mem_cleanup call by server_rpc_notify.To
+          resolve the same move code specific to call transport_unref
+          in last in free_state.
+
+> BUG: 1577574
+> Change-Id: Ia517c230d68af4e929b6b753e4c374a26c39dc1a
+> fixes: bz#1577574
+> (cherry picked from commit 8e2289b1e76ac777b71897dc709d9651341bd241)
+> (Upstream link for review https://review.gluster.org/#/c/20014/)
+
+BUG: 1575840
+Change-Id: I62df8dd6f4df545250a977897697c960adba1c4c
+Signed-off-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138797
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/server/src/server-helpers.c | 15 +++++++++++----
+ xlators/protocol/server/src/server.c         |  6 +++---
+ 2 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/xlators/protocol/server/src/server-helpers.c b/xlators/protocol/server/src/server-helpers.c
+index c8f5382..c492ab1 100644
+--- a/xlators/protocol/server/src/server-helpers.c
++++ b/xlators/protocol/server/src/server-helpers.c
+@@ -177,10 +177,6 @@ server_resolve_wipe (server_resolve_t *resolve)
+ void
+ free_state (server_state_t *state)
+ {
+-        if (state->xprt) {
+-                rpc_transport_unref (state->xprt);
+-                state->xprt = NULL;
+-        }
+         if (state->fd) {
+                 fd_unref (state->fd);
+                 state->fd = NULL;
+@@ -223,6 +219,17 @@ free_state (server_state_t *state)
+ 
+         compound_args_cleanup (state->args);
+ 
++        /* Call rpc_trnasport_unref to avoid crashes at last after free
++           all resources because of server_rpc_notify (for transport destroy)
++           call's xlator_mem_cleanup if all xprt are destroyed that internally
++           call's inode_table_destroy.
++        */
++        if (state->xprt) {
++                rpc_transport_unref (state->xprt);
++                state->xprt = NULL;
++        }
++
++
+         GF_FREE (state);
+ }
+ 
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index 2ba5da3..d40457c 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -208,9 +208,6 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
+ 
+         ret = 0;
+ ret:
+-        if (state)
+-                free_state (state);
+-
+         if (client)
+                 gf_client_unref (client);
+ 
+@@ -220,6 +217,9 @@ ret:
+         if (new_iobref)
+                 iobref_unref (iobref);
+ 
++        if (state)
++                free_state (state);
++
+         return ret;
+ }
+ 
+-- 
+1.8.3.1
+

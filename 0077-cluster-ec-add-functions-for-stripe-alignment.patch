@@ -1,0 +1,343 @@
+From c3161248afdb42d1bf5e06a32041180cc4be457d Mon Sep 17 00:00:00 2001
+From: Xavier Hernandez <jahernan@redhat.com>
+Date: Fri, 6 Oct 2017 10:39:58 +0200
+Subject: [PATCH 077/128] cluster/ec: add functions for stripe alignment
+
+This patch removes old functions to align offsets and sizes
+to stripe size boundaries and adds new ones to offer more
+possibilities.
+
+The new functions are:
+
+ * ec_adjust_offset_down()
+     Aligns a given offset to a multiple of the stripe size
+     equal or smaller than the initial one. It returns the
+     size of the gap between the aligned offset and the given
+     one.
+
+ * ec_adjust_offset_up()
+     Aligns a given offset to a multiple of the stripe size
+     equal or greater than the initial one. It returns the
+     size of the skipped region between the given offset and
+     the aligned one. If an overflow happens, the returned
+     valid has negative sign (but correct value) and the
+     offset is set to the maximum value (not aligned).
+
+ * ec_adjust_size_down()
+     Aligns the given size to a multiple of the stripe size
+     equal or smaller than the initial one. It returns the
+     size of the missed region between the aligned size and
+     the given one.
+
+ * ec_adjust_size_up()
+     Aligns the given size to a multiple of the stripe size
+     equal or greater than the initial one. It returns the
+     size of the gap between the given size and the aligned
+     one. If an overflow happens, the returned value has
+     negative sign (but correct value) and the size is set
+     to the maximum value (not aligned).
+
+These functions have been defined in ec-helpers.h as static
+inline since they are very small and compilers can optimize
+them (specially the 'scale' argument).
+
+upstream patch: https://review.gluster.org/#/c/18440/
+>Change-Id: I4c91009ad02f76c73772034dfde27ee1c78a80d7
+>Signed-off-by: Xavier Hernandez <jahernan@redhat.com>
+
+BUG: 1499865
+Change-Id: I4c91009ad02f76c73772034dfde27ee1c78a80d7
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/123556
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Javier Hernandez Juan <jahernan@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/ec/src/ec-heal.c        |   8 ++-
+ xlators/cluster/ec/src/ec-helpers.c     |  29 ---------
+ xlators/cluster/ec/src/ec-helpers.h     | 108 +++++++++++++++++++++++++++++++-
+ xlators/cluster/ec/src/ec-inode-read.c  |  10 +--
+ xlators/cluster/ec/src/ec-inode-write.c |  13 ++--
+ xlators/cluster/ec/src/ec-locks.c       |   8 +--
+ 6 files changed, 129 insertions(+), 47 deletions(-)
+
+diff --git a/xlators/cluster/ec/src/ec-heal.c b/xlators/cluster/ec/src/ec-heal.c
+index a6de3ee..bc25015 100644
+--- a/xlators/cluster/ec/src/ec-heal.c
++++ b/xlators/cluster/ec/src/ec-heal.c
+@@ -1670,7 +1670,8 @@ ec_heal_data_find_direction (ec_t *ec, default_args_cbk_t *replies,
+          * well*/
+ 
+         if (check_ondisksize) {
+-                source_size = ec_adjust_size (ec, size[source], 1);
++                source_size = size[source];
++                ec_adjust_size_up (ec, &source_size, _gf_true);
+ 
+                 for (i = 0; i < ec->nodes; i++) {
+                         if (sources[i]) {
+@@ -1983,7 +1984,7 @@ ec_rebuild_data (call_frame_t *frame, ec_t *ec, fd_t *fd, uint64_t size,
+         heal->fd = fd_ref (fd);
+         heal->xl = ec->xl;
+         heal->data = &barrier;
+-        size = ec_adjust_size (ec, size, 0);
++        ec_adjust_size_up (ec, &size, _gf_false);
+         heal->total_size = size;
+         heal->size = (128 * GF_UNIT_KB * (ec->self_heal_window_size));
+         /* We need to adjust the size to a multiple of the stripe size of the
+@@ -2038,7 +2039,8 @@ __ec_heal_trim_sinks (call_frame_t *frame, ec_t *ec,
+                 ret = 0;
+                 goto out;
+         }
+-        trim_offset = ec_adjust_size (ec, size, 1);
++        trim_offset = size;
++        ec_adjust_offset_up (ec, &trim_offset, _gf_true);
+         ret = cluster_ftruncate (ec->xl_list, trim, ec->nodes, replies, output,
+                                  frame, ec->xl, fd, trim_offset, NULL);
+         for (i = 0; i < ec->nodes; i++) {
+diff --git a/xlators/cluster/ec/src/ec-helpers.c b/xlators/cluster/ec/src/ec-helpers.c
+index 64b010f..0c66948 100644
+--- a/xlators/cluster/ec/src/ec-helpers.c
++++ b/xlators/cluster/ec/src/ec-helpers.c
+@@ -799,35 +799,6 @@ ec_fd_t * ec_fd_get(fd_t * fd, xlator_t * xl)
+     return ctx;
+ }
+ 
+-uint32_t ec_adjust_offset(ec_t * ec, off_t * offset, int32_t scale)
+-{
+-    off_t head, tmp;
+-
+-    tmp = *offset;
+-    head = tmp % ec->stripe_size;
+-    tmp -= head;
+-    if (scale)
+-    {
+-        tmp /= ec->fragments;
+-    }
+-
+-    *offset = tmp;
+-
+-    return head;
+-}
+-
+-uint64_t ec_adjust_size(ec_t * ec, uint64_t size, int32_t scale)
+-{
+-    size += ec->stripe_size - 1;
+-    size -= size % ec->stripe_size;
+-    if (scale)
+-    {
+-        size /= ec->fragments;
+-    }
+-
+-    return size;
+-}
+-
+ gf_boolean_t
+ ec_is_internal_xattr (dict_t *dict, char *key, data_t *value, void *data)
+ {
+diff --git a/xlators/cluster/ec/src/ec-helpers.h b/xlators/cluster/ec/src/ec-helpers.h
+index 4d2145c..cfd7daa 100644
+--- a/xlators/cluster/ec/src/ec-helpers.h
++++ b/xlators/cluster/ec/src/ec-helpers.h
+@@ -55,8 +55,112 @@ ec_inode_t * ec_inode_get(inode_t * inode, xlator_t * xl);
+ ec_fd_t * __ec_fd_get(fd_t * fd, xlator_t * xl);
+ ec_fd_t * ec_fd_get(fd_t * fd, xlator_t * xl);
+ 
+-uint32_t ec_adjust_offset(ec_t * ec, off_t * offset, int32_t scale);
+-uint64_t ec_adjust_size(ec_t * ec, uint64_t size, int32_t scale);
++static inline uint32_t
++ec_adjust_size_down(ec_t *ec, uint64_t *value, gf_boolean_t scale)
++{
++        uint64_t head, tmp;
++
++        tmp = *value;
++        head = tmp % ec->stripe_size;
++        tmp -= head;
++
++        if (scale) {
++                tmp /= ec->fragments;
++        }
++
++        *value = tmp;
++
++        return (uint32_t)head;
++}
++
++/* This function can cause an overflow if the passed value is too near to the
++ * uint64_t limit. If this happens, it returns the tail in negative form and
++ * the value is set to UINT64_MAX. */
++static inline int32_t
++ec_adjust_size_up(ec_t *ec, uint64_t *value, gf_boolean_t scale)
++{
++        uint64_t tmp;
++        int32_t tail;
++
++        tmp = *value;
++        /* We first adjust the value down. This never causes overflow. */
++        tail = ec_adjust_size_down(ec, &tmp, scale);
++
++        /* If the value was already aligned, tail will be 0 and nothing else
++         * needs to be done. */
++        if (tail != 0) {
++                /* Otherwise, we need to compute the real tail and adjust the
++                 * returned value to the next stripe. */
++                tail = ec->stripe_size - tail;
++                if (scale) {
++                        tmp += ec->fragment_size;
++                } else {
++                        tmp += ec->stripe_size;
++                        /* If no scaling is requested there's a posibility of
++                         * overflow. */
++                        if (tmp < ec->stripe_size) {
++                                tmp = UINT64_MAX;
++                                tail = -tail;
++                        }
++                }
++        }
++
++        *value = tmp;
++
++        return tail;
++}
++
++/* This function is equivalent to ec_adjust_size_down() but with a potentially
++ * different parameter size (off_t vs uint64_t). */
++static inline uint32_t
++ec_adjust_offset_down(ec_t *ec, off_t *value, gf_boolean_t scale)
++{
++        off_t head, tmp;
++
++        tmp = *value;
++        head = tmp % ec->stripe_size;
++        tmp -= head;
++
++        if (scale) {
++                tmp /= ec->fragments;
++        }
++
++        *value = tmp;
++
++        return (uint32_t)head;
++}
++
++/* This function is equivalent to ec_adjust_size_up() but with a potentially
++ * different parameter size (off_t vs uint64_t). */
++static inline int32_t
++ec_adjust_offset_up(ec_t *ec, off_t *value, gf_boolean_t scale)
++{
++        uint64_t tail, tmp;
++
++        /* An offset is a signed type that can only have positive values, so
++         * we take advantage of this to avoid overflows. We simply convert it
++         * to an unsigned integer and operate normally. This won't cause an
++         * overflow. Overflow is only checked when converting back to an
++         * off_t. */
++        tmp = *value;
++        tail = ec->stripe_size;
++        tail -= (tmp + tail - 1) % tail + 1;
++        tmp += tail;
++        if (scale) {
++                /* If we are scaling, we'll never get an overflow. */
++                tmp /= ec->fragments;
++        } else {
++                /* Check if there has been an overflow. */
++                if ((off_t)tmp < 0) {
++                        tmp = (1ULL << (sizeof(off_t) * 8 - 1)) - 1ULL;
++                        tail = -tail;
++                }
++        }
++
++        *value = (off_t)tmp;
++
++        return (int32_t)tail;
++}
+ 
+ static inline int32_t ec_is_power_of_2(uint32_t value)
+ {
+diff --git a/xlators/cluster/ec/src/ec-inode-read.c b/xlators/cluster/ec/src/ec-inode-read.c
+index d925e82..829f47f 100644
+--- a/xlators/cluster/ec/src/ec-inode-read.c
++++ b/xlators/cluster/ec/src/ec-inode-read.c
+@@ -1356,9 +1356,10 @@ int32_t ec_manager_readv(ec_fop_data_t * fop, int32_t state)
+     {
+         case EC_STATE_INIT:
+             fop->user_size = fop->size;
+-            fop->head = ec_adjust_offset(fop->xl->private, &fop->offset, 1);
+-            fop->size = ec_adjust_size(fop->xl->private, fop->size + fop->head,
+-                                       1);
++            fop->head = ec_adjust_offset_down(fop->xl->private, &fop->offset,
++                                              _gf_true);
++            fop->size += fop->head;
++            ec_adjust_size_up(fop->xl->private, &fop->size, _gf_true);
+ 
+         /* Fall through */
+ 
+@@ -1561,7 +1562,8 @@ int32_t ec_manager_seek(ec_fop_data_t *fop, int32_t state)
+     switch (state) {
+     case EC_STATE_INIT:
+         fop->user_size = fop->offset;
+-        fop->head = ec_adjust_offset(fop->xl->private, &fop->offset, 1);
++        fop->head = ec_adjust_offset_down(fop->xl->private, &fop->offset,
++                                          _gf_true);
+ 
+     /* Fall through */
+ 
+diff --git a/xlators/cluster/ec/src/ec-inode-write.c b/xlators/cluster/ec/src/ec-inode-write.c
+index 68bea1a..3ed9b2a 100644
+--- a/xlators/cluster/ec/src/ec-inode-write.c
++++ b/xlators/cluster/ec/src/ec-inode-write.c
+@@ -870,8 +870,10 @@ int32_t ec_manager_fallocate(ec_fop_data_t *fop, int32_t state)
+                 return EC_STATE_REPORT;
+         }
+         fop->user_size = fop->offset + fop->size;
+-        fop->head = ec_adjust_offset (fop->xl->private, &fop->offset, 1);
+-        fop->size = ec_adjust_size (fop->xl->private, fop->head + fop->size, 1);
++        fop->head = ec_adjust_offset_down (fop->xl->private, &fop->offset,
++                                           _gf_true);
++        fop->size += fop->head;
++        ec_adjust_size_up (fop->xl->private, &fop->size, _gf_true);
+ 
+         /* Fall through */
+ 
+@@ -1145,7 +1147,7 @@ int32_t ec_manager_truncate(ec_fop_data_t * fop, int32_t state)
+     {
+         case EC_STATE_INIT:
+             fop->user_size = fop->offset;
+-            fop->offset = ec_adjust_size(fop->xl->private, fop->offset, 1);
++            ec_adjust_offset_up(fop->xl->private, &fop->offset, _gf_true);
+ 
+         /* Fall through */
+ 
+@@ -1508,8 +1510,9 @@ ec_writev_prepare_buffers(ec_t *ec, ec_fop_data_t *fop)
+     int32_t err;
+ 
+     fop->user_size = iov_length(fop->vector, fop->int32);
+-    fop->head = ec_adjust_offset(ec, &fop->offset, 0);
+-    fop->size = ec_adjust_size(ec, fop->user_size + fop->head, 0);
++    fop->head = ec_adjust_offset_down(ec, &fop->offset, _gf_false);
++    fop->size = fop->user_size + fop->head;
++    ec_adjust_size_up(ec, &fop->size, _gf_false);
+ 
+     if ((fop->int32 != 1) || (fop->head != 0) ||
+         (fop->size > fop->user_size) ||
+diff --git a/xlators/cluster/ec/src/ec-locks.c b/xlators/cluster/ec/src/ec-locks.c
+index ff09852..996035d 100644
+--- a/xlators/cluster/ec/src/ec-locks.c
++++ b/xlators/cluster/ec/src/ec-locks.c
+@@ -572,10 +572,10 @@ int32_t ec_manager_inodelk(ec_fop_data_t * fop, int32_t state)
+     switch (state)
+     {
+         case EC_STATE_INIT:
+-            fop->flock.l_len += ec_adjust_offset(fop->xl->private,
+-                                                 &fop->flock.l_start, 1);
+-            fop->flock.l_len = ec_adjust_size(fop->xl->private,
+-                                              fop->flock.l_len, 1);
++            fop->flock.l_len += ec_adjust_offset_down(fop->xl->private,
++                                                      &fop->flock.l_start,
++                                                      _gf_true);
++            ec_adjust_offset_up(fop->xl->private, &fop->flock.l_len, _gf_true);
+             if ((fop->int32 == F_SETLKW) && (fop->flock.l_type != F_UNLCK))
+             {
+                 fop->uint32 = EC_LOCK_MODE_ALL;
+-- 
+1.8.3.1
+

@@ -1,0 +1,278 @@
+From 9f4564e55b1e515743a1f80d18989681d5d3b59f Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Thu, 15 Feb 2018 01:46:29 -0500
+Subject: [PATCH 164/180] geo-rep: Remove lazy umount and use mount namespaces
+
+Lazy umounting the master volume by worker causes
+issues with rsync's usage of getcwd. Henc removing
+the lazy umount and using private mount namespace
+for the same. On the slave, the lazy umount is
+retained as we can't use private namespace in non
+root geo-rep setup because gsyncd is spawned as
+non-privileged user.
+
+Backport of https://review.gluster.org/#/c/19544/
+
+Change-Id: I851e8dc2b8523dc5668a97e87ef619ab70471dfd
+BUG: 1544382
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/130468
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ geo-replication/syncdaemon/gconf.py      |  3 +++
+ geo-replication/syncdaemon/gsyncd.py     | 13 ++++++-----
+ geo-replication/syncdaemon/monitor.py    | 38 ++++++++++++++++++++------------
+ geo-replication/syncdaemon/resource.py   | 20 ++++++++++++-----
+ geo-replication/syncdaemon/syncdutils.py | 12 +++++-----
+ glusterfs.spec.in                        |  4 ++++
+ 6 files changed, 59 insertions(+), 31 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gconf.py b/geo-replication/syncdaemon/gconf.py
+index 97395b4..2280f44 100644
+--- a/geo-replication/syncdaemon/gconf.py
++++ b/geo-replication/syncdaemon/gconf.py
+@@ -28,5 +28,8 @@ class GConf(object):
+     active_earlier = False
+     passive_earlier = False
+     mgmt_lock_fd = None
++    mountbroker = False
++    mount_point = None
++    mbr_umount_cmd = []
+ 
+ gconf = GConf()
+diff --git a/geo-replication/syncdaemon/gsyncd.py b/geo-replication/syncdaemon/gsyncd.py
+index d77b90f..629e8b7 100644
+--- a/geo-replication/syncdaemon/gsyncd.py
++++ b/geo-replication/syncdaemon/gsyncd.py
+@@ -276,6 +276,7 @@ def main_i():
+     op.add_option('--georep-session-working-dir', metavar='STATF',
+                   type=str, action='callback', callback=store_abs)
+     op.add_option('--access-mount', default=False, action='store_true')
++    op.add_option('--slave-access-mount', default=False, action='store_true')
+     op.add_option('--ignore-deletes', default=False, action='store_true')
+     op.add_option('--isolated-slave', default=False, action='store_true')
+     op.add_option('--use-rsync-xattrs', default=False, action='store_true')
+@@ -431,7 +432,7 @@ def main_i():
+                     o.get_opt_string() not in ('--version', '--help'))]
+     remote_tunables = ['listen', 'go_daemon', 'timeout',
+                        'session_owner', 'config_file', 'use_rsync_xattrs',
+-                       'local_id', 'local_node', 'access_mount']
++                       'local_id', 'local_node', 'slave_access_mount']
+     rq_remote_tunables = {'listen': True}
+ 
+     # precedence for sources of values: 1) commandline, 2) cfg file, 3)
+@@ -768,15 +769,15 @@ def main_i():
+     else:
+         log_file = gconf.log_file
+     if be_monitor:
+-        label = 'monitor'
++        gconf.label = 'monitor'
+     elif be_agent:
+-        label = gconf.local_path
++        gconf.label = gconf.local_path
+     elif remote:
+         # master
+-        label = gconf.local_path
++        gconf.label = gconf.local_path
+     else:
+-        label = 'slave'
+-    startup(go_daemon=go_daemon, log_file=log_file, label=label)
++        gconf.label = 'slave'
++    startup(go_daemon=go_daemon, log_file=log_file, label=gconf.label)
+     resource.Popen.init_errhandler()
+ 
+     if be_agent:
+diff --git a/geo-replication/syncdaemon/monitor.py b/geo-replication/syncdaemon/monitor.py
+index 4da9330..0f43c4f 100644
+--- a/geo-replication/syncdaemon/monitor.py
++++ b/geo-replication/syncdaemon/monitor.py
+@@ -24,7 +24,7 @@ import random
+ from gconf import gconf
+ from syncdutils import select, waitpid, errno_wrap, lf
+ from syncdutils import set_term_handler, is_host_local, GsyncdError
+-from syncdutils import escape, Thread, finalize, memoize
++from syncdutils import escape, Thread, finalize, memoize, boolify
+ from syncdutils import gf_event, EVENT_GEOREP_FAULTY
+ 
+ from gsyncdstatus import GeorepStatus, set_monitor_status
+@@ -306,19 +306,29 @@ class Monitor(object):
+                 os.close(pr)
+                 os.close(ra)
+                 os.close(wa)
+-                os.execv(sys.executable, argv + ['--feedback-fd', str(pw),
+-                                                 '--local-path', w[0]['dir'],
+-                                                 '--local-node', w[0]['host'],
+-                                                 '--local-node-id',
+-                                                 w[0]['uuid'],
+-                                                 '--local-id',
+-                                                 '.' + escape(w[0]['dir']),
+-                                                 '--rpc-fd',
+-                                                 ','.join([str(rw), str(ww),
+-                                                           str(ra), str(wa)]),
+-                                                 '--subvol-num', str(w[2])] +
+-                         (['--is-hottier'] if w[3] else []) +
+-                         ['--resource-remote', remote_host])
++                args_to_worker = argv + ['--feedback-fd', str(pw),
++                                         '--local-path', w[0]['dir'],
++                                         '--local-node', w[0]['host'],
++                                         '--local-node-id',
++                                         w[0]['uuid'],
++                                         '--local-id',
++                                         '.' + escape(w[0]['dir']),
++                                         '--rpc-fd',
++                                         ','.join([str(rw), str(ww),
++                                         str(ra), str(wa)]),
++                                         '--subvol-num', str(w[2])]
++
++                if w[3]:
++                    args_to_worker.append('--is-hottier')
++                args_to_worker += ['--resource-remote', remote_host]
++
++                access_mount = boolify(gconf.access_mount)
++                if access_mount:
++                    os.execv(sys.executable, args_to_worker)
++                else:
++                    unshare_cmd = ['unshare', '-m', '--propagation', 'private']
++                    cmd = unshare_cmd + args_to_worker
++                    os.execvp("unshare", cmd)
+ 
+             cpids.add(cpid)
+             agents.add(apid)
+diff --git a/geo-replication/syncdaemon/resource.py b/geo-replication/syncdaemon/resource.py
+index 5ad5b97..4b2a266 100644
+--- a/geo-replication/syncdaemon/resource.py
++++ b/geo-replication/syncdaemon/resource.py
+@@ -43,7 +43,7 @@ from syncdutils import CHANGELOG_AGENT_CLIENT_VERSION
+ from syncdutils import GX_GFID_CANONICAL_LEN
+ from gsyncdstatus import GeorepStatus
+ from syncdutils import get_master_and_slave_data_from_args
+-from syncdutils import mntpt_list, lf
++from syncdutils import lf
+ from syncdutils import Xattr, matching_disk_gfid, get_gfid_from_mnt
+ 
+ UrlRX = re.compile('\A(\w+)://([^ *?[]*)\Z')
+@@ -1047,8 +1047,8 @@ class SlaveRemote(object):
+             extra_opts += ['--local-node', ln]
+         if boolify(gconf.use_rsync_xattrs):
+             extra_opts.append('--use-rsync-xattrs')
+-        if boolify(gconf.access_mount):
+-            extra_opts.append('--access-mount')
++        if boolify(gconf.slave_access_mount):
++            extra_opts.append('--slave-access-mount')
+         po = Popen(rargs + gconf.remote_gsyncd.split() + extra_opts +
+                    ['-N', '--listen', '--timeout', str(gconf.timeout),
+                     slave],
+@@ -1333,6 +1333,7 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
+         def __init__(self, params):
+             self.params = params
+             self.mntpt = None
++            self.umount_cmd = []
+ 
+         @classmethod
+         def get_glusterprog(cls):
+@@ -1424,13 +1425,15 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
+                         assert(mntdata[-1] == '\0')
+                         mntpt = mntdata[:-1]
+                         assert(mntpt)
+-                        if mounted and not boolify(gconf.access_mount):
++                        if mounted and gconf.label == 'slave' \
++                           and not boolify(gconf.slave_access_mount):
+                             po = self.umount_l(mntpt)
+                             po.terminate_geterr(fail_on_err=False)
+                             if po.returncode != 0:
+                                 po.errlog()
+                                 rv = po.returncode
+-                        if not boolify(gconf.access_mount):
++                        if gconf.label == 'slave' \
++                           and not boolify(gconf.slave_access_mount):
+                             self.cleanup_mntpt(mntpt)
+                 except:
+                     logging.exception('mount cleanup failure:')
+@@ -1451,7 +1454,7 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
+ 
+         def make_mount_argv(self):
+             self.mntpt = tempfile.mkdtemp(prefix='gsyncd-aux-mount-')
+-            mntpt_list.append(self.mntpt)
++            gconf.mount_point = self.mntpt
+             return [self.get_glusterprog()] + \
+                 ['--' + p for p in self.params] + [self.mntpt]
+ 
+@@ -1483,6 +1486,11 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
+ 
+         def handle_mounter(self, po):
+             self.mntpt = po.stdout.readline()[:-1]
++            gconf.mount_point = self.mntpt
++            gconf.mountbroker = True
++            self.umount_cmd = self.make_cli_argv() + ['umount']
++            gconf.mbr_umount_cmd = self.umount_cmd
++
+             po.stdout.close()
+             sup(self, po)
+             if po.returncode != 0:
+diff --git a/geo-replication/syncdaemon/syncdutils.py b/geo-replication/syncdaemon/syncdutils.py
+index 269f301..2b57f83 100644
+--- a/geo-replication/syncdaemon/syncdutils.py
++++ b/geo-replication/syncdaemon/syncdutils.py
+@@ -23,7 +23,6 @@ from errno import EINTR, ENOENT, EPERM, ESTALE, EBUSY, errorcode
+ from signal import signal, SIGTERM
+ import select as oselect
+ from os import waitpid as owaitpid
+-import subprocess
+ 
+ from conf import GLUSTERFS_LIBEXECDIR, UUID_FILE
+ sys.path.insert(1, GLUSTERFS_LIBEXECDIR)
+@@ -209,7 +208,6 @@ def grabpidfile(fname=None, setpid=True):
+ 
+ final_lock = Lock()
+ 
+-mntpt_list = []
+ def finalize(*a, **kw):
+     """all those messy final steps we go trough upon termination
+ 
+@@ -256,12 +254,16 @@ def finalize(*a, **kw):
+                 pass
+ 
+     """ Unmount if not done """
+-    for mnt in mntpt_list:
+-        p0 = subprocess.Popen (["umount", "-l", mnt], stderr=subprocess.PIPE)
++    if gconf.mount_point:
++        if gconf.mountbroker:
++            umount_cmd = gconf.mbr_umount_cmd + [gconf.mount_point, 'lazy']
++        else:
++            umount_cmd = ['umount', '-l', gconf.mount_point]
++        p0 = subprocess.Popen(umount_cmd, stderr=subprocess.PIPE)
+         _, errdata = p0.communicate()
+         if p0.returncode == 0:
+             try:
+-                os.rmdir(mnt)
++                os.rmdir(gconf.mount_point)
+             except OSError:
+                 pass
+         else:
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 3181d72..8379f64 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -453,6 +453,7 @@ BuildRequires:    python-ctypes
+ %endif
+ Requires:         python2-gluster = %{version}-%{release}
+ Requires:         rsync
++Requires:         util-linux
+ 
+ %description geo-replication
+ GlusterFS is a distributed file-system capable of scaling to several
+@@ -2147,6 +2148,9 @@ fi
+ %endif
+ 
+ %changelog
++* Thu Feb 22 2018 Kotresh HR <khiremat@redhat.com>
++- Added util-linux as dependency to georeplication rpm (#1544382)
++
+ * Wed Jan 17 2018 Milind Changire <mchangir@redhat.com>
+ - DOWNSTREAM ONLY - Removed pretrans script for glusterfs-ganesha - (#1410719)
+ 
+-- 
+1.8.3.1
+

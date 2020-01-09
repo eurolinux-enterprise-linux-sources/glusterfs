@@ -1,0 +1,48 @@
+From d4a387d3e419f4b15a5fc98a9ee7af4644b05ffe Mon Sep 17 00:00:00 2001
+From: Poornima G <pgurusid@redhat.com>
+Date: Wed, 16 May 2018 11:00:32 +0530
+Subject: [PATCH 272/274] readdir-ahead: Fix an issue with parallel-readdir and
+ readdir-optimize
+
+Issue: When parallel-readdir is enabled, readdir-optimize automatically
+stops working because of a bug in rda_opendir.
+
+RCA: In rda_opendir, the xattrs that indicate readdir-optimize or not
+is sent in xdata. This xdata is sent to all the readdirp prefetch
+calls. A dict_ref is taken on xdata and kept in rda_opendir to be
+used by rda_fill_fd, but dht_opendir deletes some elements in xdata
+after calling rda_opendir. Hence dict_ref is not a right choice here,
+dict_copy needs to used.
+
+Backport of https://review.gluster.org/#/c/20026/
+
+>Change-Id: Ie7cc7ceb03117dd4179ef7905647f2f123f94966
+>fixes: bz#1578650
+>Signed-off-by: Poornima G <pgurusid@redhat.com>
+
+Bug: 1578647
+Change-Id: Ia710b39ad2fe9e71df17ae13c3281526f382004b
+Signed-off-by: Poornima G <pgurusid@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139040
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/performance/readdir-ahead/src/readdir-ahead.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/performance/readdir-ahead/src/readdir-ahead.c b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+index 0d3bdbd..6501a6b 100644
+--- a/xlators/performance/readdir-ahead/src/readdir-ahead.c
++++ b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+@@ -525,7 +525,7 @@ rda_opendir(call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+                  * Retrieve list of keys set by md-cache xlator and store it
+                  * in local to be consumed in rda_opendir_cbk
+                  */
+-                local->xattrs = dict_ref (xdata);
++                local->xattrs = dict_copy_with_ref (xdata, NULL);
+                 frame->local = local;
+         }
+ 
+-- 
+1.8.3.1
+

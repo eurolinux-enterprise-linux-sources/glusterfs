@@ -13,7 +13,7 @@
 
 #ifndef REFCOUNT_NEEDS_LOCK
 
-unsigned int
+void *
 _gf_ref_get (gf_ref_t *ref)
 {
         unsigned int cnt = __sync_fetch_and_add (&ref->cnt, 1);
@@ -27,7 +27,7 @@ _gf_ref_get (gf_ref_t *ref)
          */
         GF_ASSERT (cnt != 0);
 
-        return cnt;
+        return cnt ? ref->data : NULL;
 }
 
 unsigned int
@@ -43,18 +43,15 @@ _gf_ref_put (gf_ref_t *ref)
          */
         GF_ASSERT (cnt != 0);
 
-        if (cnt == 1 && ref->release) {
+        if (cnt == 1 && ref->release)
                 ref->release (ref->data);
-                /* set return value to 0 to inform the caller correctly */
-                cnt = 0;
-        }
 
-        return cnt;
+        return (cnt != 1);
 }
 
 #else
 
-unsigned int
+void *
 _gf_ref_get (gf_ref_t *ref)
 {
         unsigned int cnt = 0;
@@ -69,7 +66,7 @@ _gf_ref_get (gf_ref_t *ref)
         }
         UNLOCK (&ref->lk);
 
-        return cnt;
+        return cnt ? ref->data : NULL;
 }
 
 unsigned int
@@ -92,7 +89,7 @@ _gf_ref_put (gf_ref_t *ref)
         if (release && ref->release)
                 ref->release (ref->data);
 
-        return cnt;
+        return !release;
 }
 
 #endif /* REFCOUNT_NEEDS_LOCK */

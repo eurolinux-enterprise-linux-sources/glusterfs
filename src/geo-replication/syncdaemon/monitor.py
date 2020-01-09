@@ -18,13 +18,14 @@ import xml.etree.ElementTree as XET
 from subprocess import PIPE
 from resource import Popen, FILE, GLUSTER, SSH
 from threading import Lock
-from errno import ECHILD
+from errno import ECHILD, ESRCH
 import re
 import random
 from gconf import gconf
-from syncdutils import select, waitpid
+from syncdutils import select, waitpid, errno_wrap, lf
 from syncdutils import set_term_handler, is_host_local, GsyncdError
 from syncdutils import escape, Thread, finalize, memoize
+from syncdutils import gf_event, EVENT_GEOREP_FAULTY
 
 from gsyncdstatus import GeorepStatus, set_monitor_status
 
@@ -62,15 +63,17 @@ def get_slave_bricks_status(host, vol):
     po.wait()
     po.terminate_geterr(fail_on_err=False)
     if po.returncode != 0:
-        logging.info("Volume status command failed, unable to get "
-                     "list of up nodes of %s, returning empty list: %s" %
-                     (vol, po.returncode))
+        logging.info(lf("Volume status command failed, unable to get "
+                        "list of up nodes, returning empty list",
+                        volume=vol,
+                        error=po.returncode))
         return []
     vi = XET.fromstring(vix)
     if vi.find('opRet').text != '0':
-        logging.info("Unable to get list of up nodes of %s, "
-                     "returning empty list: %s" %
-                     (vol, vi.find('opErrstr').text))
+        logging.info(lf("Unable to get list of up nodes, "
+                        "returning empty list",
+                        volume=vol,
+                        error=vi.find('opErrstr').text))
         return []
 
     up_hosts = set()
@@ -80,8 +83,10 @@ def get_slave_bricks_status(host, vol):
             if el.find('status').text == '1':
                 up_hosts.add(el.find('hostname').text)
     except (ParseError, AttributeError, ValueError) as e:
-        logging.info("Parsing failed to get list of up nodes of %s, "
-                     "returning empty list: %s" % (vol, e))
+        logging.info(lf("Parsing failed to get list of up nodes, "
+                        "returning empty list",
+                        volume=vol,
+                        error=e))
 
     return list(up_hosts)
 
@@ -122,8 +127,8 @@ class Volinfo(object):
     @memoize
     def bricks(self):
         def bparse(b):
-            host, dirp = b.text.split(':', 2)
-            return {'host': host, 'dir': dirp}
+            host, dirp = b.find("name").text.split(':', 2)
+            return {'host': host, 'dir': dirp, 'uuid': b.find("hostUuid").text}
         return [bparse(b) for b in self.get('brick')]
 
     @property
@@ -165,6 +170,7 @@ class Volinfo(object):
         else:
             return 0
 
+
 class Monitor(object):
 
     """class which spawns and manages gsyncd workers"""
@@ -187,7 +193,7 @@ class Monitor(object):
         # standard handler
         set_term_handler(lambda *a: set_term_handler())
         # give a chance to graceful exit
-        os.kill(-os.getpid(), signal.SIGTERM)
+        errno_wrap(os.kill, [-os.getpid(), signal.SIGTERM], [ESRCH])
 
     def monitor(self, w, argv, cpids, agents, slave_vol, slave_host, master):
         """the monitor loop
@@ -208,11 +214,17 @@ class Monitor(object):
         blown worker blows up on EPIPE if the net goes down,
         due to the keep-alive thread)
         """
-        if not self.status.get(w[0], None):
-            self.status[w[0]] = GeorepStatus(gconf.state_file, w[0])
+        if not self.status.get(w[0]['dir'], None):
+            self.status[w[0]['dir']] = GeorepStatus(gconf.state_file,
+                                                    w[0]['host'],
+                                                    w[0]['dir'],
+                                                    w[0]['uuid'],
+                                                    master,
+                                                    "%s::%s" % (slave_host,
+                                                                slave_vol))
 
         set_monitor_status(gconf.state_file, self.ST_STARTED)
-        self.status[w[0]].set_worker_status(self.ST_INIT)
+        self.status[w[0]['dir']].set_worker_status(self.ST_INIT)
 
         ret = 0
 
@@ -263,8 +275,9 @@ class Monitor(object):
             # Spawn the worker and agent in lock to avoid fd leak
             self.lock.acquire()
 
-            logging.info('-' * conn_timeout)
-            logging.info('starting gsyncd worker')
+            logging.info(lf('starting gsyncd worker',
+                            brick=w[0]['dir'],
+                            slave_node=remote_host))
 
             # Couple of pipe pairs for RPC communication b/w
             # worker and changelog agent.
@@ -279,7 +292,10 @@ class Monitor(object):
             if apid == 0:
                 os.close(rw)
                 os.close(ww)
-                os.execv(sys.executable, argv + ['--local-path', w[0],
+                os.execv(sys.executable, argv + ['--local-path', w[0]['dir'],
+                                                 '--local-node', w[0]['host'],
+                                                 '--local-node-id',
+                                                 w[0]['uuid'],
                                                  '--agent',
                                                  '--rpc-fd',
                                                  ','.join([str(ra), str(wa),
@@ -291,9 +307,12 @@ class Monitor(object):
                 os.close(ra)
                 os.close(wa)
                 os.execv(sys.executable, argv + ['--feedback-fd', str(pw),
-                                                 '--local-path', w[0],
+                                                 '--local-path', w[0]['dir'],
+                                                 '--local-node', w[0]['host'],
+                                                 '--local-node-id',
+                                                 w[0]['uuid'],
                                                  '--local-id',
-                                                 '.' + escape(w[0]),
+                                                 '.' + escape(w[0]['dir']),
                                                  '--rpc-fd',
                                                  ','.join([str(rw), str(ww),
                                                            str(ra), str(wa)]),
@@ -322,46 +341,54 @@ class Monitor(object):
 
                 if ret_agent is not None:
                     # Agent is died Kill Worker
-                    logging.info("Changelog Agent died, "
-                                 "Aborting Worker(%s)" % w[0])
-                    os.kill(cpid, signal.SIGKILL)
+                    logging.info(lf("Changelog Agent died, Aborting Worker",
+                                    brick=w[0]['dir']))
+                    errno_wrap(os.kill, [cpid, signal.SIGKILL], [ESRCH])
                     nwait(cpid)
                     nwait(apid)
 
                 if ret is not None:
-                    logging.info("worker(%s) died before establishing "
-                                 "connection" % w[0])
+                    logging.info(lf("worker died before establishing "
+                                    "connection",
+                                    brick=w[0]['dir']))
                     nwait(apid)  # wait for agent
                 else:
-                    logging.debug("worker(%s) connected" % w[0])
+                    logging.debug("worker(%s) connected" % w[0]['dir'])
                     while time.time() < t0 + conn_timeout:
                         ret = nwait(cpid, os.WNOHANG)
                         ret_agent = nwait(apid, os.WNOHANG)
 
                         if ret is not None:
-                            logging.info("worker(%s) died in startup "
-                                         "phase" % w[0])
+                            logging.info(lf("worker died in startup phase",
+                                            brick=w[0]['dir']))
                             nwait(apid)  # wait for agent
                             break
 
                         if ret_agent is not None:
                             # Agent is died Kill Worker
-                            logging.info("Changelog Agent died, Aborting "
-                                         "Worker(%s)" % w[0])
-                            os.kill(cpid, signal.SIGKILL)
+                            logging.info(lf("Changelog Agent died, Aborting "
+                                            "Worker",
+                                            brick=w[0]['dir']))
+                            errno_wrap(os.kill, [cpid, signal.SIGKILL], [ESRCH])
                             nwait(cpid)
                             nwait(apid)
                             break
 
                         time.sleep(1)
             else:
-                logging.info("worker(%s) not confirmed in %d sec, "
-                             "aborting it" % (w[0], conn_timeout))
-                os.kill(cpid, signal.SIGKILL)
+                logging.info(
+                    lf("Worker not confirmed after wait, aborting it. "
+                       "Gsyncd invocation on remote slave via SSH or "
+                       "gluster master mount might have hung. Please "
+                       "check the above logs for exact issue and check "
+                       "master or slave volume for errors. Restarting "
+                       "master/slave volume accordingly might help.",
+                       brick=w[0]['dir'],
+                       timeout=conn_timeout))
+                errno_wrap(os.kill, [cpid, signal.SIGKILL], [ESRCH])
                 nwait(apid)  # wait for agent
                 ret = nwait(cpid)
             if ret is None:
-                self.status[w[0]].set_worker_status(self.ST_STABLE)
                 # If worker dies, agent terminates on EOF.
                 # So lets wait for agent first.
                 nwait(apid)
@@ -371,9 +398,17 @@ class Monitor(object):
             else:
                 ret = exit_status(ret)
                 if ret in (0, 1):
-                    self.status[w[0]].set_worker_status(self.ST_FAULTY)
+                    self.status[w[0]['dir']].set_worker_status(self.ST_FAULTY)
+                    gf_event(EVENT_GEOREP_FAULTY,
+                             master_volume=master.volume,
+                             master_node=w[0]['host'],
+                             master_node_id=w[0]['uuid'],
+                             slave_host=slave_host,
+                             slave_volume=slave_vol,
+                             current_slave_host=current_slave_host,
+                             brick_path=w[0]['dir'])
             time.sleep(10)
-        self.status[w[0]].set_worker_status(self.ST_INCON)
+        self.status[w[0]['dir']].set_worker_status(self.ST_INCON)
         return ret
 
     def multiplex(self, wspx, suuid, slave_vol, slave_host, master):
@@ -394,9 +429,9 @@ class Monitor(object):
                 time.sleep(1)
                 self.lock.acquire()
                 for cpid in cpids:
-                    os.kill(cpid, signal.SIGKILL)
+                    errno_wrap(os.kill, [cpid, signal.SIGKILL], [ESRCH])
                 for apid in agents:
-                    os.kill(apid, signal.SIGKILL)
+                    errno_wrap(os.kill, [apid, signal.SIGKILL], [ESRCH])
                 self.lock.release()
                 finalize(exval=1)
             t = Thread(target=wmon, args=[wx])
@@ -428,9 +463,18 @@ def distribute(*resources):
         suuid = svol.uuid
         slave_host = slave.remote_addr.split('@')[-1]
         slave_vol = si.volume
+
+        # save this xattr for the session delete command
+        old_stime_xattr_name = getattr(gconf, "master.stime_xattr_name", None)
+        new_stime_xattr_name = "trusted.glusterfs." + mvol.uuid + "." + \
+            svol.uuid + ".stime"
+        if not old_stime_xattr_name or \
+           old_stime_xattr_name != new_stime_xattr_name:
+            gconf.configinterface.set("master.stime_xattr_name",
+                                      new_stime_xattr_name)
     else:
         raise GsyncdError("unknown slave type " + slave.url)
-    logging.info('slave bricks: ' + repr(sbricks))
+    logging.debug('slave bricks: ' + repr(sbricks))
     if isinstance(si, FILE):
         slaves = [slave.url]
     else:
@@ -449,13 +493,13 @@ def distribute(*resources):
 
     workerspex = []
     for idx, brick in enumerate(mvol.bricks):
-        if is_host_local(brick['host']):
+        if is_host_local(brick['uuid']):
             is_hot = mvol.is_hot(":".join([brick['host'], brick['dir']]))
-            workerspex.append((brick['dir'],
+            workerspex.append((brick,
                                slaves[idx % len(slaves)],
                                get_subvol_num(idx, mvol, is_hot),
                                is_hot))
-    logging.info('worker specs: ' + repr(workerspex))
+    logging.debug('worker specs: ' + repr(workerspex))
     return workerspex, suuid, slave_vol, slave_host, master
 
 
@@ -464,7 +508,7 @@ def monitor(*resources):
     # yes, send SIGSTOP to negative of monitor pid
     # to go back to pause state.
     if gconf.pause_on_start:
-        os.kill(-os.getpid(), signal.SIGSTOP)
+        errno_wrap(os.kill, [-os.getpid(), signal.SIGSTOP], [ESRCH])
 
     """oh yeah, actually Monitor is used as singleton, too"""
     return Monitor().multiplex(*distribute(*resources))

@@ -1,0 +1,43 @@
+From 0336d2fa2e8ee0b80c5d5891883c2551f6dbe4db Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Thu, 17 May 2018 11:20:36 +0530
+Subject: [PATCH 273/274] rpcsvc: Turn off ownthreads for Glusterfs program
+
+With introduction of request-handler-threads and queue to hold
+requests we are seeing performance regression. Hence revert the
+functionality of,
+
+commit 2e72b24707f1886833db0b09e48b3f48b8d68d37
+Author: Raghavendra G <rgowdapp@redhat.com>
+Date:   Tue Apr 25 10:43:07 2017 +0530
+
+    program/GF-DUMP: Shield ping processing from traffic to Glusterfs
+    Program
+
+by setting ownthread=false
+
+Change-Id: Ic500ff593aecf8062b2929d5518523363dfbab4f
+BUG: 1558989
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139002
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/protocol/server/src/server-rpc-fops.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/protocol/server/src/server-rpc-fops.c b/xlators/protocol/server/src/server-rpc-fops.c
+index 91d5c03..ba6cc1f 100644
+--- a/xlators/protocol/server/src/server-rpc-fops.c
++++ b/xlators/protocol/server/src/server-rpc-fops.c
+@@ -6160,5 +6160,5 @@ struct rpcsvc_program glusterfs3_3_fop_prog = {
+         .progver   = GLUSTER_FOP_VERSION,
+         .numactors = GLUSTER_FOP_PROCCNT,
+         .actors    = glusterfs3_3_fop_actors,
+-        .ownthread = _gf_true,
++        .ownthread = _gf_false,
+ };
+-- 
+1.8.3.1
+

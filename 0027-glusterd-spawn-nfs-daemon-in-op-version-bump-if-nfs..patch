@@ -1,0 +1,132 @@
+From 52798b6934ea584b25b1ade64cb52a7439c1b113 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 3 Jan 2017 18:13:29 +0530
+Subject: [PATCH 27/74] glusterd: spawn nfs daemon in op-version bump if
+ nfs.disable key is absent
+
+3.2.0 onwards gNFS will be disabled by default. However any cluster
+upgraded to 3.2.0 with existing volumes exposed over gNFS should
+continue to have gNFS access and hence post upgrade gNFS service should
+come up after bumping up the op-version. Although the key nfs.disable
+was handled and managed correctly in the upgrade path but gNFS daemon
+was never spawned in this case.
+
+Fix is to spawn gNFS daemon in op-version bump up code path if
+nfs.disable option is not set.
+
+Label : DOWNSTREAM ONLY
+
+Change-Id: Icac6f3653160f79b271f25f5df0c89690917e702
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/94006
+Reviewed-by: Jiffin Thottan <jthottan@redhat.com>
+Reviewed-by: Samikshan Bairagya <sbairagy@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-messages.h |  8 ++++++
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c    | 35 ++++++++++++++++++++++++---
+ 2 files changed, 40 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-messages.h b/xlators/mgmt/glusterd/src/glusterd-messages.h
+index 65d4353..8bb4c43 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-messages.h
++++ b/xlators/mgmt/glusterd/src/glusterd-messages.h
+@@ -4937,6 +4937,14 @@
+  */
+ #define GD_MSG_GARBAGE_ARGS                         (GLUSTERD_COMP_BASE + 611)
+ 
++/*!
++ * @messageid
++ * @diagnosis
++ * @recommendedaction
++ *
++ */
++#define GD_MSG_SVC_START_FAIL                      (GLUSTERD_COMP_BASE + 590)
++
+ /*------------*/
+ 
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 0557ad8..4fc719a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -2423,7 +2423,8 @@ out:
+ }
+ 
+ static int
+-glusterd_update_volumes_dict (glusterd_volinfo_t *volinfo)
++glusterd_update_volumes_dict (glusterd_volinfo_t *volinfo,
++                              gf_boolean_t *start_nfs_svc)
+ {
+         int              ret = -1;
+         xlator_t        *this = NULL;
+@@ -2436,6 +2437,8 @@ glusterd_update_volumes_dict (glusterd_volinfo_t *volinfo)
+         conf = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, conf, out);
+ 
++        ret = 0;
++
+         /* 3.9.0 onwards gNFS will be disabled by default. In case of an upgrade
+          * from anything below than 3.9.0 to 3.9.x, the value for nfs.disable is
+          * set to 'off' for all volumes even if it is not explicitly set in the
+@@ -2458,6 +2461,12 @@ glusterd_update_volumes_dict (glusterd_volinfo_t *volinfo)
+                                         "volume %s", volinfo->volname);
+                                 goto out;
+                         }
++                        /* If the volume is started then mark start_nfs_svc to
++                         * true such that nfs daemon can be spawned up
++                         */
++                        if (GLUSTERD_STATUS_STARTED == volinfo->status)
++                                *start_nfs_svc = _gf_true;
++
+                 }
+ 
+                 ret = dict_get_str (volinfo->dict, "transport.address-family",
+@@ -2478,9 +2487,12 @@ glusterd_update_volumes_dict (glusterd_volinfo_t *volinfo)
+                                 }
+                         }
+                 }
++                ret = glusterd_store_volinfo (volinfo,
++                                              GLUSTERD_VOLINFO_VER_AC_INCREMENT);
++                if (ret)
++                        goto out;
++
+         }
+-        ret = glusterd_store_volinfo (volinfo,
+-                                      GLUSTERD_VOLINFO_VER_AC_INCREMENT);
+ 
+ out:
+         return ret;
+@@ -2529,6 +2541,7 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+         uint32_t             op_version             = 0;
+         glusterd_volinfo_t  *volinfo                = NULL;
+         glusterd_svc_t      *svc                    = NULL;
++        gf_boolean_t         start_nfs_svc          = _gf_false;
+ 
+         conf = this->private;
+         ret = dict_get_str (dict, "key1", &key);
+@@ -2645,6 +2658,22 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                         "Failed to store op-version.");
+                         }
+                 }
++                cds_list_for_each_entry (volinfo, &conf->volumes, vol_list) {
++                        ret = glusterd_update_volumes_dict (volinfo,
++                                                            &start_nfs_svc);
++                        if (ret)
++                                goto out;
++                }
++                if (start_nfs_svc) {
++                        ret = conf->nfs_svc.manager (&(conf->nfs_svc), NULL,
++                                                     PROC_START_NO_WAIT);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        GD_MSG_SVC_START_FAIL,
++                                         "unable to start nfs service");
++                                goto out;
++                        }
++                }
+                 /* No need to save cluster.op-version in conf->opts
+                  */
+                 goto out;
+-- 
+1.8.3.1
+

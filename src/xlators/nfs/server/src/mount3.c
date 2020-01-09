@@ -8,11 +8,6 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "rpcsvc.h"
 #include "dict.h"
 #include "xlator.h"
@@ -950,20 +945,28 @@ err:
  * we need to strip out the volume name first.
  */
 char *
-__volume_subdir (char *dirpath, char **volname)
+mnt3_get_volume_subdir (char *dirpath, char **volname)
 {
-        char    *subdir = NULL;
-        int     volname_len = 0;
+        /* subdir points to the first / after the volume name while dirpath
+         * points to the first char of the volume name.
+         */
+        char          *subdir        = NULL;
+        int            volname_len   = 0;
+        static char   *root          = "/";
 
-        if (!dirpath)
-                return NULL;
+        /* all callers are expected to pass a valid *dirpath */
+        GF_ASSERT (dirpath);
 
         if (dirpath[0] == '/')
                 dirpath++;
 
         subdir = index (dirpath, (int)'/');
-        if (!subdir)
-                goto out;
+        if (!subdir) {
+                subdir = root;
+                volname_len = strlen (dirpath);
+        } else {
+                volname_len = subdir - dirpath;
+        }
 
         if (!volname)
                 goto out;
@@ -971,10 +974,6 @@ __volume_subdir (char *dirpath, char **volname)
         if (!*volname)
                 goto out;
 
-        /* subdir points to the first / after the volume name while dirpath
-         * points to the first char of the volume name.
-         */
-        volname_len = subdir - dirpath;
         strncpy (*volname, dirpath, volname_len);
         *(*volname + volname_len) = '\0';
 out:
@@ -1029,10 +1028,6 @@ mnt3_resolve_subdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                          struct iatt *buf, dict_t *xattr,
                          struct iatt *postparent);
 
-int
-mnt3_parse_dir_exports (rpcsvc_request_t *req, struct mount3_state *ms,
-                        char *subdir);
-
 int32_t
 mnt3_readlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                    int32_t op_ret, int32_t op_errno, const char *path,
@@ -1064,7 +1059,7 @@ __mnt3_resolve_export_subdir_comp (mnt3_resolve_t *mres)
         nfs_loc_wipe (&mres->resolveloc);
         ret = nfs_entry_loc_fill (mres->mstate->nfsx, mres->exp->vol->itable,
                                   gfid, nextcomp, &mres->resolveloc,
-                                  NFS_RESOLVE_CREATE);
+                                  NFS_RESOLVE_CREATE, NULL);
         if ((ret < 0) && (ret != -2)) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, EFAULT,
                         NFS_MSG_RESOLVE_INODE_FAIL, "Failed to resolve and "
@@ -1315,7 +1310,8 @@ mnt3_readlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         /* After the resolving the symlink , parsing should be done
          * for the populated mount path
          */
-        ret = mnt3_parse_dir_exports (mres->req, mres->mstate, real_loc);
+        ret = mnt3_parse_dir_exports (mres->req, mres->mstate, real_loc,
+                                      _gf_true);
 
         if (ret) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, 0, NFS_MSG_RESOLVE_ERROR,
@@ -1379,7 +1375,7 @@ __mnt3_resolve_subdir (mnt3_resolve_t *mres)
         rootgfid[15] = 1;
         ret = nfs_entry_loc_fill (mres->mstate->nfsx, mres->exp->vol->itable,
                                   rootgfid, firstcomp, &mres->resolveloc,
-                                  NFS_RESOLVE_CREATE);
+                                  NFS_RESOLVE_CREATE, NULL);
         if ((ret < 0) && (ret != -2)) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, EFAULT,
                         NFS_MSG_RESOLVE_INODE_FAIL, "Failed to resolve and "
@@ -1523,7 +1519,8 @@ mnt3_verify_auth (struct sockaddr_in *client_addr, struct mnt3_export *export)
 
 int
 mnt3_resolve_subdir (rpcsvc_request_t *req, struct mount3_state *ms,
-                     struct mnt3_export *exp, char *subdir)
+                     struct mnt3_export *exp, char *subdir,
+                     gf_boolean_t send_reply)
 {
         mnt3_resolve_t        *mres = NULL;
         int                   ret = -EFAULT;
@@ -1546,6 +1543,10 @@ mnt3_resolve_subdir (rpcsvc_request_t *req, struct mount3_state *ms,
                 }
         }
 
+        /* no reply is needed (WebNFS permissions checking), just return */
+        if (!send_reply)
+                return 0; /* no error, mnt3_verify_auth() allowed it */
+
         mres = GF_CALLOC (1, sizeof (mnt3_resolve_t), gf_nfs_mt_mnt3_resolve);
         if (!mres) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, ENOMEM, NFS_MSG_NO_MEMORY,
@@ -1556,7 +1557,10 @@ mnt3_resolve_subdir (rpcsvc_request_t *req, struct mount3_state *ms,
         mres->exp = exp;
         mres->mstate = ms;
         mres->req = req;
+
         strncpy (mres->remainingdir, subdir, MNTPATHLEN);
+        gf_path_strip_trailing_slashes (mres->remainingdir);
+
         if (gf_nfs_dvm_off (nfs_state (ms->nfsx)))
                 pfh = nfs3_fh_build_indexed_root_fh (
                                             mres->mstate->nfsx->children,
@@ -1587,11 +1591,9 @@ mnt3_resolve_export_subdir (rpcsvc_request_t *req, struct mount3_state *ms,
         if ((!req) || (!ms) || (!exp))
                 return ret;
 
-        volume_subdir = __volume_subdir (exp->expname, NULL);
-        if (!volume_subdir)
-                goto err;
+        volume_subdir = mnt3_get_volume_subdir (exp->expname, NULL);
 
-        ret = mnt3_resolve_subdir (req, ms, exp, volume_subdir);
+        ret = mnt3_resolve_subdir (req, ms, exp, volume_subdir, _gf_true);
         if (ret < 0) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, ret, NFS_MSG_RESOLVE_SUBDIR_FAIL,
                         "Failed to resolve export dir: %s", exp->expname);
@@ -1688,7 +1690,7 @@ err:
         return ret;
 }
 
-static int
+int
 mnt3_check_client_net_tcp (rpcsvc_request_t *req, char *volname)
 {
         rpcsvc_t                *svc = NULL;
@@ -1742,7 +1744,19 @@ mnt3_check_client_net_udp (struct svc_req *req, char *volname, xlator_t *nfsx)
         if ((!req) || (!volname) || (!nfsx))
                 goto err;
 
+#if !defined(_TIRPC_SVC_H)
         sin = svc_getcaller (req->rq_xprt);
+#else
+        sin = (struct sockaddr_in *)svc_getcaller (req->rq_xprt);
+        /* TIRPC's svc_getcaller() returns a pointer to a sockaddr_in6, even
+         * though it might actually be an IPv4 address. It ought return a
+         * struct sockaddr and make the caller upcast it to the proper
+         * address family. Sigh.
+         */
+#endif
+        /* And let's make sure that it's actually an IPv4 address. */
+        GF_ASSERT (sin->sin_family == AF_INET);
+
         if (!sin)
                 goto err;
 
@@ -1762,25 +1776,36 @@ err:
 
 int
 mnt3_parse_dir_exports (rpcsvc_request_t *req, struct mount3_state *ms,
-                        char *subdir)
+                        char *path, gf_boolean_t send_reply)
 {
         char                    volname[1024] = {0, };
         struct mnt3_export      *exp = NULL;
         char                    *volname_ptr = NULL;
+        char                    *subdir = NULL;
         int                     ret = -ENOENT;
         struct nfs_state        *nfs = NULL;
 
-        if ((!ms) || (!subdir))
+        if ((!ms) || (!path))
                 return -1;
 
         volname_ptr = volname;
-        subdir = __volume_subdir (subdir, &volname_ptr);
-        if (!subdir)
-                goto err;
+        subdir = mnt3_get_volume_subdir (path, &volname_ptr);
 
-        exp = mnt3_mntpath_to_export (ms, volname, _gf_false);
-        if (!exp)
-                goto err;
+        /* first try to match the full export/subdir */
+        exp = mnt3_mntpath_to_export (ms, path, _gf_false);
+        if (!exp) {
+                gf_msg_trace (GF_MNT, 0, "Could not find exact matching export "
+                              "for path=%s", path);
+                /* if no exact match is found, look for a fallback */
+                exp = mnt3_mntpath_to_export (ms, volname, _gf_true);
+                if (!exp) {
+                        gf_msg_trace (GF_MNT, 0, "Could not find export for "
+                                      "volume %s", volname);
+                        goto err;
+                }
+        }
+        gf_msg_trace (GF_MNT, 0, "volume %s and export %s will be used for "
+                      "path %s", exp->vol->name, exp->expname, path);
 
         nfs = (struct nfs_state *)ms->nfsx->private;
         if (!nfs)
@@ -1799,7 +1824,7 @@ mnt3_parse_dir_exports (rpcsvc_request_t *req, struct mount3_state *ms,
                 goto err;
         }
 
-        ret = mnt3_resolve_subdir (req, ms, exp, subdir);
+        ret = mnt3_resolve_subdir (req, ms, exp, subdir, send_reply);
         if (ret < 0) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, ret, NFS_MSG_RESOLVE_SUBDIR_FAIL,
                         "Failed to resolve export dir: %s", subdir);
@@ -1842,7 +1867,7 @@ mnt3_find_export (rpcsvc_request_t *req, char *path, struct mnt3_export **e)
                 goto err;
         }
 
-        ret = mnt3_parse_dir_exports (req, ms, path);
+        ret = mnt3_parse_dir_exports (req, ms, path, _gf_true);
 
 err:
         return ret;
@@ -1897,7 +1922,7 @@ _mnt3_get_host_from_peer (const char *peer_addr)
         size_t host_len    = 0;
         char   *colon      = NULL;
 
-        colon = strchr (peer_addr, ':');
+        colon = strrchr (peer_addr, ':');
         if (!colon) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, 0, NFS_MSG_BAD_PEER,
                         "Bad peer %s", peer_addr);
@@ -1994,6 +2019,10 @@ _mnt3_authenticate_req (struct mount3_state *ms, rpcsvc_request_t *req,
         /* Check if the IP is authorized */
         auth_status_code = mnt3_auth_host (ms->auth_params, host_addr_ip,
                                            fh, pathdup, is_write_op, &expitem);
+
+        gf_msg_debug (GF_MNT, 0, "access from IP %s is %s", host_addr_ip,
+                      auth_status_code ? "denied" : "allowed");
+
         if (auth_status_code != 0) {
                 /* If not, check if the FQDN is authorized */
                 host_addr_fqdn = gf_rev_dns_lookup (host_addr_ip);
@@ -2001,6 +2030,11 @@ _mnt3_authenticate_req (struct mount3_state *ms, rpcsvc_request_t *req,
                                                    host_addr_fqdn,
                                                    fh, pathdup, is_write_op,
                                                    &expitem);
+
+                gf_msg_debug (GF_MNT, 0, "access from FQDN %s is %s",
+                              host_addr_fqdn, auth_status_code ? "denied" :
+                                                                 "allowed");
+
                 if (auth_status_code == 0)
                         auth_host = host_addr_fqdn;
         } else
@@ -2498,6 +2532,7 @@ mnt3svc_umnt (rpcsvc_request_t *req)
         if (colon) {
                 *colon= '\0';
         }
+        gf_path_strip_trailing_slashes (dirpath);
         gf_msg_debug (GF_MNT, 0, "dirpath: %s, hostname: %s", dirpath,
                       hostname);
         ret = mnt3svc_umount (ms, dirpath, hostname);
@@ -2534,8 +2569,6 @@ __mnt3svc_umountall (struct mount3_state *ms)
                 __mountdict_remove (ms, me); /* Remove from the mount dict */
                 GF_FREE (me);
         }
-
-        dict_unref (ms->mountdict);
 
         return 0;
 }
@@ -2632,27 +2665,75 @@ mnt3_xlchildren_to_exports (rpcsvc_t *svc, struct mount3_state *ms)
                 }
                 strcpy (elist->ex_dir, ent->expname);
 
-                addrstr = rpcsvc_volume_allowed (svc->options,
-                                                 ent->vol->name);
-                elist->ex_groups = GF_CALLOC (1, sizeof (struct groupnode),
-                                              gf_nfs_mt_groupnode);
-                if (!elist->ex_groups) {
-                        gf_msg (GF_MNT, GF_LOG_ERROR, ENOMEM,
-                                NFS_MSG_NO_MEMORY, "Memory allocation failed");
-                        goto free_list;
-                }
-                /*This check has to be done after checking
-                 * elist->ex_groups allocation check to avoid resource leak;
-                */
-                if (addrstr)
-                        addrstr = gf_strdup (addrstr);
-                else
-                        addrstr = gf_strdup ("No Access");
+                addrstr = rpcsvc_volume_allowed (svc->options, ent->vol->name);
+                if (addrstr) {
+                        /* create a groupnode per allowed client */
+                        char             *pos        = NULL;
+                        char             *addr       = NULL;
+                        char             *addrs      = NULL;
+                        struct groupnode *group      = NULL;
+                        struct groupnode *prev_group = NULL;
 
-                if (!addrstr) {
-                        goto free_list;
+                        /* strtok_r() modifies the string, dup it */
+                        addrs = gf_strdup (addrstr);
+                        if (!addrs)
+                                goto free_list;
+
+                        while (1) {
+                                /* only pass addrs on the 1st call */
+                                addr = strtok_r (group ? NULL : addrs, ",",
+                                                 &pos);
+                                if (addr == NULL)
+                                        /* no mode clients */
+                                        break;
+
+                                group = GF_CALLOC (1, sizeof (struct groupnode),
+                                                   gf_nfs_mt_groupnode);
+                                if (!group) {
+                                        gf_msg (GF_MNT, GF_LOG_ERROR, ENOMEM,
+                                                NFS_MSG_NO_MEMORY, "Memory "
+                                                "allocation failed");
+                                        GF_FREE (addrs);
+                                        goto free_list;
+                                }
+
+                                group->gr_name = gf_strdup (addr);
+                                if (!group->gr_name) {
+                                        gf_msg (GF_MNT, GF_LOG_ERROR, ENOMEM,
+                                                NFS_MSG_NO_MEMORY, "Memory "
+                                                "allocation failed");
+                                        GF_FREE (group);
+                                        GF_FREE (addrs);
+                                        goto free_list;
+                                }
+
+                                /* chain the groups together */
+                                if (!elist->ex_groups)
+                                        elist->ex_groups = group;
+                                else
+                                        prev_group->gr_next = group;
+                                prev_group = group;
+                        }
+
+                        GF_FREE (addrs);
+                } else {
+                        elist->ex_groups = GF_CALLOC (1,
+                                                      sizeof (struct groupnode),
+                                                      gf_nfs_mt_groupnode);
+                        if (!elist->ex_groups) {
+                                gf_msg (GF_MNT, GF_LOG_ERROR, ENOMEM,
+                                        NFS_MSG_NO_MEMORY, "Memory allocation "
+                                        "failed");
+                                goto free_list;
+                        }
+
+                        addrstr = gf_strdup ("No Access");
+                        if (!addrstr)
+                                goto free_list;
+
+                        elist->ex_groups->gr_name = addrstr;
                 }
-                elist->ex_groups->gr_name = addrstr;
+
                 if (prev) {
                         prev->ex_next = elist;
                         prev = elist;
@@ -2763,7 +2844,21 @@ __mnt3udp_get_export_subdir_inode (struct svc_req *req, char *subdir,
 
         /* AUTH check for subdir i.e. nfs.export-dir */
         if (exp->hostspec) {
-                struct sockaddr_in *sin = svc_getcaller (req->rq_xprt);
+                struct sockaddr_in *sin = NULL;
+
+#if !defined(_TIRPC_SVC_H)
+                sin = svc_getcaller (req->rq_xprt);
+#else
+                sin = (struct sockaddr_in *)svc_getcaller (req->rq_xprt);
+                /* TIRPC's svc_getcaller() returns a pointer to a
+                 * sockaddr_in6, even though it might actually be an
+                 * IPv4 address. It ought return a struct sockaddr and
+                 * make the caller upcast it to the proper address family.
+                 */
+#endif
+                /* And let's make sure that it's actually an IPv4 address. */
+                GF_ASSERT (sin->sin_family == AF_INET);
+
                 ret = mnt3_verify_auth (sin, exp);
                 if (ret) {
                         gf_msg (GF_MNT, GF_LOG_ERROR, EACCES,
@@ -2859,7 +2954,7 @@ nfs3_rootfh (struct svc_req *req, xlator_t *nfsx,
          * 3. If a subdir is exported using nfs.export-dir,
          *      then the mount type would be MNT3_EXPTYPE_DIR,
          *      so make sure to find the proper path to be
-         *      resolved using __volume_subdir()
+         *      resolved using mnt3_get_volume_subdir()
          * 3. Make sure subdir export is allowed.
          */
         ms = __mnt3udp_get_mstate(nfsx);
@@ -2882,7 +2977,7 @@ nfs3_rootfh (struct svc_req *req, xlator_t *nfsx,
                         return NULL;
                 }
 
-                path = __volume_subdir (path, &volptr);
+                path = mnt3_get_volume_subdir (path, &volptr);
                 if (exp == NULL)
                         exp = mnt3_mntpath_to_export (ms, volname , _gf_false);
         }
@@ -3882,7 +3977,13 @@ mnt3svc_deinit (xlator_t *nfsx)
                 mnt3_auth_params_deinit (mstate->auth_params);
 
         /* Unmount everything and clear mountdict */
-        mnt3svc_umountall (mstate);
+        LOCK (&mstate->mountlock);
+        {
+                __mnt3svc_umountall (mstate);
+                dict_unref (mstate->mountdict);
+        }
+        UNLOCK (&mstate->mountlock);
+
 }
 
 rpcsvc_program_t *
@@ -3929,10 +4030,11 @@ mnt3svc_init (xlator_t *nfsx)
                 }
 
                 mstate->stop_refresh = _gf_false; /* Allow thread to run */
-                pthread_create (&mstate->auth_refresh_thread, NULL,
-                                _mnt3_auth_param_refresh_thread, mstate);
+                gf_thread_create (&mstate->auth_refresh_thread, NULL,
+                                  _mnt3_auth_param_refresh_thread, mstate,
+                                  "nfsauth");
         } else
-                gf_msg (GF_MNT, GF_LOG_WARNING, 0, NFS_MSG_EXP_AUTH_DISABLED,
+                gf_msg (GF_MNT, GF_LOG_INFO, 0, NFS_MSG_EXP_AUTH_DISABLED,
                         "Exports auth has been disabled!");
 
         mnt3prog.private = mstate;
@@ -3979,7 +4081,8 @@ mnt3svc_init (xlator_t *nfsx)
         }
 
         if (nfs->mount_udp) {
-                pthread_create (&udp_thread, NULL, mount3udp_thread, nfsx);
+                gf_thread_create (&udp_thread, NULL, mount3udp_thread, nfsx,
+                                  "nfsudp");
         }
         return &mnt3prog;
 err:

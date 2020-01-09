@@ -1,0 +1,125 @@
+From 6683f3c2702f635a95623c427f343385a1ad8c63 Mon Sep 17 00:00:00 2001
+From: jiffin tony thottan <jthottan@redhat.com>
+Date: Mon, 7 Dec 2015 14:38:54 +0530
+Subject: [PATCH 55/74] glusterd/ganesha : throw proper error for "gluster
+ nfs-ganesha disable"
+
+For first time or if "gluster nfs-ganesha enable" fails the global option
+"nfs-ganesha" won't be stored in glusterd's dictionary. In both cases the
+"gluster nfs-ganesha disable" throws following error :
+"nfs-ganesha: failed: nfs-ganesha is already (null)d."
+
+Also this patch provides the missing prompt for nfs-ganesha disable in 3.10
+
+Change-Id: I7c9fd6dabedc0cfb14c5190b3554bc63a6bc0340
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://review.gluster.org/16791
+Smoke: Gluster Build System <jenkins@build.gluster.org>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+Reviewed-by: soumya k <skoduri@redhat.com>
+Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+---
+ cli/src/cli-cmd-parser.c                     | 30 ++++++++++++++++++----------
+ xlators/mgmt/glusterd/src/glusterd-ganesha.c | 28 +++++++++-----------------
+ 2 files changed, 28 insertions(+), 30 deletions(-)
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index a4c601b..a35fc74 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -897,18 +897,26 @@ cli_cmd_ganesha_parse (struct cli_state *state,
+                 goto out;
+         }
+ 
+-        question = "Enabling NFS-Ganesha requires Gluster-NFS to be"
+-                   " disabled across the trusted pool. Do you "
+-                   "still want to continue?\n";
+-
+         if (strcmp (value, "enable") == 0) {
+-                answer = cli_cmd_get_confirmation (state, question);
+-                if (GF_ANSWER_NO == answer) {
+-                        gf_log ("cli", GF_LOG_ERROR, "Global operation "
+-                                "cancelled, exiting");
+-                        ret = -1;
+-                        goto out;
+-                }
++                question = "Enabling NFS-Ganesha requires Gluster-NFS to be "
++                           "disabled across the trusted pool. Do you "
++                           "still want to continue?\n";
++
++        } else if (strcmp (value, "disable") == 0) {
++                question = "Disabling NFS-Ganesha will tear down the entire "
++                           "ganesha cluster across the trusted pool. Do you "
++                           "still want to continue?\n";
++        } else {
++                ret = -1;
++                goto out;
++        }
++
++        answer = cli_cmd_get_confirmation (state, question);
++        if (GF_ANSWER_NO == answer) {
++                gf_log ("cli", GF_LOG_ERROR, "Global operation "
++                        "cancelled, exiting");
++                ret = -1;
++                goto out;
+         }
+         cli_out ("This will take a few minutes to complete. Please wait ..");
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-ganesha.c b/xlators/mgmt/glusterd/src/glusterd-ganesha.c
+index e176df9..5c582cd 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-ganesha.c
++++ b/xlators/mgmt/glusterd/src/glusterd-ganesha.c
+@@ -258,8 +258,7 @@ int
+ glusterd_op_stage_set_ganesha (dict_t *dict, char **op_errstr)
+ {
+         int                             ret                     = -1;
+-        int                             value                   = -1;
+-        gf_boolean_t                    option                  = _gf_false;
++        char                            *value                  = NULL;
+         char                            *str                    = NULL;
+         glusterd_conf_t                 *priv                   = NULL;
+         xlator_t                        *this                   = NULL;
+@@ -270,8 +269,8 @@ glusterd_op_stage_set_ganesha (dict_t *dict, char **op_errstr)
+         priv = this->private;
+         GF_ASSERT (priv);
+ 
+-        value = dict_get_str_boolean (dict, "value", _gf_false);
+-        if (value == -1) {
++        ret = dict_get_str (dict, "value", &value);
++        if (value == NULL) {
+                 gf_msg (this->name, GF_LOG_ERROR, errno,
+                         GD_MSG_DICT_GET_FAILED,
+                         "value not present.");
+@@ -280,22 +279,13 @@ glusterd_op_stage_set_ganesha (dict_t *dict, char **op_errstr)
+         /* This dict_get will fail if the user had never set the key before */
+         /*Ignoring the ret value and proceeding */
+         ret = dict_get_str (priv->opts, GLUSTERD_STORE_KEY_GANESHA_GLOBAL, &str);
+-        if (ret == -1) {
+-                gf_msg (this->name, GF_LOG_WARNING, errno,
+-                        GD_MSG_DICT_GET_FAILED, "Global dict not present.");
+-                ret = 0;
+-                goto out;
++        /* Check if the feature is already enabled/disable, fail in that case */
++        if (str ? strcmp (value, str) == 0 : strcmp (value, "disable") == 0) {
++                gf_asprintf (op_errstr, "nfs-ganesha is already %sd.", value);
++                 ret = -1;
++                 goto out;
+         }
+-        /* Validity of the value is already checked */
+-        ret = gf_string2boolean (str, &option);
+-        /* Check if the feature is already enabled, fail in that case */
+-        if (value == option) {
+-                gf_asprintf (op_errstr, "nfs-ganesha is already %sd.", str);
+-                ret = -1;
+-                goto out;
+-        }
+-
+-        if (value) {
++        if (strcmp (value, "enable") == 0) {
+                 ret =  start_ganesha (op_errstr);
+                 if (ret) {
+                         gf_msg (THIS->name, GF_LOG_ERROR, 0,
+-- 
+1.8.3.1
+

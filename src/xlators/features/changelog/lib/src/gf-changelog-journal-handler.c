@@ -11,6 +11,8 @@
 #include "compat-uuid.h"
 #include "globals.h"
 #include "glusterfs.h"
+#include "syscall.h"
+#include "compat-errno.h"
 
 #include "gf-changelog-helpers.h"
 
@@ -19,6 +21,7 @@
 #include "changelog-mem-types.h"
 
 #include "gf-changelog-journal.h"
+#include "changelog-lib-messages.h"
 
 extern int byebye;
 
@@ -167,8 +170,9 @@ gf_changelog_parse_binary (xlator_t *this,
 
         start = mmap (NULL, nleft, PROT_READ, MAP_PRIVATE, from_fd, 0);
         if (start == MAP_FAILED) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "mmap() error (reason: %s)", strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_MMAP_FAILED,
+                        "mmap() error");
                 goto out;
         }
 
@@ -223,10 +227,10 @@ gf_changelog_parse_binary (xlator_t *this,
                 GF_CHANGELOG_FILL_BUFFER ("\n", ascii, off, 1);
 
                 if (gf_changelog_write (to_fd, ascii, off) != off) {
-                        gf_log (this->name, GF_LOG_ERROR,
+                        gf_msg (this->name, GF_LOG_ERROR, errno,
+                                CHANGELOG_LIB_MSG_ASCII_ERROR,
                                 "processing binary changelog failed due to "
-                                " error in writing ascii change (reason: %s)",
-                                strerror (errno));
+                                " error in writing ascii change");
                         break;
                 }
 
@@ -237,8 +241,9 @@ gf_changelog_parse_binary (xlator_t *this,
                 ret = 0;
 
         if (munmap (start, stbuf->st_size))
-                gf_log (this->name, GF_LOG_ERROR,
-                        "munmap() error (reason: %s)", strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_MUNMAP_FAILED,
+                        "munmap() error");
  out:
         return ret;
 }
@@ -274,8 +279,9 @@ gf_changelog_parse_ascii (xlator_t *this,
 
         start = mmap (NULL, nleft, PROT_READ, MAP_PRIVATE, from_fd, 0);
         if (start == MAP_FAILED) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "mmap() error (reason: %s)", strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_MMAP_FAILED,
+                        "mmap() error");
                 goto out;
         }
 
@@ -386,8 +392,10 @@ gf_changelog_parse_ascii (xlator_t *this,
                                         break;
                                 }
 
-                                gf_rfc3986_encode ((unsigned char *) ptr,
-                                                   eptr, jnl->rfc3986);
+                                gf_rfc3986_encode_space_newline (
+                                                   (unsigned char *) ptr,
+                                                   eptr,
+                                                   jnl->rfc3986_space_newline);
                                 FILL_AND_MOVE (eptr, ascii, off,
                                                mover, nleft, len);
                                 free (eptr);
@@ -404,10 +412,10 @@ gf_changelog_parse_ascii (xlator_t *this,
                 GF_CHANGELOG_FILL_BUFFER ("\n", ascii, off, 1);
 
                 if (gf_changelog_write (to_fd, ascii, off) != off) {
-                        gf_log (this->name, GF_LOG_ERROR,
+                        gf_msg (this->name, GF_LOG_ERROR, errno,
+                                CHANGELOG_LIB_MSG_ASCII_ERROR,
                                 "processing ascii changelog failed due to "
-                                " error in writing change (reason: %s)",
-                                strerror (errno));
+                                " error in writing change");
                         break;
                 }
 
@@ -419,8 +427,9 @@ gf_changelog_parse_ascii (xlator_t *this,
                 ret = 0;
 
         if (munmap (start, stbuf->st_size))
-                gf_log (this->name, GF_LOG_ERROR,
-                        "munmap() error (reason: %s)", strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_MUNMAP_FAILED,
+                        "munmap() error");
 
  out:
         return ret;
@@ -434,13 +443,14 @@ gf_changelog_copy (xlator_t *this, int from_fd, int to_fd)
         char   buffer[COPY_BUFSIZE+1] = {0,};
 
         while (1) {
-                size = read (from_fd, buffer, COPY_BUFSIZE);
+                size = sys_read (from_fd, buffer, COPY_BUFSIZE);
                 if (size <= 0)
                         break;
 
                 if (gf_changelog_write (to_fd,
                                         buffer, size) != size) {
-                        gf_log (this->name, GF_LOG_ERROR,
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                CHANGELOG_LIB_MSG_COPY_FROM_BUFFER_FAILED,
                                 "error processing ascii changlog");
                         size = -1;
                         break;
@@ -493,7 +503,7 @@ gf_changelog_decode (xlator_t *this, gf_changelog_journal_t *jnl,
         /**
          * start processing after the header
          */
-        lseek (from_fd, elen, SEEK_SET);
+        sys_lseek (from_fd, elen, SEEK_SET);
 
         switch (encoding) {
         case CHANGELOG_ENCODE_BINARY:
@@ -532,7 +542,7 @@ gf_changelog_publish (xlator_t *this,
                          jnl->jnl_current_dir, basename (from_path));
 
         /* handle zerob file that wont exist in current */
-        ret = stat (to_path, &stbuf);
+        ret = sys_stat (to_path, &stbuf);
         if (ret) {
                 if (errno == ENOENT)
                         ret = 0;
@@ -542,11 +552,12 @@ gf_changelog_publish (xlator_t *this,
         (void) snprintf (dest, PATH_MAX, "%s%s",
                          jnl->jnl_processing_dir, basename (from_path));
 
-        ret = rename (to_path, dest);
+        ret = sys_rename (to_path, dest);
         if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "error moving %s to processing dir"
-                        " (reason: %s)", to_path, strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_RENAME_FAILED,
+                        "error moving %s to processing dir",
+                        to_path);
         }
 
 out:
@@ -566,19 +577,21 @@ gf_changelog_consume (xlator_t *this,
         char dest[PATH_MAX]    = {0,};
         char to_path[PATH_MAX] = {0,};
 
-        ret = stat (from_path, &stbuf);
+        ret = sys_stat (from_path, &stbuf);
         if (ret || !S_ISREG(stbuf.st_mode)) {
                 ret = -1;
-                gf_log (this->name, GF_LOG_ERROR,
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_STAT_FAILED,
                         "stat failed on changelog file: %s", from_path);
                 goto out;
         }
 
         fd1 = open (from_path, O_RDONLY);
         if (fd1 < 0) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "cannot open changelog file: %s (reason: %s)",
-                        from_path, strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_OPEN_FAILED,
+                        "cannot open changelog file: %s",
+                        from_path);
                 goto out;
         }
 
@@ -590,42 +603,44 @@ gf_changelog_consume (xlator_t *this,
         fd2 = open (to_path, O_CREAT | O_TRUNC | O_RDWR,
                     S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
         if (fd2 < 0) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "cannot create ascii changelog file %s (reason %s)",
-                        to_path, strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_OPEN_FAILED,
+                        "cannot create ascii changelog file %s",
+                        to_path);
                 goto close_fd;
         } else {
                 ret = gf_changelog_decode (this, jnl, fd1,
                                            fd2, &stbuf, &zerob);
 
-                close (fd2);
+                sys_close (fd2);
 
                 if (!ret) {
                         /* move it to processing on a successful
                            decode */
                         if (no_publish == _gf_true)
                                 goto close_fd;
-                        ret = rename (to_path, dest);
+                        ret = sys_rename (to_path, dest);
                         if (ret)
-                                gf_log (this->name, GF_LOG_ERROR,
-                                        "error moving %s to processing dir"
-                                        " (reason: %s)", to_path,
-                                        strerror (errno));
+                                gf_msg (this->name, GF_LOG_ERROR, errno,
+                                        CHANGELOG_LIB_MSG_RENAME_FAILED,
+                                        "error moving %s to processing dir",
+                                        to_path);
                 }
 
                 /* remove it from .current if it's an empty file */
                 if (zerob) {
                         /* zerob changelogs must be unlinked */
-                        ret = unlink (to_path);
+                        ret = sys_unlink (to_path);
                         if (ret)
-                                gf_log (this->name, GF_LOG_ERROR,
-                                        "could not unlink %s (reason: %s)",
-                                        to_path, strerror (errno));
+                                gf_msg (this->name, GF_LOG_ERROR, errno,
+                                        CHANGELOG_LIB_MSG_UNLINK_FAILED,
+                                        "could not unlink %s",
+                                        to_path);
                 }
         }
 
  close_fd:
-        close (fd1);
+        sys_close (fd1);
 
  out:
         return ret;
@@ -634,7 +649,6 @@ gf_changelog_consume (xlator_t *this,
 void *
 gf_changelog_process (void *data)
 {
-        int ret = 0;
         xlator_t *this = NULL;
         gf_changelog_journal_t *jnl = NULL;
         gf_changelog_entry_t *entry = NULL;
@@ -662,8 +676,8 @@ gf_changelog_process (void *data)
                 pthread_mutex_unlock (&jnl_proc->lock);
 
                 if (entry) {
-                        ret = gf_changelog_consume (this, jnl,
-                                                    entry->path, _gf_false);
+                        (void) gf_changelog_consume (this, jnl,
+                                                     entry->path, _gf_false);
                         GF_FREE (entry);
                 }
         }
@@ -702,7 +716,6 @@ void
 gf_changelog_handle_journal (void *xl, char *brick,
                              void *cbkdata, changelog_event_t *event)
 {
-        int                       ret      = 0;
         gf_changelog_journal_t   *jnl      = NULL;
         gf_changelog_processor_t *jnl_proc = NULL;
 
@@ -757,7 +770,8 @@ gf_changelog_cleanup_processor (gf_changelog_journal_t *jnl)
 
         ret = gf_thread_cleanup (this, jnl_proc->processor);
         if (ret != 0) {
-                gf_log (this->name, GF_LOG_ERROR,
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        CHANGELOG_LIB_MSG_CLEANUP_ERROR,
                         "failed to cleanup processor thread");
                 goto error_return;
         }
@@ -793,8 +807,8 @@ gf_changelog_init_processor (gf_changelog_journal_t *jnl)
         jnl_proc->waiting = _gf_false;
         jnl->jnl_proc = jnl_proc;
 
-        ret = pthread_create (&jnl_proc->processor,
-                              NULL, gf_changelog_process, jnl);
+        ret = gf_thread_create (&jnl_proc->processor,
+                                NULL, gf_changelog_process, jnl, "clogproc");
         if (ret != 0) {
                 jnl->jnl_proc = NULL;
                 goto cleanup_cond;
@@ -817,10 +831,10 @@ gf_changelog_cleanup_fds (gf_changelog_journal_t *jnl)
 {
         /* tracker fd */
         if (jnl->jnl_fd != -1)
-                close (jnl->jnl_fd);
+                sys_close (jnl->jnl_fd);
         /* processing dir */
         if (jnl->jnl_dir)
-                closedir (jnl->jnl_dir);
+                sys_closedir (jnl->jnl_dir);
 
         if (jnl->jnl_working_dir)
                 free (jnl->jnl_working_dir); /* allocated by realpath */
@@ -840,9 +854,10 @@ gf_changelog_open_dirs (xlator_t *this, gf_changelog_journal_t *jnl)
                          jnl->jnl_working_dir);
         ret = recursive_rmdir (jnl->jnl_current_dir);
         if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "Failed to rmdir: %s, err: %s",
-                        jnl->jnl_current_dir, strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_FAILED_TO_RMDIR,
+                        "Failed to rmdir: %s",
+                        jnl->jnl_current_dir);
                 goto out;
         }
         ret = mkdir_p (jnl->jnl_current_dir, 0600, _gf_false);
@@ -863,9 +878,10 @@ gf_changelog_open_dirs (xlator_t *this, gf_changelog_journal_t *jnl)
                          jnl->jnl_working_dir);
         ret = recursive_rmdir (jnl->jnl_processing_dir);
         if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "Failed to rmdir: %s, err: %s",
-                        jnl->jnl_processing_dir, strerror (errno));
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_FAILED_TO_RMDIR,
+                        "Failed to rmdir: %s",
+                        jnl->jnl_processing_dir);
                 goto out;
         }
 
@@ -873,10 +889,11 @@ gf_changelog_open_dirs (xlator_t *this, gf_changelog_journal_t *jnl)
         if (ret)
                 goto out;
 
-        dir = opendir (jnl->jnl_processing_dir);
+        dir = sys_opendir (jnl->jnl_processing_dir);
         if (!dir) {
-                gf_log ("", GF_LOG_ERROR,
-                        "opendir() error [reason: %s]", strerror (errno));
+                gf_msg ("", GF_LOG_ERROR, errno,
+                        CHANGELOG_LIB_MSG_OPENDIR_ERROR,
+                        "opendir() error");
                 goto out;
         }
 
@@ -888,7 +905,7 @@ gf_changelog_open_dirs (xlator_t *this, gf_changelog_journal_t *jnl)
         tracker_fd = open (tracker_path, O_CREAT | O_APPEND | O_RDWR,
                            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
         if (tracker_fd < 0) {
-                closedir (jnl->jnl_dir);
+                sys_closedir (jnl->jnl_dir);
                 ret = -1;
                 goto out;
         }
@@ -930,7 +947,8 @@ gf_changelog_init_history (xlator_t *this,
 
         ret = gf_changelog_open_dirs (this, jnl->hist_jnl);
         if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        CHANGELOG_LIB_MSG_OPENDIR_ERROR,
                         "could not create entries in history scratch dir");
                 goto dealloc_hist;
         }
@@ -939,9 +957,8 @@ gf_changelog_init_history (xlator_t *this,
         jnl->hist_jnl->jnl_brickpath[PATH_MAX-1] = 0;
 
         for (i = 0; i < 256; i++) {
-                jnl->hist_jnl->rfc3986[i] =
-                        (isalnum(i) || i == '~' ||
-                        i == '-' || i == '.' || i == '_') ? i : 0;
+                jnl->hist_jnl->rfc3986_space_newline[i] =
+                        (i == ' ' || i == '\n' || i == '%') ? 0 : i;
         }
 
         return 0;
@@ -956,11 +973,8 @@ gf_changelog_init_history (xlator_t *this,
 void
 gf_changelog_journal_fini (void *xl, char *brick, void *data)
 {
-        int ret = 0;
-        xlator_t *this = NULL;
         gf_changelog_journal_t *jnl = NULL;
 
-        this = xl;
         jnl = data;
 
         gf_changelog_cleanup_processor (jnl);
@@ -990,7 +1004,7 @@ gf_changelog_journal_init (void *xl, struct gf_brick_spec *brick)
         if (!jnl)
                 goto error_return;
 
-        if (stat (scratch_dir, &buf) && errno == ENOENT) {
+        if (sys_stat (scratch_dir, &buf) && errno == ENOENT) {
                 ret = mkdir_p (scratch_dir, 0600, _gf_true);
                 if (ret)
                         goto dealloc_private;
@@ -1002,7 +1016,8 @@ gf_changelog_journal_init (void *xl, struct gf_brick_spec *brick)
 
         ret = gf_changelog_open_dirs (this, jnl);
         if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        CHANGELOG_LIB_MSG_OPENDIR_ERROR,
                         "could not create entries in scratch dir");
                 goto dealloc_private;
         }
@@ -1012,9 +1027,8 @@ gf_changelog_journal_init (void *xl, struct gf_brick_spec *brick)
 
         /* RFC 3986 {de,en}coding */
         for (i = 0; i < 256; i++) {
-                jnl->rfc3986[i] =
-                        (isalnum(i) || i == '~' ||
-                        i == '-' || i == '.' || i == '_') ? i : 0;
+                jnl->rfc3986_space_newline[i] =
+                        (i == ' ' || i == '\n' || i == '%') ? 0 : i;
         }
 
         ret = gf_changelog_init_history (this, jnl, brick->brick_path);

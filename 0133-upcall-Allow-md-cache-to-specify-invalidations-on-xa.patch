@@ -1,0 +1,88 @@
+From 897f0604f34760afe585a28d9787c6ff39d3addc Mon Sep 17 00:00:00 2001
+From: Poornima G <pgurusid@redhat.com>
+Date: Tue, 9 Jan 2018 10:32:16 +0530
+Subject: [PATCH 133/139] upcall: Allow md-cache to specify invalidations on
+ xattr with wildcard
+
+Currently, md-cache sends a list of xattrs, it is inttrested in recieving
+invalidations for. But, it cannot specify any wildcard in the xattr names
+Eg: user.* - invalidate on updating any xattr with user. prefix.
+
+This patch, enable upcall to honor wildcard in the xattr key names
+
+Updates: #297
+
+> Signed-off-by: Poornima G <pgurusid@redhat.com>
+> Change-Id: I98caf0ed72f11ef10770bf2067d4428880e0a03a
+> Reviewed-on: https://review.gluster.org/19171
+> Smoke: Gluster Build System <jenkins@build.gluster.org>
+> Reviewed-by: Amar Tumballi
+> Tested-by: Poornima G <pgurusid@redhat.com>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.org>
+> (cherry picked from commit efc30e60e233164bd4fe7fc903a7c5f718b0448b)
+
+Change-Id: I98caf0ed72f11ef10770bf2067d4428880e0a03a
+BUG: 1446125
+Signed-off-by: Poornima G <pgurusid@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/128481
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ tests/bugs/md-cache/bug-1211863.t             |  0
+ xlators/features/upcall/src/upcall-internal.c | 25 +++++++++++++++++++++----
+ 2 files changed, 21 insertions(+), 4 deletions(-)
+ mode change 100644 => 100755 tests/bugs/md-cache/bug-1211863.t
+
+diff --git a/tests/bugs/md-cache/bug-1211863.t b/tests/bugs/md-cache/bug-1211863.t
+old mode 100644
+new mode 100755
+diff --git a/xlators/features/upcall/src/upcall-internal.c b/xlators/features/upcall/src/upcall-internal.c
+index 8b15dfc..7813940 100644
+--- a/xlators/features/upcall/src/upcall-internal.c
++++ b/xlators/features/upcall/src/upcall-internal.c
+@@ -466,11 +466,29 @@ up_filter_afr_xattr (dict_t *xattrs, char *xattr, data_t *v)
+ }
+ 
+ 
+-static int
++static gf_boolean_t
++up_key_is_regd_xattr (dict_t *regd_xattrs, char *regd_xattr, data_t *v,
++                      void *xattr)
++{
++        int ret = _gf_false;
++        char *key = xattr;
++
++        if (fnmatch (regd_xattr, key, 0) == 0)
++                ret = _gf_true;
++
++        return ret;
++}
++
++
++int
+ up_filter_unregd_xattr (dict_t *xattrs, char *xattr, data_t *v,
+                         void *regd_xattrs)
+ {
+-        if (dict_get ((dict_t *)regd_xattrs, xattr) == NULL) {
++        int ret = 0;
++
++        ret = dict_foreach_match (regd_xattrs, up_key_is_regd_xattr, xattr,
++                                  dict_null_foreach_fn, NULL);
++        if (ret == 0) {
+                 /* xattr was not found in the registered xattr, hence do not
+                  * send notification for its change
+                  */
+@@ -488,9 +506,8 @@ up_filter_xattr (dict_t *xattr, dict_t *regd_xattrs)
+ {
+         int ret = 0;
+ 
+-        /* Remove the xattrs from the dict, if they are not registered for
+-         * cache invalidation */
+         ret = dict_foreach (xattr, up_filter_unregd_xattr, regd_xattrs);
++
+         return ret;
+ }
+ 
+-- 
+1.8.3.1
+

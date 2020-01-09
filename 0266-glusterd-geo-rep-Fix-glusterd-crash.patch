@@ -1,0 +1,42 @@
+From 7a2bf65414368999295993cdbbee4060ca495951 Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Mon, 7 May 2018 06:35:25 -0400
+Subject: [PATCH 266/271] glusterd/geo-rep: Fix glusterd crash
+
+Using strdump instead of gf_strdup crashes
+during free if mempool is being used.
+gf_free checks the magic number in the
+header which will not be taken care if
+strdup is used.
+
+Uptream reference:
+   > fixes: bz#1576392
+   > Change-Id: Iab36496554b838a036af9d863e3f5fd07fd9780e
+   > Patch: https://review.gluster.org/19993
+
+BUG: 1570586
+Change-Id: Iab36496554b838a036af9d863e3f5fd07fd9780e
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138670
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-geo-rep.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+index dff8065..a1251ae 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
++++ b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+@@ -5637,7 +5637,7 @@ glusterd_op_gsync_set (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                                 GD_MSG_GSYNCD_OP_SET_FAILED, GEOREP" is not "
+                                 "set up for %s(master) and %s(slave)",
+                                 volname, slave);
+-                        *op_errstr = strdup (GEOREP" is not set up");
++                        *op_errstr = gf_strdup (GEOREP" is not set up");
+                         goto out;
+                 }
+ 
+-- 
+1.8.3.1
+

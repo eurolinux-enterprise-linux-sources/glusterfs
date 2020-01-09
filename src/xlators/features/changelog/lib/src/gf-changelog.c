@@ -34,6 +34,7 @@
 /* from the changelog translator */
 #include "changelog-misc.h"
 #include "changelog-mem-types.h"
+#include "changelog-lib-messages.h"
 
 /**
  * Global singleton xlator pointer for the library, initialized
@@ -44,7 +45,7 @@
  */
 xlator_t *master = NULL;
 
-static
+static inline
 gf_private_t *gf_changelog_alloc_priv ()
 {
         int ret = 0;
@@ -144,7 +145,7 @@ gf_changelog_ctx_defaults_init (glusterfs_ctx_t *ctx)
         LOCK_INIT (&pool->lock);
         ctx->pool = pool;
 
-        pthread_mutex_init (&(ctx->lock), NULL);
+        LOCK_INIT (&ctx->lock);
 
         cmd_args = &ctx->cmd_args;
 
@@ -172,6 +173,8 @@ gf_changelog_cleanup_this (xlator_t *this)
 
         this->private = NULL;
         this->ctx = NULL;
+
+        mem_pools_fini ();
 }
 
 static int
@@ -205,7 +208,13 @@ gf_changelog_init_context ()
 static int
 gf_changelog_init_master ()
 {
-        return gf_changelog_init_context ();
+        int              ret = 0;
+
+        mem_pools_init_early ();
+        ret = gf_changelog_init_context ();
+        mem_pools_init_late ();
+
+        return ret;
 }
 
 /* TODO: cleanup clnt/svc on failure */
@@ -247,7 +256,8 @@ gf_changelog_setup_rpc (xlator_t *this,
          */
         ret = gf_changelog_invoke_rpc (this, entry, proc);
         if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        CHANGELOG_LIB_MSG_INVOKE_RPC_FAILED,
                         "Could not initiate probe RPC, bailing out!!!");
                 goto error_return;
         }
@@ -265,10 +275,10 @@ gf_cleanup_event (xlator_t *this, struct gf_event_list *ev)
 
         ret = gf_thread_cleanup (this, ev->invoker);
         if (ret) {
-                gf_log (this->name, GF_LOG_WARNING,
-                        "cannot cleanup callback invoker thread "
-                        " [reason: %s]. Not freeing resources",
-                        strerror (-ret));
+                gf_msg (this->name, GF_LOG_WARNING, -ret,
+                        CHANGELOG_LIB_MSG_CLEANUP_ERROR,
+                        "cannot cleanup callback invoker thread."
+                        " Not freeing resources");
                 return -1;
         }
 
@@ -305,7 +315,7 @@ gf_init_event (gf_changelog_t *entry)
         }
 
         ret = gf_thread_create (&ev->invoker, NULL,
-                                gf_changelog_callback_invoker, ev);
+                                gf_changelog_callback_invoker, ev, "clogcbki");
         if (ret != 0) {
                 entry->pickevent = NULL;
                 entry->queueevent = NULL;
@@ -399,7 +409,7 @@ gf_setup_brick_connection (xlator_t *this,
  cleanup_event:
         (void) gf_cleanup_event (this, &entry->event);
  free_entry:
-        gf_log (this->name, GF_LOG_DEBUG, "freeing entry %p", entry);
+        gf_msg_debug (this->name, 0, "freeing entry %p", entry);
         list_del (&entry->list); /* FIXME: kludge for now */
         GF_FREE (entry);
  error_return:
@@ -460,10 +470,12 @@ gf_changelog_set_master (xlator_t *master, void *xl)
         if (!xl) {
                 /* poller thread */
                 ret = gf_thread_create (&priv->poller,
-                                        NULL, changelog_rpc_poller, THIS);
+                                        NULL, changelog_rpc_poller, THIS,
+                                        "clogpoll");
                 if (ret != 0) {
                         GF_FREE (priv);
-                        gf_log (master->name, GF_LOG_ERROR,
+                        gf_msg (master->name, GF_LOG_ERROR, 0,
+                                CHANGELOG_LIB_MSG_THREAD_CREATION_FAILED,
                                 "failed to spawn poller thread");
                         goto restore_this;
                 }
@@ -500,7 +512,8 @@ gf_changelog_init (void *xl)
 
         priv = master->private;
         ret = gf_thread_create (&priv->connectionjanitor, NULL,
-                                gf_changelog_connection_janitor, master);
+                                gf_changelog_connection_janitor, master,
+                                "clogjan");
         if (ret != 0) {
                 /* TODO: cleanup priv, mutex (poller thread for !xl) */
                 goto dealloc_name;
@@ -541,13 +554,15 @@ gf_changelog_register_generic (struct gf_brick_spec *bricks, int count,
 
         brick = bricks;
         while (count--) {
-                gf_log (this->name, GF_LOG_INFO,
+                gf_msg (this->name, GF_LOG_INFO, 0,
+                        CHANGELOG_LIB_MSG_NOTIFY_REGISTER_INFO,
                         "Registering brick: %s [notify filter: %d]",
                         brick->brick_path, brick->filter);
 
                 ret = gf_changelog_register_brick (this, brick, need_order, xl);
                 if (ret != 0) {
-                        gf_log (this->name, GF_LOG_ERROR,
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                CHANGELOG_LIB_MSG_NOTIFY_REGISTER_FAILED,
                                 "Error registering with changelog xlator");
                         break;
                 }

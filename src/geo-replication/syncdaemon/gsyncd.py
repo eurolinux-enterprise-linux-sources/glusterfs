@@ -27,13 +27,21 @@ from ipaddr import IPAddress, IPNetwork
 
 from gconf import gconf
 from syncdutils import FreeObject, norm, grabpidfile, finalize
-from syncdutils import log_raise_exception, privileged
+from syncdutils import log_raise_exception, privileged, boolify
 from syncdutils import GsyncdError, select, set_term_handler
-from configinterface import GConffile, upgrade_config_file
+from configinterface import GConffile, upgrade_config_file, TMPL_CONFIG_FILE
 import resource
 from monitor import monitor
+import xml.etree.ElementTree as XET
+from subprocess import PIPE
+import subprocess
 from changelogagent import agent, Changelog
-from gsyncdstatus import set_monitor_status, GeorepStatus
+from gsyncdstatus import set_monitor_status, GeorepStatus, human_time_utc
+from libcxattr import Xattr
+import struct
+from syncdutils import get_master_and_slave_data_from_args, lf
+
+ParseError = XET.ParseError if hasattr(XET, 'ParseError') else SyntaxError
 
 
 class GLogger(Logger):
@@ -110,6 +118,42 @@ class GLogger(Logger):
         lkw.update({'saved_label': kw.get('label')})
         gconf.log_metadata = lkw
         gconf.log_exit = True
+
+
+# Given slave host and its volume name, get corresponding volume uuid
+def slave_vol_uuid_get(host, vol):
+    po = subprocess.Popen(['gluster', '--xml', '--remote-host=' + host,
+                           'volume', 'info', vol], bufsize=0,
+                          stdin=None, stdout=PIPE, stderr=PIPE)
+    vix, err = po.communicate()
+    if po.returncode != 0:
+        logging.info(lf("Volume info failed, unable to get "
+                        "volume uuid of slavevol, "
+                        "returning empty string",
+                        slavevol=vol,
+                        slavehost=host,
+                        error=po.returncode))
+        return ""
+    vi = XET.fromstring(vix)
+    if vi.find('opRet').text != '0':
+        logging.info(lf("Unable to get volume uuid of slavevol, "
+                        "returning empty string",
+                        slavevol=vol,
+                        slavehost=host,
+                        error=vi.find('opErrstr').text))
+        return ""
+
+    try:
+        voluuid = vi.find("volInfo/volumes/volume/id").text
+    except (ParseError, AttributeError, ValueError) as e:
+        logging.info(lf("Parsing failed to volume uuid of slavevol, "
+                        "returning empty string",
+                        slavevol=vol,
+                        slavehost=host,
+                        error=e))
+        voluuid = ""
+
+    return voluuid
 
 
 def startup(**kw):
@@ -207,6 +251,7 @@ def main_i():
                   default=os.devnull, type=str, action='callback',
                   callback=store_abs)
     op.add_option('--gluster-log-level', metavar='LVL')
+    op.add_option('--changelog-log-level', metavar='LVL', default="INFO")
     op.add_option('--gluster-params', metavar='PRMS', default='')
     op.add_option(
         '--glusterd-uuid', metavar='UUID', type=str, default='',
@@ -218,9 +263,9 @@ def main_i():
                   action='callback', callback=store_abs)
     op.add_option('-l', '--log-file', metavar='LOGF', type=str,
                   action='callback', callback=store_abs)
-    op.add_option('--iprefix',  metavar='LOGD',  type=str,
+    op.add_option('--iprefix', metavar='LOGD', type=str,
                   action='callback', callback=store_abs)
-    op.add_option('--changelog-log-file',  metavar='LOGF',  type=str,
+    op.add_option('--changelog-log-file', metavar='LOGF', type=str,
                   action='callback', callback=store_abs)
     op.add_option('--log-file-mbr', metavar='LOGF', type=str,
                   action='callback', callback=store_abs)
@@ -230,6 +275,7 @@ def main_i():
                   type=str, action='callback', callback=store_abs)
     op.add_option('--georep-session-working-dir', metavar='STATF',
                   type=str, action='callback', callback=store_abs)
+    op.add_option('--access-mount', default=False, action='store_true')
     op.add_option('--ignore-deletes', default=False, action='store_true')
     op.add_option('--isolated-slave', default=False, action='store_true')
     op.add_option('--use-rsync-xattrs', default=False, action='store_true')
@@ -237,6 +283,14 @@ def main_i():
     op.add_option('--sync-acls', default=True, action='store_true')
     op.add_option('--log-rsync-performance', default=False,
                   action='store_true')
+    op.add_option('--max-rsync-retries', type=int, default=10)
+    # Max size of Changelogs to process per batch, Changelogs Processing is
+    # not limited by the number of changelogs but instead based on
+    # size of the changelog file, One sample changelog file size was 145408
+    # with ~1000 CREATE and ~1000 DATA. 5 such files in one batch is 727040
+    # If geo-rep worker crashes while processing a batch, it has to retry only
+    # that batch since stime will get updated after each batch.
+    op.add_option('--changelog-batch-size', type=int, default=727040)
     op.add_option('--pause-on-start', default=False, action='store_true')
     op.add_option('-L', '--log-level', metavar='LVL')
     op.add_option('-r', '--remote-gsyncd', metavar='CMD',
@@ -246,6 +300,10 @@ def main_i():
     op.add_option('--session-owner', metavar='ID')
     op.add_option('--local-id', metavar='ID', help=SUPPRESS_HELP, default='')
     op.add_option(
+        '--local-node', metavar='NODE', help=SUPPRESS_HELP, default='')
+    op.add_option(
+        '--local-node-id', metavar='NODEID', help=SUPPRESS_HELP, default='')
+    op.add_option(
         '--local-path', metavar='PATH', help=SUPPRESS_HELP, default='')
     op.add_option('-s', '--ssh-command', metavar='CMD', default='ssh')
     op.add_option('--ssh-port', metavar='PORT', type=int, default=22)
@@ -253,6 +311,8 @@ def main_i():
     op.add_option('--rsync-command', metavar='CMD', default='rsync')
     op.add_option('--rsync-options', metavar='OPTS', default='')
     op.add_option('--rsync-ssh-options', metavar='OPTS', default='--compress')
+    op.add_option('--rsync-opt-ignore-missing-args', default="true")
+    op.add_option('--rsync-opt-existing', default="true")
     op.add_option('--timeout', metavar='SEC', type=int, default=120)
     op.add_option('--connection-timeout', metavar='SEC',
                   type=int, default=60, help=SUPPRESS_HELP)
@@ -314,10 +374,15 @@ def main_i():
                   action='callback', callback=store_local_curry('dont'))
     op.add_option('--verify', type=str, dest="verify",
                   action='callback', callback=store_local)
+    op.add_option('--slavevoluuid-get', type=str, dest="slavevoluuid_get",
+                  action='callback', callback=store_local)
     op.add_option('--create', type=str, dest="create",
                   action='callback', callback=store_local)
     op.add_option('--delete', dest='delete', action='callback',
                   callback=store_local_curry(True))
+    op.add_option('--path-list', dest='path_list', action='callback',
+                  type=str, callback=store_local)
+    op.add_option('--reset-sync-time', default=False, action='store_true')
     op.add_option('--status-get', dest='status_get', action='callback',
                   callback=store_local_curry(True))
     op.add_option('--debug', dest="go_daemon", action='callback',
@@ -365,7 +430,8 @@ def main_i():
                 if (o.callback in (store_abs, 'store_true', None) and
                     o.get_opt_string() not in ('--version', '--help'))]
     remote_tunables = ['listen', 'go_daemon', 'timeout',
-                       'session_owner', 'config_file', 'use_rsync_xattrs']
+                       'session_owner', 'config_file', 'use_rsync_xattrs',
+                       'local_id', 'local_node', 'access_mount']
     rq_remote_tunables = {'listen': True}
 
     # precedence for sources of values: 1) commandline, 2) cfg file, 3)
@@ -374,7 +440,27 @@ def main_i():
     # the parser with virgin values container.
     defaults = op.get_default_values()
     opts, args = op.parse_args(values=optparse.Values())
+    # slave url cleanup, if input comes with vol uuid as follows
+    # 'ssh://fvm1::gv2:07dfddca-94bb-4841-a051-a7e582811467'
+    temp_args = []
+    for arg in args:
+        # Split based on ::
+        data = arg.split("::")
+        if len(data)>1:
+            slavevol_name = data[1].split(":")[0]
+            temp_args.append("%s::%s" % (data[0], slavevol_name))
+        else:
+            temp_args.append(data[0])
+    args = temp_args
     args_orig = args[:]
+
+    voluuid_get = rconf.get('slavevoluuid_get')
+    if voluuid_get:
+        slave_host, slave_vol = voluuid_get.split("::")
+        svol_uuid = slave_vol_uuid_get(slave_host, slave_vol)
+        print svol_uuid
+        return
+
     r = rconf.get('resource_local')
     if r:
         if len(args) == 0:
@@ -473,16 +559,19 @@ def main_i():
                 namedict[name + 'vol'] = x.volume
                 if name == 'remote':
                     namedict['remotehost'] = x.remotehost
-    if not 'config_file' in rconf:
-        rconf['config_file'] = os.path.join(
-            os.path.dirname(sys.argv[0]), "conf/gsyncd_template.conf")
 
-    upgrade_config_file(rconf['config_file'])
+    if not 'config_file' in rconf:
+        rconf['config_file'] = TMPL_CONFIG_FILE
+
+    # Upgrade Config File only if it is session conf file
+    if rconf['config_file'] != TMPL_CONFIG_FILE:
+        upgrade_config_file(rconf['config_file'], confdata)
+
     gcnf = GConffile(
-        rconf['config_file'], canon_peers,
+        rconf['config_file'], canon_peers, confdata,
         defaults.__dict__, opts.__dict__, namedict)
 
-    checkpoint_change = False
+    conf_change = False
     if confdata:
         opt_ok = norm(confdata.opt) in tunables + [None]
         if confdata.op == 'check':
@@ -501,10 +590,10 @@ def main_i():
         # when modifying checkpoint, it's important to make a log
         # of that, so in that case we go on to set up logging even
         # if its just config invocation
-        if confdata.opt == 'checkpoint' and confdata.op in ('set', 'del') and \
-           not confdata.rx:
-            checkpoint_change = True
-        if not checkpoint_change:
+        if confdata.op in ('set', 'del') and not confdata.rx:
+            conf_change = True
+
+        if not conf_change:
             return
 
     gconf.__dict__.update(defaults.__dict__)
@@ -515,6 +604,10 @@ def main_i():
     delete = rconf.get('delete')
     if delete:
         logging.info('geo-replication delete')
+        # remove the stime xattr from all the brick paths so that
+        # a re-create of a session will start sync all over again
+        stime_xattr_name = getattr(gconf, 'master.stime_xattr_name', None)
+
         # Delete pid file, status file, socket file
         cleanup_paths = []
         if getattr(gconf, 'pid_file', None):
@@ -547,6 +640,20 @@ def main_i():
             # To delete temp files
             for f in glob.glob(path + "*"):
                 _unlink(f)
+
+        reset_sync_time = boolify(gconf.reset_sync_time)
+        if reset_sync_time and stime_xattr_name:
+            path_list = rconf.get('path_list')
+            paths = []
+            for p in path_list.split('--path='):
+                stripped_path = p.strip()
+                if stripped_path != "":
+                    # set stime to (0,0) to trigger full volume content resync
+                    # to slave on session recreation
+                    # look at master.py::Xcrawl   hint: zero_zero
+                    Xattr.lsetxattr(stripped_path, stime_xattr_name,
+                                    struct.pack("!II", 0, 0))
+
         return
 
     if restricted and gconf.allow_network:
@@ -584,13 +691,25 @@ def main_i():
     if not privileged() and gconf.log_file_mbr:
         gconf.log_file = gconf.log_file_mbr
 
-    if checkpoint_change:
+    if conf_change:
         try:
             GLogger._gsyncd_loginit(log_file=gconf.log_file, label='conf')
+            gconf.log_exit = False
+
             if confdata.op == 'set':
-                logging.info('checkpoint %s set' % confdata.val)
+                if confdata.opt == 'checkpoint':
+                    logging.info(lf("Checkpoint Set",
+                                    time=human_time_utc(confdata.val)))
+                else:
+                    logging.info(lf("Config Set",
+                                    config=confdata.opt,
+                                    value=confdata.val))
             elif confdata.op == 'del':
-                logging.info('checkpoint info was reset')
+                if confdata.opt == 'checkpoint':
+                    logging.info("Checkpoint Reset")
+                else:
+                    logging.info(lf("Config Reset",
+                                    config=confdata.opt))
         except IOError:
             if sys.exc_info()[1].errno == ENOENT:
                 # directory of log path is not present,
@@ -607,6 +726,18 @@ def main_i():
     if create:
         if getattr(gconf, 'state_file', None):
             set_monitor_status(gconf.state_file, create)
+
+        try:
+            GLogger._gsyncd_loginit(log_file=gconf.log_file, label='monitor')
+            gconf.log_exit = False
+            logging.info(lf("Monitor Status Change",
+                            status=create))
+        except IOError:
+            if sys.exc_info()[1].errno == ENOENT:
+                # If log dir not present
+                pass
+            else:
+                raise
         return
 
     go_daemon = rconf['go_daemon']
@@ -617,8 +748,14 @@ def main_i():
 
     status_get = rconf.get('status_get')
     if status_get:
+        master_name, slave_data = get_master_and_slave_data_from_args(args)
         for brick in gconf.path:
-            brick_status = GeorepStatus(gconf.state_file, brick,
+            brick_status = GeorepStatus(gconf.state_file,
+                                        gconf.local_node,
+                                        brick,
+                                        gconf.local_node_id,
+                                        master_name,
+                                        slave_data,
                                         getattr(gconf, "pid_file", None))
             checkpoint_time = int(getattr(gconf, "checkpoint", "0"))
             brick_status.print_status(checkpoint_time=checkpoint_time)
@@ -633,7 +770,7 @@ def main_i():
     if be_monitor:
         label = 'monitor'
     elif be_agent:
-        label = 'agent'
+        label = gconf.local_path
     elif remote:
         # master
         label = gconf.local_path
@@ -644,13 +781,13 @@ def main_i():
 
     if be_agent:
         os.setsid()
-        logging.debug('rpc_fd: %s' % repr(gconf.rpc_fd))
+        logging.debug(lf("RPC FD",
+                         rpc_fd=repr(gconf.rpc_fd)))
         return agent(Changelog(), gconf.rpc_fd)
 
     if be_monitor:
         return monitor(*rscs)
 
-    logging.info("syncing: %s" % " -> ".join(r.url for r in rscs))
     if remote:
         go_daemon = remote.connect_remote(go_daemon=go_daemon)
         if go_daemon:
@@ -659,6 +796,7 @@ def main_i():
             remote.connect_remote(go_daemon='done')
     local.connect()
     if ffd:
+        logging.info("Closing feedback fd, waking up the monitor")
         os.close(ffd)
     local.service_loop(*[r for r in [remote] if r])
 

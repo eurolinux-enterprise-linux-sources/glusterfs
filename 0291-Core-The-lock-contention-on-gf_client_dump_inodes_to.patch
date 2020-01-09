@@ -1,0 +1,47 @@
+From 149a69ffa4aadca1d4d495957e5e7fd068756f64 Mon Sep 17 00:00:00 2001
+From: hari gowtham <hgowtham@redhat.com>
+Date: Fri, 18 May 2018 15:05:37 +0530
+Subject: [PATCH 291/305] Core: The lock contention on
+ gf_client_dump_inodes_to_dict
+
+        backport of:https://review.gluster.org/#/c/20035/
+
+Problem: For a distributed replicated volume, in the inode status
+command the lock on gf_client_dump_inodes_to_dict is held by the
+first brickop. while this is being processed, if the second brickop
+comes. It fails to get the lock and the whole brick op fails.
+
+Fix: Instead of using a TRY_LOCK which errors out if the lock is busy,
+Use LOCK which will wait till the lock is acquired.
+
+>Change-Id: I768a0a1b60f28c4f7f94549e18ee3765b69cc528
+>Signed-off-by: hari gowtham <hgowtham@redhat.com>
+>BUG: 1559452
+
+fixes: bz#1579769
+Change-Id: I768a0a1b60f28c4f7f94549e18ee3765b69cc528
+BUG: 1559452
+Signed-off-by: hari gowtham <hgowtham@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/140334
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ libglusterfs/src/client_t.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libglusterfs/src/client_t.c b/libglusterfs/src/client_t.c
+index dc153cc..17e3026 100644
+--- a/libglusterfs/src/client_t.c
++++ b/libglusterfs/src/client_t.c
+@@ -849,7 +849,7 @@ gf_client_dump_inodes_to_dict (xlator_t *this, dict_t *dict)
+         if (!clienttable)
+                 return -1;
+ 
+-        ret = TRY_LOCK (&clienttable->lock);
++        ret = LOCK (&clienttable->lock);
+         {
+                 if (ret) {
+                         gf_msg ("client_t", GF_LOG_WARNING, 0,
+-- 
+1.8.3.1
+

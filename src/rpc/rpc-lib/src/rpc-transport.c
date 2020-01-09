@@ -15,11 +15,6 @@
 #include <fnmatch.h>
 #include <stdint.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "logging.h"
 #include "rpc-transport.h"
 #include "glusterfs.h"
@@ -128,10 +123,6 @@ rpc_transport_pollin_destroy (rpc_transport_pollin_t *pollin)
                 iobref_unref (pollin->iobref);
         }
 
-        if (pollin->hdr_iobuf) {
-                iobuf_unref (pollin->hdr_iobuf);
-        }
-
         if (pollin->private) {
                 /* */
                 GF_FREE (pollin->private);
@@ -163,7 +154,7 @@ rpc_transport_pollin_alloc (rpc_transport_t *this, struct iovec *vector,
         msg->iobref = iobref_ref (iobref);
         msg->private = private;
         if (hdr_iobuf)
-                msg->hdr_iobuf = iobuf_ref (hdr_iobuf);
+                iobref_add (iobref, hdr_iobuf);
 
 out:
         return msg;
@@ -180,7 +171,7 @@ rpc_transport_load (glusterfs_ctx_t *ctx, dict_t *options, char *trans_name)
 	char *type = NULL;
 	char str[] = "ERROR";
 	int32_t ret = -1;
-	int8_t is_tcp = 0, is_unix = 0, is_ibsdp = 0;
+	int is_tcp = 0, is_unix = 0, is_ibsdp = 0;
 	volume_opt_list_t *vol_opt = NULL;
         gf_boolean_t bind_insecure = _gf_false;
         xlator_t   *this = NULL;
@@ -444,13 +435,14 @@ fail:
 
 
 int32_t
-rpc_transport_disconnect (rpc_transport_t *this)
+rpc_transport_disconnect (rpc_transport_t *this, gf_boolean_t wait)
 {
 	int32_t ret = -1;
 
 	GF_VALIDATE_OR_GOTO("rpc_transport", this, fail);
 
-	ret = this->ops->disconnect (this);
+        ret = this->ops->disconnect (this, wait);
+
 fail:
 	return ret;
 }
@@ -622,8 +614,10 @@ rpc_transport_unix_options_build (dict_t **options, char *filepath,
         }
 
         ret = dict_set_dynstr (dict, "transport.socket.connect-path", fpath);
-        if (ret)
+        if (ret) {
+                GF_FREE (fpath);
                 goto out;
+        }
 
         ret = dict_set_str (dict, "transport.address-family", "unix");
         if (ret)
@@ -649,10 +643,8 @@ rpc_transport_unix_options_build (dict_t **options, char *filepath,
 
         *options = dict;
 out:
-        if (ret) {
-                GF_FREE (fpath);
-                if (dict)
-                        dict_unref (dict);
+        if (ret && dict) {
+                dict_unref (dict);
         }
         return ret;
 }
@@ -664,6 +656,7 @@ rpc_transport_inet_options_build (dict_t **options, const char *hostname,
         dict_t          *dict = NULL;
         char            *host = NULL;
         int             ret = -1;
+        char            *addr_family = "inet";
 
         GF_ASSERT (options);
         GF_ASSERT (hostname);
@@ -674,7 +667,7 @@ rpc_transport_inet_options_build (dict_t **options, const char *hostname,
                 goto out;
 
         host = gf_strdup ((char*)hostname);
-        if (!hostname) {
+        if (!host) {
                 ret = -1;
                 goto out;
         }
@@ -683,6 +676,7 @@ rpc_transport_inet_options_build (dict_t **options, const char *hostname,
         if (ret) {
                 gf_log (THIS->name, GF_LOG_WARNING,
                         "failed to set remote-host with %s", host);
+                GF_FREE (host);
                 goto out;
         }
 
@@ -692,10 +686,11 @@ rpc_transport_inet_options_build (dict_t **options, const char *hostname,
                         "failed to set remote-port with %d", port);
                 goto out;
         }
-        ret = dict_set_str (dict, "transport.address-family", "inet");
+
+        ret = dict_set_str (dict, "address-family", addr_family);
         if (ret) {
                 gf_log (THIS->name, GF_LOG_WARNING,
-                        "failed to set addr-family with inet");
+                        "failed to set address-family to %s", addr_family);
                 goto out;
         }
 
@@ -708,10 +703,8 @@ rpc_transport_inet_options_build (dict_t **options, const char *hostname,
 
         *options = dict;
 out:
-        if (ret) {
-                GF_FREE (host);
-                if (dict)
-                        dict_unref (dict);
+        if (ret && dict) {
+                dict_unref (dict);
         }
 
         return ret;

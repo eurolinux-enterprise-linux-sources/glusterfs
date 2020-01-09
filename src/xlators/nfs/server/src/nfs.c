@@ -13,11 +13,6 @@
  */
 
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "defaults.h"
 #include "rpcsvc.h"
 #include "dict.h"
@@ -644,8 +639,8 @@ nfs_user_root_create (nfs_user_t *newnfu)
 
 
 int
-nfs_user_create (nfs_user_t *newnfu, uid_t uid, gid_t gid, gid_t *auxgids,
-                 int auxcount)
+nfs_user_create (nfs_user_t *newnfu, uid_t uid, gid_t gid,
+                 rpc_transport_t *trans, gid_t *auxgids, int auxcount)
 {
         int     x = 1;
         int     y = 0;
@@ -660,6 +655,10 @@ nfs_user_create (nfs_user_t *newnfu, uid_t uid, gid_t gid, gid_t *auxgids,
         newnfu->uid = uid;
         newnfu->gids[0] = gid;
         newnfu->ngrps = 1;
+        if (trans) {
+                memcpy (&newnfu->identifier, trans->peerinfo.identifier,
+                       UNIX_PATH_MAX);
+        }
 
         gf_msg_trace (GF_NFS, 0, "uid: %d, gid %d, gids: %d", uid, gid,
                 auxcount);
@@ -688,7 +687,9 @@ nfs_request_user_init (nfs_user_t *nfu, rpcsvc_request_t *req)
 
         gidarr = rpcsvc_auth_unix_auxgids (req, &gids);
         nfs_user_create (nfu, rpcsvc_request_uid (req),
-                         rpcsvc_request_gid (req), gidarr, gids);
+                         rpcsvc_request_gid (req),
+                         rpcsvc_request_transport (req),
+                         gidarr, gids);
 
         return;
 }
@@ -704,7 +705,8 @@ nfs_request_primary_user_init (nfs_user_t *nfu, rpcsvc_request_t *req,
                 return;
 
         gidarr = rpcsvc_auth_unix_auxgids (req, &gids);
-        nfs_user_create (nfu, uid, gid, gidarr, gids);
+        nfs_user_create (nfu, uid, gid, rpcsvc_request_transport (req),
+                         gidarr, gids);
 
         return;
 }
@@ -734,7 +736,7 @@ struct nfs_state *
 nfs_init_state (xlator_t *this)
 {
         struct nfs_state        *nfs = NULL;
-        int                     ret = -1;
+        int                     i = 0, ret = -1;
         unsigned int            fopspoolsize = 0;
         char                    *optstr = NULL;
         gf_boolean_t            boolt = _gf_false;
@@ -861,6 +863,23 @@ nfs_init_state (xlator_t *this)
                 }
         }
 
+        if (dict_get (this->options, "transport.socket.bind-address")) {
+                ret = dict_get_str (this->options,
+                        "transport.socket.bind-address",
+                        &optstr);
+                if (ret < 0) {
+                        gf_log (GF_NFS, GF_LOG_ERROR, "Failed to parse "
+                                "transport.socket.bind-address string");
+                } else {
+                        this->instance_name = gf_strdup (optstr);
+                        for (i = 0; i < strlen (this->instance_name); i++) {
+                                if (this->instance_name[i] == '.' ||
+                                    this->instance_name[i] == ':')
+                                        this->instance_name[i] = '_';
+                        }
+                }
+        }
+
         if (dict_get(this->options, "transport.socket.listen-port") == NULL) {
                 if (nfs->override_portnum)
                         ret = gf_asprintf (&optstr, "%d",
@@ -881,6 +900,7 @@ nfs_init_state (xlator_t *this)
                         goto free_foppool;
                 }
         }
+
 
         /* Right only socket support exists between nfs client and
          * gluster nfs, so we can set default value as socket
@@ -1054,6 +1074,9 @@ nfs_init_state (xlator_t *this)
                         goto free_foppool;
                 }
         }
+
+        GF_OPTION_INIT ("nfs.rdirplus", nfs->rdirplus, bool, free_foppool);
+
 	GF_OPTION_INIT (OPT_SERVER_RPC_STATD, nfs->rpc_statd, path, free_foppool);
 
 	GF_OPTION_INIT (OPT_SERVER_RPC_STATD_PIDFILE, nfs->rpc_statd_pid_file, path, free_foppool);
@@ -1264,6 +1287,14 @@ nfs_reconfigure_state (xlator_t *this, dict_t *options)
                 gf_msg (GF_NFS, GF_LOG_INFO, 0, NFS_MSG_RECONFIG_VALUE,
                         "Reconfigured %s with value %d",
                         OPT_SERVER_GID_CACHE_TIMEOUT, optuint32);
+        }
+
+        GF_OPTION_RECONF ("nfs.rdirplus", optbool,
+                                          options, bool, out);
+        if (nfs->rdirplus != optbool) {
+                nfs->rdirplus = optbool;
+                gf_msg (GF_NFS, GF_LOG_INFO, 0, NFS_MSG_RECONFIG_VALUE,
+                        "Reconfigured nfs.rdirplus with value %d", optbool);
         }
 
         /* reconfig nfs.dynamic-volumes */
@@ -1512,7 +1543,8 @@ notify (xlator_t *this, int32_t event, void *data, ...)
                 nfs_startup_subvolume (this, subvol);
                 break;
 
-        case GF_EVENT_CHILD_MODIFIED:
+        case GF_EVENT_SOME_DESCENDENT_DOWN:
+        case GF_EVENT_SOME_DESCENDENT_UP:
                 priv = this->private;
                 ++(priv->generation);
                 break;
@@ -1536,6 +1568,7 @@ fini (xlator_t *this)
         nfs = (struct nfs_state *)this->private;
         gf_msg_debug (GF_NFS, 0, "NFS service going down");
         nfs_deinit_versions (&nfs->versions, this);
+        GF_FREE (this->instance_name);
         return 0;
 }
 
@@ -1854,7 +1887,7 @@ struct volume_options options[] = {
           .default_value = "none",
           .description = "Reject a comma separated list of addresses and/or"
                          " hostnames from connecting to the server. By default,"
-                         " all connections are allowed. This allows users to"
+                         " all connections are allowed. This allows users to "
                          "define a general rule for all exported volumes."
         },
         { .key  = {"rpc-auth.addr.*.allow"},
@@ -2060,6 +2093,12 @@ struct volume_options options[] = {
           .type = GF_OPTION_TYPE_INT,
           .description = "Sets the TTL of an entry in the auth cache. Value is "
                          "in seconds."
+        },
+        { .key  = {"nfs.rdirplus"},
+          .type = GF_OPTION_TYPE_BOOL,
+          .default_value = "on",
+          .description = "When this option is set to off NFS falls back to "
+                         "standard readdir instead of readdirp"
         },
 
         { .key  = {NULL} },

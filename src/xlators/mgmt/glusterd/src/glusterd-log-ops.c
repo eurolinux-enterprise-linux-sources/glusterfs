@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include "common-utils.h"
 #include "cli1-xdr.h"
 #include "xdr-generic.h"
@@ -21,6 +16,7 @@
 #include "glusterd-utils.h"
 #include "glusterd-volgen.h"
 #include "glusterd-messages.h"
+#include "syscall.h"
 
 #include <signal.h>
 
@@ -150,7 +146,8 @@ glusterd_op_stage_log_rotate (dict_t *dict, char **op_errstr)
                 goto out;
         }
 
-        ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo, NULL);
+        ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo, NULL,
+                                                      _gf_false);
         if (ret) {
                 snprintf (msg, sizeof (msg), "Incorrect brick %s "
                           "for volume %s", brick, volname);
@@ -209,7 +206,8 @@ glusterd_op_log_rotate (dict_t *dict)
         if (ret)
                 goto cont;
 
-        ret = glusterd_brickinfo_new_from_brick (brick, &tmpbrkinfo);
+        ret = glusterd_brickinfo_new_from_brick (brick, &tmpbrkinfo,
+                                                 _gf_false, NULL);
         if (ret) {
                 gf_msg ("glusterd", GF_LOG_ERROR, 0,
                         GD_MSG_BRICK_NOT_FOUND,
@@ -258,7 +256,7 @@ cont:
                 snprintf (logfile, PATH_MAX, "%s.%"PRIu64,
                           brickinfo->logfile, key);
 
-                ret = rename (brickinfo->logfile, logfile);
+                ret = sys_rename (brickinfo->logfile, logfile);
                 if (ret)
                         gf_msg ("glusterd", GF_LOG_WARNING, errno,
                                 GD_MSG_FILE_OP_FAILED, "rename failed");

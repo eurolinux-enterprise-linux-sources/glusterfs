@@ -1,0 +1,53 @@
+From 8b9f3413dfc9f319f5d7476132bbbfa390819f26 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Wed, 28 Feb 2018 09:17:09 +0530
+Subject: [PATCH 173/180] packaging : adding missed part from 5eed664 while
+ backporting to downstream
+
+Label : DOWNSTREAM ONLY
+
+Change-Id: I0ece0adb3b2c85a5ced9c1850ee783d8952a8dec
+BUG: 1472445
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131344
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ glusterfs.spec.in | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 8379f64..ca36e65 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -826,8 +826,13 @@ install -D -p -m 0644 extras/glusterfs-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs
+ 
+ # ganesha ghosts
++%if ( ! 0%{?_build_server} )
+ mkdir -p %{buildroot}%{_sysconfdir}/ganesha
+ touch %{buildroot}%{_sysconfdir}/ganesha/ganesha-ha.conf
++mkdir -p %{buildroot}%{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/exports
++touch %{buildroot}%{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha.conf
++touch %{buildroot}%{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha-ha.conf
++%endif
+ 
+ %if ( 0%{!?_without_georeplication:1} )
+ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/geo-replication
+@@ -1342,7 +1347,11 @@ exit 0
+ %{_prefix}/lib/ocf/resource.d/heartbeat/*
+ %{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
+ %{_sysconfdir}/ganesha/ganesha-ha.conf.sample
+-%ghost %config(noreplace) %{_sysconfdir}/ganesha/ganesha-ha.conf
++%ghost      %attr(0644,-,-) %config(noreplace) %{_sysconfdir}/ganesha/ganesha-ha.conf
++%ghost %dir %attr(0755,-,-) %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha
++%ghost %dir %attr(0755,-,-) %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/exports
++%ghost      %attr(0644,-,-) %config(noreplace) %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha.conf
++%ghost      %attr(0644,-,-) %config(noreplace) %{_localstatedir}/run/gluster/shared_storage/nfs-ganesha/ganesha-ha.conf
+ %endif
+ 
+ %if ( 0%{?_build_server} )
+-- 
+1.8.3.1
+

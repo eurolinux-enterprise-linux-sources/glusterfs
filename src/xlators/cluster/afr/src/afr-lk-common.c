@@ -463,8 +463,8 @@ transaction_lk_op (afr_local_t *local)
 
 }
 
-static int
-is_afr_lock_transaction (afr_local_t *local)
+int
+afr_is_inodelk_transaction(afr_local_t *local)
 {
         int ret = 0;
 
@@ -636,13 +636,25 @@ afr_unlock_common_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         return 0;
 }
 
+void
+afr_update_uninodelk (afr_local_t *local, afr_internal_lock_t *int_lock,
+                    int32_t child_index)
+{
+        afr_inodelk_t       *inodelk = NULL;
+
+        inodelk = afr_get_inodelk (int_lock, int_lock->domain);
+        inodelk->locked_nodes[child_index] &= LOCKED_NO;
+        if (local->transaction.eager_lock)
+                local->transaction.eager_lock[child_index] = 0;
+
+}
+
 static int32_t
 afr_unlock_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         int32_t op_ret, int32_t op_errno, dict_t *xdata)
 {
         afr_local_t         *local = NULL;
         afr_internal_lock_t *int_lock = NULL;
-        afr_inodelk_t       *inodelk = NULL;
         int32_t             child_index = (long)cookie;
         afr_private_t       *priv = NULL;
 
@@ -657,7 +669,7 @@ afr_unlock_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (op_ret < 0 && op_errno != ENOTCONN && op_errno != EBADFD) {
                 gf_msg (this->name, GF_LOG_ERROR, op_errno,
-                        AFR_MSG_INODE_UNLOCK_FAIL,
+                        AFR_MSG_UNLOCK_FAIL,
                         "path=%s gfid=%s: unlock failed on subvolume %s "
                         "with lock owner %s", local->loc.path,
                         loc_gfid_utoa (&(local->loc)),
@@ -665,11 +677,7 @@ afr_unlock_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         lkowner_utoa (&frame->root->lk_owner));
         }
 
-
-        inodelk = afr_get_inodelk (int_lock, int_lock->domain);
-        inodelk->locked_nodes[child_index] &= LOCKED_NO;
-        if (local->transaction.eager_lock)
-                local->transaction.eager_lock[child_index] = 0;
+        afr_update_uninodelk (local, int_lock, child_index);
 
         afr_unlock_common_cbk (frame, cookie, this, op_ret, op_errno, xdata);
 
@@ -1029,6 +1037,88 @@ _is_lock_wind_needed (afr_local_t *local, int child_index)
         return _gf_true;
 }
 
+static void
+afr_log_entry_locks_failure(xlator_t *this, afr_local_t *local,
+                            afr_internal_lock_t *int_lock)
+{
+        const char *fop = NULL;
+        char *pargfid = NULL;
+        const char *name = NULL;
+
+        fop = gf_fop_list[local->op];
+
+        switch (local->op) {
+        case GF_FOP_LINK:
+                pargfid = uuid_utoa(local->newloc.pargfid);
+                name = local->newloc.name;
+                break;
+        default:
+                pargfid = uuid_utoa(local->loc.pargfid);
+                name = local->loc.name;
+                break;
+        }
+
+        gf_msg (this->name, GF_LOG_WARNING, 0, AFR_MSG_BLOCKING_LKS_FAILED,
+                "Unable to obtain sufficient blocking entry locks on at least "
+                "one child while attempting %s on {pgfid:%s, name:%s}.", fop,
+                pargfid, name);
+}
+
+static gf_boolean_t
+is_blocking_locks_count_sufficient (call_frame_t *frame, xlator_t *this)
+{
+        afr_local_t  *local = NULL;
+        afr_private_t *priv = NULL;
+        afr_internal_lock_t *int_lock = NULL;
+        gf_boolean_t is_entrylk = _gf_false;
+        int child = 0;
+        int nlockee = 0;
+        int lockee_count = 0;
+        gf_boolean_t ret = _gf_true;
+
+        local = frame->local;
+        priv = this->private;
+        int_lock = &local->internal_lock;
+        lockee_count = int_lock->lockee_count;
+        is_entrylk = afr_is_entrylk (int_lock, local->transaction.type);
+
+        if (!is_entrylk) {
+                if (int_lock->lock_count == 0) {
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                AFR_MSG_BLOCKING_LKS_FAILED, "Unable to obtain "
+                                "blocking inode lock on even one child for "
+                                "gfid:%s.", uuid_utoa (local->inode->gfid));
+                        return _gf_false;
+                } else {
+                        /*inodelk succeded on atleast one child. */
+                        return _gf_true;
+                }
+
+        } else {
+                if (int_lock->entrylk_lock_count == 0) {
+                        afr_log_entry_locks_failure (this, local, int_lock);
+                        return _gf_false;
+                }
+                /* For FOPS that take multiple sets of locks (mkdir, rename),
+                 * there must be atleast one brick on which the locks from
+                 * all lock sets were successful. */
+                for (child = 0; child < priv->child_count; child++) {
+                        ret = _gf_true;
+                        for (nlockee = 0; nlockee < lockee_count; nlockee++) {
+                                if (!(int_lock->lockee[nlockee].locked_nodes[child] & LOCKED_YES))
+                                        ret = _gf_false;
+                        }
+                        if (ret)
+                                return ret;
+                }
+                if (!ret)
+                        afr_log_entry_locks_failure (this, local, int_lock);
+        }
+
+        return ret;
+
+}
+
 int
 afr_lock_blocking (call_frame_t *frame, xlator_t *this, int cookie)
 {
@@ -1079,11 +1169,7 @@ afr_lock_blocking (call_frame_t *frame, xlator_t *this, int cookie)
         }
 
         if (int_lock->lk_expected_count == int_lock->lk_attempted_count) {
-                if ((is_entrylk && int_lock->entrylk_lock_count == 0) ||
-                    (!is_entrylk && int_lock->lock_count == 0)) {
-                        gf_msg (this->name, GF_LOG_INFO, 0,
-                                AFR_MSG_BLOCKING_LKS_FAILED,
-                                "unable to lock on even one child");
+                if (!is_blocking_locks_count_sufficient (frame, this)) {
 
                         local->op_ret           = -1;
                         int_lock->lock_op_ret   = -1;
@@ -1544,7 +1630,7 @@ afr_nonblocking_inodelk (call_frame_t *frame, xlator_t *this)
 
                 if (!call_count) {
                         gf_msg (this->name, GF_LOG_INFO, 0,
-                                AFR_MSG_ALL_SUBVOLS_DOWN,
+                                AFR_MSG_SUBVOLS_DOWN,
                                 "All bricks are down, aborting.");
                         afr_unlock (frame, this);
                         goto out;
@@ -1634,7 +1720,7 @@ afr_unlock (call_frame_t *frame, xlator_t *this)
         local = frame->local;
 
         if (transaction_lk_op (local)) {
-                if (is_afr_lock_transaction (local))
+                if (afr_is_inodelk_transaction(local))
                         afr_unlock_inodelk (frame, this);
                 else
                         afr_unlock_entrylk (frame, this);

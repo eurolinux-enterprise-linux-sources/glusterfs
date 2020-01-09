@@ -1,0 +1,261 @@
+From b72f9f0d7da441db7e144f58459d98aa4838d032 Mon Sep 17 00:00:00 2001
+From: Csaba Henk <csaba@redhat.com>
+Date: Fri, 15 Dec 2017 08:02:30 +0100
+Subject: [PATCH 102/128] libglusterfs: fix the call_stack_set_group() function
+
+- call_stack_set_group() will take the ownership of passed
+  buffer from caller;
+- to indicate the change, its signature is changed from
+  including the buffer directly to take a pointer to it;
+- either the content of the buffer is copied to the
+  groups_small embedded buffer of the call stack, or
+  the buffer is set as groups_large member of the call
+  stack;
+- the groups member of the call stack is set to,
+  respectively, groups_small or groups_large, according
+  to the memory management conventions of the call stack;
+- the buffer address is overwritten with junk to effectively
+  prevent the caller from using it further on.
+
+Also move call_stack_set_group to stack.c from stack.h
+to prevent "defined but not used [-Wunused-function]"
+warnings (not using it anymore in call_stack_alloc_group()
+implementation, which saved us from this so far).
+
+protocol/server: refactor gid_resolve()
+
+In gid_resolve there are two cases:
+either the gid_cache_lookup() call returns
+a value or not. The result is caputured in
+the agl variable, and throughout the function,
+each particular stage of the implementation
+comes with an agl and a no-agl variant.
+
+In most cases this is explicitly indicated
+via an
+
+   if (agl) {
+      ...
+   } else {
+      ...
+   }
+
+but some of this branching are expressed via
+goto constructs (obfuscating the fact we stated
+above, that is, each particular stage having
+an agl/no-agl variant).
+
+In the current refactor, we bring the agl
+conditional to the top, and present the
+agl/non-agl implementations sequentially.
+
+Also we take the opportunity to clean up and
+fix the agl case:
+- remove the spurious
+    gl.gl_list = agl->gl_list;
+  setting, as gl is not used in the agl caae
+- populate the group list of call stack from
+  agl, fixing thus referred BUG.
+
+Also fixes BUG: 1513920
+
+> Change-Id: I61f4574ba21969f7661b9ff0c9dce202b874025d
+> BUG: 1513928
+> Signed-off-by: Csaba Henk <csaba@redhat.com>
+> Reviewed-on: https://review.gluster.org/18789
+
+Change-Id: I61f4574ba21969f7661b9ff0c9dce202b874025d
+BUG: 1512963
+Signed-off-by: Csaba Henk <csaba@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/125931
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ libglusterfs/src/stack.c                     | 20 +++++++++
+ libglusterfs/src/stack.h                     | 14 +++---
+ xlators/mount/fuse/src/fuse-helpers.c        |  2 +-
+ xlators/protocol/server/src/server-helpers.c | 65 +++++++++++++---------------
+ 4 files changed, 57 insertions(+), 44 deletions(-)
+
+diff --git a/libglusterfs/src/stack.c b/libglusterfs/src/stack.c
+index 6977814..d64ac8a 100644
+--- a/libglusterfs/src/stack.c
++++ b/libglusterfs/src/stack.c
+@@ -65,6 +65,26 @@ create_frame (xlator_t *xl, call_pool_t *pool)
+ }
+ 
+ void
++call_stack_set_groups (call_stack_t *stack, int ngrps, gid_t **groupbuf_p)
++{
++        /* We take the ownership of the passed group buffer. */
++
++        if (ngrps <= SMALL_GROUP_COUNT) {
++                memcpy (stack->groups_small, *groupbuf_p,
++                        sizeof (gid_t) * ngrps);
++                stack->groups = stack->groups_small;
++                GF_FREE (*groupbuf_p);
++        } else {
++                stack->groups_large = *groupbuf_p;
++                stack->groups = stack->groups_large;
++        }
++
++        stack->ngrps = ngrps;
++        /* Set a canary. */
++        *groupbuf_p = (void *)0xdeadf00d;
++}
++
++void
+ gf_proc_dump_call_frame (call_frame_t *call_frame, const char *key_buf,...)
+ {
+ 
+diff --git a/libglusterfs/src/stack.h b/libglusterfs/src/stack.h
+index eb5848e..50a6fc7 100644
+--- a/libglusterfs/src/stack.h
++++ b/libglusterfs/src/stack.h
+@@ -357,26 +357,21 @@ STACK_RESET (call_stack_t *stack)
+         } while (0)
+ 
+ 
+-static void
+-call_stack_set_groups (call_stack_t *stack, int ngrps, gid_t *groupbuf)
+-{
+-        stack->groups = groupbuf;
+-        stack->ngrps = ngrps;
+-}
+-
+ static inline int
+ call_stack_alloc_groups (call_stack_t *stack, int ngrps)
+ {
+ 	if (ngrps <= SMALL_GROUP_COUNT) {
+-		call_stack_set_groups (stack, ngrps, stack->groups_small);
++		stack->groups = stack->groups_small;
+ 	} else {
+ 		stack->groups_large = GF_CALLOC (ngrps, sizeof (gid_t),
+ 						 gf_common_mt_groups_t);
+ 		if (!stack->groups_large)
+ 			return -1;
+-		call_stack_set_groups (stack, ngrps, stack->groups_large);
++		stack->groups = stack->groups_large;
+ 	}
+ 
++	stack->ngrps = ngrps;
++
+ 	return 0;
+ }
+ 
+@@ -465,6 +460,7 @@ copy_frame (call_frame_t *frame)
+         return newframe;
+ }
+ 
++void call_stack_set_groups (call_stack_t *stack, int ngrps, gid_t **groupbuf_p);
+ void gf_proc_dump_pending_frames(call_pool_t *call_pool);
+ void gf_proc_dump_pending_frames_to_dict (call_pool_t *call_pool,
+                                           dict_t *dict);
+diff --git a/xlators/mount/fuse/src/fuse-helpers.c b/xlators/mount/fuse/src/fuse-helpers.c
+index 3fc6b16..c59ff77 100644
+--- a/xlators/mount/fuse/src/fuse-helpers.c
++++ b/xlators/mount/fuse/src/fuse-helpers.c
+@@ -181,7 +181,7 @@ frame_fill_groups (call_frame_t *frame)
+                         return;
+                 }
+ 
+-                call_stack_set_groups (frame->root, ngroups, mygroups);
++                call_stack_set_groups (frame->root, ngroups, &mygroups);
+         } else {
+                 ret = snprintf (filename, sizeof filename, "/proc/%d/status",
+                                 frame->root->pid);
+diff --git a/xlators/protocol/server/src/server-helpers.c b/xlators/protocol/server/src/server-helpers.c
+index 51eb491..c8f5382 100644
+--- a/xlators/protocol/server/src/server-helpers.c
++++ b/xlators/protocol/server/src/server-helpers.c
+@@ -31,13 +31,24 @@ gid_resolve (server_conf_t *conf, call_stack_t *root)
+         struct passwd    *result;
+         gid_t            *mygroups;
+         gid_list_t        gl;
+-        const gid_list_t *agl;
+         int               ngroups;
++        const gid_list_t *agl;
+ 
+         agl = gid_cache_lookup (&conf->gid_cache, root->uid, 0, 0);
+         if (agl) {
+                 root->ngrps = agl->gl_count;
+-                goto fill_groups;
++
++                if (root->ngrps > 0) {
++                        ret = call_stack_alloc_groups (root, agl->gl_count);
++                        if (ret == 0) {
++                                memcpy (root->groups, agl->gl_list,
++                                        sizeof (gid_t) * agl->gl_count);
++                        }
++                }
++
++                gid_cache_release (&conf->gid_cache, agl);
++
++                return ret;
+         }
+ 
+         ret = getpwuid_r (root->uid, &mypw, mystrs, sizeof(mystrs), &result);
+@@ -66,42 +77,28 @@ gid_resolve (server_conf_t *conf, call_stack_t *root)
+         }
+         root->ngrps = (uint16_t) ngroups;
+ 
+-fill_groups:
+-        if (agl) {
+-                /* the gl is not complete, we only use gl.gl_list later on */
+-                gl.gl_list = agl->gl_list;
+-        } else {
+-                /* setup a full gid_list_t to add it to the gid_cache */
+-                gl.gl_id = root->uid;
+-                gl.gl_uid = root->uid;
+-                gl.gl_gid = root->gid;
+-                gl.gl_count = root->ngrps;
+-
+-                gl.gl_list = GF_MALLOC (root->ngrps * sizeof(gid_t),
+-                                        gf_common_mt_groups_t);
+-                if (gl.gl_list)
+-                        memcpy (gl.gl_list, mygroups,
+-                                sizeof(gid_t) * root->ngrps);
+-                else {
+-                        GF_FREE (mygroups);
+-                        return -1;
+-                }
++        /* setup a full gid_list_t to add it to the gid_cache */
++        gl.gl_id = root->uid;
++        gl.gl_uid = root->uid;
++        gl.gl_gid = root->gid;
++        gl.gl_count = root->ngrps;
++
++        gl.gl_list = GF_MALLOC (root->ngrps * sizeof(gid_t),
++                                gf_common_mt_groups_t);
++        if (gl.gl_list)
++                memcpy (gl.gl_list, mygroups,
++                        sizeof(gid_t) * root->ngrps);
++        else {
++                GF_FREE (mygroups);
++                return -1;
+         }
+ 
+-        if (root->ngrps == 0) {
+-                ret = 0;
+-                goto out;
++        if (root->ngrps > 0) {
++                call_stack_set_groups (root, root->ngrps, &mygroups);
+         }
+ 
+-        call_stack_set_groups (root, root->ngrps, mygroups);
+-
+-out:
+-        if (agl) {
+-                gid_cache_release (&conf->gid_cache, agl);
+-        } else {
+-                if (gid_cache_add (&conf->gid_cache, &gl) != 1)
+-                        GF_FREE (gl.gl_list);
+-        }
++        if (gid_cache_add (&conf->gid_cache, &gl) != 1)
++                GF_FREE (gl.gl_list);
+ 
+         return ret;
+ }
+-- 
+1.8.3.1
+

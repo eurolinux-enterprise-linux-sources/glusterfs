@@ -12,11 +12,11 @@
 .SH NAME
 .B mount.glusterfs - script to mount native GlusterFS volume
 .SH SYNOPSIS
-.B mount -t glusterfs [-o <options>] <volumeserver>:/<volume>
+.B mount -t glusterfs [-o <options>] <volumeserver>:/<volume>[/<subdir>]
 .B         <mountpoint>
 .TP
 .B mount -t glusterfs [-o <options>] <server1>,<server2>,
-.B        <server3>,..<serverN>:/<volname> <mount_point>
+.B        <server3>,..<serverN>:/<volname>[/<subdir>] <mount_point>
 .TP
 .TP
 .B mount -t glusterfs [-o <options>] <path/to/volumefile> <mountpoint>
@@ -80,7 +80,7 @@ Set entry timeout to SECONDS in fuse kernel module [default: 1]
 Set fuse module's background queue length to N [default: 64]
 .TP
 \fBgid\-timeout=\fRSECONDS
-Set auxilary group list timeout to SECONDS for fuse translator [default: 0]
+Set auxiliary group list timeout to SECONDS for fuse translator [default: 0]
 .TP
 \fBnegative\-timeout=\fRSECONDS
 Set negative timeout to SECONDS in fuse kernel module [default: 0]
@@ -95,11 +95,14 @@ Disable direct I/O mode in fuse kernel module
 \fBcongestion\-threshold=\fRN
 Set fuse module's congestion threshold to N [default: 48]
 .TP
+\fsubdir\-mount=\fRN
+Set the subdirectory mount option [default: NULL, ie, no subdirectory mount]
+.TP
 .TP
 \fBbackup\-volfile\-servers=\fRSERVERLIST
 Provide list of backup volfile servers in the following format [default: None]
 
-\fB$ mount -t glusterfs -obackup-volfile-servers=<server2>:\fR
+\fB$ mount \-t glusterfs \-obackup\-volfile\-servers=<server2>:\fR
 \fB       <server3>:...:<serverN> <server1>:/<volname> <mount_point>\fR
 
 .TP
@@ -107,7 +110,7 @@ Provide list of backup volfile servers in the following format [default: None]
 \fBbackupvolfile\-server=\fRSERVER
 Provide list of backup volfile servers in the following format [default: None]
 
-\fB $ mount -t glusterfs -obackupvolfile-server=<server2>
+\fB $ mount \-t glusterfs \-obackupvolfile\-server=<server2>
 \fB         <server1>:/<volname> <mount_point>
 
 .TP

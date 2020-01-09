@@ -1,0 +1,173 @@
+From 385b61f9a6f818c2810cc0a2223c9d71340cd345 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 17 Oct 2017 21:32:44 +0530
+Subject: [PATCH 43/74] glusterd: clean up portmap on brick disconnect
+
+GlusterD's portmap entry for a brick is cleaned up when a PMAP_SIGNOUT event is
+initiated by the brick process at the shutdown. But if the brick process crashes
+or gets killed through SIGKILL then this event is not initiated and glusterd
+ends up with a stale port. Since GlusterD's portmap traversal happens both ways,
+forward for allocation and backward for registry search, there is a possibility
+that glusterd might end up running with a stale port for a brick which
+eventually will end up with clients to fail to connect to the bricks.
+
+Solution is to clean up the port entry in case the process is down as
+part of the brick disconnect event. Although with this the handling
+PMAP_SIGNOUT event becomes redundant in most of the cases, but this is
+the safeguard method to avoid glusterd getting into the stale port
+issues.
+
+>mainline patch : https://review.gluster.org/#/c/18541
+
+Change-Id: I04c5be6d11e772ee4de16caf56dbb37d5c944303
+BUG: 1503244
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/123057
+Reviewed-by: Gaurav Yadav <gyadav@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handler.c | 25 +++++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-pmap.c    | 26 +++++++++++++++++---------
+ xlators/mgmt/glusterd/src/glusterd-pmap.h    |  3 ++-
+ xlators/mgmt/glusterd/src/glusterd.c         |  3 ++-
+ 4 files changed, 46 insertions(+), 11 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index af9a796..34e751c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -5974,8 +5974,10 @@ __glusterd_brick_rpc_notify (struct rpc_clnt *rpc, void *mydata,
+         glusterd_volinfo_t      *volinfo           = NULL;
+         xlator_t                *this              = NULL;
+         int                      temp              = 0;
++        int32_t                  pid               = -1;
+         glusterd_brickinfo_t    *brickinfo_tmp     = NULL;
+         glusterd_brick_proc_t   *brick_proc        = NULL;
++        char                     pidfile[PATH_MAX] = {0};
+ 
+         brickid = mydata;
+         if (!brickid)
+@@ -6074,6 +6076,29 @@ __glusterd_brick_rpc_notify (struct rpc_clnt *rpc, void *mydata,
+                                   "peer=%s;volume=%s;brick=%s",
+                                   brickinfo->hostname, volinfo->volname,
+                                   brickinfo->path);
++                        /* In case of an abrupt shutdown of a brick PMAP_SIGNOUT
++                         * event is not received by glusterd which can lead to a
++                         * stale port entry in glusterd, so forcibly clean up
++                         * the same if the process is not running
++                         */
++                        GLUSTERD_GET_BRICK_PIDFILE (pidfile, volinfo,
++                                                    brickinfo, conf);
++                        if (!gf_is_service_running (pidfile, &pid)) {
++                                ret = pmap_registry_remove (
++                                                      THIS, brickinfo->port,
++                                                      brickinfo->path,
++                                                      GF_PMAP_PORT_BRICKSERVER,
++                                                      NULL, _gf_true);
++                                if (ret) {
++                                        gf_msg (this->name, GF_LOG_WARNING,
++                                                GD_MSG_PMAP_REGISTRY_REMOVE_FAIL,
++                                                0, "Failed to remove pmap "
++                                                "registry for port %d for "
++                                                "brick %s", brickinfo->port,
++                                                brickinfo->path);
++                                        ret = 0;
++                                }
++                        }
+                 }
+ 
+                 if (is_brick_mx_enabled()) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-pmap.c b/xlators/mgmt/glusterd/src/glusterd-pmap.c
+index 2a75476..1b547e7 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-pmap.c
++++ b/xlators/mgmt/glusterd/src/glusterd-pmap.c
+@@ -239,7 +239,8 @@ pmap_assign_port (xlator_t *this, int old_port, const char *path)
+ 
+         if (old_port) {
+                 ret = pmap_registry_remove (this, 0, path,
+-                                            GF_PMAP_PORT_BRICKSERVER, NULL);
++                                            GF_PMAP_PORT_BRICKSERVER, NULL,
++                                            _gf_false);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_WARNING,
+                                 GD_MSG_PMAP_REGISTRY_REMOVE_FAIL, 0, "Failed to"
+@@ -342,7 +343,8 @@ pmap_registry_extend (xlator_t *this, int port, const char *brickname)
+ 
+ int
+ pmap_registry_remove (xlator_t *this, int port, const char *brickname,
+-                      gf_pmap_port_type_t type, void *xprt)
++                      gf_pmap_port_type_t type, void *xprt,
++                      gf_boolean_t brick_disconnect)
+ {
+         struct pmap_registry *pmap = NULL;
+         int                   p = 0;
+@@ -389,11 +391,16 @@ remove:
+          * can delete the entire entry.
+          */
+         if (!pmap->ports[p].xprt) {
+-                brick_str = pmap->ports[p].brickname;
+-                if (brick_str) {
+-                        while (*brick_str != '\0') {
+-                                if (*(brick_str++) != ' ') {
+-                                        goto out;
++                /* If the signout call is being triggered by brick disconnect
++                 * then clean up all the bricks (in case of brick mux)
++                 */
++                if (!brick_disconnect) {
++                        brick_str = pmap->ports[p].brickname;
++                        if (brick_str) {
++                                while (*brick_str != '\0') {
++                                        if (*(brick_str++) != ' ') {
++                                                goto out;
++                                        }
+                                 }
+                         }
+                 }
+@@ -548,14 +555,15 @@ __gluster_pmap_signout (rpcsvc_request_t *req)
+                 goto fail;
+         }
+         rsp.op_ret = pmap_registry_remove (THIS, args.port, args.brick,
+-                                           GF_PMAP_PORT_BRICKSERVER, req->trans);
++                                           GF_PMAP_PORT_BRICKSERVER, req->trans,
++                                           _gf_false);
+ 
+         ret = glusterd_get_brickinfo (THIS, args.brick, args.port, &brickinfo);
+         if (args.rdma_port) {
+                 snprintf(brick_path, PATH_MAX, "%s.rdma", args.brick);
+                 rsp.op_ret = pmap_registry_remove (THIS, args.rdma_port,
+                                 brick_path, GF_PMAP_PORT_BRICKSERVER,
+-                                req->trans);
++                                req->trans, _gf_false);
+         }
+         /* Update portmap status on brickinfo */
+         if (brickinfo)
+diff --git a/xlators/mgmt/glusterd/src/glusterd-pmap.h b/xlators/mgmt/glusterd/src/glusterd-pmap.h
+index 9965a95..253b4cc 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-pmap.h
++++ b/xlators/mgmt/glusterd/src/glusterd-pmap.h
+@@ -42,7 +42,8 @@ int pmap_registry_bind (xlator_t *this, int port, const char *brickname,
+                         gf_pmap_port_type_t type, void *xprt);
+ int pmap_registry_extend (xlator_t *this, int port, const char *brickname);
+ int pmap_registry_remove (xlator_t *this, int port, const char *brickname,
+-                          gf_pmap_port_type_t type, void *xprt);
++                          gf_pmap_port_type_t type, void *xprt,
++                          gf_boolean_t brick_disconnect);
+ int pmap_registry_search (xlator_t *this, const char *brickname,
+                           gf_pmap_port_type_t type, gf_boolean_t destroy);
+ struct pmap_registry *pmap_registry_get (xlator_t *this);
+diff --git a/xlators/mgmt/glusterd/src/glusterd.c b/xlators/mgmt/glusterd/src/glusterd.c
+index 4887ff4..81a3206 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.c
++++ b/xlators/mgmt/glusterd/src/glusterd.c
+@@ -424,7 +424,8 @@ glusterd_rpcsvc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
+                 pthread_mutex_lock (&priv->xprt_lock);
+                 list_del (&xprt->list);
+                 pthread_mutex_unlock (&priv->xprt_lock);
+-                pmap_registry_remove (this, 0, NULL, GF_PMAP_PORT_ANY, xprt);
++                pmap_registry_remove (this, 0, NULL, GF_PMAP_PORT_ANY, xprt,
++                                      _gf_false);
+                 break;
+         }
+ 
+-- 
+1.8.3.1
+

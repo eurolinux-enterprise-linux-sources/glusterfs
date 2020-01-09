@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2006-2013 Red Hat, Inc. <http://www.redhat.com>
+   Copyright (c) 2006-2016 Red Hat, Inc. <http://www.redhat.com>
    This file is part of GlusterFS.
 
    This file is licensed to you under your choice of the GNU Lesser
@@ -32,9 +32,15 @@
 #include <errno.h>
 #include <pwd.h>
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
+#ifdef GF_LINUX_HOST_OS
+#ifdef HAVE_LINUX_OOM_H
+#include <linux/oom.h>
+#else
+#define OOM_SCORE_ADJ_MIN (-1000)
+#define OOM_SCORE_ADJ_MAX   1000
+#define OOM_DISABLE       (-17)
+#define OOM_ADJUST_MAX      15
+#endif
 #endif
 
 #ifdef HAVE_MALLOC_H
@@ -74,25 +80,21 @@
 #include "exports.h"
 
 #include "daemon.h"
-#include "tw.h"
 
-/* process mode definitions */
-#define GF_SERVER_PROCESS   0
-#define GF_CLIENT_PROCESS   1
-#define GF_GLUSTERD_PROCESS 2
 
 /* using argp for command line parsing */
 static char gf_doc[] = "";
 static char argp_doc[] = "--volfile-server=SERVER [MOUNT-POINT]\n"       \
         "--volfile=VOLFILE [MOUNT-POINT]";
-const char *argp_program_version = ""
-        PACKAGE_NAME" "PACKAGE_VERSION" built on "__DATE__" "__TIME__
-        "\nRepository revision: " GLUSTERFS_REPOSITORY_REVISION "\n"
-        "Copyright (c) 2006-2013 Red Hat, Inc. <http://www.redhat.com/>\n"
-        "GlusterFS comes with ABSOLUTELY NO WARRANTY.\n"
-        "It is licensed to you under your choice of the GNU Lesser\n"
-        "General Public License, version 3 or any later version (LGPLv3\n"
-        "or later), or the GNU General Public License, version 2 (GPLv2),\n"
+const char *argp_program_version = ""                                         \
+        PACKAGE_NAME" "PACKAGE_VERSION                                        \
+        "\nRepository revision: " GLUSTERFS_REPOSITORY_REVISION "\n"          \
+        "Copyright (c) 2006-2016 Red Hat, Inc. "                              \
+        "<https://www.gluster.org/>\n"                                        \
+        "GlusterFS comes with ABSOLUTELY NO WARRANTY.\n"                      \
+        "It is licensed to you under your choice of the GNU Lesser\n"         \
+        "General Public License, version 3 or any later version (LGPLv3\n"    \
+        "or later), or the GNU General Public License, version 2 (GPLv2),\n"  \
         "in all cases as published by the Free Software Foundation.";
 const char *argp_program_bug_address = "<" PACKAGE_BUGREPORT ">";
 
@@ -157,7 +159,9 @@ static struct argp_option gf_options[] = {
         {"selinux", ARGP_SELINUX_KEY, 0, 0,
          "Enable SELinux label (extended attributes) support on inodes"},
         {"capability", ARGP_CAPABILITY_KEY, 0, 0,
-         "Enable file capability setting and retrival"},
+         "Enable Capability (extended attributes) support on inodes"},
+        {"subdir-mount", ARGP_SUBDIR_MOUNT_KEY, "SUBDIR-PATH", 0,
+         "Mount subdirectory given [default: NULL]"},
 
         {"print-netgroups", ARGP_PRINT_NETGROUPS, "NETGROUP-FILE", 0,
          "Validate the netgroups file and print it out"},
@@ -203,16 +207,21 @@ static struct argp_option gf_options[] = {
          "Set attribute timeout to SECONDS for inodes in fuse kernel module "
          "[default: 1]"},
 	{"gid-timeout", ARGP_GID_TIMEOUT_KEY, "SECONDS", 0,
-	 "Set auxilary group list timeout to SECONDS for fuse translator "
+	 "Set auxiliary group list timeout to SECONDS for fuse translator "
 	 "[default: 300]"},
         {"resolve-gids", ARGP_RESOLVE_GIDS_KEY, 0, 0,
-         "Resolve all auxilary groups in fuse translator (max 32 otherwise)"},
+         "Resolve all auxiliary groups in fuse translator (max 32 otherwise)"},
 	{"background-qlen", ARGP_FUSE_BACKGROUND_QLEN_KEY, "N", 0,
 	 "Set fuse module's background queue length to N "
 	 "[default: 64]"},
 	{"congestion-threshold", ARGP_FUSE_CONGESTION_THRESHOLD_KEY, "N", 0,
 	 "Set fuse module's congestion threshold to N "
 	 "[default: 48]"},
+#ifdef GF_LINUX_HOST_OS
+        {"oom-score-adj", ARGP_OOM_SCORE_ADJ_KEY, "INTEGER", 0,
+         "Set oom_score_adj value for process"
+         "[default: 0]"},
+#endif
         {"client-pid", ARGP_CLIENT_PID_KEY, "PID", OPTION_HIDDEN,
          "client will authenticate itself with process id PID to server"},
         {"no-root-squash", ARGP_FUSE_NO_ROOT_SQUASH_KEY, "BOOL",
@@ -230,9 +239,13 @@ static struct argp_option gf_options[] = {
          "Extra mount options to pass to FUSE"},
         {"use-readdirp", ARGP_FUSE_USE_READDIRP_KEY, "BOOL", OPTION_ARG_OPTIONAL,
          "Use readdirp mode in fuse kernel module"
-         " [default: \"off\"]"},
+         " [default: \"yes\"]"},
         {"secure-mgmt", ARGP_SECURE_MGMT_KEY, "BOOL", OPTION_ARG_OPTIONAL,
          "Override default for secure (SSL) management connections"},
+        {"localtime-logging", ARGP_LOCALTIME_LOGGING_KEY, 0, 0,
+         "Enable localtime logging"},
+        {"event-history", ARGP_FUSE_EVENT_HISTORY_KEY, "BOOL",
+         OPTION_ARG_OPTIONAL, "disable/enable fuse event-history"},
         {0, 0, 0, 0, "Miscellaneous Options:"},
         {0, }
 };
@@ -543,6 +556,15 @@ set_fuse_mount_options (glusterfs_ctx_t *ctx, dict_t *options)
                         goto err;
                 }
         }
+        if (cmd_args->event_history) {
+                ret = dict_set_str (options, "event-history",
+                                    cmd_args->event_history);
+                if (ret < 0) {
+                        gf_msg ("glusterfsd", GF_LOG_ERROR, 0, glusterfsd_msg_4,
+                                "event-history");
+                        goto err;
+                }
+        }
         ret = 0;
 err:
         return ret;
@@ -773,20 +795,50 @@ out:
 }
 
 
+#ifdef GF_LINUX_HOST_OS
+static struct oom_api_info {
+        char *oom_api_file;
+        int32_t oom_min;
+        int32_t oom_max;
+} oom_api_info[] = {
+        { "/proc/self/oom_score_adj", OOM_SCORE_ADJ_MIN, OOM_SCORE_ADJ_MAX },
+        { "/proc/self/oom_adj",       OOM_DISABLE,       OOM_ADJUST_MAX },
+        { NULL, 0, 0 }
+};
+
+
+static struct oom_api_info *
+get_oom_api_info (void)
+{
+        struct oom_api_info *api = NULL;
+
+        for (api = oom_api_info; api->oom_api_file; api++) {
+                if (sys_access (api->oom_api_file, F_OK) != -1) {
+                        return api;
+                }
+        }
+
+        return NULL;
+}
+#endif
 
 static error_t
 parse_opts (int key, char *arg, struct argp_state *state)
 {
-        cmd_args_t   *cmd_args      = NULL;
-        uint32_t      n             = 0;
-        double        d             = 0.0;
-        gf_boolean_t  b             = _gf_false;
-        char         *pwd           = NULL;
-        char          tmp_buf[2048] = {0,};
-        char         *tmp_str       = NULL;
-        char         *port_str      = NULL;
-        struct passwd *pw           = NULL;
-        int           ret           = 0;
+        cmd_args_t          *cmd_args      = NULL;
+        uint32_t             n             = 0;
+#ifdef GF_LINUX_HOST_OS
+        int32_t              k             = 0;
+        struct oom_api_info *api           = NULL;
+#endif
+        double               d             = 0.0;
+        gf_boolean_t         b             = _gf_false;
+        char                *pwd           = NULL;
+        char                 tmp_buf[2048] = {0,};
+        char                *tmp_str       = NULL;
+        char                *port_str      = NULL;
+        struct passwd       *pw            = NULL;
+        int                  ret           = 0;
 
         cmd_args = state->input;
 
@@ -1127,6 +1179,27 @@ parse_opts (int key, char *arg, struct argp_state *state)
                               "unknown congestion threshold option %s", arg);
                 break;
 
+#ifdef GF_LINUX_HOST_OS
+        case ARGP_OOM_SCORE_ADJ_KEY:
+                k = 0;
+
+                api = get_oom_api_info();
+                if (!api)
+                        goto no_oom_api;
+
+                if (gf_string2int (arg, &k) == 0 &&
+                    k >= api->oom_min && k <= api->oom_max) {
+                        cmd_args->oom_score_adj = gf_strdup (arg);
+                        break;
+                }
+
+                argp_failure (state, -1, 0,
+                              "unknown oom_score_adj value %s", arg);
+
+no_oom_api:
+                break;
+#endif
+
         case ARGP_FUSE_MOUNTOPTS_KEY:
                 cmd_args->fuse_mountopts = gf_strdup (arg);
                 break;
@@ -1174,13 +1247,12 @@ parse_opts (int key, char *arg, struct argp_state *state)
                 if (gf_string2uint32 (arg, &cmd_args->log_buf_size)) {
                         argp_failure (state, -1, 0,
                                       "unknown log buf size option %s", arg);
-                } else if ((cmd_args->log_buf_size < GF_LOG_LRU_BUFSIZE_MIN) ||
-                          (cmd_args->log_buf_size > GF_LOG_LRU_BUFSIZE_MAX)) {
-                            argp_failure (state, -1, 0,
-                                          "Invalid log buf size %s. "
-                                          "Valid range: ["
-                                          GF_LOG_LRU_BUFSIZE_MIN_STR","
-                                          GF_LOG_LRU_BUFSIZE_MAX_STR"]", arg);
+                } else if (cmd_args->log_buf_size > GF_LOG_LRU_BUFSIZE_MAX) {
+                        argp_failure (state, -1, 0,
+                                      "Invalid log buf size %s. "
+                                      "Valid range: ["
+                                      GF_LOG_LRU_BUFSIZE_MIN_STR","
+                                      GF_LOG_LRU_BUFSIZE_MAX_STR"]", arg);
                 }
 
                 break;
@@ -1214,17 +1286,69 @@ parse_opts (int key, char *arg, struct argp_state *state)
                 argp_failure (state, -1, 0,
                               "unknown secure-mgmt setting \"%s\"", arg);
                 break;
+
+        case ARGP_LOCALTIME_LOGGING_KEY:
+                cmd_args->localtime_logging = 1;
+                break;
+        case ARGP_SUBDIR_MOUNT_KEY:
+                if (arg[0] != '/') {
+                        argp_failure (state, -1, 0,
+                                      "expect '/%s', provided just \"%s\"", arg, arg);
+                        break;
+                }
+                cmd_args->subdir_mount = gf_strdup (arg);
+                break;
+        case ARGP_FUSE_EVENT_HISTORY_KEY:
+                if (!arg)
+                        arg = "no";
+
+                if (gf_string2boolean (arg, &b) == 0) {
+                        if (b) {
+                                cmd_args->event_history = "yes";
+                        } else {
+                                cmd_args->event_history = "no";
+                        }
+
+                        break;
+                }
+
+                argp_failure (state, -1, 0,
+                              "unknown event-history setting \"%s\"", arg);
+                break;
 	}
 
         return 0;
 }
 
+gf_boolean_t
+should_call_fini (glusterfs_ctx_t *ctx, xlator_t *trav)
+{
+        /* There's nothing to call, so the other checks don't matter. */
+        if (!trav->fini) {
+                return _gf_false;
+        }
+
+        /* This preserves previous behavior in glusterd. */
+        if (ctx->process_mode == GF_GLUSTERD_PROCESS) {
+                return _gf_true;
+        }
+
+        /* This is the only one known to be safe in glusterfsd. */
+        if (!strcmp(trav->type,"experimental/fdl")) {
+                return _gf_true;
+        }
+
+        return _gf_false;
+}
 
 void
 cleanup_and_exit (int signum)
 {
         glusterfs_ctx_t *ctx      = NULL;
         xlator_t        *trav     = NULL;
+        xlator_t        *top;
+        xlator_t        *victim;
+        xlator_list_t   **trav_p;
 
         ctx = glusterfsd_ctx;
 
@@ -1254,7 +1378,20 @@ cleanup_and_exit (int signum)
                 return;
 
         ctx->cleanup_started = 1;
-        glusterfs_mgmt_pmap_signout (ctx);
+
+        /* signout should be sent to all the bricks in case brick mux is enabled
+         * and multiple brick instances are attached to this process
+         */
+        if (ctx->active) {
+                top = ctx->active->first;
+                for (trav_p = &top->children; *trav_p;
+                     trav_p = &(*trav_p)->next) {
+                        victim = (*trav_p)->xlator;
+                        glusterfs_mgmt_pmap_signout (ctx, victim->name);
+                }
+        } else {
+                glusterfs_mgmt_pmap_signout (ctx, NULL);
+        }
 
         /* below part is a racy code where the rpcsvc object is freed.
          * But in another thread (epoll thread), upon poll error in the
@@ -1291,21 +1428,20 @@ cleanup_and_exit (int signum)
 
         /*call fini for glusterd xlator */
         /* TODO : Invoke fini for rest of the xlators */
-        if (ctx->process_mode == GF_GLUSTERD_PROCESS) {
-
-                trav = NULL;
-                if (ctx->active)
-                        trav = ctx->active->top;
-                while (trav) {
-                        if (trav->fini) {
-                                THIS = trav;
-                                trav->fini (trav);
-                        }
-                        trav = trav->next;
+        trav = NULL;
+        if (ctx->active)
+                trav = ctx->active->top;
+        while (trav) {
+                if (should_call_fini(ctx,trav)) {
+                        THIS = trav;
+                        trav->fini (trav);
                 }
-
+                trav = trav->next;
         }
-        exit(0);
+
+        /* NOTE: Only the least significant 8 bits i.e (signum & 255)
+           will be available to parent process on calling exit() */
+        exit(abs(signum));
 }
 
 
@@ -1342,8 +1478,8 @@ emancipate (glusterfs_ctx_t *ctx, int ret)
 {
         /* break free from the parent */
         if (ctx->daemon_pipe[1] != -1) {
-                write (ctx->daemon_pipe[1], (void *) &ret, sizeof (ret));
-                close (ctx->daemon_pipe[1]);
+                sys_write (ctx->daemon_pipe[1], (void *) &ret, sizeof (ret));
+                sys_close (ctx->daemon_pipe[1]);
                 ctx->daemon_pipe[1] = -1;
         }
 }
@@ -1456,7 +1592,6 @@ glusterfs_ctx_defaults_init (glusterfs_ctx_t *ctx)
         if (!ctx->logbuf_pool)
                 goto out;
 
-        pthread_mutex_init (&(ctx->lock), NULL);
         pthread_mutex_init (&ctx->notify_lock, NULL);
         pthread_cond_init (&ctx->notify_cond, NULL);
 
@@ -1524,7 +1659,7 @@ logging_init (glusterfs_ctx_t *ctx, const char *progpath)
         cmd_args = &ctx->cmd_args;
 
         if (cmd_args->log_file == NULL) {
-                ret = gf_set_log_file_path (cmd_args);
+                ret = gf_set_log_file_path (cmd_args, ctx);
                 if (ret == -1) {
                         fprintf (stderr, "ERROR: failed to set the log file "
                                          "path\n");
@@ -1543,6 +1678,8 @@ logging_init (glusterfs_ctx_t *ctx, const char *progpath)
 
         /* finish log set parameters before init */
         gf_log_set_loglevel (cmd_args->log_level);
+
+        gf_log_set_localtime (cmd_args->localtime_logging);
 
         gf_log_set_logger (cmd_args->logger);
 
@@ -1786,7 +1923,7 @@ parse_cmdline (int argc, char *argv[], glusterfs_ctx_t *ctx)
         cmd_args = &ctx->cmd_args;
 
         /* Do this before argp_parse so it can be overridden. */
-        if (access(SECURE_ACCESS_FILE,F_OK) == 0) {
+        if (sys_access (SECURE_ACCESS_FILE, F_OK) == 0) {
                 cmd_args->secure_mgmt = 1;
         }
 
@@ -1838,7 +1975,7 @@ parse_cmdline (int argc, char *argv[], glusterfs_ctx_t *ctx)
 
                 /* Check if the volfile exists, if not give usage output
                    and exit */
-                ret = stat (cmd_args->volfile, &stbuf);
+                ret = sys_stat (cmd_args->volfile, &stbuf);
                 if (ret) {
                         gf_msg ("glusterfs", GF_LOG_CRITICAL, errno,
                                 glusterfsd_msg_16);
@@ -1943,7 +2080,6 @@ glusterfs_pidfile_cleanup (glusterfs_ctx_t *ctx)
                       cmd_args->pid_file);
 
         if (ctx->cmd_args.pid_file) {
-                unlink (ctx->cmd_args.pid_file);
                 ctx->cmd_args.pid_file = NULL;
         }
 
@@ -1974,7 +2110,7 @@ glusterfs_pidfile_update (glusterfs_ctx_t *ctx)
                 return ret;
         }
 
-        ret = ftruncate (fileno (pidfp), 0);
+        ret = sys_ftruncate (fileno (pidfp), 0);
         if (ret) {
                 gf_msg ("glusterfsd", GF_LOG_ERROR, errno, glusterfsd_msg_20,
                         cmd_args->pid_file);
@@ -2084,8 +2220,8 @@ glusterfs_signals_setup (glusterfs_ctx_t *ctx)
                 return ret;
         }
 
-        ret = pthread_create (&ctx->sigwaiter, NULL, glusterfs_sigwaiter,
-                              (void *) &set);
+        ret = gf_thread_create (&ctx->sigwaiter, NULL, glusterfs_sigwaiter,
+                                (void *) &set, "sigwait");
         if (ret) {
                 /*
                   TODO:
@@ -2106,7 +2242,7 @@ daemonize (glusterfs_ctx_t *ctx)
         int            ret = -1;
         cmd_args_t    *cmd_args = NULL;
         int            cstatus = 0;
-        int            err = 0;
+        int            err = 1;
 
         cmd_args = &ctx->cmd_args;
 
@@ -2133,8 +2269,8 @@ daemonize (glusterfs_ctx_t *ctx)
         switch (ret) {
         case -1:
                 if (ctx->daemon_pipe[0] != -1) {
-                        close (ctx->daemon_pipe[0]);
-                        close (ctx->daemon_pipe[1]);
+                        sys_close (ctx->daemon_pipe[0]);
+                        sys_close (ctx->daemon_pipe[1]);
                 }
 
                 gf_msg ("daemonize", GF_LOG_ERROR, errno, glusterfsd_msg_24);
@@ -2142,25 +2278,30 @@ daemonize (glusterfs_ctx_t *ctx)
         case 0:
                 /* child */
                 /* close read */
-                close (ctx->daemon_pipe[0]);
+                sys_close (ctx->daemon_pipe[0]);
                 break;
         default:
                 /* parent */
                 /* close write */
-                close (ctx->daemon_pipe[1]);
+                sys_close (ctx->daemon_pipe[1]);
 
                 if (ctx->mnt_pid > 0) {
                         ret = waitpid (ctx->mnt_pid, &cstatus, 0);
-                        if (!(ret == ctx->mnt_pid && cstatus == 0)) {
+                        if (!(ret == ctx->mnt_pid)) {
+                                if (WIFEXITED(cstatus)) {
+                                        err = WEXITSTATUS(cstatus);
+                                } else {
+                                        err = cstatus;
+                                }
                                 gf_msg ("daemonize", GF_LOG_ERROR, 0,
                                         glusterfsd_msg_25);
-                                exit (1);
+                                exit (err);
                         }
                 }
-
-                err = 1;
-                read (ctx->daemon_pipe[0], (void *)&err, sizeof (err));
-                _exit (err);
+                sys_read (ctx->daemon_pipe[0], (void *)&err, sizeof (err));
+                /* NOTE: Only the least significant 8 bits i.e (err & 255)
+                   will be available to parent process on calling exit() */
+                _exit (abs(err));
         }
 
 postfork:
@@ -2174,6 +2315,48 @@ postfork:
 out:
         return ret;
 }
+
+
+#ifdef GF_LINUX_HOST_OS
+static int
+set_oom_score_adj (glusterfs_ctx_t *ctx)
+{
+        int                  ret           = -1;
+        cmd_args_t          *cmd_args      =  NULL;
+        int                  fd            = -1;
+        size_t               oom_score_len =  0;
+        struct oom_api_info *api           =  NULL;
+
+        cmd_args = &ctx->cmd_args;
+
+        if (!cmd_args->oom_score_adj)
+                goto success;
+
+        api = get_oom_api_info();
+        if (!api)
+                goto out;
+
+        fd = open (api->oom_api_file, O_WRONLY);
+        if (fd < 0)
+                goto out;
+
+        oom_score_len = strlen (cmd_args->oom_score_adj);
+        if (sys_write (fd,
+                  cmd_args->oom_score_adj, oom_score_len) != oom_score_len) {
+                sys_close (fd);
+                goto out;
+        }
+
+        if (sys_close (fd) < 0)
+                goto out;
+
+success:
+        ret = 0;
+
+out:
+        return ret;
+}
+#endif
 
 
 int
@@ -2197,7 +2380,12 @@ glusterfs_process_volfp (glusterfs_ctx_t *ctx, FILE *fp)
                 }
         }
 
-        ret = glusterfs_graph_prepare (graph, ctx);
+        xlator_t *xl = graph->first;
+        if (strcmp (xl->type, "protocol/server") == 0) {
+                (void) copy_opts_to_child (xl, FIRST_CHILD (xl), "*auth*");
+        }
+
+        ret = glusterfs_graph_prepare (graph, ctx, ctx->cmd_args.volume_name);
         if (ret) {
                 goto out;
         }
@@ -2218,7 +2406,8 @@ out:
         if (ret && !ctx->active) {
                 glusterfs_graph_destroy (graph);
                 /* there is some error in setting up the first graph itself */
-                cleanup_and_exit (0);
+                emancipate (ctx, ret);
+                cleanup_and_exit (ret);
         }
 
         return ret;
@@ -2274,6 +2463,8 @@ main (int argc, char *argv[])
         char              cmdlinestr[PATH_MAX] = {0,};
         cmd_args_t       *cmd = NULL;
 
+        mem_pools_init_early ();
+
 	gf_check_and_set_mem_acct (argc, argv);
 
 	ctx = glusterfs_ctx_new ();
@@ -2326,7 +2517,8 @@ main (int argc, char *argv[])
                 strcpy (cmdlinestr, argv[0]);
                 for (i = 1; i < argc; i++) {
                         strcat (cmdlinestr, " ");
-                        strcat (cmdlinestr, argv[i]);
+                        strncat (cmdlinestr, argv[i],
+                                 (sizeof (cmdlinestr) - 1));
                 }
                 gf_msg (argv[0], GF_LOG_INFO, 0, glusterfsd_msg_30,
                         argv[0], PACKAGE_VERSION, cmdlinestr);
@@ -2344,17 +2536,31 @@ main (int argc, char *argv[])
         if (ret)
                 goto out;
 
+        /*
+         * If we do this before daemonize, the pool-sweeper thread dies with
+         * the parent, but we want to do it as soon as possible after that in
+         * case something else depends on pool allocations.
+         */
+        mem_pools_init_late ();
+
+#ifdef GF_LINUX_HOST_OS
+        ret = set_oom_score_adj (ctx);
+        if (ret)
+                goto out;
+#endif
+
 	ctx->env = syncenv_new (0, 0, 0);
         if (!ctx->env) {
                 gf_msg ("", GF_LOG_ERROR, 0, glusterfsd_msg_31);
                 goto out;
         }
 
-        /* do this _after_ deamonize() */
+        /* do this _after_ daemonize() */
         if (cmd->global_timer_wheel) {
-                ret = glusterfs_global_timer_wheel_init (ctx);
-                if (ret)
+                if (!glusterfs_ctx_tw_get (ctx)) {
+                        ret = -1;
                         goto out;
+                }
         }
 
         ret = glusterfs_volumes_init (ctx);

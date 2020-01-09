@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <inttypes.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -89,6 +84,7 @@ __glusterd_defrag_notify (struct rpc_clnt *rpc, void *mydata,
         char                    pidfile[PATH_MAX];
         glusterd_conf_t        *priv    = NULL;
         xlator_t               *this    = NULL;
+        int                    pid      = -1;
 
         this = THIS;
         if (!this)
@@ -139,7 +135,7 @@ __glusterd_defrag_notify (struct rpc_clnt *rpc, void *mydata,
                 }
                 UNLOCK (&defrag->lock);
 
-                if (!gf_is_service_running (pidfile, NULL)) {
+                if (!gf_is_service_running (pidfile, &pid)) {
                         if (volinfo->rebal.defrag_status ==
                                                 GF_DEFRAG_STATUS_STARTED) {
                                 volinfo->rebal.defrag_status =
@@ -149,6 +145,7 @@ __glusterd_defrag_notify (struct rpc_clnt *rpc, void *mydata,
 
                 glusterd_store_perform_node_state_store (volinfo);
 
+                rpc_clnt_disable (defrag->rpc);
                 glusterd_defrag_rpc_put (defrag);
                 if (defrag->cbk_fn)
                         defrag->cbk_fn (volinfo,
@@ -187,6 +184,7 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
                               size_t len, int cmd, defrag_cbk_fn_t cbk,
                               glusterd_op_t op)
 {
+        xlator_t               *this = NULL;
         int                    ret = -1;
         glusterd_defrag_info_t *defrag =  NULL;
         runner_t               runner = {0,};
@@ -199,7 +197,11 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
         char                   valgrind_logfile[PATH_MAX] = {0,};
         char                   *volfileserver = NULL;
 
-        priv    = THIS->private;
+        this    = THIS;
+        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
+
+        priv    = this->private;
+        GF_VALIDATE_OR_GOTO ("glusterd", priv, out);
 
         GF_ASSERT (volinfo);
         GF_ASSERT (op_errstr);
@@ -232,7 +234,7 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
         GLUSTERD_GET_DEFRAG_DIR (defrag_path, volinfo, priv);
         ret = mkdir_p (defrag_path, 0777, _gf_true);
         if (ret) {
-                gf_msg (THIS->name, GF_LOG_ERROR, errno,
+                gf_msg (this->name, GF_LOG_ERROR, errno,
                         GD_MSG_CREATE_DIR_FAILED, "Failed to create "
                         "directory %s", defrag_path);
                 goto out;
@@ -245,7 +247,7 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
                     (cmd == GF_DEFRAG_CMD_START_TIER ? "tier":"rebalance"));
         runinit (&runner);
 
-        if (priv->valgrind) {
+        if (this->ctx->cmd_args.valgrind) {
                 snprintf (valgrind_logfile, PATH_MAX,
                           "%s/valgrind-%s-rebalance.log",
                           DEFAULT_LOG_FILE_DIRECTORY,
@@ -259,7 +261,7 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
 
         snprintf (volname, sizeof(volname), "rebalance/%s", volinfo->volname);
 
-        if (dict_get_str (THIS->options, "transport.socket.bind-address",
+        if (dict_get_str (this->options, "transport.socket.bind-address",
                           &volfileserver) == 0) {
                /*In the case of running multiple glusterds on a single machine,
                 *we should ensure that log file and unix socket file shouls be
@@ -319,7 +321,7 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
 
         sleep (5);
 
-        ret = glusterd_rebalance_rpc_create (volinfo, _gf_false);
+        ret = glusterd_rebalance_rpc_create (volinfo);
 
         //FIXME: this cbk is passed as NULL in all occurrences. May be
         //we never needed it.
@@ -367,8 +369,7 @@ out:
 }
 
 int
-glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo,
-                               gf_boolean_t reconnect)
+glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo)
 {
         dict_t                  *options = NULL;
         char                     sockfile[PATH_MAX] = {0,};
@@ -387,35 +388,27 @@ glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo,
         if (!defrag)
                 goto out;
 
-        //rpc obj for rebalance process already in place.
-        if (glusterd_defrag_rpc_get (defrag)) {
-                ret = 0;
-                glusterd_defrag_rpc_put (defrag);
-                goto out;
-        }
         GLUSTERD_GET_DEFRAG_SOCK_FILE (sockfile, volinfo);
-        /* If reconnecting check if defrag sockfile exists in the new location
+        /* Check if defrag sockfile exists in the new location
          * in /var/run/ , if it does not try the old location
          */
-        if (reconnect) {
-                ret = sys_stat (sockfile, &buf);
-                /* TODO: Remove this once we don't need backward compatibility
-                 * with the older path
-                 */
-                if (ret && (errno == ENOENT)) {
-                        gf_msg (this->name, GF_LOG_WARNING, errno,
-                                GD_MSG_FILE_OP_FAILED, "Rebalance sockfile "
-                                "%s does not exist. Trying old path.",
-                                sockfile);
-                        GLUSTERD_GET_DEFRAG_SOCK_FILE_OLD (sockfile, volinfo,
-                                                           priv);
-                        ret =sys_stat (sockfile, &buf);
-                        if (ret && (ENOENT == errno)) {
-                                gf_msg (this->name, GF_LOG_ERROR, 0,
-                                        GD_MSG_REBAL_NO_SOCK_FILE, "Rebalance "
-                                        "sockfile %s does not exist", sockfile);
-                                goto out;
-                        }
+        ret = sys_stat (sockfile, &buf);
+        /* TODO: Remove this once we don't need backward compatibility
+         * with the older path
+         */
+        if (ret && (errno == ENOENT)) {
+                gf_msg (this->name, GF_LOG_WARNING, errno,
+                        GD_MSG_FILE_OP_FAILED, "Rebalance sockfile "
+                        "%s does not exist. Trying old path.",
+                        sockfile);
+                GLUSTERD_GET_DEFRAG_SOCK_FILE_OLD (sockfile, volinfo,
+                                                   priv);
+                ret =sys_stat (sockfile, &buf);
+                if (ret && (ENOENT == errno)) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_REBAL_NO_SOCK_FILE, "Rebalance "
+                                "sockfile %s does not exist", sockfile);
+                        goto out;
                 }
         }
 
@@ -433,7 +426,7 @@ glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo,
 
         glusterd_volinfo_ref (volinfo);
         ret = glusterd_rpc_create (&defrag->rpc, options,
-                                   glusterd_defrag_notify, volinfo);
+                                   glusterd_defrag_notify, volinfo, _gf_true);
         if (ret) {
                 gf_msg (THIS->name, GF_LOG_ERROR, 0, GD_MSG_RPC_CREATE_FAIL,
                         "Glusterd RPC creation failed");
@@ -607,7 +600,8 @@ glusterd_brick_validation  (dict_t *dict, char *key, data_t *value,
         GF_ASSERT (this);
 
         ret = glusterd_volume_brickinfo_get_by_brick (value->data, volinfo,
-                                                      &brickinfo);
+                                                      &brickinfo,
+                                                      _gf_false);
         if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, EINVAL,
                         GD_MSG_BRICK_NOT_FOUND,
@@ -737,8 +731,9 @@ glusterd_op_stage_rebalance (dict_t *dict, char **op_errstr)
                                                       sizeof (msg),
                                                       GD_OP_REBALANCE);
                 if (ret) {
-                        gf_msg_debug (this->name, 0,
-                                        "start validate failed");
+                        gf_msg_debug (this->name, 0, "defrag start validate "
+                                      "failed for volume %s.",
+                                      volinfo->volname);
                         goto out;
                 }
                 break;
@@ -756,7 +751,8 @@ glusterd_op_stage_rebalance (dict_t *dict, char **op_errstr)
                 }
                 if ((strstr(cmd_str, "rebalance") != NULL) &&
                     (volinfo->rebal.op != GD_OP_REBALANCE)) {
-                        snprintf (msg, sizeof(msg), "Rebalance not started.");
+                        snprintf (msg, sizeof(msg), "Rebalance not started "
+                                  "for volume %s.", volinfo->volname);
                         ret = -1;
                         goto out;
                 }
@@ -764,7 +760,8 @@ glusterd_op_stage_rebalance (dict_t *dict, char **op_errstr)
                 if (strstr(cmd_str, "remove-brick") != NULL) {
                         if (volinfo->rebal.op != GD_OP_REMOVE_BRICK) {
                                 snprintf (msg, sizeof(msg), "remove-brick not "
-                                          "started.");
+                                          "started for volume %s.",
+                                          volinfo->volname);
                                 ret = -1;
                                 goto out;
                         }
@@ -828,7 +825,6 @@ glusterd_op_rebalance (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
         int32_t                 cmd       = 0;
         char                    msg[2048] = {0};
         glusterd_volinfo_t      *volinfo   = NULL;
-        glusterd_conf_t         *priv      = NULL;
         glusterd_brickinfo_t    *brickinfo = NULL;
         glusterd_brickinfo_t    *tmp      = NULL;
         gf_boolean_t            volfile_update = _gf_false;
@@ -840,7 +836,6 @@ glusterd_op_rebalance (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
 
         this = THIS;
         GF_ASSERT (this);
-        priv = this->private;
 
         ret = dict_get_str (dict, "volname", &volname);
         if (ret) {
@@ -1063,18 +1058,25 @@ glusterd_defrag_event_notify_handle (dict_t *dict)
         volname_ptr = strstr (volname, "rebalance/");
         if (volname_ptr) {
                 volname_ptr = strchr (volname_ptr, '/');
-                if (!volname_ptr) {
+                volname = volname_ptr + 1;
+        } else {
+                volname_ptr = strstr (volname, "tierd/");
+                if (volname_ptr) {
+                        volname_ptr = strchr (volname_ptr, '/');
+                        if (!volname_ptr) {
+                                ret = -1;
+                                goto out;
+                        }
+                        volname = volname_ptr + 1;
+                } else {
+
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                GD_MSG_NO_REBALANCE_PFX_IN_VOLNAME,
+                                "volname received (%s) is not prefixed with "
+                                "rebalance or tierd.", volname);
                         ret = -1;
                         goto out;
                 }
-                volname = volname_ptr + 1;
-        } else {
-                gf_msg (this->name, GF_LOG_ERROR, 0,
-                        GD_MSG_NO_REBALANCE_PFX_IN_VOLNAME,
-                        "volname recieved (%s) is not prefixed with rebalance.",
-                        volname);
-                ret = -1;
-                goto out;
         }
 
         ret = glusterd_volinfo_find (volname, &volinfo);
@@ -1086,12 +1088,15 @@ glusterd_defrag_event_notify_handle (dict_t *dict)
                 return ret;
         }
 
-        ret = glusterd_defrag_volume_status_update (volinfo, dict);
+        ret = glusterd_defrag_volume_status_update (volinfo, dict, 0);
 
-        if (ret)
+        if (ret) {
                 gf_msg (this->name, GF_LOG_ERROR, 0,
                         GD_MSG_DEFRAG_STATUS_UPDATE_FAIL,
                         "Failed to update status");
+                gf_event (EVENT_REBALANCE_STATUS_UPDATE_FAILED, "volume=%s",
+                          volinfo->volname);
+        }
 
 out:
         return ret;

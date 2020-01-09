@@ -1,0 +1,45 @@
+From d2a15381b5cd414aa1dcf585a495200a29390f7e Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Tue, 22 May 2018 17:11:11 +0530
+Subject: [PATCH 276/282] tests: check volume status for shd being up
+
+so that glusterd is also aware that shd is up and running.
+
+While not reproducible locally, on the jenkins slaves, 'gluster vol heal patchy'
+fails with "Self-heal daemon is not running. Check self-heal daemon log file.",
+while infact the afr_child_up_status_in_shd() checks before that passed. In the
+shd log also, I see the shd being up and connected to at least one brick before
+the heal is launched.
+
+Upstream Patch: https://review.gluster.org/#/c/19185/
+
+> Change-Id: Id3801fa4ab56a70b1f0bd6a7e240f69bea74a5fc
+> BUG: 1515163
+> Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+
+Change-Id: Iec44500dc52b0991cc45befaa4b40351ab1ad870
+BUG: 1581219
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/139486
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+Tested-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ tests/bugs/replicate/bug-1292379.t | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/tests/bugs/replicate/bug-1292379.t b/tests/bugs/replicate/bug-1292379.t
+index f086502..be1bf69 100644
+--- a/tests/bugs/replicate/bug-1292379.t
++++ b/tests/bugs/replicate/bug-1292379.t
+@@ -39,6 +39,7 @@ TEST $CLI volume start $V0 force
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 0
+ TEST fd_write $wfd "pqrs"
+ TEST $CLI volume set $V0 self-heal-daemon on
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Y" glustershd_up_status
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status_in_shd $V0 0
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status_in_shd $V0 1
+ 
+-- 
+1.8.3.1
+

@@ -1,0 +1,110 @@
+From 90092b0c276f599bbe415ecc3051ca12d99461b6 Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Sat, 17 Mar 2018 13:16:59 +0530
+Subject: [PATCH 263/271] server/resolver: don't trust inode-table for
+ RESOLVE_NOT
+
+There have been known races between fops which add a dentry (like
+lookup, create, mknod etc) and fops that remove a dentry (like rename,
+unlink, rmdir etc) due to which stale dentries are left out in inode
+table even though the dentry doesn't exist on backend. For eg.,
+consider a lookup (parent/bname) and unlink (parent/bname) racing in
+the following order:
+
+* lookup hits storage/posix and finds that dentry exists
+* unlink removes the dentry on storage/posix
+* unlink reaches protocol/server where the dentry (parent/bname) is
+  unlinked from the inode
+* lookup reaches protocol/server and creates a dentry (parent/bname)
+  on the inode
+
+Now we've a stale dentry (parent/bname) associated with the inode in
+itable. This situation is bad for fops like link, create etc which
+invoke resolver with type RESOLVE_NOT. These fops fail with EEXIST
+even though there is no such dentry on backend fs. This issue can be
+solved in two ways:
+
+* Enable "dentry fop serializer" xlator [1].
+  # gluster volume set features.sdfs on
+
+* Make sure resolver does a lookup on backend when it finds a dentry
+  in itable and validates the state of itable.
+   - If a dentry is not found, unlink those stale dentries from itable
+     and continue with fop
+   - If dentry is found, fail the fop with EEXIST
+
+This patch implements second solution as sdfs is not enabled by
+default in brick xlator stack. Once sdfs is enabled by default, this
+patch can be reverted.
+
+[1] https://github.com/gluster/glusterfs/issues/397
+
+>Change-Id: Ia8bb0cf97f97cb0e72639bce8aadb0f6d3f4a34a
+>updates: bz#1543279
+>BUG: 1543279
+>Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+
+upstream patch: https://review.gluster.org/19732
+BUG: 1488120
+Change-Id: I78df4f6751e5db1fc659ee15d92b76d1486455f0
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/138152
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+---
+ xlators/protocol/server/src/server-resolve.c | 27 +++++++++++++++++++++++----
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/protocol/server/src/server-resolve.c b/xlators/protocol/server/src/server-resolve.c
+index d0126aa..6ffb909 100644
+--- a/xlators/protocol/server/src/server-resolve.c
++++ b/xlators/protocol/server/src/server-resolve.c
+@@ -58,10 +58,27 @@ resolve_gfid_entry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+         if (op_ret == -1) {
+                 if (op_errno == ENOENT) {
+-                        gf_msg_debug (this->name, 0, "%s/%s: failed to resolve"
+-                                      " (%s)",
++                        gf_msg_debug (this->name, 0,
++                                      "%s/%s: failed to resolve (%s)",
+                                       uuid_utoa (resolve_loc->pargfid),
+                                       resolve_loc->name, strerror (op_errno));
++                        if (resolve->type == RESOLVE_NOT) {
++                                do {
++                                        inode = inode_grep (state->itable,
++                                                            resolve_loc->parent,
++                                                            resolve->bname);
++
++                                        if (inode) {
++                                                gf_msg_debug (this->name, 0, "%s/%s: "
++                                                              "removing stale dentry",
++                                                              uuid_utoa (resolve_loc->pargfid),
++                                                              resolve->bname);
++                                                inode_unlink (inode,
++                                                              resolve_loc->parent,
++                                                              resolve->bname);
++                                        }
++                                } while (inode);
++                        }
+                 } else {
+                         gf_msg (this->name, GF_LOG_WARNING, op_errno,
+                                 PS_MSG_GFID_RESOLVE_FAILED, "%s/%s: failed to "
+@@ -318,11 +335,13 @@ resolve_entry_simple (call_frame_t *frame)
+ 
+         if (resolve->type == RESOLVE_NOT) {
+                 gf_msg_debug (this->name, 0, "inode (pointer: %p gfid:%s found"
+-                              " for path (%s) while type is RESOLVE_NOT",
++                              " for path (%s) while type is RESOLVE_NOT. "
++                              "Performing lookup on backend to rule out any "
++                              "possible stale dentries in inode table",
+                               inode, uuid_utoa (inode->gfid), resolve->path);
+                 resolve->op_ret   = -1;
+                 resolve->op_errno = EEXIST;
+-                ret = -1;
++                ret = 1;
+                 goto out;
+         }
+ 
+-- 
+1.8.3.1
+

@@ -7,11 +7,6 @@
    later), or the GNU General Public License, version 2 (GPLv2), in all
    cases as published by the Free Software Foundation.
 */
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #ifndef _QUOTA_H
 #define _QUOTA_H
 
@@ -91,11 +86,9 @@
 #define QUOTA_STACK_WIND_TAIL(frame, params...)                         \
         do {                                                            \
                 quota_local_t *_local = NULL;                           \
-                xlator_t      *_this  = NULL;                           \
                                                                         \
                 if (frame) {                                            \
                         _local = frame->local;                          \
-                        _this  = frame->this;                           \
                         frame->local = NULL;                            \
                 }                                                       \
                                                                         \
@@ -108,10 +101,8 @@
 #define QUOTA_STACK_UNWIND(fop, frame, params...)                       \
         do {                                                            \
                 quota_local_t *_local = NULL;                           \
-                xlator_t      *_this  = NULL;                           \
                 if (frame) {                                            \
                         _local = frame->local;                          \
-                        _this  = frame->this;                           \
                         frame->local = NULL;                            \
                 }                                                       \
                 STACK_UNWIND_STRICT (fop, frame, params);               \
@@ -199,6 +190,7 @@ struct quota_local {
         loc_t                   newloc;
         loc_t                   validate_loc;
         int64_t                 delta;
+        int8_t                  object_delta;
         int32_t                 op_ret;
         int32_t                 op_errno;
         int64_t                 size;

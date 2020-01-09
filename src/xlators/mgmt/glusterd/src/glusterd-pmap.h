@@ -10,11 +10,6 @@
 #ifndef _GLUSTERD_PMAP_H_
 #define _GLUSTERD_PMAP_H_
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <pthread.h>
 #include "compat-uuid.h"
 
@@ -28,8 +23,6 @@
 #include "rpcsvc.h"
 
 
-#define GF_IANA_PRIV_PORTS_START 49152 /* RFC 6335 */
-
 struct pmap_port_status {
         gf_pmap_port_type_t type;
         char  *brickname;
@@ -42,13 +35,16 @@ struct pmap_registry {
         struct  pmap_port_status ports[65536];
 };
 
+int pmap_assign_port (xlator_t *this, int port, const char *path);
+int pmap_mark_port_leased (xlator_t *this, int port);
 int pmap_registry_alloc (xlator_t *this);
 int pmap_registry_bind (xlator_t *this, int port, const char *brickname,
                         gf_pmap_port_type_t type, void *xprt);
+int pmap_registry_extend (xlator_t *this, int port, const char *brickname);
 int pmap_registry_remove (xlator_t *this, int port, const char *brickname,
                           gf_pmap_port_type_t type, void *xprt);
 int pmap_registry_search (xlator_t *this, const char *brickname,
-                          gf_pmap_port_type_t type);
+                          gf_pmap_port_type_t type, gf_boolean_t destroy);
 struct pmap_registry *pmap_registry_get (xlator_t *this);
 
 #endif

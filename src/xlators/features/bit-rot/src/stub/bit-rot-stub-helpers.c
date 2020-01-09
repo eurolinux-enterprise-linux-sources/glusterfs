@@ -157,10 +157,8 @@ br_stub_add (xlator_t *this, uuid_t gfid)
         char              gfid_path[PATH_MAX] = {0};
         char              bad_gfid_path[PATH_MAX] = {0};
         int               ret = 0;
-        uuid_t            index = {0};
         br_stub_private_t *priv = NULL;
         struct stat       st = {0};
-        int               fd = 0;
 
         priv = this->private;
         GF_ASSERT_AND_GOTO_WITH_ERROR (this->name, !gf_uuid_is_null (gfid),
@@ -226,16 +224,27 @@ out:
 static int
 br_stub_check_stub_directory (xlator_t *this, char *fullpath)
 {
-        int ret = 0;
-        struct stat st = {0,};
+        int         ret         = 0;
+        struct stat st          = {0,};
+        char  oldpath[PATH_MAX] = {0};
+        br_stub_private_t    *priv = NULL;
 
-        ret = stat (fullpath, &st);
+        priv = this->private;
+
+        (void) snprintf (oldpath, PATH_MAX,
+                         "%s/%s", priv->export, OLD_BR_STUB_QUARANTINE_DIR);
+
+        ret = sys_stat (fullpath, &st);
         if (!ret && !S_ISDIR (st.st_mode))
                 goto error_return;
         if (ret) {
                 if (errno != ENOENT)
                         goto error_return;
-                ret = mkdir_p (fullpath, 0600, _gf_true);
+                ret =  sys_stat (oldpath, &st);
+                if (ret)
+                        ret = mkdir_p (fullpath, 0600, _gf_true);
+                else
+                        ret = sys_rename (oldpath, fullpath);
         }
 
         if (ret)
@@ -262,7 +271,7 @@ br_stub_check_stub_file (xlator_t *this, char *path)
         int fd = -1;
         struct stat st = {0,};
 
-        ret = stat (path, &st);
+        ret = sys_stat (path, &st);
         if (!ret && !S_ISREG (st.st_mode))
                 goto error_return;
         if (ret) {
@@ -294,8 +303,6 @@ br_stub_dir_create (xlator_t *this, br_stub_private_t *priv)
         int          ret = -1;
         char         fullpath[PATH_MAX] = {0};
         char         stub_gfid_path[PATH_MAX] = {0, };
-        char         path[PATH_MAX] = {0};
-        size_t       len = 0;
 
         gf_uuid_copy (priv->bad_object_dir_gfid, BR_BAD_OBJ_CONTAINER);
 
@@ -355,7 +362,6 @@ br_stub_worker (void *data)
         br_stub_private_t     *priv = NULL;
         xlator_t         *this = NULL;
         call_stub_t      *stub = NULL;
-        int               ret = 0;
 
 
         THIS = data;
@@ -366,8 +372,8 @@ br_stub_worker (void *data)
                 pthread_mutex_lock (&priv->container.bad_lock);
                 {
                         while (list_empty (&priv->container.bad_queue)) {
-                              ret = pthread_cond_wait (&priv->container.bad_cond,
-                                                       &priv->container.bad_lock);
+                              (void) pthread_cond_wait (&priv->container.bad_cond,
+                                                        &priv->container.bad_lock);
                         }
 
                         stub = __br_stub_dequeue (&priv->container.bad_queue);
@@ -393,8 +399,11 @@ br_stub_lookup_wrapper (call_frame_t *frame, xlator_t *this,
         struct iatt        stbuf       = {0, };
         struct iatt        postparent  = {0,};
         dict_t            *xattr       = NULL;
+        gf_boolean_t       ver_enabled = _gf_false;
 
+        BR_STUB_VER_ENABLED_IN_CALLPATH(frame, ver_enabled);
         priv = this->private;
+        BR_STUB_VER_COND_GOTO (priv, (!ver_enabled), done);
 
         VALIDATE_OR_GOTO (loc, done);
         if (gf_uuid_compare (loc->gfid, priv->bad_object_dir_gfid))
@@ -465,15 +474,15 @@ static int
 br_stub_fill_readdir (fd_t *fd, br_stub_fd_t *fctx, DIR *dir, off_t off,
                       size_t size, gf_dirent_t *entries)
 {
-        off_t     in_case = -1;
-        off_t     last_off = 0;
-        size_t    filled = 0;
-        int       count = 0;
-        char      entrybuf[sizeof(struct dirent) + 256 + 8];
-        struct dirent  *entry          = NULL;
-        int32_t              this_size      = -1;
-        gf_dirent_t          *this_entry     = NULL;
-        xlator_t             *this = NULL;
+        off_t          in_case = -1;
+        off_t          last_off = 0;
+        size_t         filled = 0;
+        int            count = 0;
+        int32_t        this_size      = -1;
+        gf_dirent_t   *this_entry     = NULL;
+        xlator_t      *this           = NULL;
+        struct dirent *entry          = NULL;
+        struct dirent  scratch[2]     = {{0,},};
 
         this = THIS;
         if (!off) {
@@ -507,10 +516,8 @@ br_stub_fill_readdir (fd_t *fd, br_stub_fd_t *fctx, DIR *dir, off_t off,
                 }
 
                 errno = 0;
-                entry = NULL;
-                readdir_r (dir, (struct dirent *)entrybuf, &entry);
-
-                if (!entry) {
+                entry = sys_readdir (dir, scratch);
+                if (!entry || errno != 0) {
                         if (errno == EBADF) {
                                 gf_msg (THIS->name, GF_LOG_WARNING, 0,
                                         BRS_MSG_BAD_OBJECT_DIR_READ_FAIL,
@@ -579,7 +586,7 @@ br_stub_fill_readdir (fd_t *fd, br_stub_fd_t *fctx, DIR *dir, off_t off,
                 count++;
         }
 
-        if ((!sys_readdir (dir) && (errno == 0))) {
+        if ((!sys_readdir (dir, scratch) && (errno == 0))) {
                 /* Indicate EOF */
                 errno = ENOENT;
                 /* Remember EOF offset for later detection */

@@ -18,6 +18,7 @@ TEST $CLI volume info;
 recreate ${B0}/${V0}-0
 recreate ${B0}/${V0}-1
 TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}-{0,1}
+TEST $CLI volume set $V0 nfs.disable false
 
 function volinfo_field()
 {
@@ -75,6 +76,11 @@ volid=$(getfattr -e hex -n trusted.glusterfs.volume-id $B0/${V0}-0 2> /dev/null 
 	| grep = | cut -d= -f2)
 rm -rf $B0/${V0}-0;
 mkdir $B0/${V0}-0;
+#Ideally, disk replacement is done using reset-brick or replace-brick gluster CLI
+#which will create .glusterfs/indices folder.
+mkdir $B0/${V0}-0/.glusterfs && chmod 600 $B0/${V0}-0/.glusterfs
+mkdir $B0/${V0}-0/.glusterfs/indices && chmod 600 $B0/${V0}-0/.glusterfs/indices
+
 setfattr -n trusted.glusterfs.volume-id -v $volid $B0/${V0}-0
 
 ## Restart and remount. Note that we use actimeo=0 so that the stat calls

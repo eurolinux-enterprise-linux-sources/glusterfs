@@ -1,0 +1,138 @@
+From eadd7e7168349705b29bc6ae9f99ba3e6ae58060 Mon Sep 17 00:00:00 2001
+From: Sanju Rakonde <srakonde@redhat.com>
+Date: Mon, 16 Jul 2018 15:59:36 +0530
+Subject: [PATCH 326/333] glusterd: memory leak in get-state
+
+Problem: gluster get-state command is leaking the memory when
+geo-replication session is configured.
+
+Cause: In glusterd_print_gsync_status(), we are trying to get
+reference to the keys of gsync_dict. The references to keys of
+gsync_dict are stored status_vols[i]. status_vols[i] are
+allocated with a memory of size of gf_gsync_status_t.
+
+Solution: Need not to use a array of pointers(status_vals), using
+a pointer to hold the reference to a key of gsync_dict is sufficient.
+
+Followed the below steps for testing:
+1. Configured geo-rep session
+2. Ran gluster get-state command for 1000 times.
+
+Without this patch, glusterd's memory was increasing significantly
+(around 22000KB per 1000 times), with this patch it reduced (1500KB
+per 1000 times)
+
+>fixes: bz#1601423
+>Change-Id: I361f5525d71f821bb345419ccfdc20ca288ca292
+>Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+
+upstream patch: https://review.gluster.org/#/c/20521/
+
+Change-Id: I361f5525d71f821bb345419ccfdc20ca288ca292
+BUG: 1599362
+Signed-off-by: Sanju Rakonde <srakonde@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/144325
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Mohit Agrawal <moagrawa@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handler.c | 53 ++++++++++------------------
+ 1 file changed, 19 insertions(+), 34 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index 395b342..861ff17 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -5082,7 +5082,7 @@ glusterd_print_gsync_status (FILE *fp, dict_t *gsync_dict)
+         int                     ret = -1;
+         int                     gsync_count = 0;
+         int                     i = 0;
+-        gf_gsync_status_t       **status_vals = NULL;
++        gf_gsync_status_t       *status_vals = NULL;
+         char                    status_val_name[PATH_MAX] = {0,};
+ 
+         GF_VALIDATE_OR_GOTO (THIS->name, fp, out);
+@@ -5097,62 +5097,47 @@ glusterd_print_gsync_status (FILE *fp, dict_t *gsync_dict)
+                 goto out;
+         }
+ 
+-        status_vals = GF_CALLOC (gsync_count, sizeof (gf_gsync_status_t *),
+-                                 gf_common_mt_char);
+-        if (!status_vals) {
+-                ret = -1;
+-                goto out;
+-        }
+-        for (i = 0; i < gsync_count; i++) {
+-                status_vals[i] = GF_CALLOC (1, sizeof (gf_gsync_status_t),
+-                                            gf_common_mt_char);
+-                if (!status_vals[i]) {
+-                        ret = -1;
+-                        goto out;
+-                }
+-        }
+-
+         for (i = 0; i < gsync_count; i++) {
+                 snprintf (status_val_name, sizeof(status_val_name), "status_value%d", i);
+ 
+-                ret = dict_get_bin (gsync_dict, status_val_name, (void **)&(status_vals[i]));
++                ret = dict_get_bin (gsync_dict, status_val_name, (void **)&(status_vals));
+                 if (ret)
+                         goto out;
+ 
+                 fprintf (fp, "Volume%d.pair%d.session_slave: %s\n", volcount, i+1,
+-                         get_struct_variable(21, status_vals[i]));
++                         get_struct_variable(21, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.master_node: %s\n", volcount, i+1,
+-                         get_struct_variable(0, status_vals[i]));
++                         get_struct_variable(0, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.master_volume: %s\n", volcount, i+1,
+-                         get_struct_variable(1, status_vals[i]));
++                         get_struct_variable(1, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.master_brick: %s\n", volcount, i+1,
+-                         get_struct_variable(2, status_vals[i]));
++                         get_struct_variable(2, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.slave_user: %s\n", volcount, i+1,
+-                         get_struct_variable(3, status_vals[i]));
++                         get_struct_variable(3, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.slave: %s\n", volcount, i+1,
+-                         get_struct_variable(4, status_vals[i]));
++                         get_struct_variable(4, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.slave_node: %s\n", volcount, i+1,
+-                         get_struct_variable(5, status_vals[i]));
++                         get_struct_variable(5, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.status: %s\n", volcount, i+1,
+-                         get_struct_variable(6, status_vals[i]));
++                         get_struct_variable(6, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.crawl_status: %s\n", volcount, i+1,
+-                         get_struct_variable(7, status_vals[i]));
++                         get_struct_variable(7, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.last_synced: %s\n", volcount, i+1,
+-                         get_struct_variable(8, status_vals[i]));
++                         get_struct_variable(8, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.entry: %s\n", volcount, i+1,
+-                         get_struct_variable(9, status_vals[i]));
++                         get_struct_variable(9, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.data: %s\n", volcount, i+1,
+-                         get_struct_variable(10, status_vals[i]));
++                         get_struct_variable(10, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.meta: %s\n", volcount, i+1,
+-                         get_struct_variable(11, status_vals[i]));
++                         get_struct_variable(11, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.failures: %s\n", volcount, i+1,
+-                         get_struct_variable(12, status_vals[i]));
++                         get_struct_variable(12, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.checkpoint_time: %s\n", volcount,
+-                         i+1, get_struct_variable(13, status_vals[i]));
++                         i+1, get_struct_variable(13, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.checkpoint_completed: %s\n",
+-                         volcount, i+1, get_struct_variable(14, status_vals[i]));
++                         volcount, i+1, get_struct_variable(14, status_vals));
+                 fprintf (fp, "Volume%d.pair%d.checkpoint_completion_time: %s\n",
+-                         volcount, i+1, get_struct_variable(15, status_vals[i]));
++                         volcount, i+1, get_struct_variable(15, status_vals));
+         }
+ out:
+         return ret;
+-- 
+1.8.3.1
+

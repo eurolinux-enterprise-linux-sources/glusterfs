@@ -1,0 +1,192 @@
+From d88cae2d02f0c106b4330128715921c459dd77fc Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Fri, 3 Nov 2017 11:49:42 +0530
+Subject: [PATCH 174/180] hooks: add a script to stat the subdirs in add-brick
+
+The subdirectories are expected to be present for a subdir
+mount to be successful. If not, the client_handshake()
+itself fails to succeed. When a volume is about to get
+mounted first time, this is easier to handle, as if the
+directory is not present in one brick, then its mostly
+not present in any other brick. In case of add-brick,
+the directory is not present in new brick, and there is
+no chance of healing it from the subdirectory mount, as
+in those clients, the subdir itself will be 'root' ('/')
+of the filesystem. Hence we need a volume mount to heal
+the directory before connections can succeed.
+
+This patch does take care of that by healing the directories
+which are expected to be mounted as subdirectories from the
+volume level mount point.
+
+>Change-Id: I2c2ac7b7567fe209aaa720006d09b68584d0dd14
+>BUG: 1549915
+>Signed-off-by: Amar Tumballi <amarts@redhat.com>
+upstream patch: https://review.gluster.org/#/c/18645/
+
+BUG: 1508999
+Change-Id: I2c2ac7b7567fe209aaa720006d09b68584d0dd14
+Signed-off-by: Sunil Kumar Acharya <sheggodu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/131896
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ extras/hook-scripts/add-brick/post/Makefile.am     |  4 +-
+ .../add-brick/post/S13create-subdir-mounts.sh      | 86 ++++++++++++++++++++++
+ glusterfs.spec.in                                  |  3 +-
+ tests/features/subdir-mount.t                      | 16 +---
+ 4 files changed, 94 insertions(+), 15 deletions(-)
+ create mode 100755 extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh
+
+diff --git a/extras/hook-scripts/add-brick/post/Makefile.am b/extras/hook-scripts/add-brick/post/Makefile.am
+index 5ca5a66..8eb82a1 100644
+--- a/extras/hook-scripts/add-brick/post/Makefile.am
++++ b/extras/hook-scripts/add-brick/post/Makefile.am
+@@ -1,4 +1,4 @@
+-EXTRA_DIST = disabled-quota-root-xattr-heal.sh
++EXTRA_DIST = disabled-quota-root-xattr-heal.sh S13create-subdir-mounts.sh
+ 
+ hookdir = $(GLUSTERD_WORKDIR)/hooks/1/add-brick/post/
+-hook_SCRIPTS = disabled-quota-root-xattr-heal.sh
++hook_SCRIPTS = disabled-quota-root-xattr-heal.sh S13create-subdir-mounts.sh
+diff --git a/extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh b/extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh
+new file mode 100755
+index 0000000..95e624e
+--- /dev/null
++++ b/extras/hook-scripts/add-brick/post/S13create-subdir-mounts.sh
+@@ -0,0 +1,86 @@
++#!/bin/bash
++
++##---------------------------------------------------------------------------
++## This script runs the self-heal of the directories which are expected to
++## be present as they are mounted as subdirectory mounts.
++##---------------------------------------------------------------------------
++
++MOUNT_DIR=`mktemp -d -t ${0##*/}.XXXXXX`;
++OPTSPEC="volname:,go-workdir"
++PROGNAME="add-brick-create-subdir"
++VOL_NAME=test
++GLUSTERD_WORKDIR="/var/lib/glusterd"
++
++cleanup_mountpoint ()
++{
++        umount -f $MOUNT_DIR;
++        if [ 0 -ne $? ]
++        then
++                return $?
++        fi
++
++        rmdir $MOUNT_DIR;
++        if [ 0 -ne $? ]
++        then
++                return $?
++        fi
++}
++
++##------------------------------------------
++## Parse the arguments
++##------------------------------------------
++ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
++eval set -- "$ARGS"
++
++while true;
++do
++    case $1 in
++        --volname)
++            shift
++            VOL_NAME=$1
++            ;;
++        --gd-workdir)
++            shift
++            GLUSTERD_WORKDIR=$1
++            ;;
++	--version)
++	    shift
++	    ;;
++	--volume-op)
++	    shift
++	    ;;
++	*)
++	    shift
++	    break
++	    ;;
++    esac
++    shift
++done
++
++## See if we have any subdirs to be healed before going further
++subdirs=$(grep 'auth.allow' ${GLUSTERD_WORKDIR}/vols/${VOL_NAME}/info | cut -f2 -d'=' | tr ',' '\n' | cut -f1 -d'(');
++
++if [ -z ${subdirs} ]; then
++    rmdir $MOUNT_DIR;
++    exit 0;
++fi
++
++##----------------------------------------
++## Mount the volume in temp directory.
++## -----------------------------------
++glusterfs -s localhost --volfile-id=$VOL_NAME --client-pid=-50 $MOUNT_DIR;
++if [ 0 -ne $? ]
++then
++    exit $?;
++fi
++
++## -----------------------------------
++# Do the 'stat' on all the directory for now. Ideal fix is to look at subdir
++# list from 'auth.allow' option and only stat them.
++for subdir in ${subdirs}
++do
++    stat ${MOUNT_DIR}/${subdir} > /dev/null;
++done
++
++## Clean up and exit
++cleanup_mountpoint;
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index ca36e65..34a3aba 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1519,8 +1519,9 @@ exit 0
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post
+             %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post/disabled-quota-root-xattr-heal.sh
+-            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
++            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post/S13create-subdir-mounts.sh
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
++            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/post
+             %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/post/S10selinux-label-brick.sh
+diff --git a/tests/features/subdir-mount.t b/tests/features/subdir-mount.t
+index 1742f86..8401946 100644
+--- a/tests/features/subdir-mount.t
++++ b/tests/features/subdir-mount.t
+@@ -98,22 +98,14 @@ TEST test "$mount_inode" == "1"
+ 
+ TEST umount $M2
+ 
+-# because the subdir is not yet 'healed', below should fail.
++# Now the exported subdirs should be automatically healed due to
++# hook scripts. Check if the mount is successful.
+ TEST $GFS --subdir-mount /subdir2 -s $H0 --volfile-id $V0 $M2
+ mount_inode=$(stat --format "%i" "$M2")
+-TEST test "$mount_inode" != "1"
+-
+-# Allow the heal to complete
+-TEST stat $M0/subdir1/subdir1.1/subdir1.2/subdir1.2_file;
+-TEST stat $M0/subdir2/
+-
+-# Now the mount should succeed
+-TEST $GFS --subdir-mount /subdir2 -s $H0 --volfile-id $V0 $M1
+-TEST stat $M1
++TEST test "$mount_inode" == "1"
+ 
+-# umount $M1 / $M2
+ TEST umount $M0
+-TEST umount $M1
++TEST umount $M2
+ 
+ 
+ TEST $CLI volume stop $V0;
+-- 
+1.8.3.1
+

@@ -10,11 +10,6 @@
 #ifndef _POSIX_H
 #define _POSIX_H
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif
-
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -80,6 +75,35 @@ struct posix_fd {
         int     odirect;
         struct list_head list; /* to add to the janitor list */
 };
+
+#define GFID_NULL_CHECK_AND_GOTO(frame, this, loc, xattr_req, op_ret,         \
+                                 op_errno, out)                               \
+        do {                                                                  \
+                void *_uuid_req = NULL;                                       \
+                int _ret = 0;                                                 \
+                /* TODO: Remove pid check once trash implements client side   \
+                 * logic to assign gfid for entry creations inside .trashcan  \
+                 */                                                           \
+                if (frame->root->pid == GF_SERVER_PID_TRASH)                  \
+                        break;                                                \
+                _ret = dict_get_ptr (xattr_req, "gfid-req", &_uuid_req);      \
+                if (_ret) {                                                   \
+                        gf_msg (this->name, GF_LOG_ERROR, EINVAL,             \
+                               P_MSG_NULL_GFID, "failed to get the gfid from" \
+                               " dict for %s", loc->path);                    \
+                        op_ret = -1;                                          \
+                        op_errno = EINVAL;                                    \
+                        goto out;                                             \
+                }                                                             \
+                if (gf_uuid_is_null (_uuid_req)) {                            \
+                        gf_msg (this->name, GF_LOG_ERROR, EINVAL,             \
+                                P_MSG_NULL_GFID, "gfid is null for %s",       \
+                                loc->path);                                   \
+                        op_ret = -1;                                          \
+                        op_errno = EINVAL;                                    \
+                        goto out;                                             \
+                }                                                             \
+        } while (0)
 
 
 struct posix_private {
@@ -165,6 +189,8 @@ struct posix_private {
 
 	uint32_t        batch_fsync_delay_usec;
         gf_boolean_t    update_pgfid_nlinks;
+        gf_boolean_t    gfid2path;
+        char            gfid2path_sep[8];
 
         /* seconds to sleep between health checks */
         uint32_t        health_check_interval;
@@ -180,6 +206,9 @@ struct posix_private {
         } xattr_user_namespace;
 #endif
 
+        /* Option to handle the cases of multiple bricks exported from
+           same backend. Very much usable in brick-splitting feature. */
+        int32_t shared_brick_count;
 };
 
 typedef struct {
@@ -194,6 +223,13 @@ typedef struct {
         int          flags;
         int32_t     op_errno;
 } posix_xattr_filler_t;
+
+typedef struct {
+        uint64_t unlink_flag;
+        pthread_mutex_t xattrop_lock;
+        pthread_mutex_t write_atomic_lock;
+        pthread_mutex_t pgfid_lock;
+} posix_inode_ctx_t;
 
 #define POSIX_BASE_PATH(this) (((struct posix_private *)this->private)->base_path)
 
@@ -222,8 +258,17 @@ typedef struct {
 
 
 /* Helper functions */
-int posix_inode_ctx_get (inode_t *inode, xlator_t *this, uint64_t *ctx);
-int posix_inode_ctx_set (inode_t *inode, xlator_t *this, uint64_t ctx);
+int posix_inode_ctx_set_unlink_flag (inode_t *inode, xlator_t *this,
+                                     uint64_t ctx);
+
+int posix_inode_ctx_get_all (inode_t *inode, xlator_t *this,
+                             posix_inode_ctx_t **ctx);
+
+int __posix_inode_ctx_set_unlink_flag (inode_t *inode, xlator_t *this,
+                                       uint64_t ctx);
+
+int __posix_inode_ctx_get_all (inode_t *inode, xlator_t *this,
+                               posix_inode_ctx_t **ctx);
 
 int posix_gfid_set (xlator_t *this, const char *path, loc_t *loc,
                     dict_t *xattr_req);
@@ -248,7 +293,8 @@ int posix_gfid_heal (xlator_t *this, const char *path, loc_t *loc, dict_t *xattr
 int posix_entry_create_xattr_set (xlator_t *this, const char *path,
                                   dict_t *dict);
 
-int posix_fd_ctx_get (fd_t *fd, xlator_t *this, struct posix_fd **pfd);
+int posix_fd_ctx_get (fd_t *fd, xlator_t *this, struct posix_fd **pfd,
+                      int *op_errno);
 void posix_fill_ino_from_gfid (xlator_t *this, struct iatt *buf);
 
 gf_boolean_t posix_special_xattr (char **pattern, char *key);
@@ -263,7 +309,11 @@ int
 posix_get_ancestry (xlator_t *this, inode_t *leaf_inode,
                     gf_dirent_t *head, char **path, int type, int32_t *op_errno,
                     dict_t *xdata);
-
+int
+posix_handle_georep_xattrs (call_frame_t *, const char *, int *, gf_boolean_t);
+int32_t
+posix_resolve_dirgfid_to_path (const uuid_t dirgfid, const char *brick_path,
+                               const char *bname, char **path);
 void
 posix_gfid_unset (xlator_t *this, dict_t *xdata);
 
@@ -279,4 +329,6 @@ posix_get_objectsignature (char *, dict_t *);
 int32_t
 posix_fdget_objectsignature (int, dict_t *);
 
+gf_boolean_t
+posix_is_bulk_removexattr (char *name, dict_t *dict);
 #endif /* _POSIX_H */

@@ -17,6 +17,7 @@ TEST $CLI volume info;
 TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{1,2,3,4,5,6};
 EXPECT 'Created' volinfo_field $V0 'Status';
 
+TEST $CLI volume set $V0 nfs.disable false
 TEST $CLI volume start $V0;
 EXPECT 'Started' volinfo_field $V0 'Status';
 
@@ -49,7 +50,6 @@ TEST ! mv $N0/dir/newfile_3 $N0/newdir/
 
 umount_nfs $N0
 TEST $CLI volume stop $V0
-EXPECT "1" get_aux
 
 rm -f $QDD
 

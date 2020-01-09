@@ -1,0 +1,43 @@
+From 9034056db634852d74423b8324c78ed058d028ba Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Tue, 10 Oct 2017 10:27:01 -0400
+Subject: [PATCH 089/128] geo-rep: Filter out volume-mark xattr
+
+The volume-mark xattr, maintained at brick root
+of slave volume is specific to geo-replication
+and should be filtered out for all other clients.
+It should also be filtered out from list getxattr
+from all mounts including geo-rep mount as it
+might cause rsync to read and set.
+
+Backport of:
+> Change-Id: If9eb5a3af18051083c853e70d93b2819e8eea222
+> BUG: 1500433
+> Patch: https://review.gluster.org/18479
+> Signed-off-by: Kotresh HR <khiremat@redhat.com>
+
+BUG: 1476876
+Change-Id: If9eb5a3af18051083c853e70d93b2819e8eea222
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/124531
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/storage/posix/src/posix-helpers.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/xlators/storage/posix/src/posix-helpers.c b/xlators/storage/posix/src/posix-helpers.c
+index 18999f0..f97c90b 100644
+--- a/xlators/storage/posix/src/posix-helpers.c
++++ b/xlators/storage/posix/src/posix-helpers.c
+@@ -111,6 +111,7 @@ posix_handle_georep_xattrs (call_frame_t *frame, const char *name,
+         static const char *georep_xattr[]   = { "*.glusterfs.*.stime",
+                                                 "*.glusterfs.*.xtime",
+                                                 "*.glusterfs.*.entry_stime",
++                                                "*.glusterfs.volume-mark.*",
+                                                 NULL
+                                               };
+         if (frame && frame->root) {
+-- 
+1.8.3.1
+

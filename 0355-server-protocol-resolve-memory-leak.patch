@@ -1,0 +1,38 @@
+From 5f7e699d159577a41a35085648669ea56fa80bf0 Mon Sep 17 00:00:00 2001
+From: Amar Tumballi <amarts@redhat.com>
+Date: Tue, 21 Aug 2018 10:54:46 +0530
+Subject: [PATCH 355/359] server-protocol: resolve memory leak
+
+This leak got introduced as part of d15e6e444 where 'alloca()' calls
+were removed in server protocol. Notice that only 'lookup()' has
+two places where there is return, hence we needed free in 2 places,
+not 1.
+
+BUG: 1619416
+Change-Id: I32c20a33d7a1c8862588b50455765a92095469a6
+Signed-off-by: Amar Tumballi <amarts@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/147574
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/protocol/server/src/server-rpc-fops.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/xlators/protocol/server/src/server-rpc-fops.c b/xlators/protocol/server/src/server-rpc-fops.c
+index a7fd3b5..35d0887 100644
+--- a/xlators/protocol/server/src/server-rpc-fops.c
++++ b/xlators/protocol/server/src/server-rpc-fops.c
+@@ -5871,6 +5871,9 @@ server3_3_lookup (rpcsvc_request_t *req)
+         ret = 0;
+         resolve_and_resume (frame, server_lookup_resume);
+ 
++        free (args.bname);
++        free (args.xdata.xdata_val);
++
+         return ret;
+ out:
+         free (args.bname);
+-- 
+1.8.3.1
+

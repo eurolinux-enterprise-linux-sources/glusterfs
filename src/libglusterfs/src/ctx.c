@@ -8,15 +8,11 @@
   cases as published by the Free Software Foundation.
 */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H
-#include "config.h"
-#endif /* !_CONFIG_H */
-
 #include <pthread.h>
-#include "globals.h"
 
+#include "globals.h"
 #include "glusterfs.h"
+#include "timer-wheel.h"
 
 glusterfs_ctx_t *
 glusterfs_ctx_new ()
@@ -35,18 +31,67 @@ glusterfs_ctx_new ()
         ctx->mem_acct_enable = gf_global_mem_acct_enable_get();
 
         INIT_LIST_HEAD (&ctx->graphs);
-	INIT_LIST_HEAD (&ctx->mempool_list);
+#if defined(OLD_MEM_POOLS)
+        INIT_LIST_HEAD (&ctx->mempool_list);
+#endif
+        INIT_LIST_HEAD (&ctx->volfile_list);
 
 	ctx->daemon_pipe[0] = -1;
 	ctx->daemon_pipe[1] = -1;
 
-	ret = pthread_mutex_init (&ctx->lock, NULL);
+        ctx->log.loglevel = DEFAULT_LOG_LEVEL;
+
+#ifdef RUN_WITH_VALGRIND
+        ctx->cmd_args.valgrind = _gf_true;
+#endif
+
+        /* lock is never destroyed! */
+	ret = LOCK_INIT (&ctx->lock);
 	if (ret) {
 		free (ctx);
 		ctx = NULL;
 	}
 
+        GF_ATOMIC_INIT (ctx->stats.max_dict_pairs, 0);
+        GF_ATOMIC_INIT (ctx->stats.total_pairs_used, 0);
+        GF_ATOMIC_INIT (ctx->stats.total_dicts_used, 0);
 out:
 	return ctx;
 }
 
+static void
+glusterfs_ctx_tw_destroy (struct gf_ctx_tw *ctx_tw)
+{
+        if (ctx_tw->timer_wheel)
+                gf_tw_cleanup_timers (ctx_tw->timer_wheel);
+
+        GF_FREE (ctx_tw);
+}
+
+struct tvec_base*
+glusterfs_ctx_tw_get (glusterfs_ctx_t *ctx)
+{
+        struct gf_ctx_tw *ctx_tw = NULL;
+
+        LOCK (&ctx->lock);
+        {
+                if (ctx->tw) {
+                        ctx_tw = GF_REF_GET (ctx->tw);
+                } else {
+                        ctx_tw = GF_CALLOC (1, sizeof (struct gf_ctx_tw),
+                                            gf_common_mt_tw_ctx);
+                        ctx_tw->timer_wheel = gf_tw_init_timers();
+                        GF_REF_INIT (ctx_tw, glusterfs_ctx_tw_destroy);
+                        ctx->tw = ctx_tw;
+                }
+        }
+        UNLOCK (&ctx->lock);
+
+        return ctx_tw->timer_wheel;
+}
+
+void
+glusterfs_ctx_tw_put (glusterfs_ctx_t *ctx)
+{
+        GF_REF_PUT (ctx->tw);
+}

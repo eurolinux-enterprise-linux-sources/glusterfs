@@ -23,6 +23,7 @@ import tempfile
 import shutil
 
 from syncdutils import escape, unescape, norm, update_file, GsyncdError
+from conf import GLUSTERD_WORKDIR, LOCALSTATEDIR
 
 SECT_ORD = '__section_order__'
 SECT_META = '__meta__'
@@ -30,13 +31,14 @@ config_version = 2.0
 
 re_type = type(re.compile(''))
 
+TMPL_CONFIG_FILE = GLUSTERD_WORKDIR + "/geo-replication/gsyncd_template.conf"
 
 # (SECTION, OPTION, OLD VALUE, NEW VALUE)
 CONFIGS = (
     ("peersrx . .",
      "georep_session_working_dir",
      "",
-     "/var/lib/glusterd/geo-replication/${mastervol}_${remotehost}_"
+     GLUSTERD_WORKDIR + "/geo-replication/${mastervol}_${remotehost}_"
      "${slavevol}/"),
     ("peersrx .",
      "gluster_params",
@@ -50,7 +52,7 @@ CONFIGS = (
      "ssh_command_tar",
      "",
      "ssh -oPasswordAuthentication=no -oStrictHostKeyChecking=no "
-     "-i /var/lib/glusterd/geo-replication/tar_ssh.pem"),
+     "-i " + GLUSTERD_WORKDIR + "/geo-replication/tar_ssh.pem"),
     ("peersrx . .",
      "changelog_log_file",
      "",
@@ -58,19 +60,50 @@ CONFIGS = (
      "/${eSlave}${local_id}-changes.log"),
     ("peersrx . .",
      "working_dir",
-     "/var/run/gluster/${mastervol}/${eSlave}",
+     LOCALSTATEDIR + "/run/gluster/${mastervol}/${eSlave}",
      "${iprefix}/lib/misc/glusterfsd/${mastervol}/${eSlave}"),
     ("peersrx . .",
      "ignore_deletes",
      "true",
      "false"),
+    ("peersrx . .",
+     "pid-file",
+     GLUSTERD_WORKDIR + "/geo-replication/${mastervol}_${remotehost}_"
+     "${slavevol}/${eSlave}.pid",
+     GLUSTERD_WORKDIR + "/geo-replication/${mastervol}_${remotehost}_"
+     "${slavevol}/monitor.pid"),
+    ("peersrx . .",
+     "state-file",
+     GLUSTERD_WORKDIR + "/geo-replication/${mastervol}_${remotehost}_"
+     "${slavevol}/${eSlave}.status",
+     GLUSTERD_WORKDIR + "/geo-replication/${mastervol}_${remotehost}_"
+     "${slavevol}/monitor.status"),
+    ("peersrx .",
+     "log_file",
+     "${iprefix}/log/glusterfs/geo-replication-slaves/${session_owner}:${eSlave}.log",
+     "${iprefix}/log/glusterfs/geo-replication-slaves/${session_owner}:${local_node}${local_id}.${slavevol}.log"),
+    ("peersrx .",
+     "log_file_mbr",
+     "${iprefix}/log/glusterfs/geo-replication-slaves/mbr/${session_owner}:${eSlave}.log",
+     "${iprefix}/log/glusterfs/geo-replication-slaves/mbr/${session_owner}:${local_node}${local_id}.${slavevol}.log"),
+    ("peersrx .",
+     "gluster_log_file",
+     "${iprefix}/log/glusterfs/geo-replication-slaves/${session_owner}:${eSlave}.gluster.log",
+     "${iprefix}/log/glusterfs/geo-replication-slaves/${session_owner}:${local_node}${local_id}.${slavevol}.gluster.log")
 )
 
 
-def upgrade_config_file(path):
+def upgrade_config_file(path, confdata):
     config_change = False
     config = ConfigParser.RawConfigParser()
-    config.read(path)
+    # If confdata.rx present then glusterd is adding config values,
+    # it will create config file if not exists. config.read is fine in
+    # this case since any other error will be raised during write.
+    if getattr(confdata, "rx", False):
+        config.read(path)
+    else:
+        with open(path) as fp:
+            config.readfp(fp)
 
     for sec, opt, oldval, newval in CONFIGS:
         try:
@@ -95,6 +128,35 @@ def upgrade_config_file(path):
             # config value needs update
             config_change = True
             config.set(sec, opt, newval)
+
+    # To convert from old peers section format to new peers section format.
+    # Old format: peers gluster://<master ip>:<master vol> \
+    #              ssh://root@<slave ip>:gluster://<master ip>:<slave vol>
+    # New format: peers <master vol name> <slave vol name>
+    for old_sect in config.sections():
+        if old_sect.startswith("peers "):
+            peers_data = old_sect.split(" ")
+            mvol = peers_data[1].split("%3A")[-1]
+            svol = peers_data[2].split("%3A")[-1]
+            new_sect = "peers {0} {1}".format(mvol, svol)
+
+            if old_sect == new_sect:
+                # Already in new format "peers mastervol slavevol"
+                continue
+
+            # Create new section if not exists
+            try:
+                config.add_section(new_sect)
+            except ConfigParser.DuplicateSectionError:
+                pass
+
+            config_change = True
+            # Add all the items of old_sect to new_sect
+            for key, val in config.items(old_sect):
+                config.set(new_sect, key, val)
+
+            # Delete old section
+            config.remove_section(old_sect)
 
     if config_change:
         tempConfigFile = tempfile.NamedTemporaryFile(mode="wb", delete=False)
@@ -149,7 +211,7 @@ class GConffile(object):
                 s2[k] = v
             self.config._sections[n] = s2
 
-    def __init__(self, path, peers, *dd):
+    def __init__(self, path, peers, confdata, *dd):
         """
         - .path: location of config file
         - .config: underlying ConfigParser instance
@@ -161,7 +223,12 @@ class GConffile(object):
         self.path = path
         self.auxdicts = dd
         self.config = ConfigParser.RawConfigParser()
-        self.config.read(path)
+        if getattr(confdata, "rx", False):
+            self.config.read(path)
+        else:
+            with open(path) as fp:
+                self.config.readfp(fp)
+
         self.dev, self.ino, self.mtime = -1, -1, -1
         self._normconfig()
 
@@ -176,10 +243,11 @@ class GConffile(object):
                 sres = None
 
         self.config = ConfigParser.RawConfigParser()
-        self.config.read(self.path)
+        with open(self.path) as fp:
+            self.config.readfp(fp)
         self._normconfig()
 
-    def get_realtime(self, opt):
+    def get_realtime(self, opt, default_value=None):
         try:
             sres = os.stat(self.path)
         except (OSError, IOError):
@@ -193,7 +261,7 @@ class GConffile(object):
            sres[ST_INO] != self.ino or self.mtime != sres[ST_MTIME]:
             self._load()
 
-        return self.get(opt, printValue=False)
+        return self.get(opt, printValue=False, default_value=default_value)
 
     def section(self, rx=False):
         """get the section name of the section representing .peers
@@ -203,10 +271,9 @@ class GConffile(object):
             peers = ['.', '.']
             rx = True
         if rx:
-            st = 'peersrx'
+            return ' '.join(['peersrx'] + [escape(u) for u in peers])
         else:
-            st = 'peers'
-        return ' '.join([st] + [escape(u) for u in peers])
+            return ' '.join(['peers'] + [u.split(':')[-1] for u in peers])
 
     @staticmethod
     def parse_section(section):
@@ -270,12 +337,18 @@ class GConffile(object):
 
         def update_from_sect(sect, mud):
             for k, v in self.config._sections[sect].items():
+                # Template expects String to be passed
+                # if any config value is not string then it
+                # fails with ValueError
+                v = "{0}".format(v)
+
                 if k == '__name__':
                     continue
                 if allow_unresolved:
                     dct[k] = Template(v).safe_substitute(mud)
                 else:
                     dct[k] = Template(v).substitute(mud)
+
         for sect in self.ord_sections():
             sp = self.parse_section(sect)
             if isinstance(sp[0], re_type) and len(sp) == len(self.peers):
@@ -293,7 +366,7 @@ class GConffile(object):
         if self.config.has_section(self.section()):
             update_from_sect(self.section(), MultiDict(dct, *self.auxdicts))
 
-    def get(self, opt=None, printValue=True):
+    def get(self, opt=None, printValue=True, default_value=None):
         """print the matching key/value pairs from .config,
            or if @opt given, the value for @opt (according to the
            logic described in .update_to)
@@ -302,12 +375,13 @@ class GConffile(object):
         self.update_to(d, allow_unresolved=True)
         if opt:
             opt = norm(opt)
-            v = d.get(opt)
-            if v:
-                if printValue:
+            v = d.get(opt, default_value)
+
+            if printValue:
+                if v is not None:
                     print(v)
-                else:
-                    return v
+            else:
+                return v
         else:
             for k, v in d.iteritems():
                 if k == '__name__':

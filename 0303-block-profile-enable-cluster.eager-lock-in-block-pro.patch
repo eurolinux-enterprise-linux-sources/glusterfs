@@ -1,0 +1,40 @@
+From b6cf34d99a8b60bcf07b557328d7d998a71653ac Mon Sep 17 00:00:00 2001
+From: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Date: Fri, 20 Apr 2018 17:26:12 +0530
+Subject: [PATCH 303/305] block-profile: enable cluster.eager-lock in
+ block-profile
+
+Eager-lock gave 2.5X perf improvement. On top of that with batching
+fix in tcmu-runner and client-io-threads we are seeing close to 3X perf
+improvement. But we don't want to include that in the default profile
+option but enable it on a case by case basis. So not adding
+client-io-threads option.
+
+ >BUG: 1573119
+ >Upstream-patch: https://review.gluster.org/19913
+BUG: 1569951
+Change-Id: Ida53c3ef9a041a73b65fdd06158ac082da437206
+Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/141310
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Sunil Kumar Heggodu Gopala Acharya <sheggodu@redhat.com>
+---
+ extras/group-gluster-block | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/extras/group-gluster-block b/extras/group-gluster-block
+index d619255..56b406e 100644
+--- a/extras/group-gluster-block
++++ b/extras/group-gluster-block
+@@ -6,7 +6,7 @@ performance.open-behind=off
+ performance.readdir-ahead=off
+ performance.strict-o-direct=on
+ network.remote-dio=disable
+-cluster.eager-lock=disable
++cluster.eager-lock=enable
+ cluster.quorum-type=auto
+ cluster.data-self-heal-algorithm=full
+ cluster.locking-scheme=granular
+-- 
+1.8.3.1
+

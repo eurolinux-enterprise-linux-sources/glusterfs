@@ -1,0 +1,71 @@
+From a1da6900ac8030dd9c156b38373837a00dbb37c0 Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Thu, 18 Jan 2018 14:21:57 +0530
+Subject: [PATCH 153/180] afr: add quorum checks in post-op
+
+Backport of https://review.gluster.org/#/c/18571/
+
+afr relies on pending changelog xattrs to identify source and sinks and the
+setting of these xattrs happen in post-op. So if post-op fails, we need to
+unwind the write txn with a failure.
+
+Change-Id: I0f019ac03890108324ee7672883d774918b20be1
+BUG: 1384983
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/129219
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/cluster/afr/src/afr-transaction.c | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 7e40bba..18d2ded 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -534,6 +534,29 @@ afr_lock_server_count (afr_private_t *priv, afr_transaction_type type)
+ /* {{{ pending */
+ 
+ 
++gf_boolean_t
++afr_post_op_has_quorum (afr_local_t *local, xlator_t *this)
++{
++        afr_private_t *priv = NULL;
++        int i = 0;
++        unsigned char *post_op_children = NULL;
++
++        priv = this->private;
++        post_op_children = alloca0 (priv->child_count);
++
++        for (i = 0; i < priv->child_count; i++) {
++                if (!local->transaction.failed_subvols[i]) {
++                        post_op_children[i] = 1;
++                }
++        }
++
++        if (afr_has_quorum (post_op_children, this)) {
++                return _gf_true;
++        }
++
++        return _gf_false;
++}
++
+ int
+ afr_changelog_post_op_done (call_frame_t *frame, xlator_t *this)
+ {
+@@ -545,6 +568,12 @@ afr_changelog_post_op_done (call_frame_t *frame, xlator_t *this)
+ 	priv = this->private;
+         int_lock = &local->internal_lock;
+ 
++        /* Fail the FOP if post-op did not succeed on quorum no. of bricks. */
++        if (!afr_post_op_has_quorum (local, this)) {
++                local->op_ret = -1;
++                local->op_errno = ENOTCONN;
++        }
++
+ 	if (local->transaction.resume_stub) {
+ 		call_resume (local->transaction.resume_stub);
+ 		local->transaction.resume_stub = NULL;
+-- 
+1.8.3.1
+

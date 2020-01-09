@@ -1,0 +1,107 @@
+From 45481e3e7ca074eb405b0db5521d4ca08bb20641 Mon Sep 17 00:00:00 2001
+From: karthik-us <ksubrahm@redhat.com>
+Date: Fri, 9 Mar 2018 14:45:07 +0530
+Subject: [PATCH 203/212] mgmt/glusterd: Adding validation for setting
+ quorum-count
+
+In a replicated volume it was allowing to set the quorum-count value
+between the range [1 - 2147483647]. This patch adds validation for
+allowing only maximum of replica_count number of quorum-count value
+to be set on a volume.
+
+Upstream patch: https://review.gluster.org/#/c/19104/
+
+> Change-Id: I13952f3c6cf498c9f2b91161503fc0fba9d94898
+> BUG: 1529515
+> Signed-off-by: karthik-us <ksubrahm@redhat.com>
+
+Change-Id: Ie4a74184ae640703524f371f4a0de6d70a6e9abb
+BUG: 1186664
+Signed-off-by: karthik-us <ksubrahm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/132255
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+---
+ xlators/cluster/afr/src/afr.c                   |  2 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c | 45 ++++++++++++++++++++++---
+ 2 files changed, 41 insertions(+), 6 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr.c b/xlators/cluster/afr/src/afr.c
+index dec6e60..0122b7f 100644
+--- a/xlators/cluster/afr/src/afr.c
++++ b/xlators/cluster/afr/src/afr.c
+@@ -959,7 +959,7 @@ struct volume_options options[] = {
+           .max = INT_MAX,
+           .default_value = 0,
+           .description = "If quorum-type is \"fixed\" only allow writes if "
+-                         "this many bricks or present.  Other quorum types "
++                         "this many bricks are present.  Other quorum types "
+                          "will OVERWRITE this value.",
+         },
+         { .key = {"quorum-reads"},
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 8d3407d..d01e282 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -847,6 +847,40 @@ out:
+ }
+ 
+ static int
++validate_quorum_count (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
++                       char *value, char **op_errstr)
++{
++        int                  ret           = 0;
++        xlator_t            *this          = NULL;
++        int                  q_count       = 0;
++
++        this = THIS;
++        GF_ASSERT (this);
++
++        ret = gf_string2int (value, &q_count);
++        if (ret) {
++                gf_asprintf (op_errstr, "%s is not an integer. %s expects a "
++                             "valid integer value.", value, key);
++                goto out;
++        }
++
++        if (q_count < 1 || q_count > volinfo->replica_count) {
++                gf_asprintf (op_errstr, "%d in %s %d is out of range [1 - %d]",
++                             q_count, key, q_count, volinfo->replica_count);
++                ret = -1;
++        }
++
++out:
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, GD_MSG_INVALID_ENTRY, "%s",
++                        *op_errstr);
++        }
++        gf_msg_debug (this->name, 0, "Returning %d", ret);
++
++        return ret;
++}
++
++static int
+ validate_subvols_per_directory (glusterd_volinfo_t *volinfo, dict_t *dict,
+                                 char *key, char *value, char **op_errstr)
+ {
+@@ -1456,11 +1490,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version = 1,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+-        { .key        = "cluster.quorum-count",
+-          .voltype    = "cluster/replicate",
+-          .option     = "quorum-count",
+-          .op_version = 1,
+-          .flags      = OPT_FLAG_CLIENT_OPT
++        { .key         = "cluster.quorum-count",
++          .voltype     = "cluster/replicate",
++          .option      = "quorum-count",
++          .op_version  = 1,
++          .validate_fn = validate_quorum_count,
++          .flags       = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.choose-local",
+           .voltype    = "cluster/replicate",
+-- 
+1.8.3.1
+

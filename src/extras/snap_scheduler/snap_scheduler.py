@@ -19,7 +19,50 @@ import logging.handlers
 import sys
 import shutil
 from errno import EEXIST
+from conf import GLUSTERFS_LIBEXECDIR
+sys.path.insert(1, GLUSTERFS_LIBEXECDIR)
 
+EVENTS_ENABLED = True
+try:
+    from events.eventtypes import SNAPSHOT_SCHEDULER_INITIALISED \
+                         as EVENT_SNAPSHOT_SCHEDULER_INITIALISED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_INIT_FAILED \
+                         as EVENT_SNAPSHOT_SCHEDULER_INIT_FAILED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_DISABLED \
+                         as EVENT_SNAPSHOT_SCHEDULER_DISABLED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_DISABLE_FAILED \
+                         as EVENT_SNAPSHOT_SCHEDULER_DISABLE_FAILED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_ENABLED \
+                         as EVENT_SNAPSHOT_SCHEDULER_ENABLED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_ENABLE_FAILED \
+                         as EVENT_SNAPSHOT_SCHEDULER_ENABLE_FAILED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_SCHEDULE_ADDED \
+                         as EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_ADDED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_SCHEDULE_ADD_FAILED \
+                         as EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_ADD_FAILED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_SCHEDULE_DELETED \
+                         as EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_DELETED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_SCHEDULE_DELETE_FAILED \
+                         as EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_DELETE_FAILED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_SCHEDULE_EDITED \
+                         as EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_EDITED
+    from events.eventtypes import SNAPSHOT_SCHEDULER_SCHEDULE_EDIT_FAILED \
+                         as EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_EDIT_FAILED
+except ImportError:
+    # Events APIs not installed, dummy eventtypes with None
+    EVENTS_ENABLED = False
+    EVENT_SNAPSHOT_SCHEDULER_INITIALISED = None
+    EVENT_SNAPSHOT_SCHEDULER_INIT_FAILED = None
+    EVENT_SNAPSHOT_SCHEDULER_DISABLED = None
+    EVENT_SNAPSHOT_SCHEDULER_DISABLE_FAILED = None
+    EVENT_SNAPSHOT_SCHEDULER_ENABLED = None
+    EVENT_SNAPSHOT_SCHEDULER_ENABLE_FAILED = None
+    EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_ADDED = None
+    EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_ADD_FAILED = None
+    EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_DELETED = None
+    EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_DELETE_FAILED = None
+    EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_EDITED = None
+    EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_EDIT_FAILED = None
 
 SCRIPT_NAME = "snap_scheduler"
 scheduler_enabled = False
@@ -54,6 +97,42 @@ INVALID_VOLNAME = 14
 INVALID_SCHEDULE = 15
 INVALID_ARG = 16
 VOLUME_DOES_NOT_EXIST = 17
+
+def print_error (error_num):
+    if error_num == INTERNAL_ERROR:
+        return "Internal Error"
+    elif error_num == SHARED_STORAGE_DIR_DOESNT_EXIST:
+        return "The shared storage directory ("+SHARED_STORAGE_DIR+")" \
+               " does not exist."
+    elif error_num == SHARED_STORAGE_NOT_MOUNTED:
+        return "The shared storage directory ("+SHARED_STORAGE_DIR+")" \
+               " is not mounted."
+    elif error_num == ANOTHER_TRANSACTION_IN_PROGRESS:
+        return "Another transaction is in progress."
+    elif error_num == INIT_FAILED:
+        return "Initialisation failed."
+    elif error_num == SCHEDULING_ALREADY_DISABLED:
+        return "Snapshot scheduler is already disabled."
+    elif error_num == SCHEDULING_ALREADY_ENABLED:
+        return "Snapshot scheduler is already enabled."
+    elif error_num == NODE_NOT_INITIALISED:
+        return "The node is not initialised."
+    elif error_num == ANOTHER_SCHEDULER_ACTIVE:
+        return "Another scheduler is active."
+    elif error_num == JOB_ALREADY_EXISTS:
+        return "The job already exists."
+    elif error_num == JOB_NOT_FOUND:
+        return "The job cannot be found."
+    elif error_num == INVALID_JOBNAME:
+        return "The job name is invalid."
+    elif error_num == INVALID_VOLNAME:
+        return "The volume name is invalid."
+    elif error_num == INVALID_SCHEDULE:
+        return "The schedule is invalid."
+    elif error_num == INVALID_ARG:
+        return "The argument is invalid."
+    elif error_num == VOLUME_DOES_NOT_EXIST:
+        return "The volume does not exist."
 
 def output(msg):
     print("%s: %s" % (SCRIPT_NAME, msg))
@@ -466,8 +545,98 @@ def edit_schedules(jobname, schedule, volname):
 
     return ret
 
+def get_bool_val():
+    getsebool_cli = ["getsebool",
+                     "-a"]
+    p1 = subprocess.Popen(getsebool_cli, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
+
+    grep_cmd = ["grep",
+                "cron_system_cronjob_use_shares"]
+    p2 = subprocess.Popen(grep_cmd, stdin=p1.stdout,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
+
+    p1.stdout.close()
+    output, err = p2.communicate()
+    rv = p2.returncode
+
+    if rv:
+        log.error("Command output:")
+        log.error(err)
+        return -1
+
+    bool_val = output.split()[2]
+    log.debug("Bool value = '%s'", bool_val)
+
+    return bool_val
+
+def get_selinux_status():
+    getenforce_cli = ["getenforce"]
+    log.debug("Running command '%s'", " ".join(getenforce_cli))
+
+    p1 = subprocess.Popen(getenforce_cli, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
+
+    output, err = p1.communicate()
+    rv = p1.returncode
+
+    if rv:
+        log.error("Command output:")
+        log.error(err)
+        return -1
+    else:
+        selinux_status=output.rstrip()
+        log.debug("selinux status: %s", selinux_status)
+
+    return selinux_status
+
+def set_cronjob_user_share():
+    selinux_status = get_selinux_status()
+    if (selinux_status == -1):
+        log.error("Failed to get selinux status")
+        return -1
+    elif (selinux_status == "Disabled"):
+        return 0
+
+    bool_val = get_bool_val()
+    # In case of a failure (where the boolean value is not)
+    # present in the system, we should not proceed further
+    # We should only proceed when the value is "off"
+    if (bool_val == -1 or bool_val != "off"):
+        return 0
+
+    setsebool_cli = ["setsebool", "-P",
+                     "cron_system_cronjob_use_shares",
+                     "on"]
+    log.debug("Running command '%s'", " ".join(setsebool_cli))
+
+    p1 = subprocess.Popen(setsebool_cli, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
+
+    output, err = p1.communicate()
+    rv = p1.returncode
+
+    if rv:
+        log.error("Command output:")
+        log.error(err)
+        return rv
+
+    bool_val = get_bool_val()
+    if (bool_val == "on"):
+        return 0
+    else:
+        # In case of an error or if boolean is not on
+        # we return a failure here
+        return -1
 
 def initialise_scheduler():
+    ret = set_cronjob_user_share()
+    if ret:
+        log.error("Failed to set selinux boolean "
+                  "cron_system_cronjob_use_shares to 'on'")
+        return ret
+
     try:
         with open(TMP_FILE, "w+", 0644) as f:
             updater = ("* * * * * root PATH=$PATH:/usr/local/sbin:"
@@ -499,6 +668,7 @@ def initialise_scheduler():
 
     log.info("Successfully initialised snapshot scheduler for this node")
     output("Successfully initialised snapshot scheduler for this node")
+    gf_event (EVENT_SNAPSHOT_SCHEDULER_INITIALISED, status="Success")
 
     ret = 0
     return ret
@@ -545,6 +715,8 @@ def perform_operation(args):
         ret = initialise_scheduler()
         if ret != 0:
             output("Failed to initialise snapshot scheduling")
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_INIT_FAILED,
+                      error=print_error(ret))
         return ret
 
     # Disable snapshot scheduler
@@ -552,6 +724,11 @@ def perform_operation(args):
         ret = disable_scheduler()
         if ret == 0:
             subprocess.Popen(["touch", "-h", GCRON_TASKS])
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_DISABLED,
+                      status="Successfuly Disabled")
+        else:
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_DISABLE_FAILED,
+                      error=print_error(ret))
         return ret
 
     # Check if the symlink to GCRON_TASKS is properly set in the shared storage
@@ -582,6 +759,11 @@ def perform_operation(args):
         ret = enable_scheduler()
         if ret == 0:
             subprocess.Popen(["touch", "-h", GCRON_TASKS])
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_ENABLED,
+                      status="Successfuly Enabled")
+        else:
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_ENABLE_FAILED,
+                      error=print_error(ret))
         return ret
 
     # Disable snapshot scheduler
@@ -589,6 +771,11 @@ def perform_operation(args):
         ret = disable_scheduler()
         if ret == 0:
             subprocess.Popen(["touch", "-h", GCRON_TASKS])
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_DISABLED,
+                      status="Successfuly Disabled")
+        else:
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_DISABLE_FAILED,
+                      error=print_error(ret))
         return ret
 
     # List snapshot schedules
@@ -604,6 +791,12 @@ def perform_operation(args):
         ret = add_schedules(args.jobname, args.schedule, args.volname)
         if ret == 0:
             subprocess.Popen(["touch", "-h", GCRON_TASKS])
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_ADDED,
+                      status="Successfuly added job "+args.jobname)
+        else:
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_ADD_FAILED,
+                      status="Failed to add job "+args.jobname,
+                      error=print_error(ret))
         return ret
 
     # Delete snapshot schedules
@@ -614,6 +807,12 @@ def perform_operation(args):
         ret = delete_schedules(args.jobname)
         if ret == 0:
             subprocess.Popen(["touch", "-h", GCRON_TASKS])
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_DELETED,
+                      status="Successfuly deleted job "+args.jobname)
+        else:
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_DELETE_FAILED,
+                      status="Failed to delete job "+args.jobname,
+                      error=print_error(ret))
         return ret
 
     # Edit snapshot schedules
@@ -624,10 +823,21 @@ def perform_operation(args):
         ret = edit_schedules(args.jobname, args.schedule, args.volname)
         if ret == 0:
             subprocess.Popen(["touch", "-h", GCRON_TASKS])
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_EDITED,
+                      status="Successfuly edited job "+args.jobname)
+        else:
+            gf_event (EVENT_SNAPSHOT_SCHEDULER_SCHEDULE_EDIT_FAILED,
+                      status="Failed to edit job "+args.jobname,
+                      error=print_error(ret))
         return ret
 
     ret = INVALID_ARG
     return ret
+
+def gf_event(event_type, **kwargs):
+    if EVENTS_ENABLED:
+        from events.gf_event import gf_event as gfevent
+        gfevent(event_type, **kwargs)
 
 
 def main(argv):

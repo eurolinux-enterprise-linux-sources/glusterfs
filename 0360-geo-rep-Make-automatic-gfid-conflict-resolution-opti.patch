@@ -1,0 +1,90 @@
+From 81b5fbe38a022b738aa817444d7564534e0a886e Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Fri, 24 Aug 2018 08:30:54 -0400
+Subject: [PATCH 360/362] geo-rep: Make automatic gfid conflict resolution
+ optional
+
+Autmatic gfid conflict resolution needs to be disabled
+during failover/failback as it might lead to data loss
+in the following scenario.
+
+1. Master went down without syncing directory "dir1" to slave.
+2. When slave is failed over to master, if a new file
+   is written inside "dir1", creating dir1 again if not
+   present, "dir1" ends up with different gfid on original
+   slave.
+3. When original master is up and failed back, due to
+   automatic gfid conflict resolution, "dir1" present in
+   original master is deleted losing all files and only
+   new file created on original slave is restored.
+
+Hence during failover/failback, automatic gfid conflict
+resolution should be disabled. So in these cases, appropriate
+decision is taken.
+
+Backport of:
+ > Patch: https://review.gluster.org/20986/
+ > BUG: 1622076
+ > Change-Id: I433616f5d3e13d4b6eb675475bd554ca34928573
+
+BUG: 1622029
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Change-Id: I433616f5d3e13d4b6eb675475bd554ca34928573
+Reviewed-on: https://code.engineering.redhat.com/gerrit/148004
+Tested-by: RHGS Build Bot <nigelb@redhat.com>
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ geo-replication/syncdaemon/gsyncd.py |  2 ++
+ geo-replication/syncdaemon/master.py | 22 ++++++++++++----------
+ 2 files changed, 14 insertions(+), 10 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gsyncd.py b/geo-replication/syncdaemon/gsyncd.py
+index fff193b..23d588e 100644
+--- a/geo-replication/syncdaemon/gsyncd.py
++++ b/geo-replication/syncdaemon/gsyncd.py
+@@ -323,6 +323,8 @@ def main_i():
+     op.add_option('--changelog-archive-format', metavar='N',
+                   type=str, default="%Y%m")
+     op.add_option('--use-meta-volume', default=False, action='store_true')
++    op.add_option('--gfid-conflict-resolution', default=True,
++                  action='store_true')
+     op.add_option('--meta-volume-mnt', metavar='N',
+                   type=str, default="/var/run/gluster/shared_storage")
+     op.add_option(
+diff --git a/geo-replication/syncdaemon/master.py b/geo-replication/syncdaemon/master.py
+index 1399378..6de2c77 100644
+--- a/geo-replication/syncdaemon/master.py
++++ b/geo-replication/syncdaemon/master.py
+@@ -1163,16 +1163,18 @@ class GMasterChangelogMixin(GMasterCommon):
+             self.status.inc_value("entry", len(entries))
+ 
+             failures = self.slave.server.entry_ops(entries)
+-            count = 0
+-            while failures and count < self.MAX_OE_RETRIES:
+-                count += 1
+-                self.handle_entry_failures(failures, entries)
+-                logging.info("Retry original entries. count = %s" % count)
+-                failures = self.slave.server.entry_ops(entries)
+-                if not failures:
+-                    logging.info("Sucessfully fixed all entry ops with gfid "
+-                                 "mismatch")
+-                    break
++
++            if boolify(gconf.gfid_conflict_resolution):
++                count = 0
++                while failures and count < self.MAX_OE_RETRIES:
++                    count += 1
++                    self.handle_entry_failures(failures, entries)
++                    logging.info("Retry original entries. count = %s" % count)
++                    failures = self.slave.server.entry_ops(entries)
++                    if not failures:
++                        logging.info("Sucessfully fixed all entry ops with "
++                                     "gfid mismatch")
++                        break
+ 
+             self.log_failures(failures, 'gfid', gauxpfx(), 'ENTRY')
+ 
+-- 
+1.8.3.1
+

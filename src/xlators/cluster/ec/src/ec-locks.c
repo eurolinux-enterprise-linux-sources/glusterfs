@@ -52,7 +52,7 @@ int32_t ec_lock_check(ec_fop_data_t *fop, uintptr_t *mask)
     }
 
     if (error == -1) {
-        if (ec_bits_count(locked | notlocked) >= ec->fragments) {
+        if (gf_bits_count(locked | notlocked) >= ec->fragments) {
             if (notlocked == 0) {
                 if (fop->answer == NULL) {
                     fop->answer = cbk;
@@ -197,10 +197,11 @@ int32_t ec_manager_entrylk(ec_fop_data_t * fop, int32_t state)
             return EC_STATE_PREPARE_ANSWER;
 
         case EC_STATE_PREPARE_ANSWER:
+        case -EC_STATE_PREPARE_ANSWER:
             if (fop->entrylk_cmd != ENTRYLK_UNLOCK) {
                 uintptr_t mask;
 
-                fop->error = ec_lock_check(fop, &mask);
+                ec_fop_set_error (fop, ec_lock_check(fop, &mask));
                 if (fop->error != 0) {
                     if (mask != 0) {
                         if (fop->id == GF_FOP_ENTRYLK) {
@@ -258,7 +259,6 @@ int32_t ec_manager_entrylk(ec_fop_data_t * fop, int32_t state)
 
         case -EC_STATE_INIT:
         case -EC_STATE_DISPATCH:
-        case -EC_STATE_PREPARE_ANSWER:
         case -EC_STATE_REPORT:
             GF_ASSERT(fop->error != 0);
 
@@ -590,10 +590,11 @@ int32_t ec_manager_inodelk(ec_fop_data_t * fop, int32_t state)
             return EC_STATE_PREPARE_ANSWER;
 
         case EC_STATE_PREPARE_ANSWER:
+        case -EC_STATE_PREPARE_ANSWER:
             if (fop->flock.l_type != F_UNLCK) {
                 uintptr_t mask;
 
-                fop->error = ec_lock_check(fop, &mask);
+                ec_fop_set_error (fop, ec_lock_check(fop, &mask));
                 if (fop->error != 0) {
                     if (mask != 0) {
                         ec_t *ec = fop->xl->private;
@@ -607,12 +608,14 @@ int32_t ec_manager_inodelk(ec_fop_data_t * fop, int32_t state)
                         flock.l_owner.len = 0;
 
                         if (fop->id == GF_FOP_INODELK) {
-                            ec_inodelk(fop->frame, fop->xl, mask, 1,
+                            ec_inodelk(fop->frame, fop->xl,
+                                       &fop->frame->root->lk_owner, mask, 1,
                                        ec_lock_unlocked, NULL, fop->str[0],
                                        &fop->loc[0], F_SETLK, &flock,
                                        fop->xdata);
                         } else {
-                            ec_finodelk(fop->frame, fop->xl, mask, 1,
+                            ec_finodelk(fop->frame, fop->xl,
+                                        &fop->frame->root->lk_owner, mask, 1,
                                         ec_lock_unlocked, NULL, fop->str[0],
                                         fop->fd, F_SETLK, &flock, fop->xdata);
                         }
@@ -659,7 +662,6 @@ int32_t ec_manager_inodelk(ec_fop_data_t * fop, int32_t state)
 
         case -EC_STATE_INIT:
         case -EC_STATE_DISPATCH:
-        case -EC_STATE_PREPARE_ANSWER:
         case -EC_STATE_REPORT:
             GF_ASSERT(fop->error != 0);
 
@@ -692,10 +694,10 @@ int32_t ec_manager_inodelk(ec_fop_data_t * fop, int32_t state)
     }
 }
 
-void ec_inodelk(call_frame_t * frame, xlator_t * this, uintptr_t target,
-                int32_t minimum, fop_inodelk_cbk_t func, void * data,
-                const char * volume, loc_t * loc, int32_t cmd,
-                struct gf_flock * flock, dict_t * xdata)
+void ec_inodelk (call_frame_t *frame, xlator_t *this, gf_lkowner_t *owner,
+                 uintptr_t target, int32_t minimum, fop_inodelk_cbk_t func,
+                 void *data, const char *volume, loc_t *loc, int32_t cmd,
+                 struct gf_flock *flock, dict_t *xdata)
 {
     ec_cbk_t callback = { .inodelk = func };
     ec_fop_data_t * fop = NULL;
@@ -715,6 +717,7 @@ void ec_inodelk(call_frame_t * frame, xlator_t * this, uintptr_t target,
     }
 
     fop->int32 = cmd;
+    ec_owner_copy (fop->frame, owner);
 
     if (volume != NULL) {
         fop->str[0] = gf_strdup(volume);
@@ -828,10 +831,10 @@ void ec_wind_finodelk(ec_t * ec, ec_fop_data_t * fop, int32_t idx)
                       fop->xdata);
 }
 
-void ec_finodelk(call_frame_t * frame, xlator_t * this, uintptr_t target,
-                 int32_t minimum, fop_finodelk_cbk_t func, void * data,
-                 const char * volume, fd_t * fd, int32_t cmd,
-                 struct gf_flock * flock, dict_t * xdata)
+void ec_finodelk(call_frame_t *frame, xlator_t *this, gf_lkowner_t *owner,
+                 uintptr_t target, int32_t minimum, fop_finodelk_cbk_t func,
+                 void *data, const char *volume, fd_t *fd, int32_t cmd,
+                 struct gf_flock *flock, dict_t *xdata)
 {
     ec_cbk_t callback = { .finodelk = func };
     ec_fop_data_t * fop = NULL;
@@ -853,6 +856,7 @@ void ec_finodelk(call_frame_t * frame, xlator_t * this, uintptr_t target,
     fop->use_fd = 1;
 
     fop->int32 = cmd;
+    ec_owner_copy (fop->frame, owner);
 
     if (volume != NULL) {
         fop->str[0] = gf_strdup(volume);
@@ -1008,10 +1012,6 @@ int32_t ec_manager_lk(ec_fop_data_t * fop, int32_t state)
     switch (state)
     {
         case EC_STATE_INIT:
-            fop->flock.l_len += ec_adjust_offset(fop->xl->private,
-                                                 &fop->flock.l_start, 1);
-            fop->flock.l_len = ec_adjust_size(fop->xl->private,
-                                              fop->flock.l_len, 1);
             if ((fop->int32 == F_SETLKW) && (fop->flock.l_type != F_UNLCK))
             {
                 fop->uint32 = EC_LOCK_MODE_ALL;
@@ -1026,26 +1026,27 @@ int32_t ec_manager_lk(ec_fop_data_t * fop, int32_t state)
             return EC_STATE_PREPARE_ANSWER;
 
         case EC_STATE_PREPARE_ANSWER:
+        case -EC_STATE_PREPARE_ANSWER:
             if (fop->flock.l_type != F_UNLCK) {
                 uintptr_t mask;
 
-                fop->error = ec_lock_check(fop, &mask);
+                ec_fop_set_error (fop, ec_lock_check(fop, &mask));
                 if (fop->error != 0) {
                     if (mask != 0) {
-                        ec_t *ec = fop->xl->private;
-                        struct gf_flock flock;
+                        struct gf_flock flock = {0};
 
                         flock.l_type = F_UNLCK;
                         flock.l_whence = fop->flock.l_whence;
-                        flock.l_start = fop->flock.l_start * ec->fragments;
-                        flock.l_len = fop->flock.l_len * ec->fragments;
-                        flock.l_pid = 0;
-                        flock.l_owner.len = 0;
+                        flock.l_start = fop->flock.l_start;
+                        flock.l_len = fop->flock.l_len;
+                        flock.l_pid = fop->flock.l_pid;
+                        lk_owner_copy (&flock.l_owner, &fop->flock.l_owner);
 
                         ec_lk(fop->frame, fop->xl, mask, 1,
                               ec_lock_lk_unlocked, NULL, fop->fd, F_SETLK,
                               &flock, fop->xdata);
                     }
+
                     if (fop->error < 0) {
                         fop->error = 0;
 
@@ -1077,7 +1078,6 @@ int32_t ec_manager_lk(ec_fop_data_t * fop, int32_t state)
 
         case -EC_STATE_INIT:
         case -EC_STATE_DISPATCH:
-        case -EC_STATE_PREPARE_ANSWER:
         case -EC_STATE_REPORT:
             GF_ASSERT(fop->error != 0);
 
@@ -1086,6 +1086,7 @@ int32_t ec_manager_lk(ec_fop_data_t * fop, int32_t state)
                 fop->cbks.lk(fop->req_frame, fop, fop->xl, -1, fop->error,
                              NULL, NULL);
             }
+
 
             return EC_STATE_END;
 
