@@ -1,0 +1,219 @@
+From e443f864cdaa49a3c0444167fda2a0ea92c929db Mon Sep 17 00:00:00 2001
+From: hari <hgowtham@redhat.com>
+Date: Thu, 28 Apr 2016 19:36:25 +0530
+Subject: [PATCH 131/139] Tier/glusterd: Resetting the tier status value to not started
+
+        back-port of : http://review.gluster.org/#/c/14106/
+
+Problem: during a volume restart or tier start force, the
+value of tier status is set as started irrespective of the result.
+
+Fix: The appropriate value of status is set during the restart of
+rebalance function.
+
+>Change-Id: I6164f0add48542a57dee059e80fa0f9bb036dbef
+>BUG: 1315666
+>Signed-off-by: hari <hgowtham@redhat.com>
+
+>Change-Id: Ie4345bd7ce1d458574e36b70fe8994b3d758396a
+>BUG: 1316808
+>Signed-off-by: hari <hgowtham@redhat.com>
+>Reviewed-on: http://review.gluster.org/14229
+>Smoke: Gluster Build System <jenkins@build.gluster.com>
+>Tested-by: hari gowtham <hari.gowtham005@gmail.com>
+>NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+>CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I26363875b512fe7641cf63d849a61739bc35ee68
+BUG: 1283957
+Signed-off-by: hari <hgowtham@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73782
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ tests/basic/tier/tierd_check.t             |   76 +++++++++++++++++++++-------
+ xlators/mgmt/glusterd/src/glusterd-utils.c |   13 +++--
+ 2 files changed, 67 insertions(+), 22 deletions(-)
+
+diff --git a/tests/basic/tier/tierd_check.t b/tests/basic/tier/tierd_check.t
+index 9ef12d5..25f8257 100644
+--- a/tests/basic/tier/tierd_check.t
++++ b/tests/basic/tier/tierd_check.t
+@@ -3,20 +3,24 @@
+ . $(dirname $0)/../../include.rc
+ . $(dirname $0)/../../volume.rc
+ . $(dirname $0)/../../tier.rc
++. $(dirname $0)/../../cluster.rc
+ 
+ 
+ # Creates a tiered volume with pure distribute hot and cold tiers
+ # Both hot and cold tiers will have an equal number of bricks.
+ 
++function check_peers {
++    $CLI_1 peer status | grep 'Peer in Cluster (Connected)' | wc -l
++}
++
+ function create_dist_tier_vol () {
+-        mkdir $B0/cold
+-        mkdir $B0/hot
+-        TEST $CLI volume create $V0 $H0:$B0/cold/${V0}{1..3}
+-        TEST $CLI volume set $V0 performance.quick-read off
+-        TEST $CLI volume set $V0 performance.io-cache off
+-        TEST $CLI volume start $V0
+-        TEST $CLI volume attach-tier $V0 $H0:$B0/hot/${V0}{1..2}
+-        TEST $CLI volume set $V0 cluster.tier-mode test
++        TEST $CLI_1 volume create $V0 $H1:$B1/${V0} $H2:$B2/${V0}
++        TEST $CLI_1 volume start $V0
++        TEST $CLI_1 volume attach-tier $V0 $H1:$B1/${V0}_h1 $H2:$B2/${V0}_h2
++}
++
++function tier_status () {
++	$CLI_1 volume tier $V0 status | grep progress | wc -l
+ }
+ 
+ function tier_deamon_kill () {
+@@ -26,37 +30,73 @@ echo "$?"
+ 
+ cleanup;
+ 
+-#Basic checks
+-TEST glusterd
+-TEST pidof glusterd
+-TEST $CLI volume status
++#setup cluster and test volume
++TEST launch_cluster 3; # start 3-node virtual cluster
++TEST $CLI_1 peer probe $H2; # peer probe server 2 from server 1 cli
++TEST $CLI_1 peer probe $H3; # peer probe server 3 from server 1 cli
+ 
++EXPECT_WITHIN $PROBE_TIMEOUT 2 check_peers;
+ 
+ #Create and start a tiered volume
+ create_dist_tier_vol
+ 
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT 0 tier_daemon_check
+ 
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" tier_status
++
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT 0 tier_deamon_kill
+ 
+-TEST $CLI volume tier $V0 start
++TEST $CLI_1 volume tier $V0 start
+ 
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT "0" tier_daemon_check
+ 
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" tier_status
++
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT "0" tier_deamon_kill
+ 
+-TEST $CLI volume tier $V0 start force
++TEST $CLI_3 volume tier $V0 start force
+ 
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT "0" tier_daemon_check
+ 
+-TEST $CLI volume tier $V0 start force
++#The pattern progress should occur twice only.
++#it shouldn't come up on the third node without tierd even
++#after the tier start force is issued on the node without
++#tierd
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" tier_status
++
++#kill the node on which tier is not supposed to run
++TEST kill_node 3
++
++#bring the node back, it should not have tierd running on it
++TEST $glusterd_3;
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" tier_status
++
++#after volume restart, check for tierd
++
++TEST $CLI_3 volume stop $V0
++
++TEST $CLI_3 volume start $V0
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" tier_status
++
++#check for detach start and stop
++
++TEST $CLI_3 volume tier $V0 detach start
++
++TEST $CLI_3 volume tier $V0 detach stop
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "2" tier_status
++
++TEST $CLI_1 volume tier $V0 start force
+ 
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT "0" tier_daemon_check
+ 
+-# To test fordetach start fail while the brick is down
++# To test for detach start fail while the brick is down
+ 
+-TEST pkill -f "$B0/hot/$V0"
++TEST pkill -f "$B1/$V0"
+ 
+-TEST ! $CLI volume tier $V0 detach start
++TEST ! $CLI_1 volume tier $V0 detach start
+ 
+ cleanup
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 70c45ba..3b4669c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -7227,6 +7227,8 @@ glusterd_volume_defrag_restart (glusterd_volinfo_t *volinfo, char *op_errstr,
+         case GF_DEFRAG_STATUS_NOT_STARTED:
+                 ret = glusterd_handle_defrag_start (volinfo, op_errstr, len,
+                                 cmd, cbk, volinfo->rebal.op);
++                if (ret)
++                        volinfo->rebal.defrag_status = GF_DEFRAG_STATUS_FAILED;
+                 break;
+         default:
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+@@ -7238,6 +7240,7 @@ glusterd_volume_defrag_restart (glusterd_volinfo_t *volinfo, char *op_errstr,
+         }
+ out:
+         return ret;
++
+ }
+ 
+ void
+@@ -7299,9 +7302,6 @@ glusterd_restart_rebalance_for_volume (glusterd_volinfo_t *volinfo)
+         int             ret = -1;
+         char          op_errstr[PATH_MAX];
+ 
+-        if (!volinfo->rebal.defrag_cmd)
+-                return -1;
+-
+         if (!gd_should_i_start_rebalance (volinfo)) {
+ 
+                 /* Store the rebalance-id and rebalance command even if
+@@ -7312,11 +7312,17 @@ glusterd_restart_rebalance_for_volume (glusterd_volinfo_t *volinfo)
+                  * Storing this is needed for having 'volume status'
+                  * work correctly.
+                  */
++                volinfo->rebal.defrag_status = GF_DEFRAG_STATUS_NOT_STARTED;
+                 if (volinfo->type == GF_CLUSTER_TYPE_TIER)
+                         glusterd_store_perform_node_state_store (volinfo);
+ 
+                 return 0;
+         }
++        if (!volinfo->rebal.defrag_cmd) {
++                volinfo->rebal.defrag_status = GF_DEFRAG_STATUS_FAILED;
++                return -1;
++        }
++
+         ret = glusterd_volume_defrag_restart (volinfo, op_errstr, PATH_MAX,
+                                 volinfo->rebal.defrag_cmd,
+                                 volinfo->rebal.op == GD_OP_REMOVE_BRICK ?
+@@ -7331,7 +7337,6 @@ glusterd_restart_rebalance_for_volume (glusterd_volinfo_t *volinfo)
+                         volinfo->decommission_in_progress = 1;
+                 }
+         }
+-
+         return ret;
+ }
+ int
+-- 
+1.7.1
+

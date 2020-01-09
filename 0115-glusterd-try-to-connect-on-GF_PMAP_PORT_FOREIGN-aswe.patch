@@ -1,0 +1,102 @@
+From 7c05d954fa1915711221d6d78e46eab74ebc3611 Mon Sep 17 00:00:00 2001
+From: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Date: Sun, 1 May 2016 13:53:47 +0530
+Subject: [PATCH 115/139] glusterd: try to connect on GF_PMAP_PORT_FOREIGN aswell
+
+This patch fix couple of things mentioned below:
+
+1. previously we use to try to connect on only GF_PMAP_PORT_FREE
+in the pmap_registry_alloc(), it could happen that some foreign process
+would have freed the port by this time ?, hence it is worth giving a try on
+GF_PMAP_PORT_FOREIGN ports as well instead of wasting them all.
+
+2. fix pmap_registry_remove() to mark the port asGF_PMAP_PORT_FREE
+
+3. added useful comments on gf_pmap_port_type enum members
+
+Backport of:
+> Backport of:
+>> Change-Id: Id2aa7ad55e76ae3fdece21bed15792525ae33fe1
+>> BUG: 1322805
+>> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+>> Reviewed-on: http://review.gluster.org/14080
+>> Tested-by: Prasanna Kumar Kalever <pkalever@redhat.com>
+>> Smoke: Gluster Build System <jenkins@build.gluster.com>
+>> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+>> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+>> Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+> Change-Id: Ib7852aa1c55611e81c78341aace4d374d516f439
+> BUG: 1323564
+> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+> Reviewed-on: http://review.gluster.org/14117
+> Tested-by: Prasanna Kumar Kalever <pkalever@redhat.com>
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+> Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I844b2feb54c541b75876eddcdffebbe6040b1305
+BUG: 1322306
+Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73586
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ rpc/rpc-lib/src/protocol-common.h         |    4 ++--
+ xlators/mgmt/glusterd/src/glusterd-pmap.c |   15 +++++++++------
+ 2 files changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/rpc/rpc-lib/src/protocol-common.h b/rpc/rpc-lib/src/protocol-common.h
+index fac9eef..a98cf5b 100644
+--- a/rpc/rpc-lib/src/protocol-common.h
++++ b/rpc/rpc-lib/src/protocol-common.h
+@@ -94,10 +94,10 @@ enum gf_aggregator_procnum {
+ 
+ enum gf_pmap_port_type {
+         GF_PMAP_PORT_FREE = 0,
+-        GF_PMAP_PORT_FOREIGN,
++        GF_PMAP_PORT_FOREIGN,     /* it actually means, not sure who is using it, but it is in-use */
+         GF_PMAP_PORT_LEASED,
+         GF_PMAP_PORT_NONE,
+-        GF_PMAP_PORT_BRICKSERVER,
++        GF_PMAP_PORT_BRICKSERVER, /* port used by brick process */
+ };
+ typedef enum gf_pmap_port_type gf_pmap_port_type_t;
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-pmap.c b/xlators/mgmt/glusterd/src/glusterd-pmap.c
+index d74a565..ea35c57 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-pmap.c
++++ b/xlators/mgmt/glusterd/src/glusterd-pmap.c
+@@ -189,13 +189,15 @@ pmap_registry_alloc (xlator_t *this)
+         pmap = pmap_registry_get (this);
+ 
+         for (p = pmap->last_alloc; p <= GF_PORT_MAX; p++) {
+-                if (pmap->ports[p].type != GF_PMAP_PORT_FREE)
+-                        continue;
++                /* GF_PMAP_PORT_FOREIGN may be freed up ? */
++                if ((pmap->ports[p].type == GF_PMAP_PORT_FREE) ||
++                    (pmap->ports[p].type == GF_PMAP_PORT_FOREIGN)) {
+ 
+-                if (pmap_port_isfree (p)) {
+-                        pmap->ports[p].type = GF_PMAP_PORT_LEASED;
+-                        port = p;
+-                        break;
++                        if (pmap_port_isfree (p)) {
++                                pmap->ports[p].type = GF_PMAP_PORT_LEASED;
++                                port = p;
++                                break;
++                        }
+                 }
+         }
+ 
+@@ -275,6 +277,7 @@ remove:
+ 
+         free (pmap->ports[p].brickname);
+ 
++        pmap->ports[p].type = GF_PMAP_PORT_FREE;
+         pmap->ports[p].brickname = NULL;
+         pmap->ports[p].xprt = NULL;
+ 
+-- 
+1.7.1
+

@@ -98,6 +98,12 @@
 /* Define to 1 if you have the <openssl/cmac.h> header file. */
 #undef HAVE_OPENSSL_CMAC_H
 
+/* Define to 1 if you have the <openssl/dh.h> header file. */
+#undef HAVE_OPENSSL_DH_H
+
+/* Define to 1 if you have the <openssl/ecdh.h> header file. */
+#undef HAVE_OPENSSL_ECDH_H
+
 /* Define to 1 if you have the <openssl/md5.h> header file. */
 #undef HAVE_OPENSSL_MD5_H
 

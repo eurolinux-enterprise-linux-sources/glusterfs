@@ -1,0 +1,243 @@
+From d7476c198360cac11c5da6a0e53733643c3da5f0 Mon Sep 17 00:00:00 2001
+From: Jeff Darcy <jdarcy@redhat.com>
+Date: Thu, 31 Mar 2016 17:15:37 -0400
+Subject: [PATCH 085/104] dht: add "nuke" functionality for efficient server-side deletion
+
+This turns a special xattr into an rmdir with flags set.  When that hits
+the posix translator on the server side, that causes the file/directory
+to be moved into the special "landfill" directory.  From there, the
+posix janitor thread will take care of deleting it entirely on the
+server side - traversing it recursively if necessary.  A couple of
+secondary issues were fixed to make this effective.
+
+ * FUSE now ensures that setxattr values are NUL terminated.
+
+ * The janitor thread now gets woken up immediately when something is
+   placed in 'landfill' instead of only when file descriptors need to be
+   closed.
+
+ * The default landfill-emptying interval was reduced to 10s.
+
+To use the feature, issue a setxattr something like this:
+
+   setfattr -n glusterfs.dht.nuke -v "" /mnt/glusterfs/vol/some_dir
+
+The value doesn't actually matter; the mere receipt of a request with
+this key is sufficient.  Some day it might be useful to allow setting a
+required value as a sort of password, so that only those who know it can
+access the underlying special functionality.
+
+Change-Id: I8a343c2cdb40a76d5a06c707191fb67babb8514f
+BUG: 1326498
+Signed-off-by: Jeff Darcy <jdarcy@redhat.com>
+Reviewed-upstream-on: http://review.gluster.org/13878
+Smoke: Gluster Build System <jenkins@build.gluster.com>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72126
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ tests/features/nuke.t                |   41 +++++++++++++++++++++++++++++++
+ xlators/cluster/dht/src/dht-common.c |   45 ++++++++++++++++++++++++++++++++++
+ xlators/mount/fuse/src/fuse-bridge.c |    9 ++++++-
+ xlators/storage/posix/src/posix.c    |   21 +++++++--------
+ 4 files changed, 104 insertions(+), 12 deletions(-)
+ create mode 100755 tests/features/nuke.t
+
+diff --git a/tests/features/nuke.t b/tests/features/nuke.t
+new file mode 100755
+index 0000000..ad9479f
+--- /dev/null
++++ b/tests/features/nuke.t
+@@ -0,0 +1,41 @@
++#!/bin/bash
++
++. $(dirname $0)/../include.rc
++
++create_files () {
++	mkdir $1
++	for i in $(seq 0 99); do
++		mkdir $1/dir$i
++		for j in $(seq 0 99); do
++			touch $1/dir$i/file$j
++		done
++	done
++}
++
++count_files () {
++	ls $1 | wc -l
++}
++
++LANDFILL=$B0/${V0}1/.glusterfs/landfill
++
++TEST glusterd
++
++TEST $CLI volume create $V0 $H0:$B0/${V0}1
++TEST $CLI volume start $V0
++TEST $GFS -s $H0 --volfile-id $V0 $M0
++
++TEST create_files $M0/foo
++TEST [ $(count_files $LANDFILL) = "0" ]
++
++# This should immediately send the whole directory to the landfill.
++TEST setfattr -n glusterfs.dht.nuke -v trinity $M0/foo
++
++# Make sure the directory's not visible on the mountpoint, and is visible in
++# the brick's landfill.
++TEST ! ls $M0/foo
++TEST [ $(count_files $LANDFILL) = "1" ]
++
++# Make sure the janitor thread cleans it up in a timely fashion.
++EXPECT_WITHIN 20 "0" count_files $LANDFILL
++
++cleanup
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 36244e7..ed57d5a 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -3736,6 +3736,42 @@ err:
+         return 0;
+ }
+ 
++int
++dht_nuke_dir (call_frame_t *frame, xlator_t *this, loc_t *loc, data_t *tmp)
++{
++        if (!IA_ISDIR(loc->inode->ia_type)) {
++                DHT_STACK_UNWIND (setxattr, frame, -1, ENOTSUP, NULL);
++                return 0;
++        }
++
++        /* Setxattr didn't need the parent, but rmdir does. */
++        loc->parent = inode_parent (loc->inode, NULL, NULL);
++        if (!loc->parent) {
++                DHT_STACK_UNWIND (setxattr, frame, -1, ENOENT, NULL);
++                return 0;
++        }
++        gf_uuid_copy (loc->pargfid, loc->parent->gfid);
++
++        if (!loc->name && loc->path) {
++                loc->name = strrchr (loc->path, '/');
++                if (loc->name) {
++                        ++(loc->name);
++                }
++        }
++
++        /*
++         * We do this instead of calling dht_rmdir_do directly for two reasons.
++         * The first is that we want to reuse all of the initialization that
++         * dht_rmdir does, so if it ever changes we'll just follow along.  The
++         * second (i.e. why we don't use STACK_WIND_TAIL) is so that we don't
++         * obscure the fact that we came in via this path instead of a genuine
++         * rmdir.  That makes debugging just a tiny bit easier.
++         */
++        STACK_WIND (frame, default_rmdir_cbk, this, this->fops->rmdir,
++                    loc, 1, NULL);
++
++        return 0;
++}
+ 
+ int
+ dht_setxattr (call_frame_t *frame, xlator_t *this,
+@@ -3960,6 +3996,11 @@ dht_setxattr (call_frame_t *frame, xlator_t *this,
+                 goto err;
+         }
+ 
++        tmp = dict_get (xattr, "glusterfs.dht.nuke");
++        if (tmp) {
++                return dht_nuke_dir (frame, this, loc, tmp);
++        }
++
+         if (IA_ISDIR (loc->inode->ia_type)) {
+ 
+                 for (i = 0; i < call_cnt; i++) {
+@@ -7647,6 +7688,10 @@ dht_rmdir (call_frame_t *frame, xlator_t *this, loc_t *loc, int flags,
+                 goto err;
+         }
+ 
++        if (flags) {
++                return dht_rmdir_do (frame, this);
++        }
++
+         for (i = 0; i < conf->subvolume_cnt; i++) {
+                 STACK_WIND (frame, dht_rmdir_opendir_cbk,
+                             conf->subvolumes[i],
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 2fbea13..3dac22a 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -3234,7 +3234,14 @@ fuse_setxattr (xlator_t *this, fuse_in_header_t *finh, void *msg)
+         }
+ 
+         if (fsi->size > 0) {
+-                dict_value = memdup (value, fsi->size);
++                /*
++                 * Many translators expect setxattr values to be strings, but
++                 * neither dict_get_str nor data_to_str do any checking or
++                 * fixups to make sure that's the case.  To avoid nasty
++                 * surprises, allocate an extra byte and add a NUL here.
++                 */
++                dict_value = memdup (value, fsi->size+1);
++                dict_value[fsi->size] = '\0';
+         }
+         dict_set (state->xattr, newkey,
+                   data_from_dynptr ((void *)dict_value, fsi->size));
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 179a564..01ba6d2 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -1937,6 +1937,7 @@ posix_rmdir (call_frame_t *frame, xlator_t *this,
+                 } else {
+                         sprintf (tmp_path, "%s/%s", priv->trash_path, gfid_str);
+                         op_ret = rename (real_path, tmp_path);
++                        pthread_cond_signal (&priv->janitor_cond);
+                 }
+         } else {
+                 op_ret = rmdir (real_path);
+@@ -6477,7 +6478,6 @@ init (xlator_t *this)
+         int                   ret           = 0;
+         int                   op_ret        = -1;
+         ssize_t               size          = -1;
+-        int32_t               janitor_sleep = 0;
+         uuid_t                old_uuid      = {0,};
+         uuid_t                dict_uuid     = {0,};
+         uuid_t                gfid          = {0,};
+@@ -6806,16 +6806,9 @@ init (xlator_t *this)
+         }
+         ret = 0;
+ 
+-        _private->janitor_sleep_duration = 600;
++        GF_OPTION_INIT ("janitor-sleep-duration",
++                        _private->janitor_sleep_duration, int32, out);
+ 
+-        dict_ret = dict_get_int32 (this->options, "janitor-sleep-duration",
+-                                   &janitor_sleep);
+-        if (dict_ret == 0) {
+-                gf_msg_debug (this->name, 0, "Setting janitor sleep duration "
+-                              "to %d.", janitor_sleep);
+-
+-                _private->janitor_sleep_duration = janitor_sleep;
+-        }
+         /* performing open dir on brick dir locks the brick dir
+          * and prevents it from being unmounted
+          */
+@@ -7051,7 +7044,13 @@ struct volume_options options[] = {
+         { .key  = {"background-unlink"},
+           .type = GF_OPTION_TYPE_BOOL },
+         { .key  = {"janitor-sleep-duration"},
+-          .type = GF_OPTION_TYPE_INT },
++          .type = GF_OPTION_TYPE_INT,
++          .min = 1,
++          .validate = GF_OPT_VALIDATE_MIN,
++          .default_value = "10",
++          .description = "Interval (in seconds) between times the internal "
++                         "'landfill' directory is emptied."
++        },
+         { .key  = {"volume-id"},
+           .type = GF_OPTION_TYPE_ANY },
+         { .key  = {"glusterd-uuid"},
+-- 
+1.7.1
+

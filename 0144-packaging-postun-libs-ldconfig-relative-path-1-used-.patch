@@ -1,0 +1,69 @@
+From 604db733ae2a8689685768907ac7e76486d59d48 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Fri, 13 May 2016 01:51:07 +0530
+Subject: [PATCH 144/158] packaging: %postun libs ldconfig: relative path `1' used to build cache
+
+Remove the -p /sbin/ldconfig from %post{un} {api|libs} and move the
+/sbin/ldconfig invokation to separate line.
+
+See mainline:
+>> Change-Id: I8a4c3879afcb7cea08d4b303a2524432d2ffec06
+>> BUG: 1330583
+>> http://review.gluster.org/14312
+
+Change-Id: I865e1db77c63e5a14e72ffce20ea6670618f6d5e
+BUG: 1328194
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74231
+Reviewed-by: Kaleb Keithley <kkeithle@redhat.com>
+---
+ glusterfs.spec.in |   12 ++++++++----
+ 1 files changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index c77754d..b49e7dd 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -814,7 +814,8 @@ rm -rf %{buildroot}
+ %endif
+ exit 0
+ 
+-%post api -p /sbin/ldconfig
++%post api
++/sbin/ldconfig
+ 
+ %if ( 0%{?rhel} == 5 )
+ %post fuse
+@@ -832,7 +833,8 @@ exit 0
+ %endif
+ %endif
+ 
+-%post libs -p /sbin/ldconfig
++%post libs
++/sbin/ldconfig
+ 
+ %if ( 0%{?_build_server} )
+ %post server
+@@ -949,7 +951,8 @@ fi
+ %endif
+ %endif
+ 
+-%postun api -p /sbin/ldconfig
++%postun api
++/sbin/ldconfig
+ 
+ %if ( 0%{?_build_server} )
+ %postun server
+@@ -964,7 +967,8 @@ exit 0
+ exit 0
+ %endif
+ 
+-%postun libs -p /sbin/ldconfig
++%postun libs
++/sbin/ldconfig
+ 
+ ##-----------------------------------------------------------------------------
+ ## All %%files should be placed here and keep them grouped
+-- 
+1.7.1
+

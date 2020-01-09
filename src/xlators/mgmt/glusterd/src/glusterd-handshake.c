@@ -790,8 +790,9 @@ __server_getspec (rpcsvc_request_t *req)
          * server, self-heal daemon etc., so that they are not inadvertently
          * blocked by a auth.{allow,reject} setting. The trusted volfile is not
          * meant for external users.
+         * For unix domain socket, address will be empty.
          */
-        if (strlen (addrstr) && gf_is_local_addr (addrstr)) {
+        if (strlen (addrstr) == 0 || gf_is_local_addr (addrstr)) {
 
                 ret = build_volfile_path (volume, filename,
                                           sizeof (filename),
@@ -990,7 +991,7 @@ out:
 /* Validate if glusterd can serve the management handshake request
  *
  * Requests are allowed if,
- *  - glusterd has no peers, or
+ *  - glusterd has no peers & no volumes, or
  *  - the request came from a known peer
  * A known peer is identified using the following steps
  *  - the dict is checked for a peer uuid, which if present is matched with the
@@ -1010,7 +1011,7 @@ gd_validate_mgmt_hndsk_req (rpcsvc_request_t *req, dict_t *dict)
         this = THIS;
         GF_ASSERT (this);
 
-        if (!glusterd_have_peers ())
+        if (!glusterd_have_peers () && !glusterd_have_volumes ())
                 return _gf_true;
 
         ret = dict_get_str (dict, GD_PEER_ID_KEY, &uuid_str);
@@ -2204,5 +2205,8 @@ glusterd_peer_dump_version (xlator_t *this, struct rpc_clnt *rpc,
 unlock:
         rcu_read_unlock ();
 out:
+        if (ret && frame)
+                STACK_DESTROY (frame->root);
+
         return ret;
 }

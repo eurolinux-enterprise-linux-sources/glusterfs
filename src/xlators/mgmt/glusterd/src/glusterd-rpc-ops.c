@@ -147,6 +147,7 @@ glusterd_op_send_cli_response (glusterd_op_t op, int32_t op_ret,
         case GD_OP_SNAP:
         case GD_OP_BARRIER:
         case GD_OP_BITROT:
+        case GD_OP_SCRUB_STATUS:
         {
                 /*nothing specific to be done*/
                 break;
@@ -536,6 +537,7 @@ out:
                 glusterd_friend_sm ();
                 glusterd_op_sm ();
         }
+
         if (ctx)
                 glusterd_destroy_probe_ctx (ctx);
         free (rsp.hostname);//malloced by xdr
@@ -1671,6 +1673,9 @@ glusterd_rpc_friend_update (call_frame_t *frame, xlator_t *this,
 out:
         GF_FREE (req.friends.friends_val);
 
+        if (ret && dummy_frame)
+                STACK_DESTROY (dummy_frame->root);
+
         gf_msg_debug ("glusterd", 0, "Returning %d", ret);
         return ret;
 }
@@ -1706,6 +1711,9 @@ glusterd_cluster_lock (call_frame_t *frame, xlator_t *this,
                                        (xdrproc_t)xdr_gd1_mgmt_cluster_lock_req);
 out:
         gf_msg_debug ("glusterd", 0, "Returning %d", ret);
+
+        if (ret && dummy_frame)
+                STACK_DESTROY (dummy_frame->root);
         return ret;
 }
 
@@ -1892,6 +1900,10 @@ glusterd_cluster_unlock (call_frame_t *frame, xlator_t *this,
                                        (xdrproc_t)xdr_gd1_mgmt_cluster_unlock_req);
 out:
         gf_msg_debug (this ? this->name : "glusterd", 0, "Returning %d", ret);
+
+        if (ret && dummy_frame)
+                STACK_DESTROY (dummy_frame->root);
+
         return ret;
 }
 
@@ -2239,6 +2251,7 @@ glusterd_brick_op (call_frame_t *frame, xlator_t *this,
                 if ((pending_node->type == GD_NODE_NFS) ||
                     (pending_node->type == GD_NODE_QUOTAD) ||
                     (pending_node->type == GD_NODE_SNAPD) ||
+                    (pending_node->type == GD_NODE_SCRUB) ||
                     ((pending_node->type == GD_NODE_SHD) &&
                      (req_ctx->op == GD_OP_STATUS_VOLUME)))
                         ret = glusterd_node_op_build_payload

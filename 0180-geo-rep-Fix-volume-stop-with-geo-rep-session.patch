@@ -1,0 +1,52 @@
+From 4c1027578259a377774cbb26c5fa7660f9d791e1 Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Fri, 3 Jun 2016 13:07:24 +0530
+Subject: [PATCH 180/183] geo-rep: Fix volume stop with geo-rep session
+
+The slave volume uuid is appended to slave_url
+which is saved in 'gsync_slaves' dictionary with
+the commit "http://review.gluster.org/13111".
+But the gsyncd expects slave_url with out slave
+volume uuid otherwise it fails which in turn
+fails volume stop with geo-rep. This patch
+fixes the same.
+
+Change-Id: I036f4fce43115ff848daebfe1b2c58765cffab5a
+BUG: 1342261
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: http://review.gluster.org/14636 (master)
+Reviewed-on: http://review.gluster.org/14637 (3.7)
+Reviewed-on: http://review.gluster.org/14645 (3.8)
+Reviewed-on: https://code.engineering.redhat.com/gerrit/75887
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Tested-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+---
+ geo-replication/syncdaemon/gsyncd.py |   12 ++++++++++++
+ 1 files changed, 12 insertions(+), 0 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gsyncd.py b/geo-replication/syncdaemon/gsyncd.py
+index 1667e97..da5de0f 100644
+--- a/geo-replication/syncdaemon/gsyncd.py
++++ b/geo-replication/syncdaemon/gsyncd.py
+@@ -411,6 +411,18 @@ def main_i():
+     # the parser with virgin values container.
+     defaults = op.get_default_values()
+     opts, args = op.parse_args(values=optparse.Values())
++    # slave url cleanup, if input comes with vol uuid as follows
++    # 'ssh://fvm1::gv2:07dfddca-94bb-4841-a051-a7e582811467'
++    temp_args = []
++    for arg in args:
++        # Split based on ::
++        data = arg.split("::")
++        if len(data)>1:
++            slavevol_name = data[1].split(":")[0]
++            temp_args.append("%s::%s" % (data[0], slavevol_name))
++        else:
++            temp_args.append(data[0])
++    args = temp_args
+     args_orig = args[:]
+ 
+     voluuid_get = rconf.get('slavevoluuid_get')
+-- 
+1.7.1
+

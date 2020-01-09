@@ -1,0 +1,71 @@
+From 7f92b639288a7521ec9694df332d935f712c6a6b Mon Sep 17 00:00:00 2001
+From: Ashish Pandey <aspandey@redhat.com>
+Date: Thu, 9 Jun 2016 16:19:37 +0530
+Subject: [PATCH 195/195] cluster/ec: Pass xdata to dht in case of error
+
+Problem: In case of mkdir failure, dht expects
+error information so that it can act accordingly.
+Aftre adding bricks and re balance, layout gets
+changed. Fop "mkdir" with old layout returns EIO.
+EC gets this error in xdata but does not pass it
+back to dht. In this case dht will not be able to
+take corrective action.
+
+Solution: Return xdata back to dht
+
+master -
+http://review.gluster.org/#/c/14679/
+release-3.7 -
+http://review.gluster.org/#/c/14689/
+release-3.8 -
+http://review.gluster.org/#/c/14690/
+
+Change-Id: I24def8038e6880607689b7b046dc6428f564c6ab
+BUG: 1344278
+Signed-off-by: Ashish Pandey <aspandey@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/76318
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/cluster/ec/src/ec-dir-write.c |   10 ++++++----
+ 1 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/cluster/ec/src/ec-dir-write.c b/xlators/cluster/ec/src/ec-dir-write.c
+index 6874113..e181170 100644
+--- a/xlators/cluster/ec/src/ec-dir-write.c
++++ b/xlators/cluster/ec/src/ec-dir-write.c
+@@ -46,12 +46,12 @@ ec_dir_write_cbk (call_frame_t *frame, xlator_t *this,
+         if (!cbk)
+                 goto out;
+ 
+-        if (op_ret < 0)
+-                goto out;
+-
+         if (xdata)
+                 cbk->xdata = dict_ref (xdata);
+ 
++        if (op_ret < 0)
++                goto out;
++
+         if (poststat)
+                 cbk->iatt[i++] = *poststat;
+ 
+@@ -584,12 +584,14 @@ int32_t ec_manager_mkdir(ec_fop_data_t * fop, int32_t state)
+         case -EC_STATE_DISPATCH:
+         case -EC_STATE_PREPARE_ANSWER:
+         case -EC_STATE_REPORT:
++            cbk = fop->answer;
+             GF_ASSERT(fop->error != 0);
+ 
+             if (fop->cbks.mkdir != NULL)
+             {
+                 fop->cbks.mkdir(fop->req_frame, fop, fop->xl, -1, fop->error,
+-                                NULL, NULL, NULL, NULL, NULL);
++                                NULL, NULL, NULL, NULL,
++                                ((cbk) ? cbk->xdata : NULL));
+             }
+ 
+             return EC_STATE_LOCK_REUSE;
+-- 
+1.7.1
+

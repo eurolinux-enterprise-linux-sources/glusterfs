@@ -89,9 +89,6 @@
 #define GF_XATTR_LOCKINFO_KEY   "trusted.glusterfs.lockinfo"
 #define GF_XATTR_GET_REAL_FILENAME_KEY "glusterfs.get_real_filename:"
 #define GF_XATTR_USER_PATHINFO_KEY   "glusterfs.pathinfo"
-#define QUOTA_LIMIT_KEY "trusted.glusterfs.quota.limit-set"
-#define QUOTA_LIMIT_OBJECTS_KEY "trusted.glusterfs.quota.limit-objects"
-#define VIRTUAL_QUOTA_XATTR_CLEANUP_KEY "glusterfs.quota-xattr-cleanup"
 #define GF_INTERNAL_IGNORE_DEEM_STATFS "ignore-deem-statfs"
 
 #define GF_READDIR_SKIP_DIRS       "readdir-filter-directories"
@@ -161,11 +158,17 @@
 #define GF_XATTR_STIME_PATTERN "trusted.glusterfs.*.stime"
 #define GF_XATTR_TRIGGER_SYNC "glusterfs.geo-rep.trigger-sync"
 
+/* quota xattrs */
 #define QUOTA_SIZE_KEY "trusted.glusterfs.quota.size"
+#define QUOTA_LIMIT_KEY "trusted.glusterfs.quota.limit-set"
+#define QUOTA_LIMIT_OBJECTS_KEY "trusted.glusterfs.quota.limit-objects"
+#define VIRTUAL_QUOTA_XATTR_CLEANUP_KEY "glusterfs.quota-xattr-cleanup"
 
 /* Index xlator related */
 #define GF_XATTROP_INDEX_GFID "glusterfs.xattrop_index_gfid"
 #define GF_XATTROP_INDEX_COUNT "glusterfs.xattrop_index_count"
+#define GF_XATTROP_DIRTY_GFID "glusterfs.xattrop_dirty_gfid"
+#define GF_XATTROP_DIRTY_COUNT "glusterfs.xattrop_dirty_count"
 
 #define GF_HEAL_INFO "glusterfs.heal-info"
 #define GF_AFR_HEAL_SBRAIN "glusterfs.heal-sbrain"
@@ -237,12 +240,16 @@
 #define DHT_COMMITHASH_STR "commithash"
 
 #define DHT_SKIP_NON_LINKTO_UNLINK  "unlink-only-if-dht-linkto-file"
+#define TIER_SKIP_NON_LINKTO_UNLINK  "unlink-only-if-tier-linkto-file"
+#define TIER_LINKFILE_GFID           "tier-linkfile-gfid"
 #define DHT_SKIP_OPEN_FD_UNLINK     "dont-unlink-for-open-fd"
 #define DHT_IATT_IN_XDATA_KEY       "dht-get-iatt-in-xattr"
 
-/*CTR requires inode dentry link count from posix*/
-#define CTR_RESPONSE_LINK_COUNT_XDATA "ctr_response_link_count"
-#define CTR_REQUEST_LINK_COUNT_XDATA  "ctr_request_link_count"
+/*CTR and Marker requires inode dentry link count from posix*/
+#define GF_RESPONSE_LINK_COUNT_XDATA "gf_response_link_count"
+#define GF_REQUEST_LINK_COUNT_XDATA  "gf_request_link_count"
+
+#define CTR_ATTACH_TIER_LOOKUP    "ctr_attach_tier_lookup"
 
 #define GF_LOG_LRU_BUFSIZE_DEFAULT 5
 #define GF_LOG_LRU_BUFSIZE_MIN 0
@@ -441,6 +448,7 @@ struct _cmd_args {
         int              read_only;
         int              acl;
         int              selinux;
+        int              capability;
         int              enable_ino32;
         int              worm;
         int              mac_compat;
@@ -618,6 +626,7 @@ typedef enum {
         GF_EVENT_PARENT_DOWN,
         GF_EVENT_VOLUME_BARRIER_OP,
         GF_EVENT_UPCALL,
+        GF_EVENT_SCRUB_STATUS,
         GF_EVENT_MAXVAL,
 } glusterfs_event_t;
 

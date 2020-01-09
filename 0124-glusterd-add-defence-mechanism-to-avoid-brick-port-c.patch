@@ -1,0 +1,351 @@
+From 4803fd6a2f69f1832523f5af255425a366aa5e16 Mon Sep 17 00:00:00 2001
+From: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Date: Wed, 27 Apr 2016 19:12:19 +0530
+Subject: [PATCH 124/139] glusterd: add defence mechanism to avoid brick port clashes
+
+Intro:
+Currently glusterd maintain the portmap registry which contains ports that
+are free to use between 49152 - 65535, this registry is initialized
+once, and updated accordingly as an then when glusterd sees they are been
+used.
+
+Glusterd first checks for a port within the portmap registry and gets a FREE
+port marked in it, then checks if that port is currently free using a connect()
+function then passes it to brick process which have to bind on it.
+
+Problem:
+We see that there is a time gap between glusterd checking the port with
+connect() and brick process actually binding on it. In this time gap it could
+be so possible that any process would have occupied this port because of which
+brick will fail to bind and exit.
+
+Case 1:
+To avoid the gluster client process occupying the port supplied by glusterd :
+
+we have separated the client port map range with brick port map range more @
+http://review.gluster.org/#/c/13998/
+
+Case 2: (Handled by this patch)
+To avoid the other foreign process occupying the port supplied by glusterd :
+
+To handle above situation this patch implements a mechanism to return EADDRINUSE
+error code to glusterd, upon which a new port is allocated and try to restart
+the brick process with the newly allocated port.
+
+Note: Incase of glusterd restarts i.e. runner_run_nowait() there is no way to
+handle Case 2, becuase runner_run_nowait() will not wait to get the return/exit
+code of the executed command (brick process). Hence as of now in such case,
+we cannot know with what error the brick has failed to connect.
+
+This patch also fix the runner_end() to perform some cleanup w.r.t
+return values.
+
+Backport of:
+> Backport of:
+>> Change-Id: Iec52e7f5d87ce938d173f8ef16aa77fd573f2c5e
+>> BUG: 1322805
+>> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+>> Reviewed-on: http://review.gluster.org/14043
+>> Tested-by: Prasanna Kumar Kalever <pkalever@redhat.com>
+>> Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+>> Smoke: Gluster Build System <jenkins@build.gluster.com>
+>> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+>> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+>> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+>> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+
+> Change-Id: Ief247b4d4538c1ca03e73aa31beb5fa99853afd6
+> BUG: 1323564
+> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+> Reviewed-on: http://review.gluster.org/14208
+> Tested-by: Prasanna Kumar Kalever <pkalever@redhat.com>
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+
+Change-Id: I29be5a56d4082266bce8600ddbed6c82a59ab52c
+BUG: 1322306
+Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73677
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ glusterfsd/src/glusterfsd.c                   |    7 ++-
+ libglusterfs/src/run.c                        |   12 +++--
+ rpc/rpc-lib/src/rpcsvc.c                      |   61 +++++++++----------------
+ rpc/rpc-transport/socket/src/socket.c         |    4 +-
+ xlators/mgmt/glusterd/src/glusterd-messages.h |   11 ++++-
+ xlators/mgmt/glusterd/src/glusterd-utils.c    |   22 +++++++++
+ xlators/protocol/server/src/server.c          |    3 +-
+ 7 files changed, 71 insertions(+), 49 deletions(-)
+
+diff --git a/glusterfsd/src/glusterfsd.c b/glusterfsd/src/glusterfsd.c
+index ef4b81c..9f171da 100644
+--- a/glusterfsd/src/glusterfsd.c
++++ b/glusterfsd/src/glusterfsd.c
+@@ -1305,7 +1305,7 @@ cleanup_and_exit (int signum)
+                 }
+ 
+         }
+-        exit(0);
++        exit(signum);
+ }
+ 
+ 
+@@ -2182,6 +2182,7 @@ glusterfs_process_volfp (glusterfs_ctx_t *ctx, FILE *fp)
+         glusterfs_graph_t  *graph = NULL;
+         int                 ret = -1;
+         xlator_t           *trav = NULL;
++        int                 err = 0;
+ 
+         graph = glusterfs_graph_construct (fp);
+         if (!graph) {
+@@ -2218,7 +2219,9 @@ out:
+         if (ret && !ctx->active) {
+                 glusterfs_graph_destroy (graph);
+                 /* there is some error in setting up the first graph itself */
+-                cleanup_and_exit (0);
++                err = -ret;
++                sys_write (ctx->daemon_pipe[1], (void *) &err, sizeof (err));
++                cleanup_and_exit (err);
+         }
+ 
+         return ret;
+diff --git a/libglusterfs/src/run.c b/libglusterfs/src/run.c
+index 7c237b3..17da3ad 100644
+--- a/libglusterfs/src/run.c
++++ b/libglusterfs/src/run.c
+@@ -338,13 +338,13 @@ int
+ runner_end_reuse (runner_t *runner)
+ {
+         int i = 0;
+-        int ret = -1;
++        int ret = 1;
+         int chstat = 0;
+ 
+         if (runner->chpid > 0) {
+                 if (waitpid (runner->chpid, &chstat, 0) == runner->chpid) {
+                         if (WIFEXITED(chstat)) {
+-                                ret = -WEXITSTATUS(chstat);
++                                ret = WEXITSTATUS(chstat);
+                         } else {
+                                 ret = chstat;
+                         }
+@@ -358,7 +358,7 @@ runner_end_reuse (runner_t *runner)
+                 }
+         }
+ 
+-        return ret;
++        return -ret;
+ }
+ 
+ int
+@@ -387,8 +387,12 @@ runner_run_generic (runner_t *runner, int (*rfin)(runner_t *runner))
+         int ret = 0;
+ 
+         ret = runner_start (runner);
++        if (ret)
++                goto out;
++        ret = rfin (runner);
+ 
+-        return -(rfin (runner) || ret);
++out:
++        return ret;
+ }
+ 
+ int
+diff --git a/rpc/rpc-lib/src/rpcsvc.c b/rpc/rpc-lib/src/rpcsvc.c
+index daf1932..b0eea19 100644
+--- a/rpc/rpc-lib/src/rpcsvc.c
++++ b/rpc/rpc-lib/src/rpcsvc.c
+@@ -1584,43 +1584,6 @@ rpcsvc_transport_peeraddr (rpc_transport_t *trans, char *addrstr, int addrlen,
+                                           sasize);
+ }
+ 
+-
+-rpc_transport_t *
+-rpcsvc_transport_create (rpcsvc_t *svc, dict_t *options, char *name)
+-{
+-        int                ret   = -1;
+-        rpc_transport_t   *trans = NULL;
+-
+-        trans = rpc_transport_load (svc->ctx, options, name);
+-        if (!trans) {
+-                gf_log (GF_RPCSVC, GF_LOG_WARNING, "cannot create listener, "
+-                        "initing the transport failed");
+-                goto out;
+-        }
+-
+-        ret = rpc_transport_listen (trans);
+-        if (ret == -1) {
+-                gf_log (GF_RPCSVC, GF_LOG_WARNING,
+-                        "listening on transport failed");
+-                goto out;
+-        }
+-
+-        ret = rpc_transport_register_notify (trans, rpcsvc_notify, svc);
+-        if (ret == -1) {
+-                gf_log (GF_RPCSVC, GF_LOG_WARNING, "registering notify failed");
+-                goto out;
+-        }
+-
+-        ret = 0;
+-out:
+-        if ((ret == -1) && (trans)) {
+-                rpc_transport_disconnect (trans);
+-                trans = NULL;
+-        }
+-
+-        return trans;
+-}
+-
+ rpcsvc_listener_t *
+ rpcsvc_listener_alloc (rpcsvc_t *svc, rpc_transport_t *trans)
+ {
+@@ -1658,9 +1621,23 @@ rpcsvc_create_listener (rpcsvc_t *svc, dict_t *options, char *name)
+                 goto out;
+         }
+ 
+-        trans = rpcsvc_transport_create (svc, options, name);
++        trans = rpc_transport_load (svc->ctx, options, name);
+         if (!trans) {
+-                /* LOG TODO */
++                gf_log (GF_RPCSVC, GF_LOG_WARNING, "cannot create listener, "
++                        "initing the transport failed");
++                goto out;
++        }
++
++        ret = rpc_transport_listen (trans);
++        if (ret == -EADDRINUSE || ret == -1) {
++                gf_log (GF_RPCSVC, GF_LOG_WARNING,
++                        "listening on transport failed");
++                goto out;
++        }
++
++        ret = rpc_transport_register_notify (trans, rpcsvc_notify, svc);
++        if (ret == -1) {
++                gf_log (GF_RPCSVC, GF_LOG_WARNING, "registering notify failed");
+                 goto out;
+         }
+ 
+@@ -1763,7 +1740,11 @@ out:
+ 
+         GF_FREE (transport_name);
+ 
+-        return count;
++        if (count > 0) {
++                return count;
++        } else {
++                return ret;
++        }
+ }
+ 
+ 
+diff --git a/rpc/rpc-transport/socket/src/socket.c b/rpc/rpc-transport/socket/src/socket.c
+index 17912c5..43caa70 100644
+--- a/rpc/rpc-transport/socket/src/socket.c
++++ b/rpc/rpc-transport/socket/src/socket.c
+@@ -883,6 +883,8 @@ __socket_server_bind (rpc_transport_t *this)
+                 if (errno == EADDRINUSE) {
+                         gf_log (this->name, GF_LOG_ERROR,
+                                 "Port is already in use");
++
++                        ret = -EADDRINUSE;
+                 }
+         }
+ 
+@@ -3359,7 +3361,7 @@ socket_listen (rpc_transport_t *this)
+ 
+                 ret = __socket_server_bind (this);
+ 
+-                if (ret == -1) {
++                if ((ret == -EADDRINUSE) || (ret == -1)) {
+                         /* logged inside __socket_server_bind() */
+                         close (priv->sock);
+                         priv->sock = -1;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-messages.h b/xlators/mgmt/glusterd/src/glusterd-messages.h
+index cfcd114..83e3e16 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-messages.h
++++ b/xlators/mgmt/glusterd/src/glusterd-messages.h
+@@ -46,7 +46,7 @@
+ 
+ #define GLUSTERD_COMP_BASE      GLFS_MSGID_GLUSTERD
+ 
+-#define GLFS_NUM_MESSAGES       573
++#define GLFS_NUM_MESSAGES       575
+ 
+ #define GLFS_MSGID_END          (GLUSTERD_COMP_BASE + GLFS_NUM_MESSAGES + 1)
+ /* Messaged with message IDs */
+@@ -4646,6 +4646,15 @@
+  */
+ #define GD_MSG_FILE_NOT_FOUND                       (GLUSTERD_COMP_BASE + 574)
+ 
++/*!
++ * @messageid 106575
++ * @diagnosis  Brick failed to start with given port, hence it gets a fresh port
++ *             on its own and try to restart the brick with a new port
++ * @recommendedaction  Ensure the new port is not blocked by firewall
++ */
++
++#define GD_MSG_RETRY_WITH_NEW_PORT                   (GLUSTERD_COMP_BASE + 575)
++
+ /*------------*/
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+ #endif /* !_GLUSTERD_MESSAGES_H_ */
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 8ed9ff1..70c45ba 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -1745,6 +1745,8 @@ glusterd_volume_start_glusterfs (glusterd_volinfo_t  *volinfo,
+            writing the valgrind log to the same file.
+         */
+         GLUSTERD_REMOVE_SLASH_FROM_PATH (brickinfo->path, exp_path);
++
++retry:
+         runinit (&runner);
+ 
+         if (priv->valgrind) {
+@@ -1836,6 +1838,26 @@ glusterd_volume_start_glusterfs (glusterd_volinfo_t  *volinfo,
+                 ret = runner_run (&runner);
+                 synclock_lock (&priv->big_lock);
+ 
++                if (ret == -EADDRINUSE) {
++                        /* retry after getting a new port */
++                        gf_msg (this->name, GF_LOG_WARNING, -ret,
++                                GD_MSG_SRC_BRICK_PORT_UNAVAIL,
++                                "Port %d is used by other process", port);
++
++                        port = pmap_registry_alloc (this);
++                        if (!port) {
++                                gf_msg (this->name, GF_LOG_CRITICAL, 0,
++                                        GD_MSG_NO_FREE_PORTS,
++                                        "Couldn't allocate a port");
++                                ret = -1;
++                                goto out;
++                        }
++                        gf_msg (this->name, GF_LOG_NOTICE, 0,
++                                GD_MSG_RETRY_WITH_NEW_PORT,
++                                "Retrying to start brick %s with new port %d",
++                                brickinfo->path, port);
++                        goto retry;
++                }
+         } else {
+                 ret = runner_run_nowait (&runner);
+         }
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index 347a5fb..3d0440e 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -1072,7 +1072,8 @@ init (xlator_t *this)
+                 gf_msg (this->name, GF_LOG_WARNING, 0,
+                         PS_MSG_RPCSVC_LISTENER_CREATE_FAILED,
+                         "creation of listener failed");
+-                ret = -1;
++                if (ret != -EADDRINUSE)
++                        ret = -1;
+                 goto out;
+         } else if (ret < total_transport) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+-- 
+1.7.1
+

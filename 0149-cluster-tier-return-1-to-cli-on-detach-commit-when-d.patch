@@ -1,0 +1,41 @@
+From 4a665fa5e14c33bc91ee38f5974499262d944de9 Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Wed, 11 May 2016 13:51:57 -0400
+Subject: [PATCH 149/158] cluster/tier: return -1 to cli on detach commit when detach unfinished
+
+If we try to commit a detach tier before it is finished, we should
+flag an error. This patch adds a return value -1 for this case to
+be propagated back to the CLI.
+
+This is a backport of patch 14237.
+
+> Change-Id: I619dbe662b2fd06ebdd97702b2d223560017db51
+> BUG: 1335792
+> Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+> Reviewed-on: http://review.gluster.org/14327
+
+Change-Id: I619dbe662b2fd06ebdd97702b2d223560017db51
+BUG: 1335082
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74126
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index 547b82d..d27ea2b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -2133,6 +2133,7 @@ glusterd_op_stage_remove_brick (dict_t *dict, char **op_errstr)
+                                            "retry after completion");
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+                                 GD_MSG_OIP_RETRY_LATER, "%s", errstr);
++                        ret = -1;
+                         goto out;
+                 }
+                 break;
+-- 
+1.7.1
+

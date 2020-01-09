@@ -26,6 +26,7 @@
 
 #include "rpc-clnt.h"
 #include "protocol-common.h"
+#include "glusterfsd-messages.h"
 #include "glusterfs3.h"
 #include "portmap-xdr.h"
 #include "xdr-generic.h"
@@ -562,6 +563,7 @@ int
 glusterfs_handle_translator_op (rpcsvc_request_t *req)
 {
         int32_t                  ret     = -1;
+        int32_t                  op_ret  = 0;
         gd1_mgmt_brick_op_req    xlator_req = {0,};
         dict_t                   *input    = NULL;
         xlator_t                 *xlator = NULL;
@@ -631,9 +633,12 @@ glusterfs_handle_translator_op (rpcsvc_request_t *req)
                 ret = dict_get_str (input, key, &xname);
                 xlator = xlator_search_by_name (any, xname);
                 XLATOR_NOTIFY (xlator, GF_EVENT_TRANSLATOR_OP, input, output);
+                /* If notify fails for an xlator we need to capture it but
+                 * continue with the loop. */
                 if (ret)
-                        break;
+                        op_ret = -1;
         }
+        ret = op_ret;
 out:
         glusterfs_xlator_op_response_send (req, ret, "", output);
         if (input)
@@ -645,6 +650,87 @@ out:
         return 0;
 }
 
+int
+glusterfs_handle_bitrot (rpcsvc_request_t *req)
+{
+        int32_t                  ret          = -1;
+        gd1_mgmt_brick_op_req    xlator_req   = {0,};
+        dict_t                   *input       = NULL;
+        dict_t                   *output      = NULL;
+        xlator_t                 *any         = NULL;
+        xlator_t                 *this        = NULL;
+        xlator_t                 *xlator      = NULL;
+        char                     msg[2048]    = {0,};
+        char                     xname[1024]  = {0,};
+        glusterfs_ctx_t          *ctx         = NULL;
+        glusterfs_graph_t        *active      = NULL;
+
+        GF_ASSERT (req);
+        this = THIS;
+        GF_ASSERT (this);
+
+        ret = xdr_to_generic (req->msg[0], &xlator_req,
+                             (xdrproc_t)xdr_gd1_mgmt_brick_op_req);
+
+        if (ret < 0) {
+                /*failed to decode msg;*/
+                req->rpc_err = GARBAGE_ARGS;
+                goto out;
+        }
+
+        ctx = glusterfsd_ctx;
+        GF_ASSERT (ctx);
+
+        active = ctx->active;
+        if (!active) {
+                req->rpc_err = GARBAGE_ARGS;
+                goto out;
+        }
+
+        any = active->first;
+
+        input = dict_new ();
+        if (!input)
+                goto out;
+
+        ret = dict_unserialize (xlator_req.input.input_val,
+                                xlator_req.input.input_len,
+                                &input);
+
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, glusterfsd_msg_35);
+                goto out;
+        }
+
+        /* Send scrubber request to bitrot xlator */
+        snprintf (xname, sizeof (xname), "%s-bit-rot-0", xlator_req.name);
+        xlator = xlator_search_by_name (any, xname);
+        if (!xlator) {
+                snprintf (msg, sizeof (msg), "xlator %s is not loaded", xname);
+                gf_msg (this->name, GF_LOG_ERROR, 0, glusterfsd_msg_36);
+                goto out;
+        }
+
+        output = dict_new ();
+        if (!output) {
+                ret = -1;
+                goto out;
+        }
+
+        ret = xlator->notify (xlator, GF_EVENT_SCRUB_STATUS, input,
+                              output);
+out:
+        glusterfs_translator_info_response_send (req, ret, msg, output);
+
+        if (input)
+                dict_unref (input);
+        free (xlator_req.input.input_val); /*malloced by xdr*/
+        if (output)
+                dict_unref (output);
+        free (xlator_req.name);
+
+        return 0;
+}
 
 int
 glusterfs_handle_defrag (rpcsvc_request_t *req)
@@ -1398,6 +1484,7 @@ rpcsvc_actor_t glusterfs_actors[GLUSTERD_BRICK_MAXVALUE] = {
         [GLUSTERD_NODE_STATUS]         = {"NFS STATUS",        GLUSTERD_NODE_STATUS,         glusterfs_handle_node_status,         NULL, 0, DRC_NA},
         [GLUSTERD_VOLUME_BARRIER_OP]   = {"VOLUME BARRIER OP", GLUSTERD_VOLUME_BARRIER_OP,   glusterfs_handle_volume_barrier_op,   NULL, 0, DRC_NA},
         [GLUSTERD_BRICK_BARRIER]       = {"BARRIER",           GLUSTERD_BRICK_BARRIER,       glusterfs_handle_barrier,             NULL, 0, DRC_NA},
+        [GLUSTERD_NODE_BITROT]         = {"BITROT",            GLUSTERD_NODE_BITROT,         glusterfs_handle_bitrot,              NULL, 0, DRC_NA},
 };
 
 struct rpcsvc_program glusterfs_mop_prog = {
@@ -1751,6 +1838,11 @@ glusterfs_rebalance_event_notify_cbk (struct rpc_req *req, struct iovec *iov,
         }
 out:
         free (rsp.dict.dict_val); //malloced by xdr
+
+        if (frame) {
+                STACK_DESTROY (frame->root);
+        }
+
         return ret;
 
 }
@@ -1787,9 +1879,6 @@ glusterfs_rebalance_event_notify (dict_t *dict)
 
         GF_FREE (req.dict.dict_val);
 
-        if (frame) {
-              STACK_DESTROY (frame->root);
-        }
         return ret;
 }
 
@@ -2022,6 +2111,7 @@ glusterfs_mgmt_init (glusterfs_ctx_t *ctx)
         char                    *host = NULL;
 
         cmd_args = &ctx->cmd_args;
+        GF_VALIDATE_OR_GOTO (THIS->name, cmd_args->volfile_server, out);
 
         if (ctx->mgmt)
                 return 0;
@@ -2029,11 +2119,14 @@ glusterfs_mgmt_init (glusterfs_ctx_t *ctx)
         if (cmd_args->volfile_server_port)
                 port = cmd_args->volfile_server_port;
 
-        host = "localhost";
-        if (cmd_args->volfile_server)
-                host = cmd_args->volfile_server;
+        host = cmd_args->volfile_server;
 
-        ret = rpc_transport_inet_options_build (&options, host, port);
+        if (cmd_args->volfile_server_transport &&
+            !strcmp (cmd_args->volfile_server_transport, "unix")) {
+                ret = rpc_transport_unix_options_build (&options, host, 0);
+        } else {
+                ret = rpc_transport_inet_options_build (&options, host, port);
+        }
         if (ret)
                 goto out;
 
@@ -2125,6 +2218,9 @@ mgmt_pmap_signin_cbk (struct rpc_req *req, struct iovec *iov, int count,
         char             brick_name[PATH_MAX] = {0,};
 
         frame = myframe;
+        ctx = glusterfsd_ctx;
+        cmd_args = &ctx->cmd_args;
+
 
         if (-1 == req->rpc_status) {
                 ret = -1;
@@ -2147,9 +2243,6 @@ mgmt_pmap_signin_cbk (struct rpc_req *req, struct iovec *iov, int count,
                 ret = -1;
                 goto out;
         }
-
-        ctx = glusterfsd_ctx;
-        cmd_args = &ctx->cmd_args;
 
         if (!cmd_args->brick_port2) {
                 /* We are done with signin process */

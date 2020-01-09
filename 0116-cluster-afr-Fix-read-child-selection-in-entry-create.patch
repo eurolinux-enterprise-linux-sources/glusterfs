@@ -1,0 +1,122 @@
+From a3915b06e7ca6760e4265819f3153e1f05bb7ae4 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Fri, 25 Mar 2016 06:04:23 +0530
+Subject: [PATCH 116/139] cluster/afr: Fix read-child selection in entry create fop
+
+When an entry is being created the inode is yet to be linked
+so args must be filled with gfid and ia_type for it to give
+consistent iatt.
+
+Also handle Dht sending fops on inode not yet linked.
+
+ >BUG: 1302948
+ >Change-Id: I6969cacb437cad02f66716f3bf8ec004ffe7c691
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13827
+ >Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Anuradha Talur <atalur@redhat.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+
+BUG: 1298724
+Change-Id: Ia61a8e1e4d8cb1cdea33d5a5251eaa1793de7724
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73664
+---
+ xlators/cluster/afr/src/afr-dir-write.c   |   14 ++++++++++-
+ xlators/cluster/afr/src/afr-inode-write.c |   35 +++++++++++++++++++++++++++-
+ 2 files changed, 46 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-dir-write.c b/xlators/cluster/afr/src/afr-dir-write.c
+index 887298b..3d2b114 100644
+--- a/xlators/cluster/afr/src/afr-dir-write.c
++++ b/xlators/cluster/afr/src/afr-dir-write.c
+@@ -88,15 +88,27 @@ __afr_dir_write_finalize (call_frame_t *frame, xlator_t *this)
+ 	int parent_read_subvol = -1;
+ 	int parent2_read_subvol = -1;
+ 	int i = 0;
++        afr_read_subvol_args_t args = {0,};
+ 
+ 	local = frame->local;
+ 	priv = this->private;
+ 
++	for (i = 0; i < priv->child_count; i++) {
++	        if (!local->replies[i].valid)
++	                continue;
++	        if (local->replies[i].op_ret == -1)
++	                continue;
++                gf_uuid_copy (args.gfid, local->replies[i].poststat.ia_gfid);
++                args.ia_type = local->replies[i].poststat.ia_type;
++                break;
++        }
++
+ 	if (local->inode) {
+ 		afr_replies_interpret (frame, this, local->inode, NULL);
+ 		inode_read_subvol = afr_data_subvol_get (local->inode, this,
+-							 NULL, NULL, NULL);
++							 NULL, NULL, &args);
+ 	}
++
+ 	if (local->parent)
+ 		parent_read_subvol = afr_data_subvol_get (local->parent, this,
+ 							  NULL, NULL, NULL);
+diff --git a/xlators/cluster/afr/src/afr-inode-write.c b/xlators/cluster/afr/src/afr-inode-write.c
+index c86fb49..4206ef2 100644
+--- a/xlators/cluster/afr/src/afr-inode-write.c
++++ b/xlators/cluster/afr/src/afr-inode-write.c
+@@ -47,18 +47,49 @@ __afr_inode_write_finalize (call_frame_t *frame, xlator_t *this)
+ 	afr_private_t *priv = NULL;
+ 	int read_subvol = 0;
+ 	int i = 0;
++        afr_read_subvol_args_t args = {0,};
++        struct iatt  *stbuf = NULL;
++        int    ret = 0;
+ 
+ 	local = frame->local;
+ 	priv = this->private;
+ 
++        /*This code needs to stay till DHT sends fops on linked
++         * inodes*/
++        if (local->inode && !inode_is_linked (local->inode)) {
++                for (i = 0; i < priv->child_count; i++) {
++                        if (!local->replies[i].valid)
++                                continue;
++                        if (local->replies[i].op_ret == -1)
++                                continue;
++                        if (!gf_uuid_is_null
++                                        (local->replies[i].poststat.ia_gfid)) {
++                                gf_uuid_copy (args.gfid,
++                                            local->replies[i].poststat.ia_gfid);
++                                args.ia_type =
++                                        local->replies[i].poststat.ia_type;
++                                break;
++                        } else {
++                                ret = dict_get_bin (local->replies[i].xdata,
++                                                    DHT_IATT_IN_XDATA_KEY,
++                                                    (void **) &stbuf);
++                                if (ret)
++                                        continue;
++                                gf_uuid_copy (args.gfid, stbuf->ia_gfid);
++                                args.ia_type = stbuf->ia_type;
++                                break;
++                        }
++                }
++        }
++
+ 	if (local->inode) {
+ 		if (local->transaction.type == AFR_METADATA_TRANSACTION)
+ 			read_subvol = afr_metadata_subvol_get (local->inode, this,
+ 							       NULL, NULL,
+-                                                               NULL);
++                                                               &args);
+ 		else
+ 			read_subvol = afr_data_subvol_get (local->inode, this,
+-							   NULL, NULL, NULL);
++							   NULL, NULL, &args);
+ 	}
+ 
+ 	local->op_ret = -1;
+-- 
+1.7.1
+

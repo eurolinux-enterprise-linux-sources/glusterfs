@@ -76,6 +76,7 @@ libgfdb_la_DEPENDENCIES =  \
 	$(top_builddir)/libglusterfs/src/libglusterfs.la \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
 am_libgfdb_la_OBJECTS = libgfdb_la-gfdb_data_store.lo \
+	libgfdb_la-gfdb_data_store_helper.lo \
 	libgfdb_la-gfdb_sqlite3_helper.lo libgfdb_la-gfdb_sqlite3.lo
 libgfdb_la_OBJECTS = $(am_libgfdb_la_OBJECTS)
 AM_V_lt = $(am__v_lt_$(V))
@@ -349,14 +350,14 @@ libgfdb_la_LDFLAGS = $(GF_LDFLAGS) -version-info $(LIBGLUSTERFS_LT_VERSION)
 libgfdbdir = $(includedir)/glusterfs/gfdb
 @BUILD_GFDB_TRUE@lib_LTLIBRARIES = libgfdb.la
 CONTRIB_BUILDDIR = $(top_builddir)/contrib
-libgfdb_la_SOURCES = gfdb_data_store.c gfdb_sqlite3_helper.c\
+libgfdb_la_SOURCES = gfdb_data_store.c gfdb_data_store_helper.c gfdb_sqlite3_helper.c\
    gfdb_sqlite3.c
 
 noinst_HEADERS = gfdb_data_store.h gfdb_data_store_types.h gfdb_sqlite3_helper.h\
-   gfdb_sqlite3.h gfdb_mem-types.h
+   gfdb_sqlite3.h gfdb_mem-types.h gfdb_data_store_helper.h
 
-libgfdb_HEADERS = gfdb_data_store.h gfdb_data_store_types.h \
-                gfdb_sqlite3.h gfdb_mem-types.h gfdb_sqlite3_helper.c
+libgfdb_HEADERS = gfdb_data_store.h gfdb_data_store_types.h gfdb_data_store_helper.h\
+                gfdb_sqlite3.h gfdb_mem-types.h gfdb_sqlite3_helper.h
 
 CLEANFILES = 
 all: all-am
@@ -434,6 +435,7 @@ distclean-compile:
 	-rm -f *.tab.c
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfdb_la-gfdb_data_store.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfdb_la-gfdb_data_store_helper.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfdb_la-gfdb_sqlite3.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfdb_la-gfdb_sqlite3_helper.Plo@am__quote@
 
@@ -468,6 +470,14 @@ libgfdb_la-gfdb_data_store.lo: gfdb_data_store.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='gfdb_data_store.c' object='libgfdb_la-gfdb_data_store.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfdb_la_CPPFLAGS) $(CPPFLAGS) $(libgfdb_la_CFLAGS) $(CFLAGS) -c -o libgfdb_la-gfdb_data_store.lo `test -f 'gfdb_data_store.c' || echo '$(srcdir)/'`gfdb_data_store.c
+
+libgfdb_la-gfdb_data_store_helper.lo: gfdb_data_store_helper.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfdb_la_CPPFLAGS) $(CPPFLAGS) $(libgfdb_la_CFLAGS) $(CFLAGS) -MT libgfdb_la-gfdb_data_store_helper.lo -MD -MP -MF $(DEPDIR)/libgfdb_la-gfdb_data_store_helper.Tpo -c -o libgfdb_la-gfdb_data_store_helper.lo `test -f 'gfdb_data_store_helper.c' || echo '$(srcdir)/'`gfdb_data_store_helper.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfdb_la-gfdb_data_store_helper.Tpo $(DEPDIR)/libgfdb_la-gfdb_data_store_helper.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='gfdb_data_store_helper.c' object='libgfdb_la-gfdb_data_store_helper.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfdb_la_CPPFLAGS) $(CPPFLAGS) $(libgfdb_la_CFLAGS) $(CFLAGS) -c -o libgfdb_la-gfdb_data_store_helper.lo `test -f 'gfdb_data_store_helper.c' || echo '$(srcdir)/'`gfdb_data_store_helper.c
 
 libgfdb_la-gfdb_sqlite3_helper.lo: gfdb_sqlite3_helper.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfdb_la_CPPFLAGS) $(CPPFLAGS) $(libgfdb_la_CFLAGS) $(CFLAGS) -MT libgfdb_la-gfdb_sqlite3_helper.lo -MD -MP -MF $(DEPDIR)/libgfdb_la-gfdb_sqlite3_helper.Tpo -c -o libgfdb_la-gfdb_sqlite3_helper.lo `test -f 'gfdb_sqlite3_helper.c' || echo '$(srcdir)/'`gfdb_sqlite3_helper.c

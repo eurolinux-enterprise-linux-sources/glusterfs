@@ -909,11 +909,14 @@ glusterd_volume_exclude_options_write (int fd, glusterd_volinfo_t *volinfo)
         char         buf[PATH_MAX]  = "";
         int32_t      ret            = -1;
         xlator_t    *this           = NULL;
+        glusterd_conf_t  *conf      = NULL;
 
         this = THIS;
         GF_ASSERT (this);
         GF_ASSERT (fd > 0);
         GF_ASSERT (volinfo);
+        conf = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, (conf != NULL), out);
 
         snprintf (buf, sizeof (buf), "%d", volinfo->type);
         ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_VOL_TYPE, buf);
@@ -946,17 +949,30 @@ glusterd_volume_exclude_options_write (int fd, glusterd_volinfo_t *volinfo)
         if (ret)
                 goto out;
 
-        snprintf (buf, sizeof (buf), "%d", volinfo->disperse_count);
-        ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_VOL_DISPERSE_CNT,
-                                   buf);
-        if (ret)
-                goto out;
+        if ((conf->op_version >= GD_OP_VERSION_3_7_6) &&
+            volinfo->arbiter_count) {
+                snprintf (buf, sizeof (buf), "%d", volinfo->arbiter_count);
+                ret = gf_store_save_value (fd,
+                                           GLUSTERD_STORE_KEY_VOL_ARBITER_CNT,
+                                           buf);
+                if (ret)
+                        goto out;
+        }
 
-        snprintf (buf, sizeof (buf), "%d", volinfo->redundancy_count);
-        ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_VOL_REDUNDANCY_CNT,
-                                   buf);
-        if (ret)
-                goto out;
+        if (conf->op_version >= GD_OP_VERSION_3_6_0) {
+                snprintf (buf, sizeof (buf), "%d", volinfo->disperse_count);
+                ret = gf_store_save_value (fd,
+                                           GLUSTERD_STORE_KEY_VOL_DISPERSE_CNT,
+                                           buf);
+                if (ret)
+                        goto out;
+
+                snprintf (buf, sizeof (buf), "%d", volinfo->redundancy_count);
+                ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_VOL_REDUNDANCY_CNT,
+                                           buf);
+                if (ret)
+                        goto out;
+        }
 
         snprintf (buf, sizeof (buf), "%d", volinfo->version);
         ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_VOL_VERSION, buf);
@@ -1002,6 +1018,16 @@ glusterd_volume_exclude_options_write (int fd, glusterd_volinfo_t *volinfo)
         if (volinfo->caps) {
                 snprintf (buf, sizeof (buf), "%d", volinfo->caps);
                 ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_VOL_CAPS,
+                                           buf);
+                if (ret)
+                        goto out;
+        }
+
+        if (conf->op_version >= GD_OP_VERSION_3_7_6) {
+                snprintf (buf, sizeof (buf), "%d",
+                          volinfo->quota_xattr_version);
+                ret = gf_store_save_value (fd,
+                                           GLUSTERD_STORE_KEY_VOL_QUOTA_VERSION,
                                            buf);
                 if (ret)
                         goto out;
@@ -2226,6 +2252,7 @@ glusterd_store_retrieve_bricks (glusterd_volinfo_t *volinfo)
         char                    tmpkey[4096] = {0,};
         gf_store_iter_t         *tmpiter = NULL;
         char                    *tmpvalue = NULL;
+        char                     abspath[PATH_MAX] = {0};
         struct pmap_registry    *pmap = NULL;
         xlator_t                *this = NULL;
         int                      brickid = 0;
@@ -2379,7 +2406,25 @@ glusterd_store_retrieve_bricks (glusterd_volinfo_t *volinfo)
                        GLUSTERD_ASSIGN_BRICKID_TO_BRICKINFO (brickinfo, volinfo,
                                                              brickid++);
                 }
-
+                /* By now if the brick is a local brick then it will be able to
+                 * resolve which is the only thing we want now for checking
+                 * whether the brickinfo->uuid matches with MY_UUID for realpath
+                 * check. Hence do not handle error
+                 */
+                (void)glusterd_resolve_brick (brickinfo);
+                if (!gf_uuid_compare(brickinfo->uuid, MY_UUID)) {
+                        if (!realpath (brickinfo->path, abspath)) {
+                                gf_msg (this->name, GF_LOG_CRITICAL, errno,
+                                        GD_MSG_BRICKINFO_CREATE_FAIL, "realpath"
+                                        " () failed for brick %s. The "
+                                        "underlying file system may be in bad"
+                                        " state", brickinfo->path);
+                                ret = -1;
+                                goto out;
+                        }
+                        strncpy (brickinfo->real_path, abspath,
+                                 strlen(abspath));
+                }
                 cds_list_add_tail (&brickinfo->brick_list, &volinfo->bricks);
                 brick_count++;
         }
@@ -2578,6 +2623,8 @@ glusterd_store_update_volinfo (glusterd_volinfo_t *volinfo)
                 } else if (!strncmp (key, GLUSTERD_STORE_KEY_VOL_REPLICA_CNT,
                                      strlen (GLUSTERD_STORE_KEY_VOL_REPLICA_CNT))) {
                         volinfo->replica_count = atoi (value);
+                } else if (!strcmp (key, GLUSTERD_STORE_KEY_VOL_ARBITER_CNT)) {
+                        volinfo->arbiter_count = atoi (value);
                 } else if (!strncmp (key, GLUSTERD_STORE_KEY_VOL_DISPERSE_CNT,
                                      strlen (GLUSTERD_STORE_KEY_VOL_DISPERSE_CNT))) {
                         volinfo->disperse_count = atoi (value);
@@ -2665,6 +2712,9 @@ glusterd_store_update_volinfo (glusterd_volinfo_t *volinfo)
                 } else if (!strncmp (key, GLUSTERD_STORE_KEY_COLD_TYPE,
                                      strlen (key))) {
                         volinfo->tier_info.cold_type = atoi (value);
+                } else if (!strncmp (key, GLUSTERD_STORE_KEY_VOL_QUOTA_VERSION,
+                            strlen (GLUSTERD_STORE_KEY_VOL_QUOTA_VERSION))) {
+                        volinfo->quota_xattr_version = atoi (value);
                 } else {
 
                         if (is_key_glusterd_hooks_friendly (key)) {
@@ -2753,10 +2803,18 @@ glusterd_store_update_volinfo (glusterd_volinfo_t *volinfo)
                         break;
 
                         case GF_CLUSTER_TYPE_TIER:
-                                volinfo->tier_info.cold_dist_leaf_count =
-                                        glusterd_calc_dist_leaf_count (
-                                                volinfo->tier_info.cold_replica_count, 1);
-                                break;
+                        if (volinfo->tier_info.cold_type ==
+                                        GF_CLUSTER_TYPE_DISPERSE)
+                                volinfo->tier_info.cold_dist_leaf_count
+                                        = volinfo->disperse_count;
+                        else
+                                volinfo->tier_info.cold_dist_leaf_count
+                                        = glusterd_calc_dist_leaf_count (
+                                                        volinfo->tier_info.
+                                                        cold_replica_count,
+                                                        1);
+
+                        break;
 
                         default:
                                 GF_ASSERT (0);
@@ -2880,7 +2938,7 @@ out:
         return volinfo;
 }
 
-static inline void
+static void
 glusterd_store_set_options_path (glusterd_conf_t *conf, char *path, size_t len)
 {
         snprintf (path, len, "%s/options", conf->workdir);
@@ -3966,7 +4024,6 @@ glusterd_store_retrieve_peers (xlator_t *this)
         struct dirent            *entry              = NULL;
         char                      path[PATH_MAX]     = {0,};
         glusterd_peerinfo_t      *peerinfo           = NULL;
-        char                     *hostname           = NULL;
         gf_store_handle_t        *shandle            = NULL;
         char                      filepath[PATH_MAX] = {0,};
         gf_store_iter_t          *iter               = NULL;
@@ -4049,7 +4106,6 @@ glusterd_store_retrieve_peers (xlator_t *this)
                                                       &op_errno);
                 }
                 if (op_errno != GD_STORE_EOF) {
-                        GF_FREE(hostname);
                         goto out;
                 }
 
@@ -4200,7 +4256,8 @@ glusterd_snap_cleanup (xlator_t  *this)
                         }
                 } else if (snap->snap_status != GD_SNAP_STATUS_IN_USE) {
                         ret = glusterd_snap_remove (dict, snap,
-                                                    _gf_true, _gf_true);
+                                                    _gf_true, _gf_true,
+                                                    _gf_false);
                         if (ret) {
                                 gf_msg (this->name, GF_LOG_ERROR, 0,
                                         GD_MSG_SNAP_REMOVE_FAIL,

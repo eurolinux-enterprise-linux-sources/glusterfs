@@ -719,9 +719,12 @@ client3_3_rmdir_cbk (struct rpc_req *req, struct iovec *iov, int count,
 
 out:
         if (rsp.op_ret == -1) {
-                gf_msg (this->name, GF_LOG_WARNING,
-                        gf_error_to_errno (rsp.op_errno),
-                        PC_MSG_REMOTE_OP_FAILED, "remote operation failed");
+                if (GF_IGNORE_IF_GSYNCD_SAFE_ERROR(frame, rsp.op_errno)) {
+                        gf_msg (this->name, GF_LOG_WARNING,
+                                gf_error_to_errno (rsp.op_errno),
+                                PC_MSG_REMOTE_OP_FAILED,
+                                "remote operation failed");
+                }
         }
         CLIENT_STACK_UNWIND (rmdir, frame, rsp.op_ret,
                              gf_error_to_errno (rsp.op_errno), &preparent,
@@ -2588,7 +2591,7 @@ client3_3_readdir_cbk (struct rpc_req *req, struct iovec *iov, int count,
 
         GF_PROTOCOL_DICT_UNSERIALIZE (frame->this, xdata,
                                       (rsp.xdata.xdata_val),
-                                      (rsp.xdata.xdata_len), rsp.op_ret,
+                                      (rsp.xdata.xdata_len), ret,
                                       rsp.op_errno, out);
 
 out:
@@ -5541,10 +5544,10 @@ client3_3_inodelk (call_frame_t *frame, xlator_t *this,
         if (!(args->loc && args->loc->inode))
                 goto unwind;
 
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
+        if (!gf_uuid_is_null (args->loc->gfid))
+                memcpy (req.gfid,  args->loc->gfid, 16);
         else
-                memcpy (req.gfid, args->loc->gfid, 16);
+                memcpy (req.gfid, args->loc->inode->gfid, 16);
 
         GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
                                        !gf_uuid_is_null (*((uuid_t*)req.gfid)),
@@ -5704,10 +5707,10 @@ client3_3_entrylk (call_frame_t *frame, xlator_t *this,
         if (!(args->loc && args->loc->inode))
                 goto unwind;
 
-        if (!gf_uuid_is_null (args->loc->inode->gfid))
-                memcpy (req.gfid,  args->loc->inode->gfid, 16);
+        if (!gf_uuid_is_null (args->loc->gfid))
+                memcpy (req.gfid,  args->loc->gfid, 16);
         else
-                memcpy (req.gfid, args->loc->gfid, 16);
+                memcpy (req.gfid, args->loc->inode->gfid, 16);
 
         GF_ASSERT_AND_GOTO_WITH_ERROR (this->name,
                                        !gf_uuid_is_null (*((uuid_t*)req.gfid)),

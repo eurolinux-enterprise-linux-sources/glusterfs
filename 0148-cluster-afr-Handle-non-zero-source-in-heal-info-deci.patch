@@ -1,0 +1,59 @@
+From d3b7f70709eba7f5b0d755f48b3dab39401be778 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Thu, 12 May 2016 13:55:44 +0530
+Subject: [PATCH 148/158] cluster/afr: Handle non-zero source in heal-info decision
+
+Problem:
+Spurious entries are reported in heal info when the mount is on second/third
+brick of the replica pair because local-child is given preference in selecting
+source. The code is supposed to suggest the file needs heal if the (source < 0)
+(failure code path), but instead it is written as if any non-zero value
+is considered failure.
+
+Fix:
+Treat +ve source as success case
+
+ >BUG: 1335429
+ >Change-Id: I1be7f9defef2ae03be7eec8d7d49bf34adeca82c
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/14302
+ >Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+ >Reviewed-by: Anuradha Talur <atalur@redhat.com>
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >Reviewed-by: Ravishankar N <ravishankar@redhat.com>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+
+BUG: 1335437
+Change-Id: If50fb675b1018e16821a2ae5676725666204b60a
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74271
+Reviewed-by: Anuradha Talur <atalur@redhat.com>
+Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+Tested-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 9ff3740..a346454 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -4568,11 +4568,11 @@ out:
+ }
+ 
+ gf_boolean_t
+-afr_decide_heal_info (afr_private_t *priv, unsigned char *sources, int ret)
++afr_decide_heal_info (afr_private_t *priv, unsigned char *sources, int source)
+ {
+         int sources_count = 0;
+ 
+-        if (ret)
++        if (source < 0)
+                 goto out;
+ 
+         sources_count = AFR_COUNT (sources, priv->child_count);
+-- 
+1.7.1
+

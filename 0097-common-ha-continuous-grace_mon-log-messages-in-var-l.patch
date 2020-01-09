@@ -1,0 +1,288 @@
+From 241d76a1b8440aace86020f63c50f852833ca77f Mon Sep 17 00:00:00 2001
+From: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Date: Tue, 26 Apr 2016 10:53:33 -0400
+Subject: [PATCH 097/104] common-ha: continuous grace_mon log messages in /var/log/messages
+
+messages are seen on RHEL6.x and RHEL7.1 and earlier versions of
+pacemaker. (And RHEL7.2 with RHEL7.1 pacemaker packages.)
+
+It's not possible to query attrd attributes in the older version,
+only set/update/clear them. The messages come from invalid attempts
+to query the attributes.
+
+However it is possible to query crm attributes. The fix here is to
+create a "shadow" crm attribute for the attrd attribute. Changes are
+made to both, queries are made on the crm attribute.
+
+(Resource Agents "follow" the attrd attribute using constraint locations,
+so we must keep the attrd attribute.)
+
+Backport of
+>> master:
+>> Change-Id: I84ac1a80673e528d98b67b7d5062e21dcf744d4a
+>> BUG: 1324509
+>> http://review.gluster.org/#/c/13919/
+
+> release-3.7
+> Change-Id: I7301c48849496be026ef598c588e78c68f273a8a
+> BUG: 1324510
+> http://review.gluster.org/#/c/13920/
+
+Change-Id: Id6c0ee018086f43f3f0ea3b8d1c30595c50453ac
+BUG: 1321556
+Signed-off-by: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73056
+Reviewed-by: Jiffin Thottan <jthottan@redhat.com>
+Reviewed-by: Soumya Koduri <skoduri@redhat.com>
+Tested-by: Soumya Koduri <skoduri@redhat.com>
+---
+ extras/ganesha/ocf/ganesha_grace     |   28 ++++++++++++++----------
+ extras/ganesha/ocf/ganesha_mon       |   39 +++++++++++++++++++++------------
+ extras/ganesha/ocf/ganesha_nfsd      |   12 +++++-----
+ extras/ganesha/scripts/ganesha-ha.sh |    2 +-
+ 4 files changed, 48 insertions(+), 33 deletions(-)
+
+diff --git a/extras/ganesha/ocf/ganesha_grace b/extras/ganesha/ocf/ganesha_grace
+index a82c9af..7c629f5 100644
+--- a/extras/ganesha/ocf/ganesha_grace
++++ b/extras/ganesha/ocf/ganesha_grace
+@@ -30,17 +30,17 @@
+ . ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+ 
+ if [ -n "$OCF_DEBUG_LIBRARY" ]; then
+-    . $OCF_DEBUG_LIBRARY
++	. $OCF_DEBUG_LIBRARY
+ else
+-    : ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+-. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
++	: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
++	. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+ fi
+ 
+ OCF_RESKEY_grace_active_default="grace-active"
+ : ${OCF_RESKEY_grace_active=${OCF_RESKEY_grace_active_default}}
+ 
+ ganesha_meta_data() {
+-        cat <<END
++	cat <<END
+ <?xml version="1.0"?>
+ <!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+ <resource-agent name="ganesha_grace">
+@@ -93,9 +93,11 @@ esac
+ 
+ ganesha_grace_start()
+ {
+-        rc=${OCF_ERR_GENERIC}
++	local rc=${OCF_ERR_GENERIC}
++	local short_host=$(hostname -s)
++
+ 	ocf_log debug "ganesha_grace_start()"
+-	attr=$(attrd_updater -Q -n ${OCF_RESKEY_grace_active})
++	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active})
+ 
+ 	# Three possibilities:
+ 	# 1. There is no attribute at all and attr_updater returns
+@@ -116,7 +118,7 @@ ganesha_grace_start()
+ 	fi
+ 
+ 	# case 2
+-	if [[ "${attr}" = *"value=\"1\"" ]]; then
++	if [[ "${attr}" = *"value=1" ]]; then
+ 		return ${OCF_SUCCESS}
+ 	fi
+ 
+@@ -149,10 +151,12 @@ ganesha_grace_notify()
+ 
+ ganesha_grace_monitor()
+ {
+-        rc=${OCF_ERR_GENERIC}
++	local rc=${OCF_ERR_GENERIC}
++	local short_host=$(hostname -s)
++
+ 	ocf_log debug "monitor"
+ 
+-	attr=$(attrd_updater -Q -n ${OCF_RESKEY_grace_active})
++	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active})
+ 
+ 	# if there is no attribute (yet), maybe it's because
+ 	# this RA started before ganesha_mon (nfs-mon) has had
+@@ -162,7 +166,7 @@ ganesha_grace_monitor()
+ 		return ${OCF_SUCCESS}
+ 	fi
+ 
+-	if [[ "${attr}" = *"value=\"1\"" ]]; then
++	if [[ "${attr}" = *"value=1" ]]; then
+ 		rc=${OCF_SUCCESS}
+ 	fi
+ 
+@@ -187,8 +191,8 @@ status|monitor) ganesha_grace_monitor
+ notify)         ganesha_grace_notify
+ 		;;
+ *)              ganesha_grace_usage
+-                exit ${OCF_ERR_UNIMPLEMENTED}
+-                ;;
++		exit ${OCF_ERR_UNIMPLEMENTED}
++		;;
+ esac
+ 
+ rc=$?
+diff --git a/extras/ganesha/ocf/ganesha_mon b/extras/ganesha/ocf/ganesha_mon
+index f55cf7f..65450b8 100644
+--- a/extras/ganesha/ocf/ganesha_mon
++++ b/extras/ganesha/ocf/ganesha_mon
+@@ -30,10 +30,10 @@
+ . ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+ 
+ if [ -n "${OCF_DEBUG_LIBRARY}" ]; then
+-    . ${OCF_DEBUG_LIBRARY}
++	. ${OCF_DEBUG_LIBRARY}
+ else
+-    : ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+-. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
++	: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
++	. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+ fi
+ 
+ # Defaults
+@@ -46,7 +46,7 @@ OCF_RESKEY_grace_delay_default="5"
+ : ${OCF_RESKEY_grace_delay=${OCF_RESKEY_grace_delay_default}}
+ 
+ ganesha_meta_data() {
+-        cat <<END
++	cat <<END
+ <?xml version="1.0"?>
+ <!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+ <resource-agent name="ganesha_mon">
+@@ -113,13 +113,13 @@ ganesha_mon_start()
+ {
+ 	ocf_log debug "ganesha_mon_start"
+ 	ganesha_mon_monitor
+-        return $OCF_SUCCESS
++	return $OCF_SUCCESS
+ }
+ 
+ ganesha_mon_stop()
+ {
+ 	ocf_log debug "ganesha_mon_stop"
+-        return $OCF_SUCCESS
++	return $OCF_SUCCESS
+ }
+ 
+ ganesha_mon_monitor()
+@@ -142,11 +142,22 @@ ganesha_mon_monitor()
+ 			ocf_log info "warning: attrd_updater -n ${OCF_RESKEY_ganesha_active} -v 1 failed"
+ 		fi
+ 
++		# ganesha_grace (nfs-grace) RA follows grace-active attr
++		# w/ constraint location
+ 		attrd_updater -n ${OCF_RESKEY_grace_active} -v 1
+ 		if [ $? -ne 0 ]; then
+ 			ocf_log info "warning: attrd_updater -n ${OCF_RESKEY_grace_active} -v 1 failed"
+ 		fi
+ 
++		# ganesha_mon (nfs-mon) and ganesha_grace (nfs-grace)
++		# track grace-active crm_attr (attr != crm_attr)
++		# we can't just use the attr as there's no way to query
++		# its value in RHEL6 pacemaker
++		crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1
++		if [ $? -ne 0 ]; then
++			ocf_log info "warning: crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 failed"
++		fi
++
+ 		return ${OCF_SUCCESS}
+ 	fi
+ 
+@@ -155,23 +166,23 @@ ganesha_mon_monitor()
+ 	#
+ 	# Meanwhile the ganesha_grace notify() runs when its
+ 	# nfs-grace resource is disabled on a node; which
+-	# is triggered by clearing the ganesha-grace node
+-	# attribute on this node.
++	# is triggered by clearing the grace-active attribute
++	# on this node.
+ 	#
+ 	# We need to allow time for it to run and put
+ 	# the remaining ganesha.nfsds into grace before
+ 	# initiating the VIP fail-over.
+ 
++	sleep ${OCF_RESKEY_grace_delay}
++
+ 	attrd_updater -D -n ${OCF_RESKEY_grace_active}
+ 	if [ $? -ne 0 ]; then
+ 		ocf_log info "warning: attrd_updater -D -n ${OCF_RESKEY_grace_active} failed"
+ 	fi
+ 
+-	sleep ${OCF_RESKEY_grace_delay}
+-
+-	attrd_updater -D -n ${OCF_RESKEY_ganesha_active}
++	crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0
+ 	if [ $? -ne 0 ]; then
+-		ocf_log info "warning: attrd_updater -D -n ${OCF_RESKEY_ganesha_active} failed"
++		ocf_log info "warning: crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0 failed"
+ 	fi
+ 
+ 	return ${OCF_SUCCESS}
+@@ -193,8 +204,8 @@ stop)           ganesha_mon_stop
+ status|monitor) ganesha_mon_monitor
+ 		;;
+ *)              ganesha_mon_usage
+-                exit ${OCF_ERR_UNIMPLEMENTED}
+-                ;;
++		exit ${OCF_ERR_UNIMPLEMENTED}
++		;;
+ esac
+ 
+ rc=$?
+diff --git a/extras/ganesha/ocf/ganesha_nfsd b/extras/ganesha/ocf/ganesha_nfsd
+index a9d3e4d..29e333c 100644
+--- a/extras/ganesha/ocf/ganesha_nfsd
++++ b/extras/ganesha/ocf/ganesha_nfsd
+@@ -30,17 +30,17 @@
+ . ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+ 
+ if [ -n "${OCF_DEBUG_LIBRARY}" ]; then
+-    . ${OCF_DEBUG_LIBRARY}
++	. ${OCF_DEBUG_LIBRARY}
+ else
+-    : ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+-. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
++	: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
++	. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+ fi
+ 
+ OCF_RESKEY_ha_vol_mnt_default="/var/run/gluster/shared_storage"
+ : ${OCF_RESKEY_ha_vol_mnt=${OCF_RESKEY_ha_vol_mnt_default}}
+ 
+ ganesha_meta_data() {
+-        cat <<END
++	cat <<END
+ <?xml version="1.0"?>
+ <!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+ <resource-agent name="ganesha_nfsd">
+@@ -156,8 +156,8 @@ stop)           ganesha_nfsd_stop
+ status|monitor) ganesha_nfsd_monitor
+ 		;;
+ *)              ganesha_nfsd_usage
+-                exit ${OCF_ERR_UNIMPLEMENTED}
+-                ;;
++		exit ${OCF_ERR_UNIMPLEMENTED}
++		;;
+ esac
+ 
+ rc=$?
+diff --git a/extras/ganesha/scripts/ganesha-ha.sh b/extras/ganesha/scripts/ganesha-ha.sh
+index d866220..7f1ea4c 100644
+--- a/extras/ganesha/scripts/ganesha-ha.sh
++++ b/extras/ganesha/scripts/ganesha-ha.sh
+@@ -376,7 +376,7 @@ teardown_cluster()
+         if [[ ${HA_CLUSTER_NODES} != *${server}* ]]; then
+             logger "info: ${server} is not in config, removing"
+ 
+-            pcs cluster stop ${server}
++            pcs cluster stop ${server} --force
+             if [ $? -ne 0 ]; then
+                 logger "warning: pcs cluster stop ${server} failed"
+             fi
+-- 
+1.7.1
+

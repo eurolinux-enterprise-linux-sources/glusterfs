@@ -132,6 +132,7 @@ typedef struct _afr_private {
 	gf_boolean_t           use_afr_in_pump;
         gf_boolean_t           consistent_metadata;
         uint64_t               spb_choice_timeout;
+        gf_boolean_t           need_heal;
 } afr_private_t;
 
 
@@ -270,7 +271,11 @@ struct afr_reply {
 	struct iatt preparent;
 	struct iatt preparent2;
 	struct iatt postparent2;
+        /* For rchecksum */
 	uint8_t checksum[MD5_DIGEST_LENGTH];
+        gf_boolean_t buf_has_zeroes;
+        /* For lookup */
+        int8_t need_heal;
 };
 
 typedef enum {
@@ -662,11 +667,8 @@ typedef struct _afr_local {
                 dict_t **pre_op_xdata;
                 unsigned char *pre_op_sources;
 
-		/* @fop_subvols: subvolumes on which FOP will be attempted */
-                unsigned char   *fop_subvols;
-
-		/* @failed_subvols: subvolumes on which FOP failed. Always
-		   a subset of @fop_subvols */
+		/* @failed_subvols: subvolumes on which a pre-op or a
+                    FOP failed. */
                 unsigned char   *failed_subvols;
 
 		/* @dirtied: flag which indicates whether we set dirty flag
@@ -1089,4 +1091,14 @@ afr_spb_choice_timeout_cancel (xlator_t *this, inode_t *inode);
 
 int
 afr_set_split_brain_choice (int ret, call_frame_t *frame, void *opaque);
+
+gf_boolean_t
+afr_get_need_heal (xlator_t *this);
+
+void
+afr_set_need_heal (xlator_t *this, afr_local_t *local);
+
+int
+afr_selfheal_data_open (xlator_t *this, inode_t *inode, fd_t **fd);
+
 #endif /* __AFR_H__ */

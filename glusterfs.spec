@@ -10,11 +10,11 @@
 ##
 
 # if you wish to compile an rpm with cmocka unit testing...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --with cmocka
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --with cmocka
 %{?_with_cmocka:%global _with_cmocka --enable-cmocka}
 
 # if you wish to compile an rpm without rdma support, compile like this...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without rdma
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without rdma
 %{?_without_rdma:%global _without_rdma --disable-ibverbs}
 
 # No RDMA Support on s390(x)
@@ -23,15 +23,15 @@
 %endif
 
 # if you wish to compile an rpm without epoll...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without epoll
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without epoll
 %{?_without_epoll:%global _without_epoll --disable-epoll}
 
 # if you wish to compile an rpm without fusermount...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without fusermount
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without fusermount
 %{?_without_fusermount:%global _without_fusermount --disable-fusermount}
 
 # if you wish to compile an rpm without geo-replication support, compile like this...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without georeplication
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without georeplication
 %{?_without_georeplication:%global _without_georeplication --disable-georeplication}
 
 # Disable geo-replication on EL5, as its default Python is too old
@@ -40,15 +40,15 @@
 %endif
 
 # if you wish to compile an rpm without the OCF resource agents...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without ocf
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without ocf
 %{?_without_ocf:%global _without_ocf --without-ocf}
 
 # if you wish to build rpms without syslog logging, compile like this
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without syslog
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without syslog
 %{?_without_syslog:%global _without_syslog --disable-syslog}
 
 # disable syslog forcefully as rhel <= 6 doesn't have rsyslog or rsyslog-mmcount
-# Fedora deprecated syslog, see 
+# Fedora deprecated syslog, see
 #  https://fedoraproject.org/wiki/Changes/NoDefaultSyslog
 # (And what about RHEL7?)
 %if ( 0%{?fedora} && 0%{?fedora} >= 20 ) || ( 0%{?rhel} && 0%{?rhel} <= 6 )
@@ -56,7 +56,7 @@
 %endif
 
 # if you wish to compile an rpm without the BD map support...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without bd
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without bd
 %{?_without_bd:%global _without_bd --disable-bd-xlator}
 
 %if ( 0%{?rhel} && 0%{?rhel} < 6 || 0%{?sles_version} )
@@ -64,7 +64,7 @@
 %endif
 
 # if you wish to compile an rpm without the qemu-block support...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without qemu-block
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without qemu-block
 %{?_without_qemu_block:%global _without_qemu_block --disable-qemu-block}
 
 %if ( 0%{?rhel} && 0%{?rhel} < 6 )
@@ -78,18 +78,11 @@
 %endif
 
 # if you wish not to build server rpms, compile like this.
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without server
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without server
 
 %global _build_server 1
 %if "%{?_without_server}"
 %global _build_server 0
-%endif
-
-%if ( "%{?dist}" == ".el6rhs" ) || ( "%{?dist}" == ".el7rhs" ) || ( "%{?dist}" == ".el7rhgs" )
-%global _build_server 1
-%else
-%global _build_server 0
-%global _without_georeplication --disable-georeplication
 %endif
 
 %global _without_extra_xlators 1
@@ -97,7 +90,7 @@
 
 %global _build_server 1
 ##-----------------------------------------------------------------------------
-## All %global definitions should be placed here and keep them sorted
+## All %%global definitions should be placed here and keep them sorted
 ##
 
 %if ( 0%{?fedora} && 0%{?fedora} > 16 ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
@@ -178,7 +171,7 @@
 
 
 ##-----------------------------------------------------------------------------
-## All package definitions should be placed here and keep them sorted
+## All package definitions should be placed here in alphabetical order
 ##
 Summary:          Distributed File System
 %if ( 0%{_for_fedora_koji_builds} )
@@ -188,8 +181,8 @@ Release:          0.1%{?prereltag:.%{prereltag}}%{?dist}
 Vendor:           Fedora Project
 %else
 Name:             glusterfs
-Version:          3.7.5
-Release:          19%{?dist}
+Version:          3.7.9
+Release:          12%{?dist}
 ExclusiveArch:    x86_64 aarch64
 %endif
 License:          GPLv2 or LGPLv3+
@@ -203,10 +196,9 @@ Source6:          rhel5-load-fuse-modules
 Source7:          glusterfsd.service
 Source8:          glusterfsd.init
 %else
-Source0:          glusterfs-3.7.5.tar.gz
+Source0:          glusterfs-3.7.9.tar.gz
 Source9:	enable-server-packages.patch
-Source10:	glusterfs.S56copy.patch
-Source11:	glusterfs.ini
+Source10:	glusterfs.ini
 %endif
 
 BuildRoot:        %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
@@ -218,7 +210,7 @@ BuildRequires:    python-simplejson
 BuildRequires:    systemd-units
 %endif
 
-Requires:         %{name}-libs = %{version}-%{release}
+Requires:         %{name}-libs%{?_isa} = %{version}-%{release}
 BuildRequires:    bison flex
 BuildRequires:    gcc make automake libtool
 BuildRequires:    ncurses-devel readline-devel
@@ -262,264 +254,204 @@ Obsoletes:        %{name}-ufo
 Provides:         %{name}-common = %{version}-%{release}
 Provides:         %{name}-core = %{version}-%{release}
 
-# Patch0001: 0001-Update-rfc.sh-to-rhgs-3.1.2.patch
-Patch0002: 0002-tier-ctr-CTR-DB-named-lookup-heal-of-cold-tier-durin.patch
-Patch0003: 0003-tier-ctr-Solution-for-db-locks-for-tier-migrator-and.patch
-Patch0004: 0004-firewall-spec-Create-glusterfs-firewall-service-if-f.patch
-Patch0005: 0005-glusterd-disable-ping-timer-b-w-glusterd-and-make-ep.patch
-Patch0006: 0006-event-epoll-Use-pollers-to-check-if-event_pool_dispa.patch
-Patch0007: 0007-Tier-cli-Change-detach-tier-commit-force-to-detach-t.patch
-Patch0008: 0008-Tier-glusterd-Do-not-allow-attach-tier-if-remove-bri.patch
-Patch0009: 0009-glusterd-add-brick-change-add-brick-implementation-t.patch
-Patch0010: 0010-tier-glusterd-volume-status-failed-after-detach-star.patch
-Patch0011: 0011-tier-dht-unlink-fails-after-lookup-in-a-directory.patch
-Patch0012: 0012-fuse-resolve-complete-path-after-a-graph-switch.patch
-Patch0013: 0013-tiering-glusterd-keep-afr-ec-xlators-name-constant.patch
-Patch0014: 0014-tier-shd-create-shd-volfile-for-tiering.patch
-Patch0015: 0015-tier-shd-inline-warning-when-compiled-with-gcc-v.5.patch
-Patch0016: 0016-tier-shd-make-shd-commands-compatible-with-tiering.patch
-Patch0017: 0017-cli-quota-rm-rf-on-mountpoint-dir-is-not-showing-quo.patch
-Patch0018: 0018-cli-freeing-the-allocated-memory.patch
-Patch0019: 0019-gluster-v-status-xml-for-a-replicated-hot-tier-volum.patch
-Patch0020: 0020-Tier-cli-number-of-bricks-remains-the-same-in-v-info.patch
-Patch0021: 0021-Accidentally-merged-before-proper-ACKs-in-bug.patch
-Patch0022: 0022-Accidentally-merged-before-proper-ACKs-in-bug.patch
-Patch0023: 0023-cluster-tier-add-watermarks-and-policy-driver.patch
-Patch0024: 0024-libglusterfs-pass-buffer-size-to-gf_store_read_and_t.patch
-Patch0025: 0025-glusterd-probing-a-new-node-which-is-part-of-another.patch
-Patch0026: 0026-extra-enable-shared-storage-key-should-create-shared.patch
-Patch0027: 0027-glusterd-disabling-enable-shared-storage-option-shou.patch
-Patch0028: 0028-glusterd-spec-fixing-autogen-issue.patch
-Patch0029: 0029-tier-cli-throw-a-warning-when-user-issues-a-detach-t.patch
-Patch0030: 0030-systemd-spec-glusterd-Adding-EnvironmentFile-in-glus.patch
-Patch0031: 0031-cluster-tier-remove-suprious-log-messages-on-valid-f.patch
-Patch0032: 0032-server-protocol-option-for-dynamic-authorization-of-.patch
-Patch0033: 0033-quota-use-copy_frame-when-creating-new-frame-during-.patch
-Patch0034: 0034-quota-fix-crash-in-quota_fallocate.patch
-Patch0035: 0035-quota-marker-marker-code-cleanup.patch
-Patch0036: 0036-quota-marker-dir_count-accounting-is-not-atomic.patch
-Patch0037: 0037-Revert-rpc-By-default-set-allow-insecure-bind-insecu.patch
-Patch0038: 0038-cluster-dht-Do-not-migrate-files-with-POSIX-locks-he.patch
-Patch0039: 0039-cluster-tier-Changed-tier-xattr-name-value.patch
-Patch0040: 0040-cluster-tier-update-man-pages-for-tier-feature.patch
-Patch0041: 0041-cluster-tier-do-not-abort-migration-if-a-single-bric.patch
-Patch0042: 0042-cluster-tier-add-pause-tier-for-snapshots.patch
-Patch0043: 0043-Tier-cli-removing-warning-message-for-tiering.patch
-Patch0044: 0044-features-snap-cleanup-the-root-loc-in-statfs.patch
-Patch0045: 0045-cluster-dht-op_ret-not-set-correctly-in-dht_fsync_cb.patch
-Patch0046: 0046-tier-ctr-Correcting-the-internal-fop-calculation.patch
-Patch0047: 0047-snapshot-Fix-snapshot-clone-postvalidate.patch
-Patch0048: 0048-build-remove-ghost-directory-entries.patch
-Patch0049: 0049-glusterd-call-glusterd_store_volinfo-in-bump-up-op-v.patch
-Patch0050: 0050-afr-fixes-in-transaction-code.patch
-Patch0051: 0051-build-add-RHGS-specific-changes.patch
-Patch0052: 0052-secalert-remove-setuid-bit-for-fusermount-glusterfs.patch
-Patch0053: 0053-build-packaging-corrections-for-RHEL-5.patch
-Patch0054: 0054-build-introduce-security-hardening-flags-in-gluster.patch
-Patch0055: 0055-spec-fix-add-pre-transaction-scripts-for-geo-rep-and.patch
-Patch0056: 0056-rpm-glusterfs-devel-for-client-builds-should-not-dep.patch
-Patch0057: 0057-build-add-pretrans-check.patch
-Patch0058: 0058-build-exclude-libgfdb.pc-conditionally.patch
-Patch0059: 0059-cluster-ec-update-version-and-size-on-good-bricks.patch
-Patch0060: 0060-tier-Typo-while-setting-the-wrong-value-of-low-hi-wa.patch
-Patch0061: 0061-features-ctr-Reduce-the-log-level-for-ctr-disabled-m.patch
-Patch0062: 0062-cluster-tier-do-not-log-error-message-on-lookup-heal.patch
-Patch0063: 0063-features-changelog-ignore-recording-tiering-rebalanc.patch
-Patch0064: 0064-features-changelog-record-mknod-if-tier-dht-linkto-i.patch
-Patch0065: 0065-geo-rep-Avoid-cold-tier-bricks-during-ENTRY-operatio.patch
-Patch0066: 0066-geo-rep-Add-data-operation-if-mknod-with-tier-attrib.patch
-Patch0067: 0067-afr-write-zeros-to-sink-for-non-sparse-files.patch
-Patch0068: 0068-cluster-dht-rebalance-rebalance-failure-handling.patch
-Patch0069: 0069-build-exclude-glusterfs.xml-on-rhel-7-client-build.patch
-Patch0070: 0070-glusterd-fix-op-versions-for-RHS-backwards-compatabi.patch
-Patch0071: 0071-cluster-ec-Remove-index-entries-if-file-dir-does-not.patch
-Patch0072: 0072-cluster-tier-enable-CTR-on-attach-tier.patch
-Patch0073: 0073-mount-fuse-use-a-queue-instead-of-pipe-to-communicat.patch
-Patch0074: 0074-nfs-avoid-invalid-usage-of-cs-variable-in-nfs-fops.patch
-Patch0075: 0075-glusterd-fix-info-file-checksum-mismatch-during-upgr.patch
-Patch0076: 0076-Revert-rpc-fix-binding-brick-issue-while-bind-insecu.patch
-Patch0077: 0077-glusterd-move-new-feature-tiering-enum-op-to-the-las.patch
-Patch0078: 0078-cluster-afr-Handle-stack-reset-failures.patch
-Patch0079: 0079-cluster-ec-Implement-gfid-hash-read-policy.patch
-Patch0080: 0080-geo-rep-Update-geo-rep-status-if-monitor-process-is-.patch
-Patch0081: 0081-rpc-Set-allow-insecure-to-on-by-default.patch
-Patch0082: 0082-quota-add-version-to-quota-xattrs.patch
-Patch0083: 0083-v-info-for-disperse-count-fails-while-upgrading.patch
-Patch0084: 0084-correction-of-message-displayed-after-attach-tier.patch
-Patch0085: 0085-tier-dht-Ignoring-replica-for-migration-counting.patch
-Patch0086: 0086-tests-tier-Move-common-functions-to-tier.rc.patch
-Patch0087: 0087-cluster-tier-fix-lookup-unhashed-on-tiered-volumes.patch
-Patch0088: 0088-tier-ctr-Ignore-CTR-Lookup-heal-insert-errors.patch
-Patch0089: 0089-tier-libgfdb-Replacing-ASCII-query-file-with-binary.patch
-Patch0090: 0090-tier-ctr-Ignore-bitrot-related-fops.patch
-Patch0091: 0091-cluster-tier-correct-promotion-cycle-calculation.patch
-Patch0092: 0092-common-ha-Corrected-refresh-config-output-parsing.patch
-Patch0093: 0093-Revert-fuse-resolve-complete-path-after-a-graph-swit.patch
-Patch0094: 0094-dht-heal-directory-path-if-the-directory-is-not-pres.patch
-Patch0095: 0095-marker-do-remove-xattr-only-for-last-link.patch
-Patch0096: 0096-tiering-Message-shown-in-gluster-vol-tier-volname-st.patch
-Patch0097: 0097-dht-update-cached-subvolume-during-readdirp-cbk.patch
-Patch0098: 0098-tier-ctr-resolving-redefination-of-get_db_path_key_t.patch
-Patch0099: 0099-tier-ctr-ignoring-bitrot-scrubber-fops.patch
-Patch0100: 0100-tier-libgfdb-Extending-log-level-flexibity-in-libgfd.patch
-Patch0101: 0101-cluster-ec-fix-bug-in-update_good.patch
-Patch0102: 0102-Remove-selinux-mount-option-from-man-mount.glusterfs.patch
-Patch0103: 0103-extras-Exit-with-SUCCESS-if-no-processes-to-stop.patch
-Patch0104: 0104-cluster-tier-Disallow-detach-commit-when-detach-in-p.patch
-Patch0105: 0105-extras-hooks-Fix-parsing-of-args-in-S30samba-set.sh.patch
-Patch0106: 0106-snapshot-Don-t-display-snapshot-s-hard-limit-and-sof.patch
-Patch0107: 0107-snapshot-copying-nfs-ganesha-export-file.patch
-Patch0108: 0108-tier-ctr-Providing-option-to-record-or-ignore-metada.patch
-Patch0109: 0109-md-cache-Remove-readdirp-fop-for-md-cache.patch
-Patch0110: 0110-snapshot-Inherit-snap-max-hard-limit-from-original-v.patch
-Patch0111: 0111-gfapi-xattr-key-length-check-to-avoid-brick-crash.patch
-Patch0112: 0112-tools-glusterfind-Do-not-show-session-corrupted-if-n.patch
-Patch0113: 0113-tools-glusterfind-password-prompts-for-peer-nodes-on.patch
-Patch0114: 0114-cluster-tier-Do-not-delete-linkto-file-on-demotion.patch
-Patch0115: 0115-cluster-tier-make-cache-mode-default-for-tiered-volu.patch
-Patch0116: 0116-mgmt-gluster-Handle-tier-brick-volgen.patch
-Patch0117: 0117-cluster-ec-Mark-self-heal-fops-as-internal.patch
-Patch0118: 0118-cluster-ec-Mark-internal-fops-appropriately.patch
-Patch0119: 0119-tools-glusterfind-Prepend-prefix-in-case-of-delete.patch
-Patch0120: 0120-geo-rep-Don-t-log-geo-rep-safe-errors-in-mount-logs.patch
-Patch0121: 0121-geo-rep-Fix-FD-leak-from-Active-Geo-rep-worker.patch
-Patch0122: 0122-tools-glusterfind-Handle-Keyboard-interrupt.patch
-Patch0123: 0123-build-fix-ecdh.h-and-dh.h-deps.patch
-Patch0124: 0124-glusterd-brick-failed-to-start.patch
-Patch0125: 0125-Tiering-Adding-space-between-error-message-for-detac.patch
-Patch0126: 0126-glusterd-cli-command-implementation-for-bitrot-scrub.patch
-Patch0127: 0127-features-bit-rot-stub-changes-for-showing-bad-object.patch
-Patch0128: 0128-features-bit-rot-scrubber-changes-for-getting-the-li.patch
-Patch0129: 0129-cluster-tier-readdirp-to-cold-tier-only.patch
-Patch0130: 0130-quota-fix-backward-compatibility-of-quota-xattr-vers.patch
-Patch0131: 0131-glusterd-bitrot-Integration-of-bad-files-from-bitd-w.patch
-Patch0132: 0132-glusterd-Change-volume-start-into-v3-framework.patch
-Patch0133: 0133-cluster-afr-Remember-flags-sent-by-create-fop.patch
-Patch0134: 0134-Tiering-change-of-error-message-for-v-tier-vname-det.patch
-Patch0135: 0135-tier-ctr-Correcting-rename-logic.patch
-Patch0136: 0136-features-bit-rot-Fix-NULL-dereference.patch
-Patch0137: 0137-glusterd.service-Ensure-rpcbind-is-started-before-gl.patch
-Patch0138: 0138-glusterd-copy-snapshot-object-during-duplication-of-.patch
-Patch0139: 0139-tools-glusterfind-add-query-command-to-list-files.patch
-Patch0140: 0140-glusterfsd-To-support-volfile-server-transport-type-.patch
-Patch0141: 0141-glusterd-glusterfsd-to-support-volfile-server-transp.patch
-Patch0142: 0142-quota-vol-quota-fails-when-transport.socket.bind-add.patch
-Patch0143: 0143-cluster-ec-Create-copy-of-dict-for-setting-internal-.patch
-Patch0144: 0144-libgfapi-To-support-set_volfile-server-transport-typ.patch
-Patch0145: 0145-afr-vol-heal-info-fails-when-transport.socket.bind-a.patch
-Patch0146: 0146-geo-rep-Allow-setting-config-remote_gsyncd.patch
-Patch0147: 0147-glusterd-geo-rep-Adding-ssh-port-option-for-geo-rep-.patch
-Patch0148: 0148-geo-rep-Make-restrictive-ssh-keys-optional.patch
-Patch0149: 0149-geo-rep-New-Config-option-for-ssh_port.patch
-Patch0150: 0150-geo-rep-fd-close-and-fcntl-issue.patch
-Patch0151: 0151-tier-glusterd-Validation-for-frequency-thresholds-an.patch
-Patch0152: 0152-glusterd-Removing-error-message-in-glusterd-log-duri.patch
-Patch0153: 0153-tier-libgfdb-sql-Correcting-logic-in-sql-query-for-r.patch
-Patch0154: 0154-afr-glusterd-Fix-naming-issue-in-tier-related-change.patch
-Patch0155: 0155-glusterd-tier-Reset-to-reconfigured-values-after-det.patch
-Patch0156: 0156-snapshot-clone-Fix-tier-pause-failure-for-snapshot-c.patch
-Patch0157: 0157-glusterd-afr-Readdirp-performance-improvement.patch
-Patch0158: 0158-features-index-Readdirp-performance-improvement.patch
-Patch0159: 0159-cluster-afr-Readdirp-performance-enhancement.patch
-Patch0160: 0160-heal-Changed-heal-info-to-process-all-indices-direct.patch
-Patch0161: 0161-geo-rep-geo-rep-to-handle-CAPS-based-Hostname.patch
-Patch0162: 0162-geo-rep-use-cold-tier-bricks-for-namespace-operation.patch
-Patch0163: 0163-cluster-tier-fix-loading-tier.so-into-glusterd.patch
-Patch0164: 0164-tier-tier-Ignoring-status-of-already-migrated-files.patch
-Patch0165: 0165-snapshot-Fix-quorum-check-for-clone.patch
-Patch0166: 0166-tier-dht-Fix-mem-leak-from-lookup-response-dict.patch
-Patch0167: 0167-mount-fuse-Fix-use-after-free-crash.patch
-Patch0168: 0168-Upcall-Read-gfid-from-iatt-in-case-of-invalid-inode.patch
-Patch0169: 0169-quota-add-quota-version-to-xlator-volume_options-str.patch
-Patch0170: 0170-posix-fix-posix_fgetxattr-to-return-the-correct-erro.patch
-Patch0171: 0171-quota-copy-quota_version-value-in-func-glusterd_voli.patch
-Patch0172: 0172-glusterd-quota-quota-version-conflict-in-export-impo.patch
-Patch0173: 0173-glusterd-fix-the-build.patch
-Patch0174: 0174-tier-Spawn-promotion-or-demotion-thread-depending-on.patch
-Patch0175: 0175-tier-ctr-Check-filename-in-ctr_lookup-for-nameless-l.patch
-Patch0176: 0176-glusterd-add-pending_node-only-if-hxlator_count-is-v.patch
-Patch0177: 0177-tier-dht-files-are-still-going-to-decommissioned-sub.patch
-Patch0178: 0178-tier-glusterd-Check-before-starting-tier-daemon-duri.patch
-Patch0179: 0179-cluster-tier-Fix-double-free-in-tier-process.patch
-Patch0180: 0180-dht-rebalance-Use-seperate-return-variable-for-desti.patch
-Patch0181: 0181-storage-posix-fix-dict-leak-in-posix_fgetxattr.patch
-Patch0182: 0182-protocol-client-give-preference-to-loc-gfid-over-ino.patch
-Patch0183: 0183-features-index-Prevent-logging-due-to-NULL-dict.patch
-Patch0184: 0184-afr-refresh-inode-using-fstat.patch
-Patch0185: 0185-tier-glusterd-Only-positive-values-for-freq-threshol.patch
-Patch0186: 0186-nfs-Inform-client-to-perform-extra-GETATTR-call-for-.patch
-Patch0187: 0187-tier-unlink-during-migration.patch
-Patch0188: 0188-tier-glusterd-making-new-tier-detach-command-throw-w.patch
-Patch0189: 0189-glusterd-fix-info-file-checksum-mismatch-during-upgr.patch
-Patch0190: 0190-bitrot-getting-correct-value-of-scrub-stat-s.patch
-Patch0191: 0191-features-bit-rot-stub-delete-the-link-for-bad-object.patch
-Patch0192: 0192-storage-posix-Implement-.unlink-directory.patch
-Patch0193: 0193-cluster-afr-During-name-heal-propagate-EIO-only-on-g.patch
-Patch0194: 0194-afr-Fix-bug-in-afr_inode_refresh_do.patch
-Patch0195: 0195-hook-scripts-fix-S30Samba-scripts-on-systemd-systems.patch
-Patch0196: 0196-hook-scripts-don-t-let-ctdb-script-change-samba-conf.patch
-Patch0197: 0197-cluster-tier-fix-tier-max-files-bookeeping-and-help.patch
-Patch0198: 0198-afr-handle-bad-objects-during-lookup-inode_refresh.patch
-Patch0199: 0199-cli-xml-display-correct-xml-output-of-tier-volume.patch
-Patch0200: 0200-tier-dht-Properly-free-file-descriptors-during-data-.patch
-Patch0201: 0201-tier-Demotion-failed-if-the-file-was-renamed-when-it.patch
-Patch0202: 0202-tier-unlink-open-fd-for-special-file-for-fdstat.patch
-Patch0203: 0203-cluster-tier-do-not-block-in-synctask-created-from-p.patch
-Patch0204: 0204-heal-Do-not-print-heal-count-on-ENOTCONN.patch
-Patch0205: 0205-performance-write-behind-retry-failed-syncs-to-backe.patch
-Patch0206: 0206-tier-delete-the-linkfile-if-data-file-creation-fails.patch
-Patch0207: 0207-ctr-sql-Providing-for-vol-set-for-sqlcachesize-and-s.patch
-Patch0208: 0208-cluster-afr-Fix-data-loss-due-to-race-between-sh-and.patch
-Patch0209: 0209-geo-rep-Fix-getting-subvol-number.patch
-Patch0210: 0210-geo-rep-Fix-getting-subvol-count.patch
-Patch0211: 0211-tier-glusterd-reset-to-gd_op_3_7_6-from-gd_op_3_7_7.patch
-Patch0212: 0212-cluster-ec-Get-size-and-config-for-invalid-inode.patch
-Patch0213: 0213-cluster-dht-Ftruncate-on-migrating-file-fails-with-E.patch
-Patch0214: 0214-Tier-tier-start-force-command-implementation.patch
-Patch0215: 0215-glusterd-reduce-friend-update-flood.patch
-Patch0216: 0216-glusterfsd-Initialize-ctx-cmd_args.patch
-Patch0217: 0217-quota-limit-xattr-for-subdir-not-healed-on-newly-add.patch
-Patch0218: 0218-tier-ctr-sql-Dafault-values-for-sql-cache-and-wal-si.patch
-Patch0219: 0219-dht-changing-variable-type-to-avoid-overflow.patch
-Patch0220: 0220-Tier-typo-in-tier-help.patch
-Patch0221: 0221-tier-create-Dynamically-allocate-gfid-memory.patch
-Patch0222: 0222-tier-glusterd-tier-daemon-not-updating-the-status.patch
-Patch0223: 0223-tier-unlink-symlink-failed-to-unlink.patch
-Patch0224: 0224-cluster-tier-Additional-details-in-error-messages.patch
-Patch0225: 0225-cluster-tier-Additional-details-in-error-messages.patch
-Patch0226: 0226-tier-create-store-TIER_LINKFILE_GFID-in-xattr-dictio.patch
-Patch0227: 0227-cluster-tier-check-watermark-during-migration.patch
-Patch0228: 0228-cluster-dht-Handle-failure-in-getxattr.patch
-Patch0229: 0229-tier-glusterd-Corrected-default-values-for-sql-cache.patch
-Patch0230: 0230-performance-write-behind-maintain-correct-transit-si.patch
-Patch0231: 0231-features-bitrot-Fail-node-uuid-getxattr-if-file-is-m.patch
-Patch0232: 0232-glusterd-register-rpc-notification-for-unix-sockets.patch
-Patch0233: 0233-quota-fix-quota-hook-script-for-add-brick.patch
-Patch0234: 0234-snapd-Do-not-persist-snapd-port.patch
-Patch0235: 0235-glusterd-cli-mask-out-inaccurate-scrub-statistics.patch
-Patch0236: 0236-revert-commit-62ff30a.patch
-Patch0237: 0237-cluster-tier-allow-db-queries-to-be-interruptable.patch
-Patch0238: 0238-cluster-dht-Rebalance-process-crashes-due-to-double-.patch
-Patch0239: 0239-features-bitrot-add-check-for-corrupted-object-in-f-.patch
-Patch0240: 0240-nfs-send-lookup-if-inode_ctx-is-not-set.patch
-Patch0241: 0241-snapview-client-remove-check-for-parent-inode-type.patch
-Patch0242: 0242-fuse-sent-at-least-one-lookup-before-actual-fop.patch
-Patch0243: 0243-fuse-send-lookup-if-inode_ctx-is-not-set.patch
-Patch0244: 0244-gfapi-send-lookup-if-inode_ctx-is-not-set.patch
-Patch0245: 0245-performance-write-behind-fix-memory-corruption.patch
-Patch0246: 0246-glusterd-GD_OP_VERSION-should-not-be-a-released-one.patch
-Patch0247: 0247-glusterd-define-GD_OP_VERSION_MAX.patch
-Patch0248: 0248-glusterd-cli-mask-out-inaccurate-scrub-statistics.patch
-Patch0249: 0249-snapshot-Return-before-redundant-quorum-check.patch
-Patch0250: 0250-quota-start-aux-mount-from-glusterd-with-inet-addres.patch
-Patch0251: 0251-tier-dht-Default-value-for-demote-freq-max-files-and.patch
-Patch0252: 0252-cluster-tier-Ignore-quota-deem-statfs-for-watermark-.patch
-Patch0253: 0253-geo-rep-Handle-hardlink-in-Tiering-based-volume.patch
-Patch0254: 0254-afr-Fix-excessive-logging-in-afr_accuse_smallfiles.patch
-Patch0255: 0255-cluster-tier-Reset-watermarks-in-tier.patch
-Patch0256: 0256-libgfapi-glfd-close-is-not-correctly-handled-for-asy.patch
-Patch0257: 0257-quota-Fix-incorrect-disk-usage-shown-on-a-tiered-vol.patch
-Patch0258: 0258-cluster-tier-Create-linkfiles-to-hardlinks-correctly.patch
+# Patch0001: 0001-build-Updating-rfc.sh-to-point-to-rhgs-3.1.3-branch.patch
+Patch0002: 0002-glusterd-fix-op-versions-for-RHS-backwards-compatabi.patch
+Patch0003: 0003-glusterd-disabling-enable-shared-storage-option-shou.patch
+Patch0004: 0004-tier-ctr-sql-Dafault-values-for-sql-cache-and-wal-si.patch
+Patch0005: 0005-glusterd-probing-a-new-node-which-is-part-of-another.patch
+Patch0006: 0006-libglusterfs-pass-buffer-size-to-gf_store_read_and_t.patch
+Patch0007: 0007-extra-enable-shared-storage-key-should-create-shared.patch
+Patch0008: 0008-posix-fix-posix_fgetxattr-to-return-the-correct-erro.patch
+Patch0009: 0009-libgfapi-glfd-close-is-not-correctly-handled-for-asy.patch
+Patch0010: 0010-rpc-set-bind-insecure-to-off-by-default.patch
+Patch0011: 0011-glusterd-spec-fixing-autogen-issue.patch
+Patch0012: 0012-event-epoll-Use-pollers-to-check-if-event_pool_dispa.patch
+Patch0013: 0013-cluster-dht-rebalance-rebalance-failure-handling.patch
+Patch0014: 0014-libglusterfs-glusterd-Fix-compilation-errors.patch
+Patch0015: 0015-build-remove-ghost-directory-entries.patch
+Patch0016: 0016-build-add-RHGS-specific-changes.patch
+Patch0017: 0017-secalert-remove-setuid-bit-for-fusermount-glusterfs.patch
+Patch0018: 0018-build-packaging-corrections-for-RHEL-5.patch
+Patch0019: 0019-build-introduce-security-hardening-flags-in-gluster.patch
+Patch0020: 0020-spec-fix-add-pre-transaction-scripts-for-geo-rep-and.patch
+Patch0021: 0021-rpm-glusterfs-devel-for-client-builds-should-not-dep.patch
+Patch0022: 0022-build-add-pretrans-check.patch
+Patch0023: 0023-build-exclude-libgfdb.pc-conditionally.patch
+Patch0024: 0024-build-exclude-glusterfs.xml-on-rhel-7-client-build.patch
+Patch0025: 0025-glusterd-fix-info-file-checksum-mismatch-during-upgr.patch
+Patch0026: 0026-build-spec-file-conflict-resolution.patch
+Patch0027: 0027-uss-gluster-generate-gfid-for-snapshot-files-from-sn.patch
+Patch0028: 0028-snapshot-Use-svc-manager-during-glusterd-restart.patch
+Patch0029: 0029-snapshot-cli-Keep-the-dict-keys-uniform.patch
+Patch0030: 0030-glusterd-Fix-connected-clients-check-during-volume-s.patch
+Patch0031: 0031-glusterd-upon-re-peer-probe-glusterd-should-not-retu.patch
+Patch0032: 0032-dht-update-attr-information-in-refresh-layout-to-avo.patch
+Patch0033: 0033-dht-report-constant-directory-size.patch
+Patch0034: 0034-posix-Filter-gsyncd-stime-xattr.patch
+Patch0035: 0035-build-fixing-dependency-issue-for-glusterfs-ganesha-.patch
+Patch0036: 0036-libglusterfs-open-cmd_history-log-file-with-O_APPEND.patch
+Patch0037: 0037-glusterd-Add-a-new-event-to-handle-multi-net-probes.patch
+Patch0038: 0038-cluster-ec-Provide-an-option-to-enable-disable-eager.patch
+Patch0039: 0039-glfs-heal-Use-encrypted-connection-in-shd.patch
+Patch0040: 0040-afr-Add-throttled-background-client-side-heals.patch
+Patch0041: 0041-tests-shard-fallocate-tests-refactor.patch
+Patch0042: 0042-features-shard-Implement-discard-fop.patch
+Patch0043: 0043-debug-trace-Print-acm-times-as-integers.patch
+Patch0044: 0044-glusterd-afr-Enable-auto-heal-when-replica-count-inc.patch
+Patch0045: 0045-afr-Enable-auto-heal-when-replica-count-increases.patch
+Patch0046: 0046-tier-dht-Attach-tier-fix-layout-to-run-in-background.patch
+Patch0047: 0047-glusterd-build-realpath-post-recreate-of-brick-mount.patch
+Patch0048: 0048-glusterd-fill-real_path-variable-in-brickinfo-during.patch
+Patch0049: 0049-dht-lock-on-subvols-to-prevent-lookup-vs-rmdir-race.patch
+Patch0050: 0050-Tier-displaying-status-only-one-the-nodes-running-ti.patch
+Patch0051: 0051-storage-posix-send-proper-iatt-attributes-for-the-ro.patch
+Patch0052: 0052-marker-set-inode-ctx-before-lookup-unwind.patch
+Patch0053: 0053-server-send-lookup-on-root-inode-when-itable-is-crea.patch
+Patch0054: 0054-marker-build_ancestry-in-marker.patch
+Patch0055: 0055-posix_acl-skip-acl_permits-for-special-clients.patch
+Patch0056: 0056-marker-do-mq_reduce_parent_size_txn-in-FG-for-unlink.patch
+Patch0057: 0057-marker-optimize-mq_update_dirty_inode_task.patch
+Patch0058: 0058-afr-add-mtime-based-split-brain-resolution-to-CLI.patch
+Patch0059: 0059-md-cache-Cache-gluster-swift-metadata.patch
+Patch0060: 0060-dht-lock-on-subvols-to-prevent-rename-and-lookup-sel.patch
+Patch0061: 0061-glusterd-DEBUG-log-should-not-come-after-resetting-c.patch
+Patch0062: 0062-gfapi-Fix-the-crashes-caused-by-global_xlator-and-TH.patch
+Patch0063: 0063-features-changelog-Don-t-modify-pargfid-in-resolve_p.patch
+Patch0064: 0064-tools-glusterfind-Handling-Unicode-file-names.patch
+Patch0065: 0065-cluster-afr-Don-t-delete-gfid-req-from-lookup-reques.patch
+Patch0066: 0066-cluster-ec-Do-not-ref-dictionary-in-lookup.patch
+Patch0067: 0067-packaging-gluster-ganesha-requires-pacemaker-etc.-on.patch
+Patch0068: 0068-ganesha-Include-a-script-to-generate-epoch-value.patch
+Patch0069: 0069-cluster-afr-Choose-local-child-as-source-if-possible.patch
+Patch0070: 0070-features-index-Get-gfid-type-in-readdir.patch
+Patch0071: 0071-cluster-afr-Fix-witness-counting-code-in-src-sink-de.patch
+Patch0072: 0072-syncop-Add-parallel-dir-scan-functionality.patch
+Patch0073: 0073-cluster-afr-Fix-partial-heals-in-3-way-replication.patch
+Patch0074: 0074-cluster-afr-Don-t-lookup-forget-inodes.patch
+Patch0075: 0075-cluster-afr-Use-parallel-dir-scan-functionality.patch
+Patch0076: 0076-features-shard-Make-o-direct-writes-work-with-shardi.patch
+Patch0077: 0077-Revert-features-shard-Make-o-direct-writes-work-with.patch
+Patch0078: 0078-op-version-Bump-up-op-version-to-3.7.12.patch
+Patch0079: 0079-features-shard-Make-o-direct-writes-work-with-shardi.patch
+Patch0080: 0080-glusterd-populate-brickinfo-real_path-conditionally.patch
+Patch0081: 0081-NFS-new-option-nfs.rdirplus-added.patch
+Patch0082: 0082-posix_acl-create-inode-ctx-for-posix_acl_get.patch
+Patch0083: 0083-mount-fuse-report-ESTALE-as-ENOENT.patch
+Patch0084: 0084-cluster-afr-Fix-spurious-entries-in-heal-info.patch
+Patch0085: 0085-dht-add-nuke-functionality-for-efficient-server-side.patch
+Patch0086: 0086-cluster-distribute-detect-stale-layouts-in-entry-fop.patch
+Patch0087: 0087-geo-rep-Fix-hostname-mismatch-between-volinfo-and-ge.patch
+Patch0088: 0088-extras-Add-namespace-for-options-in-group-virt.examp.patch
+Patch0089: 0089-quota-setting-read-only-option-in-xdata-to-instruct-.patch
+Patch0090: 0090-glusterd-fix-validation-of-lower-op-version-check-in.patch
+Patch0091: 0091-clone-snapshot-Save-restored_from_snap-for-clones.patch
+Patch0092: 0092-snapshot-quota-Copy-quota.cksum-during-snapshot-oper.patch
+Patch0093: 0093-cluster-afr-Fix-inode-leak-in-data-self-heal.patch
+Patch0094: 0094-afr-replica-pair-going-offline-does-not-require-CHIL.patch
+Patch0095: 0095-afr-propagate-child-up-event-after-timeout.patch
+Patch0096: 0096-dht-rebalance-Handle-GF_DEFRAG_STOP.patch
+Patch0097: 0097-common-ha-continuous-grace_mon-log-messages-in-var-l.patch
+Patch0098: 0098-gfapi-set-need_lookup-flag-on-response-list.patch
+Patch0099: 0099-gfapi-fill-iatt-in-readdirp_cbk-if-entry-inode-is-nu.patch
+Patch0100: 0100-geo-rep-Fix-checkpoint-issue-in-scheduler.patch
+Patch0101: 0101-tier-dht-check-for-rebalance-completion-for-EIO-erro.patch
+Patch0102: 0102-inode-Always-fetch-first-entry-from-the-inode-lists-.patch
+Patch0103: 0103-Tier-tier-command-fails-message-when-any-node-is-dow.patch
+Patch0104: 0104-geo-rep-Fix-gluster-binary-invocation-while-running-.patch
+Patch0105: 0105-glusterd-persist-brickinfo-real_path.patch
+Patch0106: 0106-tier-migrator-Fetch-the-next-query-file-for-the-next.patch
+Patch0107: 0107-protocol-server-Do-not-log-ENOENT-ESTALE-in-fd-based.patch
+Patch0108: 0108-libglusterfs-Add-debug-and-trace-logs-for-stack-trac.patch
+Patch0109: 0109-cluster-dht-Handle-rmdir-failure-correctly.patch
+Patch0110: 0110-features-bitrot-Introduce-scrubber-monitor-thread.patch
+Patch0111: 0111-glusterd-bitrot-Fix-bit-rot-scrub-status.patch
+Patch0112: 0112-packaging-postun-libs-ldconfig-relative-path-1-used-.patch
+Patch0113: 0113-cli-bitrot-Unmask-scrub-statistics.patch
+Patch0114: 0114-glusterd-fix-max-pmap-alloc-to-GF_PORT_MAX.patch
+Patch0115: 0115-glusterd-try-to-connect-on-GF_PMAP_PORT_FOREIGN-aswe.patch
+Patch0116: 0116-cluster-afr-Fix-read-child-selection-in-entry-create.patch
+Patch0117: 0117-cluster-afr-Don-t-let-NFS-cache-stat-after-writes.patch
+Patch0118: 0118-performance-write-behind-guaranteed-retry-after-a-sh.patch
+Patch0119: 0119-runner-extract-and-return-actual-exit-status-of-chil.patch
+Patch0120: 0120-rpc-fix-gf_process_reserved_ports.patch
+Patch0121: 0121-heal-Fix-incorrect-heal-info-output.patch
+Patch0122: 0122-socket-Reap-own-threads.patch
+Patch0123: 0123-rpc-assign-port-only-if-it-is-unreserved.patch
+Patch0124: 0124-glusterd-add-defence-mechanism-to-avoid-brick-port-c.patch
+Patch0125: 0125-rpc-define-client-port-range.patch
+Patch0126: 0126-dht-afr-client-posix-Fail-mkdir-without-gfid-req.patch
+Patch0127: 0127-gfapi-upcall-Ignore-handle-create-failures.patch
+Patch0128: 0128-glusterd-remove-brick-commit-should-not-succeed-when.patch
+Patch0129: 0129-packaging-additional-dirs-and-files-in-var-lib-glust.patch
+Patch0130: 0130-cluster-afr-Do-heals-with-shd-pid.patch
+Patch0131: 0131-Tier-glusterd-Resetting-the-tier-status-value-to-not.patch
+Patch0132: 0132-NFS-Ganesha-Parse-the-Export_Id-correctly-for-unexpo.patch
+Patch0133: 0133-glusterd-ganesha-copy-ganesha-export-configuration-f.patch
+Patch0134: 0134-tier-detach-During-detach-check-if-background-fixlay.patch
+Patch0135: 0135-dht-remember-locked-subvol-and-send-unlock-to-the-sa.patch
+Patch0136: 0136-gfapi-Fix-a-deadlock-caused-by-graph-switch-while-ai.patch
+Patch0137: 0137-heal-Have-fixed-number-of-fields-in-heal-info-output.patch
+Patch0138: 0138-heal-xml-xml-implementation-of-heal-info-and-splitbr.patch
+Patch0139: 0139-packaging-additional-dirs-and-files-in-var-lib-glust.patch
+Patch0140: 0140-build-dependency-error-during-upgrade.patch
+Patch0141: 0141-packaging-additional-dirs-and-files-in-var-lib-glust.patch
+Patch0142: 0142-readdir-ahead-Prefetch-xattrs-needed-by-md-cache.patch
+Patch0143: 0143-packaging-additional-dirs-and-files-in-var-lib-glust.patch
+Patch0144: 0144-packaging-postun-libs-ldconfig-relative-path-1-used-.patch
+Patch0145: 0145-glusterd-geo-rep-slave-volume-uuid-to-identify-a-geo.patch
+Patch0146: 0146-Revert-features-shard-Make-o-direct-writes-work-with.patch
+Patch0147: 0147-gfapi-clear-loc.gfid-when-retrying-after-ESTALE.patch
+Patch0148: 0148-cluster-afr-Handle-non-zero-source-in-heal-info-deci.patch
+Patch0149: 0149-cluster-tier-return-1-to-cli-on-detach-commit-when-d.patch
+Patch0150: 0150-cluster-afr-Do-post-op-in-case-of-symmetric-errors.patch
+Patch0151: 0151-cluster-dht-Perform-NULL-check-on-xdata-before-dict_.patch
+Patch0152: 0152-socket-Fix-incorrect-handling-of-partial-reads.patch
+Patch0153: 0153-common-ha-floating-IP-VIP-doesn-t-fail-over-when-gan.patch
+Patch0154: 0154-features-marker-Fix-dict_get-errors-when-key-is-NULL.patch
+Patch0155: 0155-ganesha-scripts-Fixing-refresh-config-in-ganesha-ha..patch
+Patch0156: 0156-tier-detach-Clear-tier-fix-layout-complete-xattr-aft.patch
+Patch0157: 0157-cluster-distribute-use-a-linked-inode-in-directory-h.patch
+Patch0158: 0158-cluster-distribute-heal-layout-in-discover-codepath-.patch
+Patch0159: 0159-dht-rename-takes-lock-on-parent-directory-if-destina.patch
+Patch0160: 0160-cluster-afr-If-possible-give-errno-received-from-low.patch
+Patch0161: 0161-cluster-afr-Refresh-inode-for-inode-write-fops-in-ne.patch
+Patch0162: 0162-cluster-afr-Do-not-inode_link-in-afr.patch
+Patch0163: 0163-glusterd-copy-real_path-from-older-brickinfo-during-.patch
+Patch0164: 0164-features-shard-Get-hard-link-count-in-unlink-rename-.patch
+Patch0165: 0165-tier-cli-printing-a-warning-instead-of-skipping-the-.patch
+Patch0166: 0166-glusterfsd-fix-to-return-actual-exit-status-on-mount.patch
+Patch0167: 0167-extras-stop-all-include-glusterfs-process-as-well.patch
+Patch0168: 0168-common-ha-stonith-enabled-option-set-error-in-new-pa.patch
+Patch0169: 0169-gfapi-upcall-Use-GF_CALLOC-while-allocating-variable.patch
+Patch0170: 0170-common-ha-log-flooded-with-Could-not-map-name-xxxx-t.patch
+Patch0171: 0171-common-ha-post-fail-back-ganesha.nfsds-are-not-put-i.patch
+Patch0172: 0172-glusterd-Fix-signature-of-glusterd_volinfo_copy_bric.patch
+Patch0173: 0173-cluster-ec-Fix-issues-with-eager-locking.patch
+Patch0174: 0174-dht-selfheal-should-wind-mkdir-call-to-subvols-with-.patch
+Patch0175: 0175-cluster-afr-Unwind-xdata_rsp-even-in-case-of-failure.patch
+Patch0176: 0176-Revert-gfapi-upcall-Use-GF_CALLOC-while-allocating-v.patch
+Patch0177: 0177-geo-rep-Handle-Worker-kill-gracefully-if-worker-alre.patch
+Patch0178: 0178-geo-rep-update-peers-section-in-gsyncd-conf.patch
+Patch0179: 0179-glusterd-snapshot-Fix-snapshot-creation-with-geo-rep.patch
+Patch0180: 0180-geo-rep-Fix-volume-stop-with-geo-rep-session.patch
+Patch0181: 0181-glusterd-geo-rep-upgrade-path-when-slave-vol-uuid-in.patch
+Patch0182: 0182-glusterd-snapshot-remove-quota-related-options-from-.patch
+Patch0183: 0183-common-ha-race-timing-issue-setting-up-cluster.patch
+Patch0184: 0184-cluster-ec-Restrict-the-launch-of-replace-brick-heal.patch
+Patch0185: 0185-storage-posix-Print-offset-size-and-gfid-too-when-re.patch
+Patch0186: 0186-protocol-client-Filter-o-direct-in-readv-writev.patch
+Patch0187: 0187-libglusterfs-Even-anonymous-fds-must-have-fd-flags-s.patch
+Patch0188: 0188-posix-shard-Use-page-aligned-buffer-for-o-direct-rea.patch
+Patch0189: 0189-features-shard-Don-t-modify-readv-size.patch
+Patch0190: 0190-core-shard-Make-shards-inherit-main-file-s-O_DIRECT-.patch
+Patch0191: 0191-nfs-store-sattr-properly-in-nfs3_setattr-call.patch
+Patch0192: 0192-glusterd-geo-rep-Avoid-started-status-check-if-same-.patch
+Patch0193: 0193-libglusterfs-Negate-all-but-O_DIRECT-flag-if-present.patch
+Patch0194: 0194-glusterd-fail-volume-delete-if-one-of-the-node-is-do.patch
+Patch0195: 0195-cluster-ec-Pass-xdata-to-dht-in-case-of-error.patch
+Patch0196: 0196-glusterd-Fix-gsyncd-upgrade-issue.patch
+Patch0197: 0197-gfapi-update-count-when-glfs_buf_copy-is-used.patch
+Patch0198: 0198-gfapi-check-the-value-iovec-in-glfs_io_async_cbk-onl.patch
 
 %description
 GlusterFS is a distributed file-system capable of scaling to several
@@ -537,10 +469,8 @@ and client framework.
 %package api
 Summary:          GlusterFS api library
 Group:            System Environment/Daemons
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-client-xlators = %{version}-%{release}
-# we provide the Python package/namespace 'gluster'
-#Provides:         python-gluster = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
 
 %description api
 GlusterFS is a distributed file-system capable of scaling to several
@@ -556,8 +486,8 @@ This package provides the glusterfs libgfapi library.
 %package api-devel
 Summary:          Development Libraries
 Group:            Development/Libraries
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-devel = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-devel%{?_isa} = %{version}-%{release}
 Requires:         libacl-devel
 
 %description api-devel
@@ -574,7 +504,7 @@ This package provides the api include files.
 %package cli
 Summary:          GlusterFS CLI
 Group:            Applications/File
-Requires:         %{name}-libs = %{version}-%{release}
+Requires:         %{name}-libs%{?_isa} = %{version}-%{release}
 
 %description cli
 GlusterFS is a distributed file-system capable of scaling to several
@@ -590,7 +520,7 @@ This package provides the GlusterFS CLI application and its man page
 %package devel
 Summary:          Development Libraries
 Group:            Development/Libraries
-Requires:         %{name} = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
 # Needed for the Glupy examples to work
 %if ( 0%{!?_without_extra_xlators:1} )
 Requires:         %{name}-extra-xlators = %{version}-%{release}
@@ -635,8 +565,8 @@ Group:            Applications/File
 BuildRequires:    fuse-devel
 Requires:         attr
 
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-client-xlators = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
 
 Obsoletes:        %{name}-client < %{version}-%{release}
 Provides:         %{name}-client = %{version}-%{release}
@@ -658,9 +588,11 @@ glusterfs(d) binary.
 Summary:          NFS-Ganesha configuration
 Group:            Applications/File
 
-Requires:         %{name}-server = %{version}-%{release}
-Requires:         nfs-ganesha-gluster
-Requires:         pcs
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
+Requires:         nfs-ganesha-gluster, pcs, dbus
+%if ( 0%{?rhel} && 0%{?rhel} == 6 )
+Requires:         cman, pacemaker, corosync
+%endif
 
 %description ganesha
 GlusterFS is a distributed file-system capable of scaling to several
@@ -680,8 +612,8 @@ NFS-Ganesha as the NFS server using GlusterFS
 %package geo-replication
 Summary:          GlusterFS Geo-replication
 Group:            Applications/File
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-server = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
 Requires:         python python-ctypes
 Requires:         rsync
 
@@ -701,14 +633,6 @@ This package provides support to geo-replication.
 %package libs
 Summary:          GlusterFS common libraries
 Group:            Applications/File
-%if ( 0%{!?_without_syslog:1} )
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
-Requires:         rsyslog-mmjsonparse
-%endif
-%if ( 0%{?rhel} && 0%{?rhel} == 6 )
-Requires:         rsyslog-mmcount
-%endif
-%endif
 
 %description libs
 GlusterFS is a distributed file-system capable of scaling to several
@@ -749,7 +673,7 @@ Summary:          GlusterFS rdma support for ib-verbs
 Group:            Applications/File
 BuildRequires:    libibverbs-devel
 BuildRequires:    librdmacm-devel >= 1.0.15
-Requires:         %{name} = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
 
 %description rdma
 GlusterFS is a distributed file-system capable of scaling to several
@@ -768,9 +692,9 @@ This package provides support to ib-verbs library.
 %package regression-tests
 Summary:          Development Tools
 Group:            Development/Tools
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-fuse = %{version}-%{release}
-Requires:         %{name}-server = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-fuse%{?_isa} = %{version}-%{release}
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
 ## thin provisioning support
 Requires:         lvm2 >= 2.02.89
 Requires:         perl(App::Prove) perl(Test::Harness) gcc util-linux-ng
@@ -799,7 +723,7 @@ Group:            System Environment/Base
 Group:            Productivity/Clustering/HA
 %endif
 # for glusterd
-Requires:         %{name}-server
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
 # depending on the distribution, we need pacemaker or resource-agents
 Requires:         %{_prefix}/lib/ocf/resource.d
 
@@ -822,13 +746,14 @@ like Pacemaker.
 %package server
 Summary:          Clustered file-system server
 Group:            System Environment/Daemons
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-libs = %{version}-%{release}
-Requires:         %{name}-cli = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-cli%{?_isa} = %{version}-%{release}
+Requires:         %{name}-libs%{?_isa} = %{version}-%{release}
 # some daemons (like quota) use a fuse-mount, glusterfsd is part of -fuse
-Requires:         %{name}-fuse = %{version}-%{release}
+Requires:         %{name}-fuse%{?_isa} = %{version}-%{release}
 # self-heal daemon, rebalance, nfs-server etc. are actually clients
-Requires:         %{name}-client-xlators = %{version}-%{release}
+Requires:         %{name}-api%{?_isa} = %{version}-%{release}
+Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
 # psmisc for killall, lvm2 for snapshot, and nfs-utils and
 # rpcbind/portmap for gnfs server
 Requires:         psmisc
@@ -1084,68 +1009,12 @@ This package provides the translators needed on any GlusterFS client.
 %patch0196 -p1
 %patch0197 -p1
 %patch0198 -p1
-%patch0199 -p1
-%patch0200 -p1
-%patch0201 -p1
-%patch0202 -p1
-%patch0203 -p1
-%patch0204 -p1
-%patch0205 -p1
-%patch0206 -p1
-%patch0207 -p1
-%patch0208 -p1
-%patch0209 -p1
-%patch0210 -p1
-%patch0211 -p1
-%patch0212 -p1
-%patch0213 -p1
-%patch0214 -p1
-%patch0215 -p1
-%patch0216 -p1
-%patch0217 -p1
-%patch0218 -p1
-%patch0219 -p1
-%patch0220 -p1
-%patch0221 -p1
-%patch0222 -p1
-%patch0223 -p1
-%patch0224 -p1
-%patch0225 -p1
-%patch0226 -p1
-%patch0227 -p1
-%patch0228 -p1
-%patch0229 -p1
-%patch0230 -p1
-%patch0231 -p1
-%patch0232 -p1
-%patch0233 -p1
-%patch0234 -p1
-%patch0235 -p1
-%patch0236 -p1
-%patch0237 -p1
-%patch0238 -p1
-%patch0239 -p1
-%patch0240 -p1
-%patch0241 -p1
-%patch0242 -p1
-%patch0243 -p1
-%patch0244 -p1
-%patch0245 -p1
-%patch0246 -p1
-%patch0247 -p1
-%patch0248 -p1
-%patch0249 -p1
-%patch0250 -p1
-%patch0251 -p1
-%patch0252 -p1
-%patch0253 -p1
-%patch0254 -p1
-%patch0255 -p1
-%patch0256 -p1
-%patch0257 -p1
-%patch0258 -p1
 
 %build
+%if ( 0%{?rhel} && 0%{?rhel} < 6 )
+CFLAGS=-DUSE_INSECURE_OPENSSL
+export CFLAGS
+%endif
 # In RHEL7 few hardening flags are available by default, however the RELRO
 # default behaviour is partial, convert to full
 %if ( 0%{?rhel} && 0%{?rhel} >= 7 )
@@ -1158,15 +1027,17 @@ LDFLAGS="$RPM_LD_FLAGS -pie -Wl,-z,relro,-z,now"
 %else
 #It appears that with gcc-4.1.2 in RHEL5 there is an issue using both -fPIC and
  # -fPIE that makes -z relro not work; -fPIE seems to undo what -fPIC does
-CFLAGS="$RPM_OPT_FLAGS"
+CFLAGS="$CFLAGS $RPM_OPT_FLAGS"
 LDFLAGS="$RPM_LD_FLAGS -Wl,-z,relro,-z,now"
-%if ( 0%{?rhel} && 0%{?rhel} < 6 )
-CFLAGS="$CFLAGS -DUSE_INSECURE_OPENSSL"
-%endif
 %endif
 export CFLAGS
 export LDFLAGS
 %endif
+
+# fix for patch 0104
+if [ -f extras/geo-rep/schedule_georep.py ]; then
+    mv extras/geo-rep/schedule_georep.py extras/geo-rep/schedule_georep.py.in
+fi
 
 ./autogen.sh && %configure \
         %{?_with_cmocka} \
@@ -1301,26 +1172,9 @@ install -D -p -m 0644 extras/glusterfs-georep-logrotate \
     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs-georep
 %endif
 
-%if ( 0%{!?_without_syslog:1} )
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
-install -D -p -m 0644 extras/gluster-rsyslog-7.2.conf \
-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
-%endif
-
-%if ( 0%{?rhel} && 0%{?rhel} == 6 )
-install -D -p -m 0644 extras/gluster-rsyslog-5.8.conf \
-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
-%endif
-
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
-install -D -p -m 0644 extras/logger.conf.example \
-    %{buildroot}%{_sysconfdir}/glusterfs/logger.conf.example
-%endif
-%endif
-
 touch %{buildroot}%{_sharedstatedir}/glusterd/glusterd.info
 touch %{buildroot}%{_sharedstatedir}/glusterd/options
-subdirs=("add-brick" "create" "copy-file" "delete" "gsync-create" "remove-brick" "reset" "set" "start" "stop")
+subdirs=(add-brick create copy-file delete gsync-create remove-brick reset set start stop)
 for dir in ${subdirs[@]}
 do
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/"$dir"/{pre,post}
@@ -1329,24 +1183,13 @@ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/glustershd
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/peers
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/vols
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/nfs/run
+mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/bitd
+mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/quotad
+mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/scrub
+mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/snaps
+mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/ss_brick
 touch %{buildroot}%{_sharedstatedir}/glusterd/nfs/nfs-server.vol
 touch %{buildroot}%{_sharedstatedir}/glusterd/nfs/run/nfs.pid
-
-%{__install} -p -m 0744 extras/hook-scripts/start/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start/post
-%{__install} -p -m 0744 extras/hook-scripts/stop/pre/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop/pre
-%{__install} -p -m 0744 extras/hook-scripts/set/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set/post
-%{__install} -p -m 0744 extras/hook-scripts/add-brick/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/post
-%{__install} -p -m 0744 extras/hook-scripts/add-brick/pre/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
-%{__install} -p -m 0744 extras/hook-scripts/reset/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset/post
-%{__install} -p -m 0744 extras/hook-scripts/S56glusterd-geo-rep-create-post.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/gsync-create/post
-
 
 find ./tests ./run-tests.sh -type f | cpio -pd %{buildroot}%{_prefix}/share/glusterfs
 
@@ -1354,35 +1197,37 @@ find ./tests ./run-tests.sh -type f | cpio -pd %{buildroot}%{_prefix}/share/glus
 install -p -m 0744 -D extras/command-completion/gluster.bash \
     %{buildroot}%{_sysconfdir}/bash_completion.d/gluster
 
-
 %clean
 rm -rf %{buildroot}
 
 ##-----------------------------------------------------------------------------
-## All %post should be placed here and keep them sorted
+## All %%post should be placed here and keep them sorted
 ##
 %post
+/sbin/ldconfig
 %if ( 0%{!?_without_syslog:1} )
 %if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
 %_init_restart rsyslog
 %endif
 %endif
+exit 0
 
 %post api
 /sbin/ldconfig
 
-%post fuse
 %if ( 0%{?rhel} == 5 )
+%post fuse
 modprobe fuse
+exit 0
 %endif
 
 %if ( 0%{?_build_server} )
 %if ( 0%{!?_without_georeplication:1} )
 %post geo-replication
-#restart glusterd.
 if [ $1 -ge 1 ]; then
     %_init_restart glusterd
 fi
+exit 0
 %endif
 %endif
 
@@ -1440,7 +1285,7 @@ fi
 #reload service files if firewalld running
 if $(systemctl is-active firewalld 1>/dev/null 2>&1); then
   #firewalld-filesystem is not available for rhel7, so command used for reload.
-  firewall-cmd  --reload
+  firewall-cmd  --reload 1>/dev/null 2>&1
 fi
 %endif
 
@@ -1468,7 +1313,7 @@ fi
 %endif
 
 ##-----------------------------------------------------------------------------
-## All %preun should be placed here and keep them sorted
+## All %%preun should be placed here and keep them sorted
 ##
 %if ( 0%{?_build_server} )
 %preun server
@@ -1491,7 +1336,10 @@ fi
 %endif
 
 ##-----------------------------------------------------------------------------
-## All %postun should be placed here and keep them sorted
+## All %%postun should be placed here and keep them sorted as best we can
+## making sure to "close" each one to avoid
+##   ldconfig: relative path `1' used to build cache
+## errors
 ##
 %postun
 /sbin/ldconfig
@@ -1506,20 +1354,22 @@ fi
 
 %if ( 0%{?_build_server} )
 %postun server
+/sbin/ldconfig
 %if (0%{?_with_firewalld:1})
 #reload service files if firewalld running
 if $(systemctl is-active firewalld 1>/dev/null 2>&1); then
     firewall-cmd  --reload
 fi
+exit 0
 %endif
+exit 0
 %endif
-
 
 %postun libs
 /sbin/ldconfig
 
 ##-----------------------------------------------------------------------------
-## All files should be placed here and keep them grouped
+## All %%files should be placed here and keep them grouped
 ##
 %files
 # exclude extra-xlators files
@@ -1583,9 +1433,6 @@ fi
 %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs*
 %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/protocol/server*
 %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/storage*
-%if ( 0%{!?_without_tiering:1} )
-%exclude %{_libdir}/libgfdb.so.*
-%endif
 %exclude %{_sbindir}/gcron.py
 %exclude %{_sbindir}/glfsheal
 %exclude %{_sbindir}/glusterd
@@ -1601,11 +1448,6 @@ fi
 %endif
 %endif
 %doc ChangeLog COPYING-GPLV2 COPYING-LGPLV3 INSTALL README.md THANKS
-%if ( 0%{!?_without_syslog:1} )
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
-%{_sysconfdir}/rsyslog.d/gluster.conf.example
-%endif
-%endif
 %{_mandir}/man8/*gluster*.8*
 %exclude %{_mandir}/man8/gluster.8*
 %dir %{_localstatedir}/log/glusterfs
@@ -1649,7 +1491,10 @@ fi
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/performance/stat-prefetch.so
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/performance/write-behind.so
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/system/posix-acl.so
-
+%dir %{_localstatedir}/run/gluster
+%if 0%{?_tmpfilesdir:1}
+%{_tmpfilesdir}/gluster.conf
+%endif
 
 %files api
 %exclude %{_libdir}/*.so
@@ -1672,12 +1517,6 @@ fi
 %exclude %{_includedir}/glusterfs/y.tab.h
 %exclude %{_includedir}/glusterfs/api
 %exclude %{_libdir}/libgfapi.so
-%if ( ! 0%{?_build_server} )
-%exclude %{_libdir}/libgfchangelog.so
-%endif
-%if ( 0%{!?_without_tiering:1} && ! 0%{?_build_server})
-%exclude %{_libdir}/libgfdb.so
-%endif
 %{_libdir}/*.so
 # Glupy Translator examples
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/glupy/debug-trace.*
@@ -1687,6 +1526,10 @@ fi
 %{_libdir}/pkgconfig/libgfchangelog.pc
 %else
 %exclude %{_libdir}/pkgconfig/libgfchangelog.pc
+%exclude %{_libdir}/libgfchangelog.so
+%endif
+%if ( 0%{!?_without_tiering:1} && ! 0%{?_build_server})
+%exclude %{_libdir}/libgfdb.so
 %endif
 %if ( 0%{!?_without_tiering:1} && 0%{?_build_server})
 %{_libdir}/pkgconfig/libgfdb.pc
@@ -1743,31 +1586,40 @@ fi
 %if ( 0%{?_build_server} )
 %files ganesha
 %{_sysconfdir}/ganesha/*
-%attr(0755,-,-) %{_libexecdir}/ganesha/*
-%attr(0755,-,-) %{_prefix}/lib/ocf/resource.d/heartbeat/*
+%{_libexecdir}/ganesha/*
+%{_prefix}/lib/ocf/resource.d/heartbeat/*
+%{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
+%{_sharedstatedir}/glusterd/hooks/1/reset/post/S31ganesha-reset.sh
 %endif
 
 %if ( 0%{?_build_server} )
 %if ( 0%{!?_without_georeplication:1} )
 %files geo-replication
 %config(noreplace) %{_sysconfdir}/logrotate.d/glusterfs-georep
+
+%{_sbindir}/gfind_missing_files
 %{_libexecdir}/glusterfs/gsyncd
 %{_libexecdir}/glusterfs/python/syncdaemon/*
 %{_libexecdir}/glusterfs/gverify.sh
 %{_libexecdir}/glusterfs/set_geo_rep_pem_keys.sh
 %{_libexecdir}/glusterfs/peer_gsec_create
 %{_libexecdir}/glusterfs/peer_mountbroker
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/geo-replication
-%{_sharedstatedir}/glusterd/hooks/1/gsync-create/post/S56glusterd-geo-rep-create-post.sh
+%{_libexecdir}/glusterfs/gfind_missing_files
+
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/geo-replication
+%ghost      %attr(0644,-,-) %{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/gsync-create
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post/S56glusterd-geo-rep-create-post.sh
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/gsync-create/pre
+
 %{_datadir}/glusterfs/scripts/get-gfid.sh
 %{_datadir}/glusterfs/scripts/slave-upgrade.sh
 %{_datadir}/glusterfs/scripts/gsync-upgrade.sh
 %{_datadir}/glusterfs/scripts/generate-gfid-file.sh
 %{_datadir}/glusterfs/scripts/gsync-sync-gfid
-%ghost %attr(0644,-,-) %{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
+%{_datadir}/glusterfs/scripts/schedule_georep.py*
 %endif
-%{_libexecdir}/glusterfs/gfind_missing_files
-%{_sbindir}/gfind_missing_files
 %endif
 
 %files libs
@@ -1807,36 +1659,17 @@ fi
 
 %if ( 0%{?_build_server} )
 %files server
-%exclude %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post/S56glusterd-geo-rep-create-post.sh
 %doc extras/clear_xattrs.sh
-%config(noreplace) %{_sysconfdir}/sysconfig/glusterd
+# sysconf
 %config(noreplace) %{_sysconfdir}/glusterfs
-%dir %{_localstatedir}/run/gluster
-%if 0%{?_tmpfilesdir:1}
-%{_tmpfilesdir}/gluster.conf
-%endif
-%dir %{_sharedstatedir}/glusterd
-%{_sharedstatedir}/glusterd/*
-%config(noreplace) %{_sharedstatedir}/glusterd/groups/virt
-# Legacy configs
-%if ( 0%{_for_fedora_koji_builds} )
-%config(noreplace) %{_sysconfdir}/sysconfig/glusterfsd
-%endif
-%config %{_sharedstatedir}/glusterd/hooks/1/add-brick/post/disabled-quota-root-xattr-heal.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/set/post/S30samba-set.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/set/post/S32gluster_enable_shared_storage.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/start/post/S29CTDBsetup.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/start/post/S30samba-start.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S30samba-stop.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S29CTDB-teardown.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/reset/post/S31ganesha-reset.sh
+%config(noreplace) %{_sysconfdir}/sysconfig/glusterd
+
 # init files
 %_init_glusterd
 %if ( 0%{_for_fedora_koji_builds} )
 %_init_glusterfsd
 %endif
+
 # binaries
 %{_sbindir}/glusterd
 %{_sbindir}/glfsheal
@@ -1870,25 +1703,64 @@ fi
 %{_sbindir}/snap_scheduler.py
 %{_sbindir}/gcron.py
 
-#hookscripts
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/post
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/post
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete/post
-
-%ghost %attr(0644,-,-) %config(noreplace) %{_sharedstatedir}/glusterd/glusterd.info
-%ghost %attr(0600,-,-) %{_sharedstatedir}/glusterd/options
-%ghost %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/nfs-server.vol
-%ghost %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
+# /var/lib/glusterd, e.g. hookscripts, etc.
+%ghost      %attr(0644,-,-) %config(noreplace) %{_sharedstatedir}/glusterd/glusterd.info
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/bitd
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/groups
+            %attr(0644,-,-) %{_sharedstatedir}/glusterd/groups/virt
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glusterfind
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glusterfind/.keys
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glustershd
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post/disabled-quota-root-xattr-heal.sh
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/post
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/copy-file
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/copy-file/post
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/copy-file/pre
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete/post
+                            %{_sharedstatedir}/glusterd/hooks/1/delete/post/S57glusterfind-delete-post.py
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/post
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/pre
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/reset
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/reset/post
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/reset/pre
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/post
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/post/S30samba-set.sh
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/post/S32gluster_enable_shared_storage.sh
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/pre
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/post
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/post/S29CTDBsetup.sh
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/post/S30samba-start.sh
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/pre
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/post
+       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S30samba-stop.sh
+            %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S29CTDB-teardown.sh
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs
+%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/nfs-server.vol
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs/run
+%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
+%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/options
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/peers
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/quotad
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/scrub
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/snaps
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/ss_brick
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/vols
 
 # Extra utility script
 %{_datadir}/glusterfs/scripts/stop-all-gluster-processes.sh
@@ -1897,7 +1769,6 @@ fi
 %{_libexecdir}/glusterfs/glusterfind
 %{_bindir}/glusterfind
 %{_libexecdir}/glusterfs/peer_add_secret_pub
-%{_sharedstatedir}/glusterd/hooks/1/delete/post/S57glusterfind-delete-post.py
 
 %if ( 0%{?_with_firewalld:1} )
 /usr/lib/firewalld/services/glusterfs.xml
@@ -2496,87 +2367,63 @@ end
 
 
 %changelog
-* Thu May 26 2016 Scientific Linux Auto Patch Process <SCIENTIFIC-LINUX-DEVEL@LISTSERV.FNAL.GOV>
+* Wed Mar 22 2017 Scientific Linux Auto Patch Process <SCIENTIFIC-LINUX-DEVEL@LISTSERV.FNAL.GOV>
 - Added Source: enable-server-packages.patch
 -->  Enable building the glusterfs-server package
-- Added Source: glusterfs.S56copy.patch
--->  Copied S56glusterd-geo-rep-create-post.sh to /var/lib/glusterd/hooks/1/gsync-create/post/
 - Added Source: glusterfs.ini
 -->  Config file for automated patch script
 
-* Sun Feb 07 2016 Milind Changire <mchangir@redhat.com> - 3.7.5-19
-- fixes bugs bz#1303894 bz#1302901 bz#1305172 bz#1304684
+* Wed Aug 24 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-12
+- fixes bugs bz#1369390
 
-* Thu Jan 28 2016 Milind Changire <mchangir@redhat.com> - 3.7.5-18
-- fixes bugs bz#1299724 bz#1300246 bz#1300682
+* Wed Jul 27 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-11
+- fixes bugs bz#1353470
 
-* Thu Jan 21 2016 Milind Changire <mchangir@redhat.com> - 3.7.5-17
-- fixes bugs bz#1299799 bz#1285226 bz#1283961 bz#1219794 bz#1294774
+* Fri Jun 10 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-10
+- fixes bugs bz#1343549 bz#1344278 bz#1344625
 
-* Thu Jan 14 2016 Milind Changire <mchangir@redhat.com> - 3.7.5-16
-- fixes bugs bz#1297300 bz#1296134 bz#1296048 bz#1297004
+* Tue Jun 07 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-9
+- fixes bugs bz#1336753 bz#1339136 bz#1342426 bz#1342938
 
-* Fri Jan 08 2016 Milind Changire <mchangir@redhat.com> - 3.7.5-15
-- fixes bugs bz#1285226 bz#1285167 bz#1291969 bz#1277944 bz#1288509 
-  bz#1293380 bz#1278798 bz#1294816 bz#1285797 bz#1288490 bz#1272409 bz#1219794
+* Sat Jun 04 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-8
+- fixes bugs bz#1341034 bz#1341316 bz#1341567 bz#1341820 bz#1342261
 
-* Tue Jan 05 2016 Milind Changire <mchangir@redhat.com> - 3.7.5-14
-- fixes bugs bz#1294487 bz#1293903 bz#1294594 bz#1291386 bz#1294073 
-  bz#1281946 bz#1282729 bz#1285797 bz#1272409 bz#1294478
+* Tue May 31 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-7
+- fixes bugs bz#1286582 bz#1330997 bz#1334092 bz#1337384 bz#1337649 
+  bz#1339090 bz#1339163 bz#1339208 bz#1340085 bz#1340383
 
-* Wed Dec 23 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-13
-- fixes bugs bz#1293240 bz#1275751 bz#1276273 bz#1285783 bz#1286218 
-  bz#1289228 bz#1282729 bz#1291152 bz#1219794 bz#1293228 bz#1293237 bz#1292762 
-  bz#1274334 bz#1291195 bz#1292751 bz#1285797 bz#1291560 bz#1291566 bz#1293286 
-  bz#1286028
+* Mon May 23 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-6
+- fixes bugs bz#1118762 bz#1322695 bz#1330044 bz#1331280 bz#1333643 
+  bz#1335357 bz#1336332
 
-* Thu Dec 17 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-12
-- fixes bugs bz#1285226 bz#1283940 bz#1291052 bz#1275751 bz#1288003 
-  bz#1283035 bz#1285238 bz#1290401 bz#1262680 bz#1289893 bz#1289423 bz#1276227
+* Tue May 17 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-5
+- fixes bugs bz#1261838 bz#1324820 bz#1325760 bz#1328194 bz#1331260 
+  bz#1332949 bz#1333668 bz#1334234 bz#1334668 bz#1334985 bz#1335082 bz#1335114 
+  bz#1335364 bz#1335437 bz#1335505 bz#1335826
 
-* Thu Dec 10 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-11
-- fixes bugs bz#1287532 bz#1288988 bz#1275751 bz#1289071 bz#1284834 
-  bz#1287980 bz#1284387 bz#1287997
+* Tue May 10 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-4
+- fixes bugs bz#1097555 bz#1322306 bz#1327195 bz#1324820 bz#1306194 
+  bz#1298724 bz#1299737 bz#1330385 bz#1258875 bz#1283957 bz#1311362 bz#1321550 
+  bz#1332199 bz#1329514 bz#1224180 bz#1313370 bz#1328194 bz#1323424 bz#1332957 
+  bz#1294755 bz#1328411 bz#1327751 bz#1332077 bz#1328721 bz#1330365
 
-* Tue Dec 08 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-10
-- fixes bugs bz#1283608 bz#1278798 bz#1288921 bz#1285998 bz#1278389 bz#1275633
+* Sat Apr 30 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-3
+- fixes bugs bz#1325975 bz#1311839 bz#1321556 bz#1286911 bz#1323042 
+  bz#1298724 bz#1327165 bz#1101702 bz#1326498 bz#1326663 bz#1328397 bz#1330881 
+  bz#1331376 bz#1330901 bz#1326248 bz#1324338 bz#1115367 bz#1308837 bz#1322695 
+  bz#1322247 bz#1329895 bz#1327552 bz#1118770
 
-* Thu Dec 03 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-9
-- bz#1275971 bz#1285295 bz#1286346 bz#1257343 bz#1286605 bz#1275912 bz#1286604 bz#1264800 bz#1272008 bz#1283563 bz#1250241 bz#1278254 bz#1286927 bz#1247515 bz#1286654 bz#1286637
+* Tue Apr 19 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-2
+- fixes bugs bz#1321509 bz#1322765 bz#1314724 bz#1242358 bz#1317790 
+  bz#1314391 bz#1318428 bz#1298724 bz#1318170 bz#1283957 bz#1302355 bz#1318427 
+  bz#1325750 bz#1309437 bz#1317940 bz#1302688 bz#1320412 bz#1289439 bz#1294062 
+  bz#1300875 bz#1305456 bz#1115367 bz#1118770 bz#1314373 bz#1314421 bz#1294790 
+  bz#1317908 bz#1323119 bz#1248998 bz#1231150 bz#1311686 bz#1321544 bz#1298955 
+  bz#1292034 bz#1319406 bz#1303591 bz#1279628
 
-* Tue Dec 01 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-8
-- bz#1285783 bz#1285166 bz#1286058 bz#1236020 bz#1276245 bz#1281304 bz#1285958
+* Wed Mar 23 2016 Milind Changire <mchangir@redhat.com> - 3.7.9-1
+- rebase to upstream v3.7.9
+- fixes bugs bz#1319658 bz#1319670 bz#1319688 bz#1319695 bz#1319603 
+  bz#1273706 bz#1319625 bz#1319619 bz#1319646 bz#1283035 bz#1319710 bz#1319698 
+  bz#1319634 bz#1319592 bz#1319638
 
-* Tue Nov 24 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-7
-- fixes bugs bz#1280410 bz#1276248 bz#1269885 bz#1224226 bz#1277088 
-  bz#1277028 bz#1279350 bz#1278408 bz#1277562 bz#1283410 bz#1277126 bz#1278279 
-  bz#1246007 bz#1275521 bz#1282701 bz#1224928 bz#1283050 bz#1275525 bz#1275998 
-  bz#990558 bz#1278754 bz#1224064 bz#1228079 bz#1283566 bz#1271732 bz#1224880 
-  bz#1278390 bz#1272929
-
-* Tue Nov 10 2015 Milind Changire <mchangir@redhat.com> - 3.7.5-6
-- fixes bugs bz#1276248 bz#1278399 bz#1265074 bz#1276246 bz#1278723 
-  bz#1277359 bz#1276587 bz#1276234 bz#1272452 bz#1276542 bz#1277126 bz#1257209 
-  bz#1276541 bz#1265200 bz#1276678 bz#1277043 bz#1275925 bz#1249975 bz#1261248 
-  bz#1271999 bz#1264804 bz#1277316 bz#1269557 bz#1278389 bz#1275919 bz#1241436
-
-* Thu Oct 29 2015 Bala.FA <barumuga@redhat.com> - 3.7.5-5
-- fixes bugs bz#1237059 bz#1273706
-
-* Thu Oct 29 2015 Bala.FA <barumuga@redhat.com> - 3.7.5-4
-- fixes bugs bz#1200815 bz#1273703 bz#1227029 bz#1232641 bz#1262627 
-  bz#1274411 bz#1236052 bz#1267185 bz#1233486 bz#1269753 bz#1211839 bz#1275158 
-  bz#1272407 bz#1272341 bz#1273711 bz#1272409 bz#1248895 bz#1267194 bz#1273249 
-  bz#1273260 bz#1275906 bz#1230114 bz#1274595 bz#1275155 bz#1271999 bz#1266878 
-  bz#1274334 bz#1275515 bz#1265571 bz#1243797 bz#1272403 bz#1275907
-
-* Thu Oct 15 2015 Bala.FA <barumuga@redhat.com> - 3.7.5-3
-- fixes bugs bz#1236153 bz#1236503 bz#1237022 bz#1269203 bz#1271752
-
-* Thu Oct 15 2015 Bala.FA <barumuga@redhat.com> - 3.7.5-2
-- fixes bugs bz#1228643 bz#1271178 bz#1271184 bz#1271648 bz#1271659 bz#1271705
-  bz#1271724 bz#1271725 bz#1271727 bz#1271729 bz#1271732 bz#1271733 bz#1271750
-  bz#1271752 bz#1271757
-
-* Wed Oct 14 2015 Bala.FA <barumuga@redhat.com> - 3.7.5-1
-- rebase to upstream v3.7.5

@@ -1,0 +1,81 @@
+From 15e669d0fff1c20d9071d392520bd4d23afdf51d Mon Sep 17 00:00:00 2001
+From: hari gowtham <hgowtham@redhat.com>
+Date: Tue, 8 Mar 2016 17:22:35 +0530
+Subject: [PATCH 50/80] Tier: displaying status only one the nodes running tierd
+
+        back-port of : http://review.gluster.org/#/c/13647/2
+
+When tier status is given on a cluster where one node doesn't
+have tierd running, the status is shown as not started.
+
+The status of the node without tierd should not be displayed.
+
+This patch will skip if the current node if the status is not
+started
+
+>Change-Id: Ibeb39f13133f94a5869b020c5ccd9bd6992323f1
+>BUG: 1315666
+>Signed-off-by: hari gowtham <hgowtham@redhat.com>
+
+>Change-Id: I15399db6bcdea68c0a7bebcf113329d37def6e1d
+>BUG: 1316808
+>Signed-off-by: hari gowtham <hgowtham@redhat.com>
+>Reviewed-on: http://review.gluster.org/13676
+>Smoke: Gluster Build System <jenkins@build.gluster.com>
+>Tested-by: hari gowtham <hari.gowtham005@gmail.com>
+>CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+>NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: I7eb119f049c037f513cb57f016a9613f1ac9f049
+BUG: 1283957
+Signed-off-by: hari <hgowtham@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71524
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ cli/src/cli-rpc-ops.c |   21 ++++++++++++++-------
+ 1 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 5bbf647..275eb54 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -1677,6 +1677,20 @@ gf_cli_print_tier_status (dict_t *dict, enum gf_task_types task_type)
+                 promoted = 0;
+                 demoted = 0;
+ 
++                /* Check if status is NOT_STARTED, and continue early */
++                memset (key, 0, 256);
++                snprintf (key, 256, "status-%d", i);
++
++                ret = dict_get_int32 (dict, key, (int32_t *)&status_rcd);
++                if (ret) {
++                        gf_log ("cli", GF_LOG_TRACE, "count: %d, %d,"
++                                "failed to get status", count, i);
++                        goto out;
++                }
++
++                if (GF_DEFRAG_STATUS_NOT_STARTED == status_rcd)
++                        continue;
++
+                 memset (key, 0, 256);
+                 snprintf (key, 256, "node-name-%d", i);
+                 ret = dict_get_str (dict, key, &node_name);
+@@ -1697,13 +1711,6 @@ gf_cli_print_tier_status (dict_t *dict, enum gf_task_types task_type)
+                         gf_log ("cli", GF_LOG_TRACE,
+                                 "failed to get demoted count");
+ 
+-                memset (key, 0, 256);
+-                snprintf (key, 256, "status-%d", i);
+-                ret = dict_get_int32 (dict, key, (int32_t *)&status_rcd);
+-                if (ret)
+-                        gf_log ("cli", GF_LOG_TRACE,
+-                                "failed to get status");
+-
+                 /* Check for array bound */
+                 if (status_rcd >= GF_DEFRAG_STATUS_MAX)
+                         status_rcd = GF_DEFRAG_STATUS_MAX;
+-- 
+1.7.1
+

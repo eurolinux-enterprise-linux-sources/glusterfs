@@ -1,0 +1,80 @@
+From 9710b5edaf152142f548e04304f2ea3c1a290fe9 Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Tue, 19 Apr 2016 15:30:19 +0530
+Subject: [PATCH 100/104] geo-rep: Fix checkpoint issue in scheduler
+
+If checkpoint is not met, Scheduler script should touch the
+Mount point so that SETATTR will get recorded in every brick
+Changelog. Script was not touching the mount point in each iteration.
+
+BUG: 1328397
+Change-Id: I2718a764fb3e550742c9dcd316724683561ddf18
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: http://review.gluster.org/14029
+Reviewed-on: http://review.gluster.org/14071
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73033
+Reviewed-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+---
+ extras/geo-rep/schedule_georep.py |   26 +++++++++++---------------
+ 1 files changed, 11 insertions(+), 15 deletions(-)
+
+diff --git a/extras/geo-rep/schedule_georep.py b/extras/geo-rep/schedule_georep.py
+index 9b9b131..74fc693 100644
+--- a/extras/geo-rep/schedule_georep.py
++++ b/extras/geo-rep/schedule_georep.py
+@@ -131,11 +131,9 @@ def glustermount(hostname, volname):
+     """
+     mnt = tempfile.mkdtemp(prefix="georepsetup_")
+     execute(["glusterfs",
+-             "--xlator-option=\"*dht.lookup-unhashed=off\"",
+              "--volfile-server", hostname,
+              "--volfile-id", volname,
+              "-l", SESSION_MOUNT_LOG_FILE,
+-             "--client-pid=-1",
+              mnt],
+             failure_msg="Unable to Mount Gluster Volume "
+             "{0}:{1}".format(hostname, volname))
+@@ -412,29 +410,27 @@ def main(args):
+                       "All status {2} (Turns {0:>3})".format(
+                           turns, chkpt_status, ok_status))
+         else:
+-            if not summary["checkpoints_ok"]:
+-                # If Checkpoint is not complete after a iteration means brick
+-                # was down and came online now. SETATTR on mount is not
+-                # recorded, So again issue touch on mount root So that
+-                # Stime will increase and Checkpoint will complete.
+-                touch_mount_root(args.mastervol)
+-
+             output_warning("All Checkpoints {1}, "
+                            "All status {2} (Turns {0:>3})".format(
+                                turns, chkpt_status, ok_status))
+ 
++            output_warning("Geo-rep workers Faulty/Offline, "
++                           "Faulty: {0} Offline: {1}".format(
++                               repr(faulty_rows),
++                               repr(down_rows)))
++
+         if summary["checkpoints_ok"]:
+             output_ok("Stopping Geo-replication session now")
+             cmd = ["gluster", "volume", "geo-replication", args.mastervol,
+                    "%s::%s" % (args.slave, args.slavevol), "stop"]
+             execute(cmd)
+             break
+-
+-        if not summary["ok"]:
+-            output_warning("Geo-rep workers Faulty/Offline, "
+-                           "Faulty: {0} Offline: {1}".format(
+-                               repr(faulty_rows),
+-                               repr(down_rows)))
++        else:
++            # If Checkpoint is not complete after a iteration means brick
++            # was down and came online now. SETATTR on mount is not
++            # recorded, So again issue touch on mount root So that
++            # Stime will increase and Checkpoint will complete.
++            touch_mount_root(args.mastervol)
+ 
+         # Increment the turns and Sleep for 10 sec
+         turns += 1
+-- 
+1.7.1
+

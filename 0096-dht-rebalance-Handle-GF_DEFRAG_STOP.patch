@@ -1,0 +1,76 @@
+From fb5d0c543922c01acdfa7858efdeb206293c484b Mon Sep 17 00:00:00 2001
+From: Susant Palai <spalai@redhat.com>
+Date: Fri, 15 Apr 2016 05:15:33 -0400
+Subject: [PATCH 096/104] dht/rebalance: Handle GF_DEFRAG_STOP
+
+Backport of http://review.gluster.org/14004
+
+Problem: On a rebal stop, the migrator threads don't intimate the
+crawler thread to wake up in case it is waiting on signal from
+migrator thread.
+
+BUG: 1326663
+Change-Id: Ib1c2a6cccae5eef07650193cb9461ba390a89a00
+Reviewed-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: http://review.gluster.org/14076
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+Smoke: Gluster Build System <jenkins@build.gluster.com>
+Signed-off-by: Susant Palai <spalai@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73093
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c |   17 +++++++++++++++++
+ 1 files changed, 17 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index de24135..f41aa22 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -2074,6 +2074,10 @@ gf_defrag_task (void *opaque)
+         while (true) {
+ 
+                 if (defrag->defrag_status != GF_DEFRAG_STATUS_STARTED) {
++                        pthread_cond_broadcast (
++                                &defrag->rebalance_crawler_alarm);
++                        pthread_cond_broadcast (
++                                &defrag->parallel_migration_cond);
+                         goto out;
+                 }
+ 
+@@ -2137,6 +2141,13 @@ gf_defrag_task (void *opaque)
+ 
+                                         defrag->defrag_status =
+                                                        GF_DEFRAG_STATUS_FAILED;
++
++                                        pthread_cond_broadcast (
++                                             &defrag->rebalance_crawler_alarm);
++
++                                        pthread_cond_broadcast (
++                                             &defrag->parallel_migration_cond);
++
+                                         goto out;
+                                 }
+ 
+@@ -2195,10 +2206,16 @@ gf_defrag_get_entry (xlator_t *this, int i, struct dht_container **container,
+         xlator_t               *hashed_subvol   = NULL;
+         xlator_t               *cached_subvol   = NULL;
+ 
++        if (defrag->defrag_status != GF_DEFRAG_STATUS_STARTED) {
++                ret = -1;
++                goto out;
++        }
++
+         if (dir_dfmeta->offset_var[i].readdir_done == 1) {
+                 ret = 0;
+                 goto out;
+         }
++
+         if (dir_dfmeta->fetch_entries[i] == 1) {
+                 ret = syncop_readdirp (conf->local_subvols[i], fd, 131072,
+                                        dir_dfmeta->offset_var[i].offset,
+-- 
+1.7.1
+

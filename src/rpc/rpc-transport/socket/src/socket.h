@@ -14,10 +14,10 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
-#ifdef ERR_R_DH_LIB
+#ifdef HAVE_OPENSSL_DH_H
 #include <openssl/dh.h>
 #endif
-#ifdef ERR_R_ECDH_LIB
+#ifdef HAVE_OPENSSL_ECDH_H
 #include <openssl/objects.h>
 #include <openssl/ecdh.h>
 #endif
@@ -245,6 +245,7 @@ typedef struct {
         ot_state_t             ot_state;
         uint32_t               ot_gen;
         gf_boolean_t           is_server;
+        int                    log_ctr;
 } socket_private_t;
 
 

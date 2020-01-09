@@ -1,0 +1,42 @@
+From 3e2b326eb387b7170f26a8f8a2029ec4b8d365b4 Mon Sep 17 00:00:00 2001
+From: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Date: Tue, 10 May 2016 12:37:23 -0400
+Subject: [PATCH 140/158] build: dependency error during upgrade
+
+Not sure who thought config params in the form without_foo were a
+good idea. Trying to parse !without_tiering conditionals makes my
+head hurt.
+
+Change-Id: Ie1c43fc60d6f747c27b22e3a1c40539aba3d2cad
+BUG: 1334668
+Signed-off-by: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74041
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+---
+ glusterfs.spec.in |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 15e25a9..9ddfd58 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1126,12 +1126,14 @@ exit 0
+ %exclude %{_libdir}/pkgconfig/libgfchangelog.pc
+ %exclude %{_libdir}/libgfchangelog.so
+ %endif
+-%if ( 0%{!?_without_tiering:1} || 0%{?_build_server})
++%if ( 0%{!?_without_tiering:1} && ! 0%{?_build_server})
++%exclude %{_libdir}/libgfdb.so
++%endif
++%if ( 0%{!?_without_tiering:1} && 0%{?_build_server})
+ %{_libdir}/pkgconfig/libgfdb.pc
+ %else
+ %if ( 0%{?rhel} && 0%{?rhel} >= 6 )
+ %exclude %{_libdir}/pkgconfig/libgfdb.pc
+-%exclude %{_libdir}/libgfdb.so
+ %endif
+ %endif
+ 
+-- 
+1.7.1
+

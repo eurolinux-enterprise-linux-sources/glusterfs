@@ -123,7 +123,7 @@ br_brick_fini (void *xl, char *brick, void *data)
  * FIX: Send the string length as part of the signature struct and
  *      change stub to handle this change.
  */
-static inline br_isignature_t *
+static br_isignature_t *
 br_prepare_signature (const unsigned char *sign,
                       unsigned long hashlen,
                       int8_t hashtype, br_object_t *object)
@@ -186,7 +186,7 @@ out:
 /**
  * Do a lookup on the gfid present within the object.
  */
-static inline int32_t
+static int32_t
 br_object_lookup (xlator_t *this, br_object_t *object,
                   struct iatt *iatt, inode_t **linked_inode)
 {
@@ -234,7 +234,7 @@ out:
  * know that open is being done by bitd because syncop framework does not allow
  * passing xdata -- may be use frame->root->pid itself.
  */
-static inline int32_t
+static int32_t
 br_object_open (xlator_t *this,
                 br_object_t *object, inode_t *inode, fd_t **openfd)
 {
@@ -377,14 +377,14 @@ br_calculate_obj_checksum (unsigned char *md,
         return ret;
 }
 
-static inline int32_t
+static int32_t
 br_object_checksum (unsigned char *md,
                     br_object_t *object, fd_t *fd, struct iatt *iatt)
 {
         return br_calculate_obj_checksum (md, object->child, fd,  iatt);
 }
 
-static inline int32_t
+static int32_t
 br_object_read_sign (inode_t *linked_inode, fd_t *fd, br_object_t *object,
                      struct iatt *iatt)
 {
@@ -457,7 +457,7 @@ br_object_read_sign (inode_t *linked_inode, fd_t *fd, br_object_t *object,
         return ret;
 }
 
-static inline int br_object_sign_softerror (int32_t op_errno)
+static int br_object_sign_softerror (int32_t op_errno)
 {
         return ((op_errno == ENOENT) || (op_errno == ESTALE)
                 || (op_errno == ENODATA));
@@ -567,7 +567,7 @@ br_object_resign (xlator_t *this,
  * some form of priority scheduling and/or read burstness to avoid starving
  * (or kicking) client I/O's.
  */
-static inline int32_t br_sign_object (br_object_t *object)
+static int32_t br_sign_object (br_object_t *object)
 {
         int32_t         ret           = -1;
         inode_t        *linked_inode  = NULL;
@@ -636,7 +636,7 @@ static inline int32_t br_sign_object (br_object_t *object)
         return ret;
 }
 
-static inline br_object_t *__br_pick_object (br_private_t *priv)
+static br_object_t *__br_pick_object (br_private_t *priv)
 {
         br_object_t *object = NULL;
 
@@ -724,7 +724,7 @@ br_add_object_to_queue (struct gf_tw_timer_list *timer,
         return;
 }
 
-static inline br_object_t *
+static br_object_t *
 br_initialize_object (xlator_t *this, br_child_t *child, changelog_event_t *ev)
 {
         br_object_t *object = NULL;
@@ -746,7 +746,7 @@ out:
         return object;
 }
 
-static inline struct gf_tw_timer_list *
+static struct gf_tw_timer_list *
 br_initialize_timer (xlator_t *this, br_object_t *object, br_child_t *child,
                      changelog_event_t *ev)
 {
@@ -877,17 +877,7 @@ br_fill_brick_spec (struct gf_brick_spec *brick, char *path)
         brick->disconnected = NULL;
 }
 
-static inline gf_boolean_t
-br_time_equal (br_child_t *child, struct timeval *tv)
-{
-        if ((child->tv.tv_sec == tv->tv_sec) &&
-            (child->tv.tv_usec == tv->tv_usec))
-                return _gf_true;
-
-        return _gf_false;
-}
-
-static inline gf_boolean_t
+static gf_boolean_t
 br_check_object_need_sign (xlator_t *this, dict_t *xattr, br_child_t *child)
 {
         int32_t              ret       = -1;
@@ -1562,12 +1552,73 @@ _br_qchild_event (xlator_t *this, br_child_t *child, br_child_handler *call)
 }
 
 int
+br_scrubber_status_get (xlator_t *this, dict_t **dict)
+{
+
+        int                    ret          = -1;
+        char                   key[256]     = {0,};
+        br_private_t          *priv         = NULL;
+        struct br_scrub_stats *scrub_stats  = NULL;
+
+        priv = this->private;
+
+        GF_VALIDATE_OR_GOTO ("bit-rot", priv, out);
+
+        scrub_stats = &priv->scrub_stat;
+
+        ret = br_get_bad_objects_list (this, dict);
+        if (ret) {
+                gf_msg_debug (this->name, 0, "Failed to collect corrupt "
+                              "files");
+        }
+
+        memset (key, 0, 256);
+        snprintf (key, 256, "scrubbed-files");
+        ret = dict_set_uint32 (*dict, key, scrub_stats->scrubbed_files);
+        if (ret) {
+                gf_msg_debug (this->name, 0, "Failed to setting scrubbed file "
+                              "entry to the dictionary");
+        }
+
+        memset (key, 0, 256);
+        snprintf (key, 256, "unsigned-files");
+        ret = dict_set_uint32 (*dict, key, scrub_stats->unsigned_files);
+        if (ret) {
+                gf_msg_debug (this->name, 0, "Failed to set unsigned file count"
+                              " entry to the dictionary");
+        }
+
+        memset (key, 0, 256);
+        snprintf (key, 256, "scrub-duration");
+        ret = dict_set_uint32 (*dict, key, scrub_stats->scrub_duration);
+        if (ret) {
+                gf_msg_debug (this->name, 0, "Failed to set scrub duration"
+                              " entry to the dictionary");
+        }
+
+        memset (key, 0, 256);
+        snprintf (key, 256, "last-scrub-time");
+        ret = dict_set_dynstr_with_alloc (*dict, key,
+                                          scrub_stats->last_scrub_time);
+        if (ret) {
+                gf_msg_debug (this->name, 0, "Failed to set "
+                                      "last scrub time value");
+        }
+
+out:
+        return ret;
+}
+
+int
 notify (xlator_t *this, int32_t event, void *data, ...)
 {
         int           idx    = -1;
+        int           ret    = -1;
         xlator_t     *subvol = NULL;
         br_child_t   *child  = NULL;
         br_private_t *priv   = NULL;
+        dict_t       *output = NULL;
+        va_list       ap;
 
         subvol = (xlator_t *)data;
         priv = this->private;
@@ -1634,6 +1685,15 @@ notify (xlator_t *this, int32_t event, void *data, ...)
                         default_notify (this, event, data);
                 break;
 
+        case GF_EVENT_SCRUB_STATUS:
+                gf_msg_debug (this->name, GF_LOG_INFO, "BitRot scrub status "
+                              "called");
+                va_start (ap, data);
+                output = va_arg (ap, dict_t *);
+
+                ret = br_scrubber_status_get (this, &output);
+                gf_msg_debug (this->name, 0, "returning %d", ret);
+                break;
         default:
                 default_notify (this, event, data);
         }
@@ -1646,7 +1706,7 @@ notify (xlator_t *this, int32_t event, void *data, ...)
  * Initialize signer specific structures, spawn worker threads.
  */
 
-static inline void
+static void
 br_fini_signer (xlator_t *this, br_private_t *priv)
 {
         int i = 0;
@@ -1658,7 +1718,7 @@ br_fini_signer (xlator_t *this, br_private_t *priv)
         pthread_cond_destroy (&priv->object_cond);
 }
 
-static inline int32_t
+static int32_t
 br_init_signer (xlator_t *this, br_private_t *priv)
 {
         int i = 0;

@@ -1,0 +1,90 @@
+From 50bb1149c3b8036f7c84364a00f16ba6d6c1a95a Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Fri, 3 Jun 2016 04:22:27 +0530
+Subject: [PATCH 189/192] features/shard: Don't modify readv size
+
+        Backport of: http://review.gluster.org/14623
+        3.7 backport: http://review.gluster.org/#/c/14658
+
+For o-direct reads application sends aligned size which needs to be
+sent as is, otherwise o-direct writes where the file-size is not
+aligned fails.
+
+Change-Id: Idac1c6d2622dc5115d67706be1ed5011423da2b8
+BUG: 1339136
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/76044
+---
+ tests/bugs/shard/bug-1342298.t     |   23 +++++++++++++++++++++++
+ xlators/features/shard/src/shard.c |   15 +--------------
+ 2 files changed, 24 insertions(+), 14 deletions(-)
+ create mode 100644 tests/bugs/shard/bug-1342298.t
+
+diff --git a/tests/bugs/shard/bug-1342298.t b/tests/bugs/shard/bug-1342298.t
+new file mode 100644
+index 0000000..ecd7720
+--- /dev/null
++++ b/tests/bugs/shard/bug-1342298.t
+@@ -0,0 +1,23 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++
++cleanup;
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0,1}
++TEST $CLI volume set $V0 performance.quick-read off
++TEST $CLI volume set $V0 performance.io-cache off
++TEST $CLI volume set $V0 performance.write-behind off
++TEST $CLI volume set $V0 performance.stat-prefetch off
++TEST $CLI volume set $V0 performance.read-ahead off
++TEST $CLI volume set $V0 performance.open-behind off
++TEST $CLI volume set $V0 features.shard on
++TEST $CLI volume start $V0
++
++TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0
++echo a > $M0/a
++TEST dd if=$M0/a of=/dev/null bs=4096 count=1 iflag=direct
++
++cleanup;
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index 1139194..dce6d49 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -3317,8 +3317,6 @@ int
+ shard_post_lookup_readv_handler (call_frame_t *frame, xlator_t *this)
+ {
+         int                ret         = 0;
+-        size_t             read_size   = 0;
+-        size_t             actual_size = 0;
+         struct iobuf      *iobuf       = NULL;
+         shard_local_t     *local       = NULL;
+         shard_priv_t      *priv        = NULL;
+@@ -3353,21 +3351,10 @@ shard_post_lookup_readv_handler (call_frame_t *frame, xlator_t *this)
+                 return 0;
+         }
+ 
+-        read_size = (local->offset + local->req_size);
+-        actual_size = local->prebuf.ia_size;
+-
+         local->first_block = get_lowest_block (local->offset,
+                                                local->block_size);
+ 
+-        /* If the end of read surpasses the file size, only resolve and read
+-         * till the end of the file size. If the read is confined within the
+-         * size of the file, read only the requested size.
+-         */
+-
+-        if (read_size >= actual_size)
+-                local->total_size = actual_size - local->offset;
+-        else
+-                local->total_size = local->req_size;
++        local->total_size = local->req_size;
+ 
+         local->last_block = get_highest_block (local->offset, local->total_size,
+                                                local->block_size);
+-- 
+1.7.1
+

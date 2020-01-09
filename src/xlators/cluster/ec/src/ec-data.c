@@ -108,7 +108,7 @@ void ec_cbk_data_destroy(ec_cbk_data_t * cbk)
  * heal to complete as healing big file/directory could take a while. Which
  * will lead to hang on the mount.
  */
-static inline gf_boolean_t
+static gf_boolean_t
 ec_needs_graceful_completion (ec_fop_data_t *fop)
 {
         if ((fop->id != EC_FOP_HEAL) && (fop->id != EC_FOP_FHEAL))
@@ -139,7 +139,9 @@ ec_fop_data_t * ec_fop_data_allocate(call_frame_t * frame, xlator_t * this,
     INIT_LIST_HEAD(&fop->healer);
     INIT_LIST_HEAD(&fop->answer_list);
     INIT_LIST_HEAD(&fop->pending_list);
+    INIT_LIST_HEAD(&fop->locks[0].owner_list);
     INIT_LIST_HEAD(&fop->locks[0].wait_list);
+    INIT_LIST_HEAD(&fop->locks[1].owner_list);
     INIT_LIST_HEAD(&fop->locks[1].wait_list);
 
     fop->xl = this;
@@ -181,6 +183,9 @@ ec_fop_data_t * ec_fop_data_allocate(call_frame_t * frame, xlator_t * this,
     fop->handler = handler;
     fop->cbks = cbks;
     fop->data = data;
+
+    fop->uid = fop->frame->root->uid;
+    fop->gid = fop->frame->root->gid;
 
     LOCK_INIT(&fop->lock);
 

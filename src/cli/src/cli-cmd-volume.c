@@ -910,20 +910,10 @@ do_cli_cmd_volume_attach_tier (struct cli_state *state,
         int                     parse_error = 0;
         cli_local_t             *local = NULL;
         int                     type = 0;
-        char                    *question = "Attach tier is recommended only "
-                                            "for testing purposes in this "
-                                            "release. Do you want to continue?";
-        gf_answer_t             answer = GF_ANSWER_NO;
 
         frame = create_frame (THIS, THIS->ctx->pool);
         if (!frame)
                 goto out;
-
-        answer = cli_cmd_get_confirmation (state, question);
-        if (GF_ANSWER_NO == answer) {
-                ret = 0;
-                goto out;
-        }
 
         ret = cli_cmd_volume_add_brick_parse (words, wordcount, &options, &type);
         if (ret) {
@@ -1001,7 +991,8 @@ do_cli_cmd_volume_detach_tier (struct cli_state *state,
         if (!frame)
                 goto out;
 
-        ret = cli_cmd_volume_detach_tier_parse(words, wordcount, &options);
+        ret = cli_cmd_volume_detach_tier_parse(words, wordcount, &options,
+                                               &need_question);
         if (ret) {
                 cli_usage_out (word->pattern);
                 parse_error = 1;
@@ -1118,90 +1109,6 @@ out:
         return ret;
 }
 
-static int
-gf_cli_create_auxiliary_mount (char *volname)
-{
-        int      ret                     = -1;
-        char     mountdir[PATH_MAX]      = {0,};
-        char     pidfile_path[PATH_MAX]  = {0,};
-        char     logfile[PATH_MAX]       = {0,};
-        char     qpid [16]               = {0,};
-
-        GLUSTERFS_GET_AUX_MOUNT_PIDFILE (pidfile_path, volname);
-
-        if (gf_is_service_running (pidfile_path, NULL)) {
-                gf_log ("cli", GF_LOG_DEBUG, "Aux mount of volume %s is running"
-                        " already", volname);
-                ret = 0;
-                goto out;
-        }
-
-        GLUSTERD_GET_QUOTA_AUX_MOUNT_PATH (mountdir, volname, "/");
-        ret = mkdir (mountdir, 0777);
-        if (ret && errno != EEXIST) {
-                gf_log ("cli", GF_LOG_ERROR, "Failed to create auxiliary mount "
-                        "directory %s. Reason : %s", mountdir,
-                        strerror (errno));
-                goto out;
-        }
-
-        snprintf (logfile, PATH_MAX-1, "%s/quota-mount-%s.log",
-                  DEFAULT_LOG_FILE_DIRECTORY, volname);
-        snprintf(qpid, 15, "%d", GF_CLIENT_PID_QUOTA_MOUNT);
-
-        ret = runcmd (SBIN_DIR"/glusterfs",
-                      "-s", "localhost",
-                      "--volfile-id", volname,
-                      "-l", logfile,
-                      "-p", pidfile_path,
-                      "--client-pid", qpid,
-                      mountdir,
-                      NULL);
-
-        if (ret) {
-                gf_log ("cli", GF_LOG_WARNING, "failed to mount glusterfs "
-                        "client. Please check the log file %s for more details",
-                        logfile);
-                ret = -1;
-                goto out;
-        }
-
-        ret = 0;
-
-out:
-        return ret;
-}
-
-static int
-cli_stage_quota_op (char *volname, int op_code)
-{
-        int ret = -1;
-
-        switch (op_code) {
-        case GF_QUOTA_OPTION_TYPE_ENABLE:
-        case GF_QUOTA_OPTION_TYPE_LIMIT_USAGE:
-        case GF_QUOTA_OPTION_TYPE_LIMIT_OBJECTS:
-        case GF_QUOTA_OPTION_TYPE_REMOVE:
-        case GF_QUOTA_OPTION_TYPE_REMOVE_OBJECTS:
-        case GF_QUOTA_OPTION_TYPE_LIST:
-                ret = gf_cli_create_auxiliary_mount (volname);
-                if (ret) {
-                        cli_err ("quota: Could not start quota "
-                                 "auxiliary mount");
-                        goto out;
-                }
-                ret = 0;
-                break;
-
-        default:
-                ret = 0;
-                break;
-        }
-
-out:
-        return ret;
-}
-
 int
 cli_get_soft_limit (dict_t *options, const char **words, dict_t *xdata)
 {
@@ -1302,42 +1209,6 @@ out:
         return limits_set;
 }
 
-/* Checks if the mount is connected to the bricks
- *
- * Returns true if connected and false if not
- */
-gf_boolean_t
-_quota_aux_mount_online (char *volname)
-{
-        int         ret = 0;
-        char        mount_path[PATH_MAX + 1] = {0,};
-        struct stat buf = {0,};
-
-        GF_ASSERT (volname);
-
-        /* Try to create the aux mount before checking if bricks are online */
-        ret = gf_cli_create_auxiliary_mount (volname);
-        if (ret) {
-                cli_err ("quota: Could not start quota auxiliary mount");
-                return _gf_false;
-        }
-
-        GLUSTERD_GET_QUOTA_AUX_MOUNT_PATH (mount_path, volname, "/");
-
-        ret = sys_stat (mount_path, &buf);
-        if (ret) {
-                if (ENOTCONN == errno) {
-                        cli_err ("quota: Cannot connect to bricks. Check if "
-                                 "bricks are online.");
-                } else {
-                        cli_err ("quota: Error on quota auxiliary mount (%s).",
-                                 strerror (errno));
-                }
-                return _gf_false;
-        }
-        return _gf_true;
-}
-
 int
 cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
 {
@@ -1405,12 +1276,6 @@ cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
                         cli_out ("quota: %s", err_str);
                 }
                 ret = 0;
-                goto out;
-        }
-
-        /* Check if the mount is online before doing any listing */
-        if (!_quota_aux_mount_online (volname)) {
-                ret = -1;
                 goto out;
         }
 
@@ -1645,11 +1510,6 @@ cli_cmd_quota_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 gf_log ("cli", GF_LOG_ERROR, "Failed to get volume name");
                 goto out;
         }
-
-        //create auxiliary mount need for quota commands that operate on path
-        ret = cli_stage_quota_op (volname, type);
-        if (ret)
-                goto out;
 
         frame = create_frame (THIS, THIS->ctx->pool);
         if (!frame) {
@@ -2663,6 +2523,7 @@ struct cli_cmd volume_cmds[] = {
           "rename volume <VOLNAME> to <NEW-VOLNAME>"},*/
 
         { "volume tier <VOLNAME> status\n"
+        "volume tier <VOLNAME> start [force]\n"
         "volume tier <VOLNAME> attach [<replica COUNT>] <NEW-BRICK>...\n"
         "volume tier <VOLNAME> detach <start|stop|status|commit|[force]>\n",
         cli_cmd_volume_tier_cbk,
@@ -2675,7 +2536,7 @@ struct cli_cmd volume_cmds[] = {
           "[<replica COUNT>] <NEW-BRICK>..."},
 
         { "volume detach-tier <VOLNAME> "
-          " <start|stop|status|commit|[force]>",
+          " <start|stop|status|commit|force>",
         cli_cmd_volume_tier_cbk,
           "NOTE: this is old syntax, will be depreciated in next release. "
           "Please use gluster volume tier <vol> detach "
@@ -2729,7 +2590,7 @@ struct cli_cmd volume_cmds[] = {
          "reset all the reconfigured options"},
 
 #if (SYNCDAEMON_COMPILE)
-        {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [[no-verify]|[push-pem]] [force]"
+        {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [[ssh-port n] [[no-verify]|[push-pem]]] [force]"
          "|start [force]|stop [force]|pause [force]|resume [force]|config|status [detail]|delete} [options...]",
          cli_cmd_volume_gsync_set_cbk,
          "Geo-sync operations",
@@ -2797,7 +2658,7 @@ struct cli_cmd volume_cmds[] = {
          "volume bitrot <volname> scrub-throttle {lazy|normal|aggressive} |\n"
          "volume bitrot <volname> scrub-frequency {hourly|daily|weekly|biweekly"
          "|monthly} |\n"
-         "volume bitrot <volname> scrub {pause|resume}",
+         "volume bitrot <volname> scrub {pause|resume|status}",
          cli_cmd_bitrot_cbk,
          "Bitrot translator specific operation. For more information about "
          "bitrot command type  'man gluster'"
@@ -2809,12 +2670,20 @@ int
 cli_cmd_volume_help_cbk (struct cli_state *state, struct cli_cmd_word *in_word,
                       const char **words, int wordcount)
 {
-        struct cli_cmd        *cmd = NULL;
+        struct cli_cmd        *cmd     = NULL;
+        struct cli_cmd        *vol_cmd = NULL;
+        int                   count    = 0;
 
-        for (cmd = volume_cmds; cmd->pattern; cmd++)
-                if (_gf_false == cmd->disable)
-                        cli_out ("%s - %s", cmd->pattern, cmd->desc);
+        cmd = GF_CALLOC (1, sizeof (volume_cmds), cli_mt_cli_cmd);
+        memcpy (cmd, volume_cmds, sizeof (volume_cmds));
+        count = (sizeof (volume_cmds) / sizeof (struct cli_cmd));
+        cli_cmd_sort (cmd, count);
 
+        for (vol_cmd = cmd; vol_cmd->pattern; vol_cmd++)
+                if (_gf_false == vol_cmd->disable)
+                        cli_out ("%s - %s", vol_cmd->pattern, vol_cmd->desc);
+
+        GF_FREE (cmd);
         return 0;
 }
 

@@ -1,0 +1,413 @@
+From c1528c3a9bbe3872a1d0cf07b76460e41bdeba0a Mon Sep 17 00:00:00 2001
+From: Prashanth Pai <ppai@redhat.com>
+Date: Wed, 4 May 2016 16:56:50 +0530
+Subject: [PATCH 142/158] readdir-ahead: Prefetch xattrs needed by md-cache
+
+Problem:
+Negative cache feature implementation in md-cache requires xattrs
+returned by posix to be intercepted for every call that can possibly
+return xattrs. This includes readdirp(). This is crucial to treat
+missing keys in cache as a case of negative entry (returns ENODATA)
+
+md-cache puts names of xattrs that it wants to cache in xdata and
+passes it down to posix which returns the specified xattrs in the
+callback. This is done in lookup() and readdirp(). Hence, a xattr
+that is cached can be invalidated during readdirp_cbk too.
+
+This is based on the assumption that readdirp() will always return
+all xattrs that md-cache is interested in. However, this is not the
+case when readdirp() call is served from readdir-ahead's cache.
+readdir-ahead xlator will pre-fetch dentries during opendir_cbk
+and readdirp. These internal readdirp() calls made by readdir-ahead
+xlator does not set xdata in it's requests. Hence, no xattrs are
+fetched and stored in it's internal cache.
+
+This causes metadata loss in gluster-swift. md-cache returns ENODATA
+during getxattr() call even though the xattr for that object exists on
+the brick. On receiving ENODATA, gluster-swift will create new metadata
+and do setxattr(). This results in loss of information stored in
+existing xattr.
+
+Fix:
+During opendir, md-cache will communicate to readdir-ahead asking it
+to store the names of xattrs it's interested in so that readdir-ahead
+can fetch those in all subsequent internal readdirp() calls issued by
+it. This stored names of xattrs is invalidated/updated on the next
+real readdirp() call issued by application. This readdirp() call will
+have xdata set correctly by md-cache xlator.
+
+> BUG: 1334700
+> Change-Id: I32d46f93a99d4ec34c741f3c52b0646d141614f9
+> (cherry picked from commit 0c73e7050c4d30ace0c39cc9b9634e9c1b448cfb)
+> Reviewed-on: http://review.gluster.org/14282
+> Tested-by: Prashanth Pai <ppai@redhat.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+
+BUG: 1331260
+Change-Id: Id9ba1e53a17dc07642d2727928f84f62cd97ab92
+Signed-off-by: Prashanth Pai <ppai@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74100
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ libglusterfs/src/glusterfs.h                       |    1 +
+ xlators/performance/md-cache/src/md-cache.c        |   80 ++++++++++++
+ .../performance/readdir-ahead/src/readdir-ahead.c  |  129 ++++++++++++++++++-
+ .../performance/readdir-ahead/src/readdir-ahead.h  |    2 +
+ 4 files changed, 205 insertions(+), 7 deletions(-)
+
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index 67bfd5a..34c0361 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -92,6 +92,7 @@
+ #define GF_INTERNAL_IGNORE_DEEM_STATFS "ignore-deem-statfs"
+ 
+ #define GF_READDIR_SKIP_DIRS       "readdir-filter-directories"
++#define GF_MDC_LOADED_KEY_NAMES     "glusterfs.mdc.loaded.key.names"
+ 
+ #define BD_XATTR_KEY             "user.glusterfs"
+ #define GF_PREOP_PARENT_KEY      "glusterfs.preop.parent.key"
+diff --git a/xlators/performance/md-cache/src/md-cache.c b/xlators/performance/md-cache/src/md-cache.c
+index b94dade..74aafdb 100644
+--- a/xlators/performance/md-cache/src/md-cache.c
++++ b/xlators/performance/md-cache/src/md-cache.c
+@@ -14,6 +14,7 @@
+ #endif
+ 
+ #include "glusterfs.h"
++#include "defaults.h"
+ #include "logging.h"
+ #include "dict.h"
+ #include "xlator.h"
+@@ -743,6 +744,50 @@ mdc_load_reqs (xlator_t *this, dict_t *dict)
+ }
+ 
+ 
++static char*
++mdc_serialize_loaded_key_names (xlator_t *this)
++{
++        int             max_len = 0;
++        int             len = 0;
++        int             i = 0;
++        char           *mdc_key_names = NULL;
++        const char     *mdc_key = NULL;
++        gf_boolean_t    at_least_one_key_loaded = _gf_false;
++
++        for (mdc_key = mdc_keys[i].name; (mdc_key = mdc_keys[i].name); i++) {
++                max_len += (strlen(mdc_keys[i].name) + 1);
++                if (mdc_keys[i].load)
++                        at_least_one_key_loaded = _gf_true;
++        }
++
++        if (!at_least_one_key_loaded)
++                goto out;
++
++        mdc_key_names = GF_CALLOC (1, max_len + 1, gf_common_mt_char);
++        if (!mdc_key_names)
++                goto out;
++
++        i = 0;
++        for (mdc_key = mdc_keys[i].name; (mdc_key = mdc_keys[i].name); i++) {
++                if (!mdc_keys[i].load)
++                        continue;
++                strcat (mdc_key_names, mdc_keys[i].name);
++                strcat (mdc_key_names, " ");
++        }
++
++        len = strlen (mdc_key_names);
++        if (len > 0) {
++                mdc_key_names[len - 1] = '\0';
++        } else {
++                GF_FREE (mdc_key_names);
++                mdc_key_names = NULL;
++        }
++
++out:
++        return mdc_key_names;
++}
++
++
+ struct checkpair {
+ 	int  ret;
+ 	dict_t *rsp;
+@@ -1980,6 +2025,40 @@ mdc_fremovexattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
+ 
+ 
+ int
++mdc_opendir(call_frame_t *frame, xlator_t *this, loc_t *loc,
++            fd_t *fd, dict_t *xdata)
++{
++        int          ret = -1;
++        char        *mdc_key_names = NULL;
++        dict_t      *xattr_alloc = NULL;
++
++        if (!xdata)
++                xdata = xattr_alloc = dict_new ();
++
++        if (xdata) {
++                /* Tell readdir-ahead to include these keys in xdata when it
++                 * internally issues readdirp() in it's opendir_cbk */
++                mdc_key_names = mdc_serialize_loaded_key_names(this);
++                if (!mdc_key_names)
++                        goto wind;
++                ret = dict_set_dynstr (xdata, GF_MDC_LOADED_KEY_NAMES,
++                                       mdc_key_names);
++                if (ret)
++                        goto wind;
++        }
++
++wind:
++        STACK_WIND (frame, default_opendir_cbk, FIRST_CHILD(this),
++                    FIRST_CHILD(this)->fops->opendir, loc, fd, xdata);
++
++        if (xattr_alloc)
++                dict_unref (xattr_alloc);
++
++        return 0;
++}
++
++
++int
+ mdc_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 		  int op_ret, int op_errno, gf_dirent_t *entries, dict_t *xdata)
+ {
+@@ -2322,6 +2401,7 @@ struct xlator_fops fops = {
+         .fgetxattr   = mdc_fgetxattr,
+ 	.removexattr = mdc_removexattr,
+ 	.fremovexattr= mdc_fremovexattr,
++        .opendir     = mdc_opendir,
+ 	.readdirp    = mdc_readdirp,
+ 	.readdir     = mdc_readdir,
+ 	.fallocate   = mdc_fallocate,
+diff --git a/xlators/performance/readdir-ahead/src/readdir-ahead.c b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+index 75f30d9..f2f5130 100644
+--- a/xlators/performance/readdir-ahead/src/readdir-ahead.c
++++ b/xlators/performance/readdir-ahead/src/readdir-ahead.c
+@@ -57,8 +57,9 @@ rda_fd_ctx *get_rda_fd_ctx(fd_t *fd, xlator_t *this)
+ 
+ 		LOCK_INIT(&ctx->lock);
+ 		INIT_LIST_HEAD(&ctx->entries.list);
+-		ctx->state = RDA_FD_NEW;
++                ctx->state = RDA_FD_NEW;
+ 		/* ctx offset values initialized to 0 */
++                ctx->xattrs = NULL;
+ 
+ 		if (__fd_ctx_set(fd, this, (uint64_t) ctx) < 0) {
+ 			GF_FREE(ctx);
+@@ -85,6 +86,10 @@ rda_reset_ctx(struct rda_fd_ctx *ctx)
+ 	ctx->next_offset = 0;
+         ctx->op_errno = 0;
+ 	gf_dirent_free(&ctx->entries);
++        if (ctx->xattrs) {
++                dict_unref (ctx->xattrs);
++                ctx->xattrs = NULL;
++        }
+ }
+ 
+ /*
+@@ -201,6 +206,15 @@ rda_readdirp(call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
+ 	 */
+ 	if (!off && (ctx->state & RDA_FD_EOD) && (ctx->cur_size == 0)) {
+ 		rda_reset_ctx(ctx);
++                /*
++                 * Unref and discard the 'list of xattrs to be fetched'
++                 * stored during opendir call. This is done above - inside
++                 * rda_reset_ctx().
++                 * Now, ref the xdata passed by md-cache in actual readdirp()
++                 * call and use that for all subsequent internal readdirp()
++                 * requests issued by this xlator.
++                 */
++                ctx->xattrs = dict_ref (xdata);
+ 		fill = 1;
+ 	}
+ 
+@@ -317,6 +331,14 @@ out:
+ 
+ 	if (!(ctx->state & RDA_FD_RUNNING)) {
+ 		fill = 0;
++        if (ctx->xattrs) {
++                /*
++                 * fill = 0 and hence rda_fill_fd() won't be invoked.
++                 * unref for ref taken in rda_fill_fd()
++                 */
++                dict_unref (ctx->xattrs);
++                ctx->xattrs = NULL;
++        }
+ 		STACK_DESTROY(ctx->fill_frame->root);
+ 		ctx->fill_frame = NULL;
+ 	}
+@@ -337,6 +359,7 @@ rda_fill_fd(call_frame_t *frame, xlator_t *this, fd_t *fd)
+ {
+ 	call_frame_t *nframe = NULL;
+ 	struct rda_local *local = NULL;
++        struct rda_local *orig_local = frame->local;
+ 	struct rda_fd_ctx *ctx;
+ 	off_t offset;
+ 	struct rda_priv *priv = this->private;
+@@ -374,6 +397,11 @@ rda_fill_fd(call_frame_t *frame, xlator_t *this, fd_t *fd)
+ 		nframe->local = local;
+ 
+ 		ctx->fill_frame = nframe;
++
++        if (!ctx->xattrs && orig_local && orig_local->xattrs) {
++                /* when this function is invoked by rda_opendir_cbk */
++                ctx->xattrs = dict_ref(orig_local->xattrs);
++        }
+ 	} else {
+ 		nframe = ctx->fill_frame;
+ 		local = nframe->local;
+@@ -383,9 +411,9 @@ rda_fill_fd(call_frame_t *frame, xlator_t *this, fd_t *fd)
+ 
+ 	UNLOCK(&ctx->lock);
+ 
+-	STACK_WIND(nframe, rda_fill_fd_cbk, FIRST_CHILD(this),
+-		   FIRST_CHILD(this)->fops->readdirp, fd, priv->rda_req_size,
+-		   offset, NULL);
++        STACK_WIND(nframe, rda_fill_fd_cbk, FIRST_CHILD(this),
++                   FIRST_CHILD(this)->fops->readdirp, fd,
++                   priv->rda_req_size, offset, ctx->xattrs);
+ 
+ 	return 0;
+ 
+@@ -396,14 +424,53 @@ err:
+ 	return -1;
+ }
+ 
++
++static int
++rda_unpack_mdc_loaded_keys_to_dict(char *payload, dict_t *dict)
++{
++        int      ret = -1;
++        char    *mdc_key = NULL;
++
++        if (!payload || !dict) {
++                goto out;
++        }
++
++        mdc_key = strtok(payload, " ");
++        while (mdc_key != NULL) {
++                ret = dict_set_int8 (dict, mdc_key, 0);
++                if (ret) {
++                        goto out;
++                }
++                mdc_key = strtok(NULL, " ");
++        }
++
++out:
++        return ret;
++}
++
++
+ static int32_t
+ rda_opendir_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+ 		    int32_t op_ret, int32_t op_errno, fd_t *fd, dict_t *xdata)
+ {
++        struct rda_local *local = frame->local;
++
+ 	if (!op_ret)
+ 		rda_fill_fd(frame, this, fd);
+ 
++        frame->local = NULL;
++
+ 	STACK_UNWIND_STRICT(opendir, frame, op_ret, op_errno, fd, xdata);
++
++        if (local && local->xattrs) {
++                /* unref for dict_new() done in rda_opendir */
++                dict_unref (local->xattrs);
++                local->xattrs = NULL;
++        }
++
++        if (local)
++                mem_put (local);
++
+ 	return 0;
+ }
+ 
+@@ -411,9 +478,57 @@ static int32_t
+ rda_opendir(call_frame_t *frame, xlator_t *this, loc_t *loc, fd_t *fd,
+ 		dict_t *xdata)
+ {
+-	STACK_WIND(frame, rda_opendir_cbk, FIRST_CHILD(this),
+-		   FIRST_CHILD(this)->fops->opendir, loc, fd, xdata);
+-	return 0;
++        int                  ret = -1;
++        int                  op_errno = 0;
++        char                *payload = NULL;
++        struct rda_local    *local = NULL;
++        dict_t              *xdata_from_req = NULL;
++
++        if (xdata) {
++                /*
++                 * Retrieve list of keys set by md-cache xlator and store it
++                 * in local to be consumed in rda_opendir_cbk
++                 */
++                ret = dict_get_str (xdata, GF_MDC_LOADED_KEY_NAMES, &payload);
++                if (ret)
++                        goto wind;
++
++                xdata_from_req = dict_new();
++                if (!xdata_from_req) {
++                        op_errno = ENOMEM;
++                        goto unwind;
++                }
++
++                ret = rda_unpack_mdc_loaded_keys_to_dict((char *) payload,
++                                                         xdata_from_req);
++                if (ret) {
++                        dict_unref(xdata_from_req);
++                        goto wind;
++                }
++
++                local = mem_get0(this->local_pool);
++                if (!local) {
++                        dict_unref(xdata_from_req);
++                        op_errno = ENOMEM;
++                        goto unwind;
++                }
++
++                local->xattrs = xdata_from_req;
++                frame->local = local;
++        }
++
++wind:
++        if (xdata)
++                /* Remove the key after consumption. */
++                dict_del (xdata, GF_MDC_LOADED_KEY_NAMES);
++
++        STACK_WIND(frame, rda_opendir_cbk, FIRST_CHILD(this),
++                   FIRST_CHILD(this)->fops->opendir, loc, fd, xdata);
++        return 0;
++
++unwind:
++        STACK_UNWIND_STRICT(opendir, frame, -1, op_errno, fd, xdata);
++        return 0;
+ }
+ 
+ static int32_t
+diff --git a/xlators/performance/readdir-ahead/src/readdir-ahead.h b/xlators/performance/readdir-ahead/src/readdir-ahead.h
+index e48786d..f030f10 100644
+--- a/xlators/performance/readdir-ahead/src/readdir-ahead.h
++++ b/xlators/performance/readdir-ahead/src/readdir-ahead.h
+@@ -29,12 +29,14 @@ struct rda_fd_ctx {
+ 	call_frame_t *fill_frame;
+ 	call_stub_t *stub;
+ 	int op_errno;
++        dict_t *xattrs;      /* md-cache keys to be sent in readdirp() */
+ };
+ 
+ struct rda_local {
+ 	struct rda_fd_ctx *ctx;
+ 	fd_t *fd;
+ 	off_t offset;
++        dict_t *xattrs;      /* md-cache keys to be sent in readdirp() */
+ };
+ 
+ struct rda_priv {
+-- 
+1.7.1
+

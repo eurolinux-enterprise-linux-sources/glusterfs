@@ -1,0 +1,39 @@
+From 6997dacc0155c9014149299bcb5e0b492b8157ed Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Wed, 4 May 2016 20:16:36 +0530
+Subject: [PATCH 151/158] cluster/dht: Perform NULL check on xdata before dict_get()
+
+.. to prevent unnecessary logs from gf_msg_callingfn()
+
+Change-Id: I367628fee2f6783ba9ed6f918deabd034df820c9
+BUG: 1335364
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: http://review.gluster.org/14212
+Smoke: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Shyamsundar Ranganathan <srangana@redhat.com>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74341
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index fa053de..e9fcf47 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -7208,7 +7208,7 @@ dht_mkdir_hashed_cbk (call_frame_t *frame, void *cookie,
+         if (op_ret == -1) {
+                 local->op_errno = op_errno;
+ 
+-                parent_layout_changed = dict_get (xdata, GF_PREOP_CHECK_FAILED)
++                parent_layout_changed = (xdata && dict_get (xdata, GF_PREOP_CHECK_FAILED))
+                         ? 1 : 0;
+                 if (parent_layout_changed) {
+                         gf_msg (this->name, GF_LOG_INFO, 0,
+-- 
+1.7.1
+

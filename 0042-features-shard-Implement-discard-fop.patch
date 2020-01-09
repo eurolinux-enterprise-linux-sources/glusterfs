@@ -1,0 +1,410 @@
+From 5801339c2e2aa38ac8a7af811c8446430b8c7fde Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Tue, 8 Mar 2016 15:44:04 +0530
+Subject: [PATCH 42/80] features/shard: Implement discard fop
+
+        Backport of: http://review.gluster.org/13657
+        release-3.7 patch: http://review.gluster.org/13774
+
+Change-Id: Iec037fa2e1c476e98a36ff6d2ca3d439352c9655
+BUG: 1302688
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71397
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ tests/bugs/shard/bug-1260637.t        |    3 +-
+ tests/bugs/shard/bug-shard-discard.c  |   66 +++++++++++++++++++++++++++++++++
+ tests/bugs/shard/bug-shard-discard.t  |   61 ++++++++++++++++++++++++++++++
+ tests/bugs/shard/bug-shard-zerofill.c |    6 +-
+ tests/bugs/shard/bug-shard-zerofill.t |    8 +---
+ tests/bugs/shard/shard-fallocate.c    |   10 +---
+ tests/bugs/shard/zero-flag.t          |   12 ++----
+ tests/volume.rc                       |    4 ++
+ xlators/features/shard/src/shard.c    |   27 +++++++++++--
+ 9 files changed, 167 insertions(+), 30 deletions(-)
+ create mode 100644 tests/bugs/shard/bug-shard-discard.c
+ create mode 100644 tests/bugs/shard/bug-shard-discard.t
+
+diff --git a/tests/bugs/shard/bug-1260637.t b/tests/bugs/shard/bug-1260637.t
+index f5bf083..21008ee 100644
+--- a/tests/bugs/shard/bug-1260637.t
++++ b/tests/bugs/shard/bug-1260637.t
+@@ -1,6 +1,7 @@
+ #!/bin/bash
+ 
+ . $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
+ 
+ cleanup
+ 
+@@ -34,7 +35,7 @@ TEST ! setfattr -x trusted.glusterfs.shard.file-size $M0/foo
+ # Verify that shard xattrs are not listed when listxattr is triggered.
+ TEST ! "getfattr -d -m . $M0/foo | grep shard"
+ 
+-TEST umount $M0
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+ TEST $CLI volume stop $V0
+ TEST $CLI volume delete $V0
+ 
+diff --git a/tests/bugs/shard/bug-shard-discard.c b/tests/bugs/shard/bug-shard-discard.c
+new file mode 100644
+index 0000000..d51b07f
+--- /dev/null
++++ b/tests/bugs/shard/bug-shard-discard.c
+@@ -0,0 +1,66 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include "glfs.h"
++#include "glfs-handles.h"
++
++int
++main (int argc, char *argv[])
++{
++        int        ret = 0;
++        off_t      off = 0;
++        size_t     len = 0;
++        glfs_t    *fs  = NULL;
++        glfs_fd_t *fd  = NULL;
++
++        if (argc != 7) {
++                fprintf (stderr, "Syntax: %s <host> <volname> <file-path> <off> <len> <log-file>\n", argv[0]);
++                return 1;
++        }
++
++        fs = glfs_new (argv[2]);
++        if (!fs) {
++                fprintf (stderr, "glfs_new: returned NULL\n");
++                return 1;
++        }
++
++        ret = glfs_set_volfile_server (fs, "tcp", argv[1], 24007);
++        if (ret != 0) {
++                fprintf (stderr, "glfs_set_volfile_server: retuned %d\n", ret);
++                goto out;
++        }
++
++        ret = glfs_set_logging (fs, argv[6], 7);
++        if (ret != 0) {
++                fprintf (stderr, "glfs_set_logging: returned %d\n", ret);
++                goto out;
++        }
++
++        ret = glfs_init (fs);
++        if (ret != 0) {
++                fprintf (stderr, "glfs_init: returned %d\n", ret);
++                goto out;
++        }
++
++        fd = glfs_open (fs, argv[3], O_RDWR);
++        if (fd == NULL) {
++                fprintf (stderr, "glfs_open: returned NULL\n");
++                goto out;
++        }
++
++        off = atoi (argv[4]);
++        len = atoi (argv[5]);
++
++        ret = glfs_discard (fd, off, len);
++        if (ret <= 0) {
++                fprintf (stderr, "glfs_discard: returned %d\n", ret);
++                goto out;
++        }
++
++        ret = 0;
++
++out:
++        if (fd)
++                glfs_close (fd);
++        glfs_fini (fs);
++        return ret;
++}
+diff --git a/tests/bugs/shard/bug-shard-discard.t b/tests/bugs/shard/bug-shard-discard.t
+new file mode 100644
+index 0000000..4c4e941
+--- /dev/null
++++ b/tests/bugs/shard/bug-shard-discard.t
+@@ -0,0 +1,61 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0..3}
++TEST $CLI volume set $V0 features.shard on
++TEST $CLI volume start $V0
++
++TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0
++
++# Create a file.
++TEST touch $M0/foo
++TEST dd if=/dev/urandom of=$M0/foo bs=1M count=10
++
++# This should ensure /.shard is created on the bricks.
++TEST stat $B0/${V0}0/.shard
++TEST stat $B0/${V0}1/.shard
++TEST stat $B0/${V0}2/.shard
++TEST stat $B0/${V0}3/.shard
++
++#Note the size of the file, it should be 10M
++EXPECT '10485760' stat -c %s $M0/foo
++
++gfid_foo=$(get_gfid_string $M0/foo)
++
++TEST gcc -Wall -O2 -I api/src -o $(dirname $0)/bug-shard-discard $(dirname $0)/bug-shard-discard.c -lgfapi
++#Call discard on the file at off=7M and len=3M
++TEST $(dirname $0)/bug-shard-discard $H0 $V0 /foo 7340032 3145728 `gluster --print-logdir`/glfs-$V0.log
++
++#Ensure that discard doesn't change the original size of the file.
++EXPECT '10485760' stat -c %s $M0/foo
++
++# Ensure that the last shard is all zero'd out
++EXPECT "1" file_all_zeroes `find $B0 -name $gfid_foo.2`
++EXPECT_NOT "1" file_all_zeroes `find $B0 -name $gfid_foo.1`
++
++# Now unlink the file. And ensure that all shards associated with the file are cleaned up
++TEST unlink $M0/foo
++TEST ! stat $B0/${V0}0/.shard/$gfid_foo.1
++TEST ! stat $B0/${V0}1/.shard/$gfid_foo.1
++TEST ! stat $B0/${V0}2/.shard/$gfid_foo.1
++TEST ! stat $B0/${V0}3/.shard/$gfid_foo.1
++TEST ! stat $B0/${V0}0/.shard/$gfid_foo.2
++TEST ! stat $B0/${V0}1/.shard/$gfid_foo.2
++TEST ! stat $B0/${V0}2/.shard/$gfid_foo.2
++TEST ! stat $B0/${V0}3/.shard/$gfid_foo.2
++TEST ! stat $M0/foo
++
++#clean up everything
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
++TEST $CLI volume stop $V0
++TEST $CLI volume delete $V0
++
++TEST rm -f $(dirname $0)/bug-shard-discard
++
++cleanup
+diff --git a/tests/bugs/shard/bug-shard-zerofill.c b/tests/bugs/shard/bug-shard-zerofill.c
+index 728e492..f88c2e2 100644
+--- a/tests/bugs/shard/bug-shard-zerofill.c
++++ b/tests/bugs/shard/bug-shard-zerofill.c
+@@ -9,8 +9,8 @@ main (int argc, char *argv[])
+         glfs_fd_t *fd = NULL;
+         int        ret = 1;
+ 
+-        if (argc != 4) {
+-                fprintf (stderr, "Syntax: %s <host> <volname> <file-path> \n", argv[0]);
++        if (argc != 5) {
++                fprintf (stderr, "Syntax: %s <host> <volname> <file-path> <log-file>\n", argv[0]);
+                 return 1;
+         }
+ 
+@@ -25,7 +25,7 @@ main (int argc, char *argv[])
+                 fprintf (stderr, "glfs_set_volfile_server: retuned %d\n", ret);
+                 goto out;
+         }
+-        ret = glfs_set_logging (fs, "/var/log/glusterfs/glfs-dis.log", 7);
++        ret = glfs_set_logging (fs, argv[4], 7);
+         if (ret != 0) {
+                 fprintf (stderr, "glfs_set_logging: returned %d\n", ret);
+                 goto out;
+diff --git a/tests/bugs/shard/bug-shard-zerofill.t b/tests/bugs/shard/bug-shard-zerofill.t
+index c321149..ad508c8 100644
+--- a/tests/bugs/shard/bug-shard-zerofill.t
++++ b/tests/bugs/shard/bug-shard-zerofill.t
+@@ -3,10 +3,6 @@
+ . $(dirname $0)/../../include.rc
+ . $(dirname $0)/../../volume.rc
+ 
+-function file_all_zeroes {
+-        < $1 tr -d '\0' | read -n 1 || echo 1
+-}
+-
+ cleanup
+ 
+ TEST glusterd
+@@ -23,7 +19,7 @@ TEST touch $M0/foo
+ gfid_foo=$(get_gfid_string $M0/foo)
+ 
+ TEST gcc -Wall -O2 -I api/src -o $(dirname $0)/bug-shard-zerofill $(dirname $0)/bug-shard-zerofill.c -lgfapi
+-TEST $(dirname $0)/bug-shard-zerofill $H0 $V0 /foo
++TEST $(dirname $0)/bug-shard-zerofill $H0 $V0 /foo `gluster --print-logdir`/glfs-$V0.log
+ 
+ # This should ensure /.shard is created on the bricks.
+ TEST stat $B0/${V0}0/.shard
+@@ -40,7 +36,7 @@ TEST `echo "abc" >> $M0/foo`
+ 
+ EXPECT_NOT "1" file_all_zeroes $M0/foo
+ 
+-TEST umount $M0
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+ TEST $CLI volume stop $V0
+ TEST $CLI volume delete $V0
+ 
+diff --git a/tests/bugs/shard/shard-fallocate.c b/tests/bugs/shard/shard-fallocate.c
+index fded623..5365c74 100644
+--- a/tests/bugs/shard/shard-fallocate.c
++++ b/tests/bugs/shard/shard-fallocate.c
+@@ -45,12 +45,11 @@ main (int argc, char *argv[])
+         int        opcode = -1;
+         off_t      offset = 0;
+         size_t     len = 0;
+-        char       logpath[PATH_MAX] = {0,};
+         glfs_t    *fs = NULL;
+         glfs_fd_t *fd = NULL;
+ 
+-        if (argc != 7) {
+-                fprintf (stderr, "Syntax: %s <host> <volname> <opcode> <offset> <len> <file-path>\n", argv[0]);
++        if (argc != 8) {
++                fprintf (stderr, "Syntax: %s <host> <volname> <opcode> <offset> <len> <file-path> <log-file>\n", argv[0]);
+                 return 1;
+         }
+ 
+@@ -60,16 +59,13 @@ main (int argc, char *argv[])
+                 return 1;
+         }
+ 
+-        snprintf (logpath, sizeof (logpath), "/var/log/glusterfs/glfs-%s.log",
+-                  argv[2]);
+-
+         ret = glfs_set_volfile_server (fs, "tcp", argv[1], 24007);
+         if (ret != 0) {
+                 fprintf (stderr, "glfs_set_volfile_server: retuned %d\n", ret);
+                 goto out;
+         }
+ 
+-        ret = glfs_set_logging (fs, logpath, 7);
++        ret = glfs_set_logging (fs, argv[7], 7);
+         if (ret != 0) {
+                 fprintf (stderr, "glfs_set_logging: returned %d\n", ret);
+                 goto out;
+diff --git a/tests/bugs/shard/zero-flag.t b/tests/bugs/shard/zero-flag.t
+index dc88ae1..fabf830 100644
+--- a/tests/bugs/shard/zero-flag.t
++++ b/tests/bugs/shard/zero-flag.t
+@@ -4,10 +4,6 @@
+ . $(dirname $0)/../../volume.rc
+ . $(dirname $0)/../../fallocate.rc
+ 
+-function file_all_zeroes {
+-        < $1 tr -d '\0' | read -n 1 || echo 1
+-}
+-
+ cleanup
+ 
+ require_fallocate -l 1m $M0/file
+@@ -31,7 +27,7 @@ TEST touch $M0/file1
+ 
+ gfid_file1=$(get_gfid_string $M0/file1)
+ 
+-TEST $(dirname $0)/zero-flag $H0 $V0 "0" "0" "6291456" /file1
++TEST $(dirname $0)/zero-flag $H0 $V0 "0" "0" "6291456" /file1 `gluster --print-logdir`/glfs-$V0.log
+ 
+ EXPECT '6291456' stat -c %s $M0/file1
+ 
+@@ -51,7 +47,7 @@ TEST truncate -s 6M $M0/file2
+ TEST dd if=$M0/tmp of=$M0/file2 bs=1 seek=3145728 count=26 conv=notrunc
+ md5sum_file2=$(md5sum $M0/file2 | awk '{print $1}')
+ 
+-TEST $(dirname $0)/zero-flag $H0 $V0 "0" "3145728" "26" /file2
++TEST $(dirname $0)/zero-flag $H0 $V0 "0" "3145728" "26" /file2 `gluster --print-logdir`/glfs-$V0.log
+ 
+ EXPECT '6291456' stat -c %s $M0/file2
+ EXPECT "$md5sum_file2" echo `md5sum $M0/file2 | awk '{print $1}'`
+@@ -69,10 +65,10 @@ TEST   stat $B0/$V0*/.shard/$gfid_file3.2
+ md5sum_file3=$(md5sum $M0/file3 | awk '{print $1}')
+ EXPECT "1048602" echo `find $B0 -name $gfid_file3.2 | xargs stat -c %s`
+ 
+-TEST $(dirname $0)/zero-flag $H0 $V0 "0" "5242880" "1048576" /file3
++TEST $(dirname $0)/zero-flag $H0 $V0 "0" "5242880" "1048576" /file3 `gluster --print-logdir`/glfs-$V0.log
+ EXPECT "$md5sum_file3" echo `md5sum $M0/file3 | awk '{print $1}'`
+ 
+-TEST umount $M0
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+ TEST $CLI volume stop $V0
+ TEST $CLI volume delete $V0
+ rm -f $(dirname $0)/zero-flag
+diff --git a/tests/volume.rc b/tests/volume.rc
+index 13fed01..19848bc 100644
+--- a/tests/volume.rc
++++ b/tests/volume.rc
+@@ -652,3 +652,7 @@ function get_gfid_string {
+         getfattr -n glusterfs.gfid.string $1 2>/dev/null \
+                     | grep glusterfs.gfid.string | cut -d '"' -f 2
+ }
++
++function file_all_zeroes {
++        < $1 tr -d '\0' | read -n 1 || echo 1
++}
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index c7cced6..c7a57e0 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -502,6 +502,10 @@ shard_common_inode_write_failure_unwind (glusterfs_fop_t fop,
+                 SHARD_STACK_UNWIND (zerofill, frame, op_ret, op_errno,
+                                     NULL, NULL, NULL);
+                 break;
++        case GF_FOP_DISCARD:
++                SHARD_STACK_UNWIND (discard, frame, op_ret, op_errno,
++                                    NULL, NULL, NULL);
++                break;
+         default:
+                 gf_msg (THIS->name, GF_LOG_WARNING, 0, SHARD_MSG_INVALID_FOP,
+                         "Invalid fop id = %d", fop);
+@@ -531,6 +535,10 @@ shard_common_inode_write_success_unwind (glusterfs_fop_t fop,
+                 SHARD_STACK_UNWIND (zerofill, frame, op_ret, 0, &local->prebuf,
+                                     &local->postbuf, local->xattr_rsp);
+                 break;
++        case GF_FOP_DISCARD:
++                SHARD_STACK_UNWIND (discard, frame, op_ret, 0, &local->prebuf,
++                                    &local->postbuf, local->xattr_rsp);
++                break;
+         default:
+                 gf_msg (THIS->name, GF_LOG_WARNING, 0, SHARD_MSG_INVALID_FOP,
+                         "Invalid fop id = %d", fop);
+@@ -3556,6 +3564,12 @@ shard_common_inode_write_wind (call_frame_t *frame, xlator_t *this,
+                                    FIRST_CHILD(this)->fops->zerofill, fd,
+                                    shard_offset, size, local->xattr_req);
+                 break;
++        case GF_FOP_DISCARD:
++                STACK_WIND_COOKIE (frame, shard_common_inode_write_do_cbk, fd,
++                                   FIRST_CHILD(this),
++                                   FIRST_CHILD(this)->fops->discard, fd,
++                                   shard_offset, size, local->xattr_req);
++                break;
+         default:
+                 gf_msg (this->name, GF_LOG_WARNING, 0, SHARD_MSG_INVALID_FOP,
+                         "Invalid fop id = %d", local->fop);
+@@ -4502,6 +4516,11 @@ shard_common_inode_write_begin (call_frame_t *frame, xlator_t *this,
+                                          FIRST_CHILD(this)->fops->zerofill,
+                                          fd, offset, len, xdata);
+                         break;
++                case GF_FOP_DISCARD:
++                        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
++                                         FIRST_CHILD(this)->fops->discard,
++                                         fd, offset, len, xdata);
++                        break;
+                 default:
+                 gf_msg (this->name, GF_LOG_WARNING, 0, SHARD_MSG_INVALID_FOP,
+                         "Invalid fop id = %d", fop);
+@@ -4614,12 +4633,10 @@ shard_zerofill (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+ 
+ int
+ shard_discard (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+-              size_t len, dict_t *xdata)
++               size_t len, dict_t *xdata)
+ {
+-        /* TBD */
+-        gf_msg (this->name, GF_LOG_INFO, ENOTSUP, SHARD_MSG_FOP_NOT_SUPPORTED,
+-                "discard called on %s.", uuid_utoa (fd->inode->gfid));
+-        SHARD_STACK_UNWIND (discard, frame, -1, ENOTSUP, NULL, NULL, NULL);
++        shard_common_inode_write_begin (frame, this, GF_FOP_DISCARD, fd, NULL,
++                                        0, offset, 0, len, NULL, xdata);
+         return 0;
+ }
+ 
+-- 
+1.7.1
+

@@ -1,0 +1,101 @@
+From 068be8915dfec2c3062be3576bb1818ed4c2c17a Mon Sep 17 00:00:00 2001
+From: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Date: Mon, 4 Apr 2016 16:15:18 +0530
+Subject: [PATCH 123/139] rpc: assign port only if it is unreserved
+
+Current order:
+    assign port;
+    check for port;
+    if reserved {
+        port--;
+        continue to i;
+    }
+    bind();
+
+basically, we are assigning port first then checking if it is reserved
+
+Fix:
+    get unreserved port;
+    assign port;
+    bind();
+
+from now, we get unreserved port first and then assign it
+
+Backport of:
+> Backport of:
+>> Change-Id: I004580c5215e7c9cae3594af6405b20fcd9fa4ad
+>> BUG: 1323659
+>> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+>> Reviewed-on: http://review.gluster.org/13900
+>> Tested-by: Prasanna Kumar Kalever <pkalever@redhat.com>
+>> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+>> Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+>> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+>> Reviewed-by: Raghavendra Talur <rtalur@redhat.com>
+>> Smoke: Gluster Build System <jenkins@build.gluster.com>
+>> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+>> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+
+> Change-Id: I772c1323606f1853542e22d8ab4d80934871efcb
+> BUG: 1332838
+> Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+> Reviewed-on: http://review.gluster.org/14204
+> Tested-by: Prasanna Kumar Kalever <pkalever@redhat.com>
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+
+Change-Id: I802fb5b210aae3e665aa66cac175906430db32cc
+BUG: 1322306
+Signed-off-by: Prasanna Kumar Kalever <prasanna.kalever@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73675
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ rpc/rpc-transport/rdma/src/name.c   |    4 +++-
+ rpc/rpc-transport/socket/src/name.c |    4 +++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/rpc/rpc-transport/rdma/src/name.c b/rpc/rpc-transport/rdma/src/name.c
+index 2f69975..d4502e7 100644
+--- a/rpc/rpc-transport/rdma/src/name.c
++++ b/rpc/rpc-transport/rdma/src/name.c
+@@ -61,12 +61,14 @@ af_inet_bind_to_port_lt_ceiling (struct rdma_cm_id *cm_id,
+         ret = gf_process_reserved_ports (ports, ceiling);
+ 
+         while (port) {
+-                _assign_port (sockaddr, port);
+                 /* ignore the reserved ports */
+                 if (ports[port] == _gf_true) {
+                         port--;
+                         continue;
+                 }
++
++                _assign_port (sockaddr, port);
++
+                 ret = rdma_bind_addr (cm_id, sockaddr);
+ 
+                 if (ret == 0)
+diff --git a/rpc/rpc-transport/socket/src/name.c b/rpc/rpc-transport/socket/src/name.c
+index 642e99c..aa43006 100644
+--- a/rpc/rpc-transport/socket/src/name.c
++++ b/rpc/rpc-transport/socket/src/name.c
+@@ -50,12 +50,14 @@ af_inet_bind_to_port_lt_ceiling (int fd, struct sockaddr *sockaddr,
+ 
+         while (port)
+         {
+-                _assign_port (sockaddr, port);
+                 /* ignore the reserved ports */
+                 if (ports[port] == _gf_true) {
+                         port--;
+                         continue;
+                 }
++
++                _assign_port (sockaddr, port);
++
+                 ret = bind (fd, sockaddr, sockaddr_len);
+ 
+                 if (ret == 0)
+-- 
+1.7.1
+

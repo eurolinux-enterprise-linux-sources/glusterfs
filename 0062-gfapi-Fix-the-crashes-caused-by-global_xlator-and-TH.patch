@@ -1,0 +1,359 @@
+From 6b5789a9c9fba12b9ec06cbdde3c6dbfb3c1aaae Mon Sep 17 00:00:00 2001
+From: Poornima G <pgurusid@redhat.com>
+Date: Sat, 19 Mar 2016 04:38:47 -0400
+Subject: [PATCH 62/64] gfapi: Fix the crashes caused by global_xlator and THIS
+
+Issue: http://thread.gmane.org/gmane.comp.file-systems.gluster.devel/10922
+
+The right fix for this is elaborate and intrusive, until it is in place,
+this patch provides a temperory fix. This fix is necessary, as without this
+libgfapi applications like qemu, samba, NFS ganesha are prone to crashes.
+This patch will be reverted completely, once the actual fix gets accepted.
+
+Credits: Rajesh Joseph, Raghavendra Talur, Anoop CS
+
+Reviewed on: http://review.gluster.org/#/c/13784/
+BUG: 1317940
+Change-Id: I5931ca4731558c60909ace05c7a2756273926886
+Signed-off-by: Poornima G <pgurusid@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/70407
+Reviewed-by: Raghavendra Talur <rtalur@redhat.com>
+Reviewed-by: Anoop Chirayath Manjiyil Sajan <anoopcs@redhat.com>
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ api/src/glfs.c                                |   60 ++++++++++--
+ libglusterfs/src/globals.c                    |    7 +-
+ libglusterfs/src/logging.c                    |    4 +-
+ libglusterfs/src/logging.h                    |    2 +-
+ libglusterfs/src/unittest/log_mock.c          |    2 +-
+ tests/bugs/libgfapi/bug-1319374-THIS-crash.sh |   27 +++++
+ tests/bugs/libgfapi/bug-1319374.c             |  128 +++++++++++++++++++++++++
+ 7 files changed, 218 insertions(+), 12 deletions(-)
+ create mode 100755 tests/bugs/libgfapi/bug-1319374-THIS-crash.sh
+ create mode 100644 tests/bugs/libgfapi/bug-1319374.c
+
+diff --git a/api/src/glfs.c b/api/src/glfs.c
+index 8e2d2c3..1fc1a30 100644
+--- a/api/src/glfs.c
++++ b/api/src/glfs.c
+@@ -626,6 +626,49 @@ err:
+         return NULL;
+ }
+ 
++extern xlator_t global_xlator;
++extern glusterfs_ctx_t *global_ctx;
++extern pthread_mutex_t global_ctx_mutex;
++
++static int
++glfs_init_global_ctx ()
++{
++        int              ret = 0;
++        glusterfs_ctx_t *ctx = NULL;
++
++        pthread_mutex_lock (&global_ctx_mutex);
++        {
++                if (global_xlator.ctx)
++                        goto unlock;
++
++                ctx = glusterfs_ctx_new ();
++                if (!ctx) {
++                        ret = -1;
++                        goto unlock;
++                }
++
++                gf_log_globals_init (ctx, GF_LOG_NONE);
++
++                global_ctx = ctx;
++                global_xlator.ctx = global_ctx;
++
++                ret = glusterfs_ctx_defaults_init (ctx);
++                if (ret) {
++                        global_ctx = NULL;
++                        global_xlator.ctx = NULL;
++                        goto unlock;
++                }
++        }
++unlock:
++        pthread_mutex_unlock (&global_ctx_mutex);
++
++        if (ret)
++                FREE (ctx);
++
++        return ret;
++}
++
++
+ struct glfs *
+ pub_glfs_new (const char *volname)
+ {
+@@ -654,11 +697,9 @@ pub_glfs_new (const char *volname)
+                 goto fini;
+ 
+         old_THIS = THIS;
+-        /* THIS is set to NULL so that we do not modify the caller xlators'
+-         * ctx, instead we set the global_xlator->ctx
+-         */
+-        THIS = NULL;
+-        THIS->ctx = ctx;
++        ret = glfs_init_global_ctx ();
++        if (ret)
++                goto fini;
+ 
+         /* then ctx_defaults_init, for xlator_mem_acct_init(THIS) */
+ 
+@@ -770,12 +811,16 @@ GFAPI_SYMVER_PUBLIC_DEFAULT(glfs_set_volfile, 3.4.0);
+ int
+ pub_glfs_set_logging (struct glfs *fs, const char *logfile, int loglevel)
+ {
+-        int  ret = -1;
+-        char *tmplog = NULL;
++        int              ret     = -1;
++        char            *tmplog  = NULL;
++        glusterfs_ctx_t *old_ctx = NULL;
+ 
+         DECLARE_OLD_THIS;
+         __GLFS_ENTRY_VALIDATE_FS (fs, invalid_fs);
+ 
++        old_ctx = THIS->ctx;
++        THIS->ctx = fs->ctx;
++
+         if (!logfile) {
+                 ret = gf_set_log_file_path (&fs->ctx->cmd_args);
+                 if (ret)
+@@ -798,6 +843,7 @@ pub_glfs_set_logging (struct glfs *fs, const char *logfile, int loglevel)
+                 goto out;
+ 
+ out:
++        THIS->ctx = old_ctx;
+         __GLFS_EXIT_FS;
+ 
+ invalid_fs:
+diff --git a/libglusterfs/src/globals.c b/libglusterfs/src/globals.c
+index 8943637..1b25e43 100644
+--- a/libglusterfs/src/globals.c
++++ b/libglusterfs/src/globals.c
+@@ -76,6 +76,11 @@ const char *gf_fop_list[GF_FOP_MAXVALUE] = {
+ };
+ /* THIS */
+ 
++/* This global ctx is a bad hack to prevent some of the libgfapi crashes.
++ * This should be removed once the patch on resource pool is accepted
++ */
++glusterfs_ctx_t *global_ctx = NULL;
++pthread_mutex_t global_ctx_mutex = PTHREAD_MUTEX_INITIALIZER;
+ xlator_t global_xlator;
+ static pthread_key_t this_xlator_key;
+ static pthread_key_t synctask_key;
+@@ -387,7 +392,7 @@ glusterfs_globals_init (glusterfs_ctx_t *ctx)
+ {
+         int ret = 0;
+ 
+-        gf_log_globals_init (ctx);
++        gf_log_globals_init (ctx, GF_LOG_INFO);
+ 
+         ret =  pthread_once (&globals_inited, gf_globals_init_once);
+ 
+diff --git a/libglusterfs/src/logging.c b/libglusterfs/src/logging.c
+index 04b44b8..2d0a4ea 100644
+--- a/libglusterfs/src/logging.c
++++ b/libglusterfs/src/logging.c
+@@ -645,13 +645,13 @@ gf_syslog (int facility_priority, char *format, ...)
+ }
+ 
+ void
+-gf_log_globals_init (void *data)
++gf_log_globals_init (void *data, gf_loglevel_t level)
+ {
+         glusterfs_ctx_t *ctx = data;
+ 
+         pthread_mutex_init (&ctx->log.logfile_mutex, NULL);
+ 
+-        ctx->log.loglevel         = GF_LOG_INFO;
++        ctx->log.loglevel         = level;
+         ctx->log.gf_log_syslog    = 1;
+         ctx->log.sys_log_level    = GF_LOG_CRITICAL;
+         ctx->log.logger           = gf_logger_glusterlog;
+diff --git a/libglusterfs/src/logging.h b/libglusterfs/src/logging.h
+index 4ad52d8..a08e8c7 100644
+--- a/libglusterfs/src/logging.h
++++ b/libglusterfs/src/logging.h
+@@ -139,7 +139,7 @@ typedef struct log_buf_ {
+         struct list_head msg_list;
+ } log_buf_t;
+ 
+-void gf_log_globals_init (void *ctx);
++void gf_log_globals_init (void *ctx, gf_loglevel_t level);
+ int gf_log_init (void *data, const char *filename, const char *ident);
+ 
+ void gf_log_logrotate (int signum);
+diff --git a/tests/bugs/libgfapi/bug-1319374-THIS-crash.sh b/tests/bugs/libgfapi/bug-1319374-THIS-crash.sh
+new file mode 100755
+index 0000000..9aea739
+--- /dev/null
++++ b/tests/bugs/libgfapi/bug-1319374-THIS-crash.sh
+@@ -0,0 +1,27 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup;
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume info;
++
++TEST $CLI volume create $V0 $H0:$B0/brick1 $H0:$B0/brick2;
++EXPECT 'Created' volinfo_field $V0 'Status';
++
++TEST $CLI volume start $V0;
++EXPECT 'Started' volinfo_field $V0 'Status';
++
++TEST $CLI volume set $V0 diagnostics.client-log-flush-timeout 30
++
++logdir=`gluster --print-logdir`
++
++build_tester $(dirname $0)/bug-1319374.c -lgfapi
++TEST $(dirname $0)/bug-1319374 $V0 $logdir/bug-1319374.log
++
++cleanup_tester $(dirname $0)/bug-1319374
++
++cleanup;
+diff --git a/tests/bugs/libgfapi/bug-1319374.c b/tests/bugs/libgfapi/bug-1319374.c
+new file mode 100644
+index 0000000..878d897
+--- /dev/null
++++ b/tests/bugs/libgfapi/bug-1319374.c
+@@ -0,0 +1,128 @@
++#include <glusterfs/api/glfs.h>
++#include <glusterfs/api/glfs-handles.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#define NO_INIT 1
++
++glfs_t *
++setup_new_client(char *volname, char *log_file, int flag)
++{
++        int ret = 0;
++        glfs_t *fs = NULL;
++
++        fs = glfs_new (volname);
++        if (!fs) {
++                fprintf (stderr, "\nglfs_new: returned NULL (%s)\n",
++                                 strerror (errno));
++                goto error;
++        }
++
++        ret = glfs_set_volfile_server (fs, "tcp", "localhost", 24007);
++        if (ret < 0) {
++                fprintf (stderr, "\nglfs_set_volfile_server failed ret:%d (%s)\n",
++                                 ret, strerror (errno));
++                goto error;
++        }
++
++        ret = glfs_set_logging (fs, log_file, 7);
++        if (ret < 0) {
++                fprintf (stderr, "\nglfs_set_logging failed with ret: %d (%s)\n",
++                                 ret, strerror (errno));
++                goto error;
++        }
++
++        if (flag == NO_INIT)
++                goto out;
++
++        ret = glfs_init (fs);
++        if (ret < 0) {
++                fprintf (stderr, "\nglfs_init failed with ret: %d (%s)\n",
++                                  ret, strerror (errno));
++                goto error;
++        }
++
++out:
++        return fs;
++error:
++        return NULL;
++}
++
++int
++main (int argc, char *argv[])
++{
++        int        ret         = 0;
++        glfs_t    *fs1         = NULL;
++        glfs_t    *fs2         = NULL;
++        glfs_t    *fs3         = NULL;
++        char      *volname     = NULL;
++        char      *log_file    = NULL;
++
++        if (argc != 3) {
++                fprintf (stderr,
++                                "Expect following args %s <Vol> <log file location>\n"
++                                , argv[0]);
++                return -1;
++        }
++
++        volname = argv[1];
++        log_file = argv[2];
++
++        fs1 = setup_new_client (volname, log_file, NO_INIT);
++        if (!fs1) {
++                fprintf (stderr, "\nsetup_new_client: returned NULL (%s)\n",
++                                 strerror (errno));
++                goto error;
++        }
++
++        fs2 = setup_new_client (volname, log_file, 0);
++        if (!fs2) {
++                fprintf (stderr, "\nsetup_new_client: returned NULL (%s)\n",
++                                 strerror (errno));
++                goto error;
++        }
++
++        fs3 = setup_new_client (volname, log_file, 0);
++        if (!fs3) {
++                fprintf (stderr, "\nsetup_new_client: returned NULL (%s)\n",
++                                 strerror (errno));
++                goto error;
++        }
++
++        ret = glfs_fini (fs3);
++        if (ret < 0) {
++                fprintf (stderr, "glfs_fini failed with ret: %d (%s)\n",
++                         ret, strerror (errno));
++                goto error;
++        }
++
++        /* The crash is seen in gf_log_flush_timeout_cbk(), and this gets
++         * triggered when 30s timer expires, hence the sleep of 31s
++         */
++        sleep (31);
++        ret = glfs_fini (fs2);
++        if (ret < 0) {
++                fprintf (stderr, "glfs_fini failed with ret: %d (%s)\n",
++                         ret, strerror (errno));
++                goto error;
++        }
++
++        ret = glfs_init (fs1);
++        if (ret < 0) {
++                fprintf (stderr, "\nglfs_init failed with ret: %d (%s)\n",
++                                  ret, strerror (errno));
++                goto error;
++        }
++
++        ret = glfs_fini (fs1);
++        if (ret < 0) {
++                fprintf (stderr, "glfs_fini failed with ret: %d (%s)\n",
++                         ret, strerror (errno));
++                goto error;
++        }
++
++        return 0;
++error:
++        return -1;
++}
+-- 
+1.7.1
+

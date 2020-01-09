@@ -1,0 +1,523 @@
+From b51cbea6bca43a3f390836eca40a3a8ff6664af4 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Mon, 18 Apr 2016 21:34:32 +0530
+Subject: [PATCH 133/139] glusterd-ganesha : copy ganesha export configuration files during reboot
+
+glusterd creates export conf file for ganesha using hook script during
+volume start and ganesha_manage_export() for volume set command. But this
+routine is not added in glusterd restart scenario.
+Consider the following case, in a three node cluster a volume got exported
+via ganesha while one of the node is offline(glusterd is not running).
+When the node comes back online, that volume is not exported on that node
+due to the above mentioned issue.
+Also I have removed unused variables from glusterd_handle_ganesha_op()
+For this patch to work pcs cluster should running on that be node.
+
+Upstream reference
+>Change-Id: I5b2312c2f3cef962b1f795b9f16c8f0a27f08ee5
+>BUG: 1330097
+>Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>i
+>Reviewed-on: http://review.gluster.org/14063
+>Smoke: Gluster Build System <jenkins@build.gluster.com>
+>NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+>CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: soumya k <skoduri@redhat.com>
+>Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+>BUG: 1333661
+>Reviewed-on: http://review.gluster.org/14233
+Change-Id: Idaab88b0688a8c69b13883bafacb96c709da42fb
+BUG: 1327195
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73800
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ extras/ganesha/scripts/Makefile.am              |    4 +-
+ extras/ganesha/scripts/copy-export-ganesha.sh   |   97 ++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-ganesha.c    |  184 +++++++++++++++--------
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c      |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c      |   32 ++++-
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c |    2 +-
+ xlators/mgmt/glusterd/src/glusterd.h            |    3 +-
+ 7 files changed, 254 insertions(+), 70 deletions(-)
+ create mode 100755 extras/ganesha/scripts/copy-export-ganesha.sh
+
+diff --git a/extras/ganesha/scripts/Makefile.am b/extras/ganesha/scripts/Makefile.am
+index 224ed26..c326fc2 100644
+--- a/extras/ganesha/scripts/Makefile.am
++++ b/extras/ganesha/scripts/Makefile.am
+@@ -1,6 +1,6 @@
+ EXTRA_DIST= ganesha-ha.sh dbus-send.sh create-export-ganesha.sh \
+-            generate-epoch.py
++            generate-epoch.py copy-export-ganesha.sh
+ 
+ scriptsdir = $(libexecdir)/ganesha
+ scripts_SCRIPTS = create-export-ganesha.sh dbus-send.sh ganesha-ha.sh \
+-                  generate-epoch.py
++                  generate-epoch.py copy-export-ganesha.sh
+diff --git a/extras/ganesha/scripts/copy-export-ganesha.sh b/extras/ganesha/scripts/copy-export-ganesha.sh
+new file mode 100755
+index 0000000..e8cdc98
+--- /dev/null
++++ b/extras/ganesha/scripts/copy-export-ganesha.sh
+@@ -0,0 +1,97 @@
++#/bin/bash
++
++#This script is called by glusterd when in case of
++#reboot.An export file specific to a volume
++#is copied in GANESHA_DIR/exports from online node.
++
++# Try loading the config from any of the distro
++# specific configuration locations
++if [ -f /etc/sysconfig/ganesha ]
++        then
++        . /etc/sysconfig/ganesha
++fi
++if [ -f /etc/conf.d/ganesha ]
++        then
++        . /etc/conf.d/ganesha
++fi
++if [ -f /etc/default/ganesha ]
++        then
++        . /etc/default/ganesha
++fi
++
++GANESHA_DIR=${1%/}
++VOL=$2
++CONF=
++host=$(hostname -s)
++SECRET_PEM="/var/lib/glusterd/nfs/secret.pem"
++
++function check_cmd_status()
++{
++        if [ "$1" != "0" ]
++                 then
++                 rm -rf $GANESHA_DIR/exports/export.$VOL.conf
++                 exit 1
++        fi
++}
++
++
++if [ ! -d "$GANESHA_DIR/exports" ];
++        then
++        mkdir $GANESHA_DIR/exports
++        check_cmd_status `echo $?`
++fi
++
++function find_rhel7_conf
++{
++ while [[ $# > 0 ]]
++        do
++                key="$1"
++                case $key in
++                        -f)
++                         CONFFILE="$2"
++                         ;;
++                         *)
++                         ;;
++                 esac
++                 shift
++         done
++}
++
++if [ -z $CONFFILE ]; then
++        find_rhel7_conf $OPTIONS
++
++fi
++CONF=${CONFFILE:-/etc/ganesha/ganesha.conf}
++
++#remove the old export entry from NFS-Ganesha
++#if already exported
++dbus-send --type=method_call --print-reply --system \
++          --dest=org.ganesha.nfsd /org/ganesha/nfsd/ExportMgr \
++          org.ganesha.nfsd.exportmgr.ShowExports \
++    | grep -w -q "/$VOL"
++if [ $? -eq 0 ]; then
++        removed_id=`cat $GANESHA_DIR/exports/export.$VOL.conf |\
++                grep Export_Id | awk -F"[=,;]" '{print$2}' | tr -d '[[:space:]]'`
++
++        dbus-send --print-reply --system --dest=org.ganesha.nfsd \
++        /org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.RemoveExport \
++        uint16:$removed_id 2>&1
++fi
++
++ha_servers=$(pcs status | grep "Online:" | grep -o '\[.*\]' | sed -e 's/\[//' | sed -e 's/\]//')
++IFS=$' '
++for server in ${ha_servers} ; do
++        current_host=`echo $server | cut -d "." -f 1`
++        if [ $host != $current_host ]
++        then
++                scp -oPasswordAuthentication=no -oStrictHostKeyChecking=no -i \
++                ${SECRET_PEM} $server:$GANESHA_DIR/exports/export.$VOL.conf \
++                $GANESHA_DIR/exports/export.$VOL.conf
++                break
++        fi
++done
++
++if ! (cat $CONF | grep  $VOL.conf\"$ )
++then
++echo "%include \"$GANESHA_DIR/exports/export.$VOL.conf\"" >> $CONF
++fi
+diff --git a/xlators/mgmt/glusterd/src/glusterd-ganesha.c b/xlators/mgmt/glusterd/src/glusterd-ganesha.c
+index 8cd2aa6..8c14d63 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-ganesha.c
++++ b/xlators/mgmt/glusterd/src/glusterd-ganesha.c
+@@ -424,23 +424,42 @@ create_export_config (char *volname, char **op_errstr)
+                         CONFDIR, volname, NULL);
+         ret = runner_run(&runner);
+ 
+-        if (ret)
++        if (ret && op_errstr)
+                 gf_asprintf (op_errstr, "Failed to create"
+                             " NFS-Ganesha export config file.");
+ 
+         return ret;
+ }
+ 
++int
++copy_export_config (char *volname, char **op_errstr)
++{
++        runner_t                runner                     = {0,};
++        int                     ret                        = -1;
++
++        GF_ASSERT(volname);
++        runinit (&runner);
++        runner_add_args (&runner, "sh",
++                        GANESHA_PREFIX"/copy-export-ganesha.sh",
++                        CONFDIR, volname, NULL);
++        ret = runner_run(&runner);
++
++        if (ret && op_errstr)
++                gf_asprintf (op_errstr, "Failed to copy"
++                            " NFS-Ganesha export config file.");
++
++        return ret;
++}
+ /* Exports and unexports a particular volume via NFS-Ganesha */
+ int
+-ganesha_manage_export (dict_t *dict, char *value, char **op_errstr)
++ganesha_manage_export (char *volname, char *value, char **op_errstr,
++                       gf_boolean_t reboot)
+ {
+         runner_t                 runner = {0,};
+         int                      ret = -1;
+         char                     str[1024];
+         glusterd_volinfo_t      *volinfo = NULL;
+         dict_t                  *vol_opts = NULL;
+-        char                    *volname = NULL;
+         xlator_t                *this    = NULL;
+         glusterd_conf_t         *priv    = NULL;
+         gf_boolean_t             option  = _gf_false;
+@@ -452,16 +471,10 @@ ganesha_manage_export (dict_t *dict, char *value, char **op_errstr)
+         priv = this->private;
+ 
+         GF_ASSERT (value);
+-        GF_ASSERT (dict);
+         GF_ASSERT (priv);
++        GF_VALIDATE_OR_GOTO (this->name, volname, out);
++
+ 
+-        ret = dict_get_str (dict, "volname", &volname);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, errno,
+-                        GD_MSG_DICT_GET_FAILED,
+-                        "Unable to get volume name");
+-                goto out;
+-        }
+         ret = gf_string2boolean (value, &option);
+         if (ret == -1) {
+                 gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+@@ -469,54 +482,77 @@ ganesha_manage_export (dict_t *dict, char *value, char **op_errstr)
+                 goto out;
+         }
+ 
+-        ret = glusterd_volinfo_find (volname, &volinfo);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+-                        GD_MSG_VOL_NOT_FOUND,
+-                        FMTSTR_CHECK_VOL_EXISTS, volname);
+-                goto out;
+-        }
++        /* *
++         * Incase of reboot, following checks are already made before calling
++         * ganesha_manage_export. So it will be reductant do it again
++         */
++        if (!reboot) {
++                ret = glusterd_volinfo_find (volname, &volinfo);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, EINVAL,
++                                GD_MSG_VOL_NOT_FOUND,
++                                FMTSTR_CHECK_VOL_EXISTS, volname);
++                        goto out;
++                }
+ 
+-        ret = glusterd_check_ganesha_export (volinfo);
+-        if (ret && option) {
+-                gf_asprintf (op_errstr, "ganesha.enable "
+-                             "is already 'on'.");
+-                ret = -1;
+-                goto out;
++                ret = glusterd_check_ganesha_export (volinfo);
++                if (ret && option) {
++                        if (op_errstr)
++                                gf_asprintf (op_errstr, "ganesha.enable "
++                                                     "is already 'on'.");
++                        ret = -1;
++                        goto out;
+ 
+-        }  else if (!option && !ret) {
+-                gf_asprintf (op_errstr, "ganesha.enable "
+-                                    "is already 'off'.");
+-                ret = -1;
+-                goto out;
++                }  else if (!option && !ret) {
++                        if (op_errstr)
++                                gf_asprintf (op_errstr, "ganesha.enable "
++                                                    "is already 'off'.");
++                        ret = -1;
++                        goto out;
++                }
+         }
+ 
+-        /* Check if global option is enabled, proceed only then */
+-        ret = dict_get_str_boolean (priv->opts,
++        ret = 0;
++
++        /* *
++         * Incase of restart, there is chance that global option turned off
++         * with volume set command. Still we may need to clean up the
++         * configuration files.
++         * Otherwise check if global option is enabled, only then proceed
++         * */
++        if (!(reboot && !option)) {
++                ret = dict_get_str_boolean (priv->opts,
+                             GLUSTERD_STORE_KEY_GANESHA_GLOBAL, _gf_false);
+-        if (ret == -1) {
+-                gf_msg_debug (this->name, 0, "Failed to get "
+-                        "global option dict.");
+-                gf_asprintf (op_errstr, "The option "
+-                             "nfs-ganesha should be "
+-                             "enabled before setting ganesha.enable.");
+-                goto out;
+-        }
+-        if (!ret) {
+-                gf_asprintf (op_errstr, "The option "
+-                             "nfs-ganesha should be "
+-                             "enabled before setting ganesha.enable.");
+-                ret = -1;
+-                goto out;
++                if (ret == -1) {
++                        gf_msg_debug (this->name, 0, "Failed to get "
++                                                "global option dict.");
++                        if (op_errstr)
++                                gf_asprintf (op_errstr, "The option "
++                                             "nfs-ganesha should be "
++                                             "enabled before setting "
++                                             "ganesha.enable.");
++                        goto out;
++                }
++                if (!ret) {
++                        if (op_errstr)
++                                gf_asprintf (op_errstr, "The option "
++                                             "nfs-ganesha should be "
++                                             "enabled before setting "
++                                             "ganesha.enable.");
++                        ret = -1;
++                        goto out;
++                }
+         }
+-
+         /* Create the export file only when ganesha.enable "on" is executed */
+          if (option) {
+-                ret  =  create_export_config (volname, op_errstr);
++                if (reboot)
++                       ret  =  copy_export_config (volname, op_errstr);
++                else
++                       ret  =  create_export_config (volname, op_errstr);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+                                 GD_MSG_EXPORT_FILE_CREATE_FAIL,
+-                                "Failed to create"
++                                "Failed to create/copy "
+                                 "export file for NFS-Ganesha\n");
+                         goto out;
+                 }
+@@ -527,21 +563,36 @@ ganesha_manage_export (dict_t *dict, char *value, char **op_errstr)
+                          CONFDIR, value, volname, NULL);
+                 ret = runner_run (&runner);
+                 if (ret) {
+-                        gf_asprintf(op_errstr, "Dynamic export"
+-                                    " addition/deletion failed."
+-                                    " Please see log file for details");
+-                        goto out;
++                        if (op_errstr)
++                                gf_asprintf(op_errstr, "Dynamic export"
++                                            " addition/deletion failed."
++                                            " Please see log file for details");
++                        /* *
++                         * Incase of reboot scenarios, we cannot guarantee
++                         * nfs-ganesha to be running on that node, so that
++                         * dynamic export may fail
++                         */
++                        if (reboot)
++                                ret = 0;
++                        else
++                                goto out;
+                 }
+         }
+ 
+-        vol_opts = volinfo->dict;
+-        /* cache-invalidation should be on when a volume is exported
+-         *  and off when a volume is unexported.                    */
+-        ret = dict_set_dynstr_with_alloc (vol_opts,
++
++        /* *
++         * cache-invalidation should be on when a volume is exported
++         * and off when a volume is unexported. It is not required
++         * for reboot scenarios, already it will be copied.
++         * */
++        if (!reboot) {
++                vol_opts = volinfo->dict;
++                ret = dict_set_dynstr_with_alloc (vol_opts,
+                                          "features.cache-invalidation", value);
+-        if (ret)
+-                gf_asprintf (op_errstr, "Cache-invalidation could not"
+-                             " be set to %s.", value);
++                if (ret && op_errstr)
++                        gf_asprintf (op_errstr, "Cache-invalidation could not"
++                                                " be set to %s.", value);
++        }
+ out:
+         return ret;
+ }
+@@ -728,12 +779,9 @@ glusterd_handle_ganesha_op (dict_t *dict, char **op_errstr,
+                             char *key, char *value)
+ {
+ 
+-        int32_t                 ret          = -1;
++        int32_t                ret           = -1;
+         char                   *volname      = NULL;
+-        xlator_t               *this         = NULL;
+         gf_boolean_t           option        = _gf_false;
+-        static int             export_id     = 1;
+-        glusterd_volinfo_t     *volinfo      = NULL;
+ 
+         GF_ASSERT (dict);
+         GF_ASSERT (op_errstr);
+@@ -742,7 +790,15 @@ glusterd_handle_ganesha_op (dict_t *dict, char **op_errstr,
+ 
+ 
+         if (strcmp (key, "ganesha.enable") == 0) {
+-                ret =  ganesha_manage_export (dict, value, op_errstr);
++                ret = dict_get_str (dict, "volname", &volname);
++                if (ret) {
++                        gf_msg (THIS->name, GF_LOG_ERROR, errno,
++                                GD_MSG_DICT_GET_FAILED,
++                                "Unable to get volume name");
++                        goto out;
++                }
++                ret =  ganesha_manage_export (volname, value, op_errstr,
++                                              _gf_false);
+                 if (ret < 0)
+                         goto out;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 2d40552..a3a598a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -2158,7 +2158,7 @@ glusterd_op_reset_volume (dict_t *dict, char **op_rspstr)
+                 quorum_action = _gf_true;
+         ret = glusterd_check_ganesha_export (volinfo);
+         if (ret) {
+-                ret = ganesha_manage_export (dict, "off", op_rspstr);
++                ret = ganesha_manage_export (volname, "off", op_rspstr, _gf_false);
+                 if (ret) {
+                         gf_msg (THIS->name, GF_LOG_WARNING, 0,
+                                 GD_MSG_NFS_GNS_RESET_FAIL,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 3b4669c..afa5fea 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -4006,6 +4006,9 @@ glusterd_import_friend_volume (dict_t *peer_data, size_t count)
+         glusterd_volinfo_t      *old_volinfo = NULL;
+         glusterd_volinfo_t      *new_volinfo = NULL;
+         glusterd_svc_t          *svc         = NULL;
++        gf_boolean_t            newexportvalue;
++        gf_boolean_t            oldexportvalue;
++        char                    *value     = NULL;
+ 
+         GF_ASSERT (peer_data);
+ 
+@@ -4026,7 +4029,9 @@ glusterd_import_friend_volume (dict_t *peer_data, size_t count)
+ 
+         ret = glusterd_volinfo_find (new_volinfo->volname, &old_volinfo);
+         if (0 == ret) {
+-                (void) gd_check_and_update_rebalance_info (old_volinfo,
++                 oldexportvalue = glusterd_check_ganesha_export (old_volinfo);
++
++                 (void) gd_check_and_update_rebalance_info (old_volinfo,
+                                                            new_volinfo);
+                 (void) glusterd_delete_stale_volume (old_volinfo, new_volinfo);
+         }
+@@ -4040,6 +4045,31 @@ glusterd_import_friend_volume (dict_t *peer_data, size_t count)
+                 }
+         }
+ 
++        ret = glusterd_volinfo_get (new_volinfo, "ganesha.enable", &value);
++        if (ret)
++                goto out;
++        ret = gf_string2boolean (value, &newexportvalue);
++        if (ret)
++                goto out;
++
++        /* *
++         * if new and old export value is off, then there is no point in calling
++         * ganesha_manage_export
++         */
++        if (!((newexportvalue == oldexportvalue) &&
++               newexportvalue == _gf_false)) {
++                ret = ganesha_manage_export (new_volinfo->volname, value,
++                                             NULL, _gf_true);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_NFS_GNS_OP_HANDLE_FAIL,
++                                "Returning from ganesha_manage_export with"
++                                " ret: %d for volume %s ganesha.enable %s",
++                                ret, new_volinfo->volname,
++                                value);
++                        goto out;
++                }
++        }
+         ret = glusterd_store_volinfo (new_volinfo, GLUSTERD_VOLINFO_VER_AC_NONE);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index f5dc30c..3dc0d3f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -1664,7 +1664,7 @@ glusterd_op_stage_stop_volume (dict_t *dict, char **op_errstr)
+         }
+         ret = glusterd_check_ganesha_export (volinfo);
+         if (ret) {
+-                ret = ganesha_manage_export(dict, "off", op_errstr);
++                ret = ganesha_manage_export (volname, "off", op_errstr, _gf_false);
+                 if (ret) {
+                         gf_msg (THIS->name, GF_LOG_WARNING, 0,
+                                 GD_MSG_NFS_GNS_UNEXPRT_VOL_FAIL, "Could not "
+diff --git a/xlators/mgmt/glusterd/src/glusterd.h b/xlators/mgmt/glusterd/src/glusterd.h
+index 01dbd58..e4c3281 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.h
++++ b/xlators/mgmt/glusterd/src/glusterd.h
+@@ -1055,7 +1055,8 @@ int glusterd_check_ganesha_cmd (char *key, char *value,
+                                 char **errstr, dict_t *dict);
+ int glusterd_op_stage_set_ganesha (dict_t *dict, char **op_errstr);
+ int glusterd_op_set_ganesha (dict_t *dict, char **errstr);
+-int ganesha_manage_export (dict_t *dict, char *value, char **op_errstr);
++int ganesha_manage_export (char *volname, char *value, char **op_errstr,
++                           gf_boolean_t reboot);
+ gf_boolean_t glusterd_check_ganesha_export (glusterd_volinfo_t *volinfo);
+ int stop_ganesha (char **op_errstr);
+ int tear_down_cluster (void);
+-- 
+1.7.1
+

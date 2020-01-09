@@ -6,6 +6,13 @@ function volinfo_field()
     $CLI volume info $vol | grep "^$field: " | sed 's/.*: //';
 }
 
+function volume_get_field()
+{
+    local vol=$1
+    local field=$2
+    $CLI volume get $vol $field | tail -1 | awk '{print $2}'
+}
+
 
 function brick_count()
 {
@@ -17,6 +24,14 @@ function brick_count()
 function online_brick_count ()
 {
     pgrep glusterfsd | wc -l
+}
+
+function brick_up_status {
+        local vol=$1
+        local host=$2
+        local brick=$3
+        brick_pid=$(get_brick_pid $vol $host $brick)
+        gluster volume status | grep $brick_pid | awk '{print $4}'
 }
 
 function volume_option()
@@ -539,7 +554,7 @@ function num_graphs
 function get_aux()
 {
 ##Check if a auxiliary mount is there
-df -h 2>&1 | grep "/var/run/gluster/$V0" -
+df -h 2>&1 | sed 's#/build/install##' | grep -e "[[:space:]]/run/gluster/${V0}$" -e "[[:space:]]/var/run/gluster/${V0}$" -
 
 if [ $? -eq 0 ]
 then
@@ -567,6 +582,18 @@ function get_nfs_count {
 
 function get_snapd_count {
         ps auxww | grep glusterfs | grep snapd.pid | grep -v grep | wc -l
+}
+
+function drop_cache() {
+	case $OSTYPE in
+	Linux)
+		echo 3 > /proc/sys/vm/drop_caches
+		;;
+	*)
+		# fail but flush caches
+		( cd $1 && umount $1 2>/dev/null )
+		;;
+	esac
 }
 
 function quota_list_field () {
@@ -612,3 +639,10 @@ function quota_hl_exceeded()
 }
 
 
+function scrub_status()
+{
+        local vol=$1;
+        local field=$2;
+
+        $CLI volume bitrot $vol scrub status | grep "^$field: " | sed 's/.*: //';
+}

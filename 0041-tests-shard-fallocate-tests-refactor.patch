@@ -1,0 +1,375 @@
+From fec4fe478044a7e5a4712fb259caa055c5348531 Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Tue, 9 Feb 2016 16:40:36 +0530
+Subject: [PATCH 41/80] tests, shard: fallocate tests refactor
+
+        Backport of: http://review.gluster.org/13405
+        release-3.7 patch: http://review.gluster.org/13670
+
+Change-Id: I1b2b9aac8039ff5830e457103caad85a2594e792
+BUG: 1302688
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71396
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ tests/bugs/shard/bug-1251824.t         |   10 +--
+ tests/bugs/shard/bug-shard-fallocate.t |   47 -------------
+ tests/bugs/shard/bug-shard-zerofill.c  |    4 +-
+ tests/bugs/shard/bug-shard-zerofill.t  |    3 +-
+ tests/bugs/shard/shard-fallocate.c     |  113 ++++++++++++++++++++++++++++++++
+ tests/bugs/shard/zero-flag.t           |   79 ++++++++++++++++++++++
+ tests/volume.rc                        |    6 ++
+ 7 files changed, 205 insertions(+), 57 deletions(-)
+ delete mode 100644 tests/bugs/shard/bug-shard-fallocate.t
+ create mode 100644 tests/bugs/shard/shard-fallocate.c
+ create mode 100644 tests/bugs/shard/zero-flag.t
+
+diff --git a/tests/bugs/shard/bug-1251824.t b/tests/bugs/shard/bug-1251824.t
+index cdb6c5e..85f0638 100644
+--- a/tests/bugs/shard/bug-1251824.t
++++ b/tests/bugs/shard/bug-1251824.t
+@@ -1,6 +1,7 @@
+ #!/bin/bash
+ 
+ . $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
+ . $(dirname $0)/../../common-utils.rc
+ 
+ cleanup;
+@@ -29,8 +30,7 @@ TEST chown test_user:test_user $M0/bar
+ TEST run_cmd_as_user test_user "dd if=/dev/zero of=$M0/foo bs=1M count=6"
+ 
+ # Ensure owner and group are root on the block-1 shard.
+-gfid_foo=`getfattr -n glusterfs.gfid.string $M0/foo 2>/dev/null \
+-          | grep glusterfs.gfid.string | cut -d '"' -f 2`
++gfid_foo=$(get_gfid_string $M0/foo)
+ 
+ EXPECT "root" echo `find $B0 -name $gfid_foo.1 | xargs stat -c %U`
+ EXPECT "root" echo `find $B0 -name $gfid_foo.1 | xargs stat -c %G`
+@@ -49,8 +49,7 @@ EXPECT "root" echo `find $B0/${V0}3 -name .shard | xargs stat -c %G`
+ TEST dd if=/dev/zero of=$M0/bar bs=1M count=6
+ 
+ # Ensure owner and group are root on the block-1 shard.
+-gfid_bar=`getfattr -n glusterfs.gfid.string $M0/bar 2>/dev/null \
+-          | grep glusterfs.gfid.string | cut -d '"' -f 2`
++gfid_bar=$(get_gfid_string $M0/bar)
+ 
+ EXPECT "root" echo `find $B0 -name $gfid_bar.1 | xargs stat -c %U`
+ EXPECT "root" echo `find $B0 -name $gfid_bar.1 | xargs stat -c %G`
+@@ -58,8 +57,7 @@ EXPECT "root" echo `find $B0 -name $gfid_bar.1 | xargs stat -c %G`
+ # Write 6M of data on baz as root.
+ TEST dd if=/dev/zero of=$M0/baz bs=1M count=6
+ 
+-gfid_baz=`getfattr -n glusterfs.gfid.string $M0/baz 2>/dev/null \
+-          | grep glusterfs.gfid.string | cut -d '"' -f 2`
++gfid_baz=$(get_gfid_string $M0/baz)
+ 
+ # Ensure owner and group are root on the block-1 shard.
+ EXPECT "root" echo `find $B0 -name $gfid_baz.1 | xargs stat -c %U`
+diff --git a/tests/bugs/shard/bug-shard-fallocate.t b/tests/bugs/shard/bug-shard-fallocate.t
+deleted file mode 100644
+index 8d41507..0000000
+--- a/tests/bugs/shard/bug-shard-fallocate.t
++++ /dev/null
+@@ -1,47 +0,0 @@
+-#!/bin/bash
+-
+-. $(dirname $0)/../../include.rc
+-
+-cleanup
+-
+-TEST glusterd
+-TEST pidof glusterd
+-TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0,1,2,3}
+-TEST $CLI volume set $V0 features.shard on
+-TEST $CLI volume start $V0
+-
+-TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0
+-
+-# Create a file.
+-TEST touch $M0/foo
+-
+-gfid_foo=`getfattr -n glusterfs.gfid.string $M0/foo 2>/dev/null \
+-          | grep glusterfs.gfid.string | cut -d '"' -f 2`
+-
+-TEST fallocate -l 17M $M0/foo
+-EXPECT '17825792' stat -c %s $M0/foo
+-
+-# This should ensure /.shard is created on the bricks.
+-TEST stat $B0/${V0}0/.shard
+-TEST stat $B0/${V0}1/.shard
+-TEST stat $B0/${V0}2/.shard
+-TEST stat $B0/${V0}3/.shard
+-
+-EXPECT "4194304" echo `find $B0 -name $gfid_foo.1 | xargs stat -c %s`
+-EXPECT "4194304" echo `find $B0 -name $gfid_foo.2 | xargs stat -c %s`
+-EXPECT "4194304" echo `find $B0 -name $gfid_foo.3 | xargs stat -c %s`
+-EXPECT "1048576" echo `find $B0 -name $gfid_foo.4 | xargs stat -c %s`
+-
+-TEST fallocate -o 102400 -l 17M $M0/foo
+-EXPECT '17928192' stat -c %s $M0/foo
+-
+-EXPECT "4194304" echo `find $B0 -name $gfid_foo.1 | xargs stat -c %s`
+-EXPECT "4194304" echo `find $B0 -name $gfid_foo.2 | xargs stat -c %s`
+-EXPECT "4194304" echo `find $B0 -name $gfid_foo.3 | xargs stat -c %s`
+-EXPECT "1150976" echo `find $B0 -name $gfid_foo.4 | xargs stat -c %s`
+-
+-TEST umount $M0
+-TEST $CLI volume stop $V0
+-TEST $CLI volume delete $V0
+-
+-cleanup
+diff --git a/tests/bugs/shard/bug-shard-zerofill.c b/tests/bugs/shard/bug-shard-zerofill.c
+index 2ec4119..728e492 100644
+--- a/tests/bugs/shard/bug-shard-zerofill.c
++++ b/tests/bugs/shard/bug-shard-zerofill.c
+@@ -49,11 +49,11 @@ main (int argc, char *argv[])
+                 goto out;
+         }
+ 
+-        glfs_close(fd);
+-
+         ret = 0;
+ 
+ out:
++        if (fd)
++                glfs_close(fd);
+         glfs_fini (fs);
+         return ret;
+ }
+diff --git a/tests/bugs/shard/bug-shard-zerofill.t b/tests/bugs/shard/bug-shard-zerofill.t
+index d511300..c321149 100644
+--- a/tests/bugs/shard/bug-shard-zerofill.t
++++ b/tests/bugs/shard/bug-shard-zerofill.t
+@@ -20,8 +20,7 @@ TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0
+ # Create a file.
+ TEST touch $M0/foo
+ 
+-gfid_foo=`getfattr -n glusterfs.gfid.string $M0/foo 2>/dev/null \
+-          | grep glusterfs.gfid.string | cut -d '"' -f 2`
++gfid_foo=$(get_gfid_string $M0/foo)
+ 
+ TEST gcc -Wall -O2 -I api/src -o $(dirname $0)/bug-shard-zerofill $(dirname $0)/bug-shard-zerofill.c -lgfapi
+ TEST $(dirname $0)/bug-shard-zerofill $H0 $V0 /foo
+diff --git a/tests/bugs/shard/shard-fallocate.c b/tests/bugs/shard/shard-fallocate.c
+new file mode 100644
+index 0000000..fded623
+--- /dev/null
++++ b/tests/bugs/shard/shard-fallocate.c
+@@ -0,0 +1,113 @@
++#define _GNU_SOURCE
++#include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include "glfs.h"
++#include "glfs-handles.h"
++
++enum fallocate_flag {
++        TEST_FALLOCATE_NONE,
++        TEST_FALLOCATE_KEEP_SIZE,
++        TEST_FALLOCATE_ZERO_RANGE,
++        TEST_FALLOCATE_PUNCH_HOLE,
++        TEST_FALLOCATE_MAX,
++};
++
++int
++get_fallocate_flag (int opcode)
++{
++        int ret = 0;
++
++        switch (opcode) {
++        case TEST_FALLOCATE_NONE:
++                ret = 0;
++                break;
++        case TEST_FALLOCATE_KEEP_SIZE:
++                ret = FALLOC_FL_KEEP_SIZE;
++                break;
++        case TEST_FALLOCATE_ZERO_RANGE:
++                ret = FALLOC_FL_ZERO_RANGE;
++                break;
++        case TEST_FALLOCATE_PUNCH_HOLE:
++                ret = FALLOC_FL_PUNCH_HOLE;
++                break;
++        default:
++                ret = -1;
++                break;
++        }
++        return ret;
++}
++
++int
++main (int argc, char *argv[])
++{
++        int        ret = 1;
++        int        opcode = -1;
++        off_t      offset = 0;
++        size_t     len = 0;
++        char       logpath[PATH_MAX] = {0,};
++        glfs_t    *fs = NULL;
++        glfs_fd_t *fd = NULL;
++
++        if (argc != 7) {
++                fprintf (stderr, "Syntax: %s <host> <volname> <opcode> <offset> <len> <file-path>\n", argv[0]);
++                return 1;
++        }
++
++        fs = glfs_new (argv[2]);
++        if (!fs) {
++                fprintf (stderr, "glfs_new: returned NULL\n");
++                return 1;
++        }
++
++        snprintf (logpath, sizeof (logpath), "/var/log/glusterfs/glfs-%s.log",
++                  argv[2]);
++
++        ret = glfs_set_volfile_server (fs, "tcp", argv[1], 24007);
++        if (ret != 0) {
++                fprintf (stderr, "glfs_set_volfile_server: retuned %d\n", ret);
++                goto out;
++        }
++
++        ret = glfs_set_logging (fs, logpath, 7);
++        if (ret != 0) {
++                fprintf (stderr, "glfs_set_logging: returned %d\n", ret);
++                goto out;
++        }
++
++        ret = glfs_init (fs);
++        if (ret != 0) {
++                fprintf (stderr, "glfs_init: returned %d\n", ret);
++                goto out;
++        }
++
++        opcode = atoi (argv[3]);
++        opcode = get_fallocate_flag (opcode);
++        if (opcode < 0) {
++                fprintf (stderr, "get_fallocate_flag: invalid flag \n");
++                goto out;
++        }
++
++        offset = atoi (argv[4]);
++        len    = atoi (argv[5]);
++
++        fd = glfs_open (fs, argv[6], O_RDWR);
++        if (fd == NULL) {
++                fprintf (stderr, "glfs_open: returned NULL\n");
++                goto out;
++        }
++
++        ret = glfs_fallocate (fd, opcode, offset, len);
++        if (ret <= 0) {
++                fprintf (stderr, "glfs_fallocate: returned %d\n", ret);
++                goto out;
++        }
++
++        ret = 0;
++
++out:
++        if (fd)
++                glfs_close(fd);
++        glfs_fini (fs);
++        return ret;
++}
+diff --git a/tests/bugs/shard/zero-flag.t b/tests/bugs/shard/zero-flag.t
+new file mode 100644
+index 0000000..dc88ae1
+--- /dev/null
++++ b/tests/bugs/shard/zero-flag.t
+@@ -0,0 +1,79 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../fallocate.rc
++
++function file_all_zeroes {
++        < $1 tr -d '\0' | read -n 1 || echo 1
++}
++
++cleanup
++
++require_fallocate -l 1m $M0/file
++require_fallocate -p -l 512k $M0/file && rm -f $M0/file
++require_fallocate -z -l 512k $M0/file && rm -f $M0/file
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0,1,2,3}
++TEST $CLI volume set $V0 features.shard on
++TEST $CLI volume start $V0
++
++TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0
++TEST gcc -Wall -O2 -I api/src -o $(dirname $0)/zero-flag $(dirname $0)/shard-fallocate.c -lgfapi
++
++# On file1 confirm that when fallocate's offset + len > cur file size,
++# the new file size will increase.
++TEST touch $M0/tmp
++TEST `echo 'abcdefghijklmnopqrstuvwxyz' > $M0/tmp`
++TEST touch $M0/file1
++
++gfid_file1=$(get_gfid_string $M0/file1)
++
++TEST $(dirname $0)/zero-flag $H0 $V0 "0" "0" "6291456" /file1
++
++EXPECT '6291456' stat -c %s $M0/file1
++
++# This should ensure /.shard is created on the bricks.
++TEST stat $B0/${V0}0/.shard
++TEST stat $B0/${V0}1/.shard
++TEST stat $B0/${V0}2/.shard
++TEST stat $B0/${V0}3/.shard
++
++EXPECT "2097152" echo `find $B0 -name $gfid_file1.1 | xargs stat -c %s`
++EXPECT "1" file_all_zeroes $M0/file1
++
++
++# On file2 confirm that fallocate to already allocated region of the
++# file does not change the content of the file.
++TEST truncate -s 6M $M0/file2
++TEST dd if=$M0/tmp of=$M0/file2 bs=1 seek=3145728 count=26 conv=notrunc
++md5sum_file2=$(md5sum $M0/file2 | awk '{print $1}')
++
++TEST $(dirname $0)/zero-flag $H0 $V0 "0" "3145728" "26" /file2
++
++EXPECT '6291456' stat -c %s $M0/file2
++EXPECT "$md5sum_file2" echo `md5sum $M0/file2 | awk '{print $1}'`
++
++# On file3 confirm that fallocate to a region of the file that consists
++#of holes creates a new shard in its place, fallocates it and there is no
++#change in the file content seen by the application.
++TEST touch $M0/file3
++
++gfid_file3=$(get_gfid_string $M0/file3)
++
++TEST dd if=$M0/tmp of=$M0/file3 bs=1 seek=9437184 count=26 conv=notrunc
++TEST ! stat $B0/$V0*/.shard/$gfid_file3.1
++TEST   stat $B0/$V0*/.shard/$gfid_file3.2
++md5sum_file3=$(md5sum $M0/file3 | awk '{print $1}')
++EXPECT "1048602" echo `find $B0 -name $gfid_file3.2 | xargs stat -c %s`
++
++TEST $(dirname $0)/zero-flag $H0 $V0 "0" "5242880" "1048576" /file3
++EXPECT "$md5sum_file3" echo `md5sum $M0/file3 | awk '{print $1}'`
++
++TEST umount $M0
++TEST $CLI volume stop $V0
++TEST $CLI volume delete $V0
++rm -f $(dirname $0)/zero-flag
++cleanup
+diff --git a/tests/volume.rc b/tests/volume.rc
+index bc193e8..13fed01 100644
+--- a/tests/volume.rc
++++ b/tests/volume.rc
+@@ -646,3 +646,9 @@ function scrub_status()
+ 
+         $CLI volume bitrot $vol scrub status | grep "^$field: " | sed 's/.*: //';
+ }
++
++function get_gfid_string {
++        local path=$1;
++        getfattr -n glusterfs.gfid.string $1 2>/dev/null \
++                    | grep glusterfs.gfid.string | cut -d '"' -f 2
++}
+-- 
+1.7.1
+

@@ -1,0 +1,88 @@
+From 58ca36024986ce577cce7589709bdb707cb775e8 Mon Sep 17 00:00:00 2001
+From: Vijay Bellur <vbellur@redhat.com>
+Date: Fri, 8 Apr 2016 21:59:53 -0400
+Subject: [PATCH 088/104] extras: Add namespace for options in group-virt.example
+
+Commit 23ccabbeb7 introduced a new key "disperse.eager-lock" which
+causes a conflict with key "cluster.eager-lock" when option is used
+without the qualifying namespace. group-virt.example which gets
+installed as /var/lib/glusterd/ groups/virt contains options without
+namespace qualifiers. This patch adds the appropriate namespace to all
+options in group-virt.example.
+
+Change-Id: I2c09dd10d44138410d889ddeb805f01c641c6780
+BUG: 1329895
+Signed-off-by: Vijay Bellur <vbellur@redhat.com>
+Signed-off-by: Kaushal M <kaushal@redhat.com>
+Reviewed-upstream-on: http://review.gluster.org/13958
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72923
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ extras/group-virt.example                    |   16 ++++++++--------
+ tests/bugs/glusterd/bug-1314649-group-virt.t |   14 ++++++++++++++
+ tests/include.rc                             |    5 +++--
+ 3 files changed, 25 insertions(+), 10 deletions(-)
+ create mode 100644 tests/bugs/glusterd/bug-1314649-group-virt.t
+
+diff --git a/extras/group-virt.example b/extras/group-virt.example
+index 0abe9f4..b699c9e 100644
+--- a/extras/group-virt.example
++++ b/extras/group-virt.example
+@@ -1,8 +1,8 @@
+-quick-read=off
+-read-ahead=off
+-io-cache=off
+-stat-prefetch=off
+-eager-lock=enable
+-remote-dio=enable
+-quorum-type=auto
+-server-quorum-type=server
++performance.quick-read=off
++performance.read-ahead=off
++performance.io-cache=off
++performance.stat-prefetch=off
++cluster.eager-lock=enable
++network.remote-dio=enable
++cluster.quorum-type=auto
++cluster.server-quorum-type=server
+diff --git a/tests/bugs/glusterd/bug-1314649-group-virt.t b/tests/bugs/glusterd/bug-1314649-group-virt.t
+new file mode 100644
+index 0000000..257e784
+--- /dev/null
++++ b/tests/bugs/glusterd/bug-1314649-group-virt.t
+@@ -0,0 +1,14 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup;
++
++TEST glusterd
++
++TEST $CLI volume create $V0 replica 2 stripe 2 $H0:$B0/${V0}{1,2,3,4,5,6,7,8};
++
++TEST $CLI volume set $V0 group virt;
++
++cleanup;
+diff --git a/tests/include.rc b/tests/include.rc
+index 03c9f44..9be67de 100644
+--- a/tests/include.rc
++++ b/tests/include.rc
+@@ -455,9 +455,10 @@ function cleanup()
+                 ;;
+         esac
+ 
+-        # remove contents of "GLUSTERD_WORKDIR" except hooks directory.
++        # remove contents of "GLUSTERD_WORKDIR" except hooks and groups
++        # directories.
+         find  $GLUSTERD_WORKDIR/* -maxdepth 0 -name 'hooks' -prune \
+-        -o -exec rm -rf '{}' ';'
++        -o -name 'groups' -prune -o -exec rm -rf '{}' ';'
+ 
+         rm -rf $B0/* /etc/glusterd/*;
+ 
+-- 
+1.7.1
+

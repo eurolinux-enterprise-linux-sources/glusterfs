@@ -85,9 +85,8 @@ libgfapi_la_DEPENDENCIES =  \
 	$(top_builddir)/libglusterfs/src/libglusterfs.la \
 	$(top_builddir)/rpc/rpc-lib/src/libgfrpc.la \
 	$(top_builddir)/rpc/xdr/src/libgfxdr.la $(am__DEPENDENCIES_1)
-am_libgfapi_la_OBJECTS = libgfapi_la-glfs.lo libgfapi_la-glfs-mgmt.lo \
-	libgfapi_la-glfs-fops.lo libgfapi_la-glfs-resolve.lo \
-	libgfapi_la-glfs-handleops.lo
+am_libgfapi_la_OBJECTS = glfs.lo glfs-mgmt.lo glfs-fops.lo \
+	glfs-resolve.lo glfs-handleops.lo
 libgfapi_la_OBJECTS = $(am_libgfapi_la_OBJECTS)
 libgfapi_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
@@ -355,11 +354,13 @@ libgfapi_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la \
 	$(top_builddir)/rpc/xdr/src/libgfxdr.la \
 	$(GF_LDADD)
 
-libgfapi_la_CPPFLAGS = $(GF_CPPFLAGS) -D__USE_FILE_OFFSET64 \
-	-I$(top_srcdir)/libglusterfs/src \
-	-I$(top_srcdir)/rpc/rpc-lib/src \
-	-I$(top_srcdir)/rpc/xdr/src
+AM_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src \
+        -I$(top_srcdir)/rpc/rpc-lib/src \
+        -I$(top_srcdir)/rpc/xdr/src \
+        -DDATADIR=\"$(localstatedir)\" \
+        -D__USE_FILE_OFFSET64
 
+AM_CFLAGS = -Wall $(GF_CFLAGS)
 libgfapi_la_LDFLAGS = -version-info $(GFAPI_LT_VERSION) \
 	$(GFAPI_EXTRA_LDFLAGS) $(ACL_LIBS)
 
@@ -376,8 +377,6 @@ api_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la \
 	$(top_builddir)/rpc/xdr/src/libgfxdr.la \
 	$(top_builddir)/api/src/libgfapi.la
 
-AM_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src
-AM_CFLAGS = -Wall $(GF_CFLAGS)
 all: all-am
 
 .SUFFIXES:
@@ -485,12 +484,12 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glfs-fops.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glfs-handleops.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glfs-master.Plo@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfapi_la-glfs-fops.Plo@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfapi_la-glfs-handleops.Plo@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfapi_la-glfs-mgmt.Plo@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfapi_la-glfs-resolve.Plo@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfapi_la-glfs.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glfs-mgmt.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glfs-resolve.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glfs.Plo@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(COMPILE) -MT $@ -MD -MP -MF $(DEPDIR)/$*.Tpo -c -o $@ $<
@@ -515,46 +514,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$<' object='$@' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LTCOMPILE) -c -o $@ $<
-
-libgfapi_la-glfs.lo: glfs.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libgfapi_la-glfs.lo -MD -MP -MF $(DEPDIR)/libgfapi_la-glfs.Tpo -c -o libgfapi_la-glfs.lo `test -f 'glfs.c' || echo '$(srcdir)/'`glfs.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfapi_la-glfs.Tpo $(DEPDIR)/libgfapi_la-glfs.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glfs.c' object='libgfapi_la-glfs.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libgfapi_la-glfs.lo `test -f 'glfs.c' || echo '$(srcdir)/'`glfs.c
-
-libgfapi_la-glfs-mgmt.lo: glfs-mgmt.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libgfapi_la-glfs-mgmt.lo -MD -MP -MF $(DEPDIR)/libgfapi_la-glfs-mgmt.Tpo -c -o libgfapi_la-glfs-mgmt.lo `test -f 'glfs-mgmt.c' || echo '$(srcdir)/'`glfs-mgmt.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfapi_la-glfs-mgmt.Tpo $(DEPDIR)/libgfapi_la-glfs-mgmt.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glfs-mgmt.c' object='libgfapi_la-glfs-mgmt.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libgfapi_la-glfs-mgmt.lo `test -f 'glfs-mgmt.c' || echo '$(srcdir)/'`glfs-mgmt.c
-
-libgfapi_la-glfs-fops.lo: glfs-fops.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libgfapi_la-glfs-fops.lo -MD -MP -MF $(DEPDIR)/libgfapi_la-glfs-fops.Tpo -c -o libgfapi_la-glfs-fops.lo `test -f 'glfs-fops.c' || echo '$(srcdir)/'`glfs-fops.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfapi_la-glfs-fops.Tpo $(DEPDIR)/libgfapi_la-glfs-fops.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glfs-fops.c' object='libgfapi_la-glfs-fops.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libgfapi_la-glfs-fops.lo `test -f 'glfs-fops.c' || echo '$(srcdir)/'`glfs-fops.c
-
-libgfapi_la-glfs-resolve.lo: glfs-resolve.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libgfapi_la-glfs-resolve.lo -MD -MP -MF $(DEPDIR)/libgfapi_la-glfs-resolve.Tpo -c -o libgfapi_la-glfs-resolve.lo `test -f 'glfs-resolve.c' || echo '$(srcdir)/'`glfs-resolve.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfapi_la-glfs-resolve.Tpo $(DEPDIR)/libgfapi_la-glfs-resolve.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glfs-resolve.c' object='libgfapi_la-glfs-resolve.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libgfapi_la-glfs-resolve.lo `test -f 'glfs-resolve.c' || echo '$(srcdir)/'`glfs-resolve.c
-
-libgfapi_la-glfs-handleops.lo: glfs-handleops.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT libgfapi_la-glfs-handleops.lo -MD -MP -MF $(DEPDIR)/libgfapi_la-glfs-handleops.Tpo -c -o libgfapi_la-glfs-handleops.lo `test -f 'glfs-handleops.c' || echo '$(srcdir)/'`glfs-handleops.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfapi_la-glfs-handleops.Tpo $(DEPDIR)/libgfapi_la-glfs-handleops.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glfs-handleops.c' object='libgfapi_la-glfs-handleops.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfapi_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o libgfapi_la-glfs-handleops.lo `test -f 'glfs-handleops.c' || echo '$(srcdir)/'`glfs-handleops.c
 
 mostlyclean-libtool:
 	-rm -f *.lo

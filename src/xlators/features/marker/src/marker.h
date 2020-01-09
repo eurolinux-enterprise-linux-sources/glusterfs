@@ -100,7 +100,7 @@ struct marker_local{
         uid_t           uid;
         gid_t           gid;
         int32_t         ref;
-        int32_t         ia_nlink;
+        uint32_t        ia_nlink;
         struct iatt     buf;
         gf_lock_t       lock;
         mode_t          mode;
@@ -147,6 +147,7 @@ struct marker_conf{
         char        *marker_xattr;
         uint64_t     quota_lk_owner;
         gf_lock_t    lock;
+        int32_t      version;
 };
 typedef struct marker_conf marker_conf_t;
 

@@ -1,0 +1,297 @@
+From 68734d8dcf5b6e9943d37b1401d7746f963c0243 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 16 May 2016 15:05:36 +0530
+Subject: [PATCH 161/167] cluster/afr: Refresh inode for inode-write fops in need
+
+Problem:
+If a named fresh-lookup is done on an loc and the fop fails on one of the
+bricks or not sent on one of the bricks, but by the time response comes to afr,
+if the brick is up, 'can_interpret' will be set to false in afr_lookup_done(),
+this will lead to inode-ctx for that inode to be not set, this can lead to EIO
+in case of a transaction as it depends on 'readable' array to be available by
+that point.
+
+Fix:
+Refresh inode for inode-write fops for the ctx to be set if it is not already
+done at the time of named fresh-lookup or if the file is in split-brain where
+we need to perform one more refresh before failing the fop to check if the file
+is still in split-brain or not.
+
+ >BUG: 1336612
+ >Change-Id: I5c50b62c8de06129b8516039f7c252e5008c47a5
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/14368
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >Reviewed-by: Ravishankar N <ravishankar@redhat.com>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+
+release-3.7: http://review.gluster.org/14453
+
+BUG: 1330044
+Change-Id: I7430f826da65215fe5d1d3eb359315ce08f10857
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74760
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+Tested-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c      |   31 ++++++---
+ xlators/cluster/afr/src/afr-read-txn.c    |    4 +-
+ xlators/cluster/afr/src/afr-transaction.c |   95 +++++++++++++++++++++-------
+ xlators/cluster/afr/src/afr.h             |    5 +-
+ 4 files changed, 98 insertions(+), 37 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index a346454..6e84b81 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -385,10 +385,6 @@ afr_inode_get_readable (call_frame_t *frame, inode_t *inode, xlator_t *this,
+         int event_generation = 0;
+         int ret = 0;
+ 
+-        /* We don't care about split-brains for entry transactions. */
+-        if (type == AFR_ENTRY_TRANSACTION || type == AFR_ENTRY_RENAME_TRANSACTION)
+-                return 0;
+-
+         ret = afr_inode_read_subvol_get (inode, this, data, metadata,
+                                          &event_generation);
+         if (ret == -1)
+@@ -931,7 +927,8 @@ afr_inode_refresh_subvol_with_lookup_cbk (call_frame_t *frame, void *cookie,
+ 
+ int
+ afr_inode_refresh_subvol_with_lookup (call_frame_t *frame, xlator_t *this,
+-                                      int i, inode_t *inode, dict_t *xdata)
++                                      int i, inode_t *inode, uuid_t gfid,
++                                      dict_t *xdata)
+ {
+ 	loc_t loc = {0, };
+ 	afr_private_t *priv = NULL;
+@@ -939,7 +936,13 @@ afr_inode_refresh_subvol_with_lookup (call_frame_t *frame, xlator_t *this,
+ 	priv = this->private;
+ 
+ 	loc.inode = inode;
+-	gf_uuid_copy (loc.gfid, inode->gfid);
++        if (gf_uuid_is_null (inode->gfid) && gfid) {
++                /* To handle setattr/setxattr on yet to be linked inode from
++                 * dht */
++                gf_uuid_copy (loc.gfid, gfid);
++        } else {
++                gf_uuid_copy (loc.gfid, inode->gfid);
++        }
+ 
+ 	STACK_WIND_COOKIE (frame, afr_inode_refresh_subvol_with_lookup_cbk,
+ 			   (void *) (long) i, priv->children[i],
+@@ -1053,7 +1056,8 @@ afr_inode_refresh_do (call_frame_t *frame, xlator_t *this)
+                                                              xdata);
+                 else
+                         afr_inode_refresh_subvol_with_lookup (frame, this, i,
+-                                                    local->refreshinode, xdata);
++                                                    local->refreshinode,
++                                                    local->refreshgfid, xdata);
+ 
+ 		if (!--call_count)
+ 			break;
+@@ -1067,7 +1071,7 @@ afr_inode_refresh_do (call_frame_t *frame, xlator_t *this)
+ 
+ int
+ afr_inode_refresh (call_frame_t *frame, xlator_t *this, inode_t *inode,
+-		   afr_inode_refresh_cbk_t refreshfn)
++                   uuid_t gfid, afr_inode_refresh_cbk_t refreshfn)
+ {
+ 	afr_local_t *local = NULL;
+ 
+@@ -1082,6 +1086,11 @@ afr_inode_refresh (call_frame_t *frame, xlator_t *this, inode_t *inode,
+ 
+ 	local->refreshinode = inode_ref (inode);
+ 
++        if (gfid)
++                gf_uuid_copy (local->refreshgfid, gfid);
++        else
++                gf_uuid_clear (local->refreshgfid);
++
+ 	afr_inode_refresh_do (frame, this);
+ 
+ 	return 0;
+@@ -2413,7 +2422,8 @@ afr_discover (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xattr_req
+ 			     AFR_DATA_TRANSACTION, NULL);
+ 
+ 	if (event != local->event_generation)
+-		afr_inode_refresh (frame, this, loc->inode, afr_discover_do);
++		afr_inode_refresh (frame, this, loc->inode, NULL,
++                                   afr_discover_do);
+ 	else
+ 		afr_discover_do (frame, this, 0);
+ 
+@@ -2563,7 +2573,8 @@ afr_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xattr_req)
+ 			     AFR_DATA_TRANSACTION, NULL);
+ 
+ 	if (event != local->event_generation)
+-		afr_inode_refresh (frame, this, loc->parent, afr_lookup_do);
++		afr_inode_refresh (frame, this, loc->parent, NULL,
++                                   afr_lookup_do);
+ 	else
+ 		afr_lookup_do (frame, this, 0);
+ 
+diff --git a/xlators/cluster/afr/src/afr-read-txn.c b/xlators/cluster/afr/src/afr-read-txn.c
+index a70565c..32ad6a4 100644
+--- a/xlators/cluster/afr/src/afr-read-txn.c
++++ b/xlators/cluster/afr/src/afr-read-txn.c
+@@ -121,7 +121,7 @@ afr_read_txn_continue (call_frame_t *frame, xlator_t *this, int subvol)
+ 
+ 	if (!local->refreshed) {
+ 		local->refreshed = _gf_true;
+-		afr_inode_refresh (frame, this, local->inode,
++		afr_inode_refresh (frame, this, local->inode, NULL,
+ 				   afr_read_txn_refresh_done);
+ 	} else {
+ 		afr_read_txn_next_subvol (frame, this);
+@@ -268,7 +268,7 @@ read:
+ 	return 0;
+ 
+ refresh:
+-	afr_inode_refresh (frame, this, inode, afr_read_txn_refresh_done);
++	afr_inode_refresh (frame, this, inode, NULL, afr_read_txn_refresh_done);
+ 
+ 	return 0;
+ }
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 9c97f75..8b667c9 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -2003,32 +2003,13 @@ unlock:
+         UNLOCK (&local->fd->lock);
+ }
+ 
+-
+-int
+-afr_transaction (call_frame_t *frame, xlator_t *this, afr_transaction_type type)
++void
++afr_transaction_start (call_frame_t *frame, xlator_t *this)
+ {
+-        afr_local_t *   local = NULL;
+-        afr_private_t * priv  = NULL;
+-        fd_t            *fd   = NULL;
+-        int             ret   = -1;
+-
+-        local = frame->local;
+-        priv  = this->private;
+-
+-        local->transaction.resume = afr_transaction_resume;
+-        local->transaction.type   = type;
+-
+-        ret = afr_transaction_local_init (local, this);
+-        if (ret < 0)
+-            goto out;
++        afr_local_t   *local = frame->local;
++        afr_private_t *priv  = this->private;
++        fd_t          *fd    = NULL;
+ 
+-        ret = afr_inode_get_readable (frame, local->inode, this, 0, 0, type);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, EIO, AFR_MSG_SPLIT_BRAIN,
+-                        "Failing %s on gfid %s: split-brain observed.",
+-                        gf_fop_list[local->op], uuid_utoa (local->inode->gfid));
+-                goto out;
+-        }
+         afr_transaction_eager_lock_init (local, this);
+ 
+         if (local->fd && local->transaction.eager_lock_on)
+@@ -2052,6 +2033,72 @@ afr_transaction (call_frame_t *frame, xlator_t *this, afr_transaction_type type)
+         } else {
+                 afr_lock (frame, this);
+         }
++}
++
++int
++afr_write_txn_refresh_done (call_frame_t *frame, xlator_t *this, int err)
++{
++        afr_local_t   *local           = frame->local;
++        afr_private_t *priv            = this->private;
++        int           ret              = 0;
++
++        if (err) {
++                local->op_errno = -err;
++                local->op_ret = -1;
++                goto fail;
++        }
++	ret = afr_inode_get_readable (frame, local->inode, this,
++                                      local->readable, NULL,
++				      local->transaction.type);
++        if (ret < 0) {
++                gf_msg (this->name, GF_LOG_ERROR, -ret, AFR_MSG_SPLIT_BRAIN,
++                        "Failing %s on gfid %s: split-brain observed.",
++                        gf_fop_list[local->op], uuid_utoa (local->inode->gfid));
++                local->op_ret = -1;
++                local->op_errno = -ret;
++                goto fail;
++        }
++        afr_transaction_start (frame, this);
++        return 0;
++fail:
++        local->transaction.unwind (frame, this);
++        AFR_STACK_DESTROY (frame);
++        return 0;
++}
++
++int
++afr_transaction (call_frame_t *frame, xlator_t *this, afr_transaction_type type)
++{
++        afr_local_t   *local           = NULL;
++        afr_private_t *priv            = NULL;
++        int           ret              = -1;
++        int           event_generation = 0;
++
++        local = frame->local;
++        priv  = this->private;
++
++        local->transaction.resume = afr_transaction_resume;
++        local->transaction.type   = type;
++
++        ret = afr_transaction_local_init (local, this);
++        if (ret < 0)
++                goto out;
++
++        if (type == AFR_ENTRY_TRANSACTION ||
++            type == AFR_ENTRY_RENAME_TRANSACTION) {
++                afr_transaction_start (frame, this);
++                ret = 0;
++                goto out;
++        }
++
++        ret = afr_inode_get_readable (frame, local->inode, this,
++                                      local->readable, &event_generation, type);
++        if (ret < 0 || event_generation != priv->event_generation) {
++                afr_inode_refresh (frame, this, local->inode, local->loc.gfid,
++                                   afr_write_txn_refresh_done);
++        } else {
++                afr_transaction_start (frame, this);
++        }
+         ret = 0;
+ out:
+         return ret;
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index c553a1f..6370577 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -426,6 +426,9 @@ typedef struct _afr_local {
+ 	*/
+ 	inode_t *refreshinode;
+ 
++        /*To handle setattr/setxattr on yet to be linked inode from dht*/
++        uuid_t  refreshgfid;
++
+ 	/*
+ 	  @pre_op_compat:
+ 
+@@ -844,7 +847,7 @@ afr_read_subvol_get (inode_t *inode, xlator_t *this, int *subvol_p,
+ 
+ int
+ afr_inode_refresh (call_frame_t *frame, xlator_t *this, inode_t *inode,
+-		   afr_inode_refresh_cbk_t cbk);
++                   uuid_t gfid, afr_inode_refresh_cbk_t cbk);
+ 
+ int32_t
+ afr_notify (xlator_t *this, int32_t event, void *data, void *data2);
+-- 
+1.7.1
+

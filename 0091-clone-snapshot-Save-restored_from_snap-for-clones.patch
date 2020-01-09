@@ -1,0 +1,60 @@
+From e30dce6335eae8eac87cbd5dbd97353bbdb5584c Mon Sep 17 00:00:00 2001
+From: Avra Sengupta <asengupt@redhat.com>
+Date: Mon, 18 Apr 2016 14:44:18 +0530
+Subject: [PATCH 091/104] clone/snapshot: Save restored_from_snap for clones
+
+Bricks of cloned volumes are lvm bricks mounted in
+/run/gluster, which on reboot of the node gets
+cleared. Hence, these brick paths need to be recreated
+on glusterd restart and the appropriate lvms are
+mounted.
+
+Backport of (Upstream master):
+> Change-Id: I6da086288c0dbdcedf3a20fd53f25e3728bea473
+> BUG: 1328010
+> Signed-off-by: Avra Sengupta <asengupt@redhat.com>
+> Reviewed-on: http://review.gluster.org/14021
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+> Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+
+and (Upstream release-3.7)
+
+> Change-Id: I02d10e6bca99f6d78b50cb91c677e33a8dcefa17
+> BUG: 1329989
+> Signed-off-by: Rajesh Joseph <rjoseph@redhat.com>
+> Reviewed-on: http://review.gluster.org/14059
+> Reviewed-by: mohammed rafi kc <rkavunga@redhat.com>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Avra Sengupta <asengupt@redhat.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+
+Change-Id: I74bc064c886963dbc20e5db94c83a1ce0715f832
+Signed-off-by: Rajesh Joseph <rjoseph@redhat.com>
+BUG: 1327165
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73089
+Reviewed-by: Rafi Kavungal Chundattu Parambil <rkavunga@redhat.com>
+Reviewed-by: Avra Sengupta <asengupt@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c |    3 +++
+ 1 files changed, 3 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index 4912f56..da6c301 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -5233,6 +5233,9 @@ glusterd_do_snap_vol (glusterd_volinfo_t *origin_vol, glusterd_snap_t *snap,
+                 }
+                 cds_list_add_tail (&snap_vol->vol_list, &snap->volumes);
+                 strcpy(snap_vol->volname, clonename);
++                gf_uuid_copy (snap_vol->restored_from_snap,
++                              origin_vol->snapshot->snap_id);
++
+         } else {
+                 GLUSTERD_GET_UUID_NOHYPHEN (snap_vol->volname, *snap_volid);
+                 strcpy (snap_vol->parent_volname, origin_vol->volname);
+-- 
+1.7.1
+

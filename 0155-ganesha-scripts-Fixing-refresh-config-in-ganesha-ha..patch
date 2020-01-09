@@ -1,0 +1,43 @@
+From 556d6343c30956d3c6bf60d6d36107f11a912d92 Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@redhat.com>
+Date: Fri, 13 May 2016 11:59:55 +0530
+Subject: [PATCH 155/158] ganesha/scripts : Fixing refresh config in ganesha-ha.sh
+
+The change http://review.gluster.org/#/c/14225/ cause a regression
+for refresh config funtion in ganesha-ha.sh due to a invalid usage
+of awk arguement.
+
+This is backport of below mainline patch -
+        http://review.gluster.org/14325
+        http://review.gluster.org/#/c/14353/ (release-3.7)
+
+Change-Id: Id5adfb12f99b29bdb3531773cd34bd67cfff8768
+BUG: 1335114
+Signed-off-by: Soumya Koduri <skoduri@redhat.com>
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: http://review.gluster.org/14325
+Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74360
+Reviewed-by: Kaleb Keithley <kkeithle@redhat.com>
+Tested-by: Kaleb Keithley <kkeithle@redhat.com>
+---
+ extras/ganesha/scripts/ganesha-ha.sh |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/extras/ganesha/scripts/ganesha-ha.sh b/extras/ganesha/scripts/ganesha-ha.sh
+index a712b27..33affe9 100644
+--- a/extras/ganesha/scripts/ganesha-ha.sh
++++ b/extras/ganesha/scripts/ganesha-ha.sh
+@@ -259,7 +259,7 @@ ${tganesha_vol_conf}
+                 removed_id=$(ssh -oPasswordAuthentication=no \
+ -oStrictHostKeyChecking=no -i ${SECRET_PEM} root@${current_host} \
+ "cat $HA_CONFDIR/exports/export.$VOL.conf |\
+-grep Export_Id | awk -F"[=,;]" '{print$2}' | tr -d '[[:space:]]'")
++grep Export_Id | awk -F\"[=,;]\" '{print \$2}' | tr -d '[[:space:]]'")
+ 
+                 output=$(ssh -oPasswordAuthentication=no \
+ -oStrictHostKeyChecking=no -i ${SECRET_PEM} root@${current_host} \
+-- 
+1.7.1
+

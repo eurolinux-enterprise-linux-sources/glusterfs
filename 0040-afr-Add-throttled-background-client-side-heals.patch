@@ -1,0 +1,654 @@
+From a468ff0af57528dbd7a711f985c0524251ec90d3 Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Tue, 5 Apr 2016 11:40:05 +0530
+Subject: [PATCH 40/80] afr: Add throttled background client-side heals
+
+Backport of: http://review.gluster.org/13207
+
+If a heal is needed after inode refresh (lookup, read_txn), launch it in
+the background instead of blocking the fop (that triggered refresh)
+until the heal happens.
+
+afr_replies_interpret() is modified such that the heal is
+launched only if atleast one sink brick is up.
+
+Max. no of heals that can happen in parallel is configurable via the
+'background-self-heal-count' volume option. Any number greater than that
+is put in a wait queue whose length is configurable via
+'heal-wait-queue-leng' volume option. If the wait queue is also full,
+further heals will be ignored.
+
+Default values:  background-self-heal-count=8, heal-wait-queue-leng=128
+
+Change-Id: Ief20b915f8b3064dfbde41e9216b080de45f31f5
+BUG: 1300875
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71393
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ tests/basic/afr/client-side-heal.t              |    1 +
+ tests/bugs/glusterd/859927/repl.t               |    4 +-
+ tests/bugs/quota/bug-1035576.t                  |    1 -
+ tests/bugs/replicate/bug-802417.t               |    5 +-
+ tests/bugs/replicate/bug-977797.t               |   52 +++++------
+ xlators/cluster/afr/src/afr-common.c            |   89 +++++++++----------
+ xlators/cluster/afr/src/afr-dir-write.c         |    2 +-
+ xlators/cluster/afr/src/afr-self-heal-common.c  |  110 +++++++++++++++++++++++
+ xlators/cluster/afr/src/afr-self-heal.h         |    3 +
+ xlators/cluster/afr/src/afr.c                   |   26 +++++-
+ xlators/cluster/afr/src/afr.h                   |   28 +++++--
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |    8 ++
+ 12 files changed, 237 insertions(+), 92 deletions(-)
+
+diff --git a/tests/basic/afr/client-side-heal.t b/tests/basic/afr/client-side-heal.t
+index 18f7626..d87f4b1 100644
+--- a/tests/basic/afr/client-side-heal.t
++++ b/tests/basic/afr/client-side-heal.t
+@@ -70,6 +70,7 @@ EXPECT 7 get_pending_heal_count $V0
+ EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+ TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 --entry-timeout=0 $M0;
+ TEST cat $M0/datafile
++EXPECT_WITHIN $HEAL_TIMEOUT 6 get_pending_heal_count $V0
+ 
+ EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+ TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 --entry-timeout=0 $M0;
+diff --git a/tests/bugs/glusterd/859927/repl.t b/tests/bugs/glusterd/859927/repl.t
+index a500961..40e8602 100755
+--- a/tests/bugs/glusterd/859927/repl.t
++++ b/tests/bugs/glusterd/859927/repl.t
+@@ -23,7 +23,6 @@ TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{1,2};
+ TEST $CLI volume set $V0 cluster.self-heal-daemon off
+ TEST $CLI volume set $V0 performance.stat-prefetch off
+ TEST $CLI volume set $V0 client-log-level DEBUG
+-TEST $CLI volume set $V0 cluster.background-self-heal-count 0
+ TEST $CLI volume start $V0
+ TEST glusterfs --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id=$V0 $M0;
+ 
+@@ -34,6 +33,7 @@ EXPECT full volume_option $V0 cluster.data-self-heal-algorithm
+ create_setup_for_self_heal $M0/a
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 0
+ cat $file 2>&1 > /dev/null
++EXPECT_WITHIN $HEAL_TIMEOUT 0 get_pending_heal_count $V0
+ TEST cmp $B0/${V0}1/a $B0/${V0}2/a
+ 
+ TEST $CLI volume set $V0 cluster.data-self-heal-algorithm diff
+@@ -41,12 +41,14 @@ EXPECT diff volume_option $V0 cluster.data-self-heal-algorithm
+ create_setup_for_self_heal $M0/a
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 0
+ cat $file 2>&1 > /dev/null
++EXPECT_WITHIN $HEAL_TIMEOUT 0 get_pending_heal_count $V0
+ TEST cmp $B0/${V0}1/a $B0/${V0}2/a
+ 
+ TEST $CLI volume reset $V0 cluster.data-self-heal-algorithm
+ create_setup_for_self_heal $M0/a
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 0
+ cat $file 2>&1 > /dev/null
++EXPECT_WITHIN $HEAL_TIMEOUT 0 get_pending_heal_count $V0
+ TEST cmp $B0/${V0}1/a $B0/${V0}2/a
+ 
+ TEST ! $CLI volume set $V0 cluster.data-self-heal-algorithm ""
+diff --git a/tests/bugs/quota/bug-1035576.t b/tests/bugs/quota/bug-1035576.t
+index 99b3925..eaf4439 100644
+--- a/tests/bugs/quota/bug-1035576.t
++++ b/tests/bugs/quota/bug-1035576.t
+@@ -17,7 +17,6 @@ TEST $CLI volume set $V0 performance.io-cache off
+ TEST $CLI volume set $V0 performance.write-behind off
+ TEST $CLI volume set $V0 performance.stat-prefetch off
+ TEST $CLI volume set $V0 performance.read-ahead off
+-TEST $CLI volume set $V0 background-self-heal-count 0
+ TEST $CLI volume set $V0 self-heal-daemon off
+ TEST $CLI volume quota $V0 enable
+ 
+diff --git a/tests/bugs/replicate/bug-802417.t b/tests/bugs/replicate/bug-802417.t
+index df989b1..c5ba98b 100755
+--- a/tests/bugs/replicate/bug-802417.t
++++ b/tests/bugs/replicate/bug-802417.t
+@@ -32,7 +32,6 @@ TEST $CLI volume set $V0 performance.stat-prefetch off
+ ## Make sure automatic self-heal doesn't perturb our results.
+ TEST $CLI volume set $V0 cluster.self-heal-daemon off
+ TEST $CLI volume set $V0 cluster.data-self-heal on
+-TEST $CLI volume set $V0 cluster.background-self-heal-count 0
+ 
+ ## Start volume and verify
+ TEST $CLI volume start $V0;
+@@ -70,8 +69,8 @@ tgt_xattr_2="trusted.afr.${V0}-client-2"
+ actual=$(afr_get_changelog_xattr $obs_path_0 $tgt_xattr_0)
+ EXPECT "0x000000000000000000000000|^\$" echo $actual
+ 
+-actual=$(afr_get_changelog_xattr $obs_path_0 $tgt_xattr_1)
+-EXPECT "0x000000000000000000000000|^\$" echo $actual
++EXPECT_WITHIN $HEAL_TIMEOUT "0x000000000000000000000000" \
++afr_get_changelog_xattr $obs_path_0 $tgt_xattr_1
+ 
+ actual=$(afr_get_changelog_xattr $obs_path_0 $tgt_xattr_2)
+ EXPECT "0x000000030000000000000000" echo $actual
+diff --git a/tests/bugs/replicate/bug-977797.t b/tests/bugs/replicate/bug-977797.t
+index 3ff14ec..72c616b 100755
+--- a/tests/bugs/replicate/bug-977797.t
++++ b/tests/bugs/replicate/bug-977797.t
+@@ -26,7 +26,6 @@ TEST $CLI volume set $V0 quick-read off
+ TEST $CLI volume set $V0 read-ahead off
+ TEST $CLI volume set $V0 write-behind off
+ TEST $CLI volume set $V0 io-cache off
+-TEST $CLI volume set $V0 background-self-heal-count 0
+ 
+ TEST glusterfs --volfile-id=/$V0 --volfile-server=$H0 $M0 --attribute-timeout=0 --entry-timeout=0
+ 
+@@ -56,34 +55,29 @@ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 1;
+ 
+ TEST dd if=$M0/a/file of=/dev/null bs=1024k
+ 
+-b1c0dir=$(afr_get_specific_changelog_xattr $B0/$V0"1"/a \
+-          trusted.afr.$V0-client-0 "entry")
+-b1c1dir=$(afr_get_specific_changelog_xattr $B0/$V0"1"/a \
+-          trusted.afr.$V0-client-1 "entry")
+-b2c0dir=$(afr_get_specific_changelog_xattr \
+-          $B0/$V0"2"/a trusted.afr.$V0-client-0 "entry")
+-b2c1dir=$(afr_get_specific_changelog_xattr \
+-          $B0/$V0"2"/a trusted.afr.$V0-client-1 "entry")
+-
+-
+-b1c0f=$(afr_get_specific_changelog_xattr $B0/$V0"1"/a/file \
+-        trusted.afr.$V0-client-0 "data")
+-b1c1f=$(afr_get_specific_changelog_xattr $B0/$V0"1"/a/file \
+-        trusted.afr.$V0-client-1 "data")
+-b2c0f=$(afr_get_specific_changelog_xattr $B0/$V0"2"/a/file \
+-        trusted.afr.$V0-client-0 "data")
+-b2c1f=$(afr_get_specific_changelog_xattr $B0/$V0"2"/a/file \
+-        trusted.afr.$V0-client-1 "data")
+-
+-EXPECT "00000000|^$" echo $b1c0f
+-EXPECT "00000000|^$" echo $b1c1f
+-EXPECT "00000000|^$" echo $b2c0f
+-EXPECT "00000000|^$" echo $b2c1f
+-
+-EXPECT "00000000|^$" echo $b1c0dir
+-EXPECT "00000000|^$" echo $b1c1dir
+-EXPECT "00000000|^$" echo $b2c0dir
+-EXPECT "00000000|^$" echo $b2c1dir
++EXPECT_WITHIN $HEAL_TIMEOUT "00000000"  \
++afr_get_specific_changelog_xattr $B0/$V0"1"/a/file trusted.afr.$V0-client-0 "data"
++
++EXPECT_WITHIN $HEAL_TIMEOUT "00000000" \
++afr_get_specific_changelog_xattr $B0/$V0"1"/a/file trusted.afr.$V0-client-1 "data"
++
++EXPECT_WITHIN $HEAL_TIMEOUT "00000000" \
++afr_get_specific_changelog_xattr $B0/$V0"2"/a/file trusted.afr.$V0-client-0 "data"
++
++EXPECT_WITHIN $HEAL_TIMEOUT  "00000000" \
++afr_get_specific_changelog_xattr $B0/$V0"2"/a/file trusted.afr.$V0-client-1 "data"
++
++EXPECT_WITHIN $HEAL_TIMEOUT "00000000" \
++afr_get_specific_changelog_xattr $B0/$V0"1"/a trusted.afr.$V0-client-0 "entry"
++
++EXPECT_WITHIN HEAL_TIMEOUT "00000000" \
++afr_get_specific_changelog_xattr $B0/$V0"1"/a trusted.afr.$V0-client-1 "entry"
++
++EXPECT_WITHIN $HEAL_TIMEOUT "00000000" \
++afr_get_specific_changelog_xattr $B0/$V0"2"/a trusted.afr.$V0-client-0 "entry"
++
++EXPECT_WITHIN $HEAL_TIMEOUT  "00000000" \
++afr_get_specific_changelog_xattr $B0/$V0"2"/a trusted.afr.$V0-client-1 "entry"
+ 
+ ## Finish up
+ TEST $CLI volume stop $V0;
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index b232a2d..b5d07ac 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -697,7 +697,8 @@ afr_accuse_smallfiles (xlator_t *this, struct afr_reply *replies,
+ }
+ 
+ int
+-afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode)
++afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode,
++                       gf_boolean_t *start_heal)
+ {
+ 	afr_local_t *local = NULL;
+ 	afr_private_t *priv = NULL;
+@@ -777,6 +778,13 @@ afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode)
+ 		}
+ 	}
+ 
++	for (i = 0; i < priv->child_count; i++) {
++                if (start_heal && priv->child_up[i] &&
++                    (!data_readable[i] || !metadata_readable[i])) {
++                        *start_heal = _gf_true;
++                        break;
++                }
++        }
+ 	afr_inode_read_subvol_set (inode, this, data_readable,
+ 				   metadata_readable, event_generation);
+ 	return ret;
+@@ -815,36 +823,6 @@ ret:
+ 	return -err;
+ }
+ 
+-
+-int
+-afr_refresh_selfheal_wrap (void *opaque)
+-{
+-	call_frame_t *frame = opaque;
+-	afr_local_t *local = NULL;
+-	xlator_t *this = NULL;
+-	int err = 0;
+-
+-	local = frame->local;
+-	this = frame->this;
+-
+-	afr_selfheal (frame->this, local->refreshinode->gfid);
+-
+-	afr_selfheal_unlocked_discover (frame, local->refreshinode,
+-					local->refreshinode->gfid,
+-					local->replies);
+-
+-	afr_replies_interpret (frame, this, local->refreshinode);
+-
+-	err = afr_inode_refresh_err (frame, this);
+-
+-        afr_local_replies_wipe (local, this->private);
+-
+-	local->refreshfn (frame, this, err);
+-
+-	return 0;
+-}
+-
+-
+ gf_boolean_t
+ afr_selfheal_enabled (xlator_t *this)
+ {
+@@ -860,35 +838,43 @@ afr_selfheal_enabled (xlator_t *this)
+ 	return data || priv->metadata_self_heal || priv->entry_self_heal;
+ }
+ 
+-
+ int
+ afr_inode_refresh_done (call_frame_t *frame, xlator_t *this)
+ {
+-	call_frame_t *heal = NULL;
++	call_frame_t *heal_frame = NULL;
+ 	afr_local_t *local = NULL;
++        gf_boolean_t start_heal = _gf_false;
++        afr_local_t *heal_local = NULL;
++        int op_errno = ENOMEM;
+ 	int ret = 0;
+ 	int err = 0;
+ 
+ 	local = frame->local;
+ 
+-	ret = afr_replies_interpret (frame, this, local->refreshinode);
++	ret = afr_replies_interpret (frame, this, local->refreshinode,
++                                     &start_heal);
+ 
+ 	err = afr_inode_refresh_err (frame, this);
+ 
+         afr_local_replies_wipe (local, this->private);
+ 
+-	if (ret && afr_selfheal_enabled (this)) {
+-		heal = copy_frame (frame);
+-		if (heal)
+-			heal->root->pid = GF_CLIENT_PID_SELF_HEALD;
+-		ret = synctask_new (this->ctx->env, afr_refresh_selfheal_wrap,
+-				    afr_refresh_selfheal_done, heal, frame);
+-		if (ret)
+-			goto refresh_done;
+-	} else {
+-	refresh_done:
+-		local->refreshfn (frame, this, err);
+-	}
++	if (ret && afr_selfheal_enabled (this) && start_heal) {
++                heal_frame = copy_frame (frame);
++                if (!heal_frame)
++                        goto refresh_done;
++                heal_frame->root->pid = GF_CLIENT_PID_SELF_HEALD;
++                heal_local = AFR_FRAME_INIT (heal_frame, op_errno);
++                if (!heal_local) {
++                        AFR_STACK_DESTROY (heal_frame);
++                        goto refresh_done;
++                }
++                heal_local->refreshinode = inode_ref (local->refreshinode);
++                heal_local->heal_frame = heal_frame;
++                afr_throttled_selfheal (heal_frame, this);
++        }
++
++refresh_done:
++        local->refreshfn (frame, this, err);
+ 
+ 	return 0;
+ }
+@@ -1785,7 +1771,7 @@ afr_lookup_done (call_frame_t *frame, xlator_t *this)
+ 		*/
+                 gf_uuid_copy (args.gfid, read_gfid);
+                 args.ia_type = ia_type;
+-		if (afr_replies_interpret (frame, this, local->inode)) {
++		if (afr_replies_interpret (frame, this, local->inode, NULL)) {
+                         read_subvol = afr_read_subvol_decide (local->inode,
+                                                               this, &args);
+ 			afr_inode_read_subvol_reset (local->inode, this);
+@@ -2246,7 +2232,7 @@ afr_discover_done (call_frame_t *frame, xlator_t *this)
+                 goto unwind;
+ 	}
+ 
+-	afr_replies_interpret (frame, this, local->inode);
++	afr_replies_interpret (frame, this, local->inode, NULL);
+ 
+ 	read_subvol = afr_read_subvol_decide (local->inode, this, NULL);
+ 	if (read_subvol == -1) {
+@@ -3899,6 +3885,12 @@ afr_priv_dump (xlator_t *this)
+         gf_proc_dump_write("favorite_child", "%d", priv->favorite_child);
+         gf_proc_dump_write("wait_count", "%u", priv->wait_count);
+         gf_proc_dump_write("quorum-reads", "%d", priv->quorum_reads);
++        gf_proc_dump_write("heal-wait-queue-length", "%d",
++                           priv->heal_wait_qlen);
++        gf_proc_dump_write("heal-waiters", "%d", priv->heal_waiters);
++        gf_proc_dump_write("background-self-heal-count", "%d",
++                           priv->background_self_heal_count);
++        gf_proc_dump_write("healers", "%d", priv->healers);
+ 
+         return 0;
+ }
+@@ -4205,6 +4197,7 @@ afr_local_init (afr_local_t *local, afr_private_t *priv, int32_t *op_errno)
+ 		goto out;
+ 	}
+ 
++        INIT_LIST_HEAD (&local->healer);
+ 	return 0;
+ out:
+         return -1;
+diff --git a/xlators/cluster/afr/src/afr-dir-write.c b/xlators/cluster/afr/src/afr-dir-write.c
+index 3d586dd..887298b 100644
+--- a/xlators/cluster/afr/src/afr-dir-write.c
++++ b/xlators/cluster/afr/src/afr-dir-write.c
+@@ -93,7 +93,7 @@ __afr_dir_write_finalize (call_frame_t *frame, xlator_t *this)
+ 	priv = this->private;
+ 
+ 	if (local->inode) {
+-		afr_replies_interpret (frame, this, local->inode);
++		afr_replies_interpret (frame, this, local->inode, NULL);
+ 		inode_read_subvol = afr_data_subvol_get (local->inode, this,
+ 							 NULL, NULL, NULL);
+ 	}
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index 6e90de0..73d7e94 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -20,6 +20,9 @@
+ #include "protocol-common.h"
+ #include "afr-messages.h"
+ 
++void
++afr_heal_synctask (xlator_t *this, afr_local_t *local);
++
+ int
+ afr_selfheal_post_op_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 			  int op_ret, int op_errno, dict_t *xattr, dict_t *xdata)
+@@ -1423,3 +1426,110 @@ afr_selfheal (xlator_t *this, uuid_t gfid)
+ 
+ 	return ret;
+ }
++
++afr_local_t*
++__afr_dequeue_heals (afr_private_t *priv)
++{
++        afr_local_t *local = NULL;
++
++        if (list_empty (&priv->heal_waiting))
++                goto none;
++        if ((priv->background_self_heal_count > 0) &&
++            (priv->healers >= priv->background_self_heal_count))
++                goto none;
++
++        local = list_entry (priv->heal_waiting.next, afr_local_t, healer);
++        priv->heal_waiters--;
++        GF_ASSERT (priv->heal_waiters >= 0);
++        list_del_init(&local->healer);
++        list_add(&local->healer, &priv->healing);
++        priv->healers++;
++        return local;
++none:
++        gf_msg_debug (THIS->name, 0, "Nothing dequeued. "
++                      "Num healers: %d, Num Waiters: %d",
++                      priv->healers, priv->heal_waiters);
++        return NULL;
++}
++
++int
++afr_refresh_selfheal_wrap (void *opaque)
++{
++        call_frame_t *heal_frame = opaque;
++        afr_local_t *local = heal_frame->local;
++        int ret = 0;
++
++        ret = afr_selfheal (heal_frame->this, local->refreshinode->gfid);
++        return ret;
++}
++
++int
++afr_refresh_heal_done (int ret, call_frame_t *frame, void *opaque)
++{
++        call_frame_t *heal_frame = opaque;
++        xlator_t *this = heal_frame->this;
++        afr_private_t *priv = this->private;
++        afr_local_t *local = heal_frame->local;
++
++        LOCK (&priv->lock);
++        {
++                list_del_init(&local->healer);
++                priv->healers--;
++                GF_ASSERT (priv->healers >= 0);
++                local = __afr_dequeue_heals (priv);
++        }
++        UNLOCK (&priv->lock);
++
++        if (heal_frame)
++                AFR_STACK_DESTROY (heal_frame);
++
++        if (local)
++                afr_heal_synctask (this, local);
++        return 0;
++
++}
++
++void
++afr_heal_synctask (xlator_t *this, afr_local_t *local)
++{
++        int ret = 0;
++        call_frame_t *heal_frame = NULL;
++
++        heal_frame = local->heal_frame;
++        ret = synctask_new (this->ctx->env, afr_refresh_selfheal_wrap,
++                            afr_refresh_heal_done, heal_frame, heal_frame);
++        if (ret < 0)
++                /* Heal not launched. Will be queued when the next inode
++                 * refresh happens and shd hasn't healed it yet. */
++                afr_refresh_heal_done (ret, heal_frame, heal_frame);
++}
++
++void
++afr_throttled_selfheal (call_frame_t *frame, xlator_t *this)
++{
++        gf_boolean_t can_heal = _gf_true;
++        afr_private_t *priv = this->private;
++        afr_local_t *local = frame->local;
++
++        LOCK (&priv->lock);
++        {
++                if ((priv->background_self_heal_count > 0) &&
++                    (priv->heal_wait_qlen + priv->background_self_heal_count) >
++                    (priv->heal_waiters + priv->healers)) {
++                        list_add_tail(&local->healer, &priv->heal_waiting);
++                        priv->heal_waiters++;
++                        local = __afr_dequeue_heals (priv);
++                } else {
++                        can_heal = _gf_false;
++                }
++        }
++        UNLOCK (&priv->lock);
++
++        if (can_heal) {
++                if (local)
++                        afr_heal_synctask (this, local);
++                else
++                        gf_msg_debug (this->name, 0, "Max number of heals are "
++                                      "pending, background self-heal rejected.");
++        }
++}
+diff --git a/xlators/cluster/afr/src/afr-self-heal.h b/xlators/cluster/afr/src/afr-self-heal.h
+index 74e852a..b298fa1 100644
+--- a/xlators/cluster/afr/src/afr-self-heal.h
++++ b/xlators/cluster/afr/src/afr-self-heal.h
+@@ -85,6 +85,9 @@
+ int
+ afr_selfheal (xlator_t *this, uuid_t gfid);
+ 
++void
++afr_throttled_selfheal (call_frame_t *frame, xlator_t *this);
++
+ int
+ afr_selfheal_name (xlator_t *this, uuid_t gfid, const char *name,
+                    void *gfid_req);
+diff --git a/xlators/cluster/afr/src/afr.c b/xlators/cluster/afr/src/afr.c
+index 5ef920a..d65895a 100644
+--- a/xlators/cluster/afr/src/afr.c
++++ b/xlators/cluster/afr/src/afr.c
+@@ -128,6 +128,10 @@ reconfigure (xlator_t *this, dict_t *options)
+                           priv->background_self_heal_count, options, uint32,
+                           out);
+ 
++        GF_OPTION_RECONF ("heal-wait-queue-length",
++                          priv->heal_wait_qlen, options, uint32, out);
++
++
+         GF_OPTION_RECONF ("metadata-self-heal",
+                           priv->metadata_self_heal, options, bool, out);
+ 
+@@ -277,6 +281,8 @@ init (xlator_t *this)
+         priv->read_child = -1;
+ 
+         GF_OPTION_INIT ("arbiter-count", priv->arbiter_count, uint32, out);
++        INIT_LIST_HEAD (&priv->healing);
++        INIT_LIST_HEAD (&priv->heal_waiting);
+ 
+         priv->spb_choice_timeout = AFR_DEFAULT_SPB_CHOICE_TIMEOUT;
+ 
+@@ -329,6 +335,9 @@ init (xlator_t *this)
+         GF_OPTION_INIT ("background-self-heal-count",
+                         priv->background_self_heal_count, uint32, out);
+ 
++        GF_OPTION_INIT ("heal-wait-queue-length",
++                        priv->heal_wait_qlen, uint32, out);
++
+         GF_OPTION_INIT ("data-self-heal", priv->data_self_heal, str, out);
+ 
+         GF_OPTION_INIT ("data-self-heal-algorithm",
+@@ -587,10 +596,21 @@ struct volume_options options[] = {
+         { .key  = {"background-self-heal-count"},
+           .type = GF_OPTION_TYPE_INT,
+           .min  = 0,
+-          .default_value = "16",
++          .max  = 256,
++          .default_value = "8",
++          .validate = GF_OPT_VALIDATE_MIN,
++          .description = "This specifies the number of per client self-heal "
++                         "jobs that can perform parallel heals in the "
++                         "background."
++        },
++        { .key  = {"heal-wait-queue-length"},
++          .type = GF_OPTION_TYPE_INT,
++          .min  = 0,
++          .max  = 10000, /*Around 100MB with sizeof(afr_local_t)= 10496 bytes*/
++          .default_value = "128",
+           .validate = GF_OPT_VALIDATE_MIN,
+-          .description = "This specifies the number of self-heals that can be "
+-                         " performed in background without blocking the fop"
++          .description = "This specifies the number of heals that can be queued"
++                         " for the parallel background self heal jobs."
+         },
+         { .key  = {"data-self-heal"},
+           .type = GF_OPTION_TYPE_STR,
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index 52f9c51..9915344 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -74,8 +74,17 @@ typedef struct _afr_private {
+         unsigned int data_self_heal_window_size;  /* max number of pipelined
+                                                      read/writes */
+ 
+-        unsigned int background_self_heal_count;
+-        unsigned int background_self_heals_started;
++        struct list_head heal_waiting; /*queue for files that need heal*/
++        uint32_t  heal_wait_qlen; /*configurable queue length for heal_waiting*/
++        int32_t  heal_waiters; /* No. of elements currently in wait queue.*/
++
++        struct list_head healing;/* queue for files that are undergoing
++                                    background heal*/
++        uint32_t  background_self_heal_count;/*configurable queue length for
++                                               healing queue*/
++        int32_t  healers;/* No. of elements currently undergoing background
++                          heal*/
++
+         gf_boolean_t metadata_self_heal;   /* on/off */
+         gf_boolean_t entry_self_heal;      /* on/off */
+ 
+@@ -127,12 +136,14 @@ typedef struct _afr_private {
+ 
+ 	afr_self_heald_t       shd;
+ 
+-	/* pump dependencies */
+-	void                   *pump_private;
+-	gf_boolean_t           use_afr_in_pump;
+         gf_boolean_t           consistent_metadata;
+         uint64_t               spb_choice_timeout;
+         gf_boolean_t           need_heal;
++
++	/* pump dependencies */
++	void                   *pump_private;
++	gf_boolean_t           use_afr_in_pump;
++
+ } afr_private_t;
+ 
+ 
+@@ -740,6 +751,10 @@ typedef struct _afr_local {
+         int             xflag;
+         gf_boolean_t    do_discovery;
+ 	struct afr_reply *replies;
++
++        /* For  client side background heals. */
++        struct list_head healer;
++        call_frame_t *heal_frame;
+ } afr_local_t;
+ 
+ 
+@@ -891,7 +906,8 @@ int
+ afr_locked_nodes_count (unsigned char *locked_nodes, int child_count);
+ 
+ int
+-afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode);
++afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode,
++                       gf_boolean_t *start_heal);
+ 
+ void
+ afr_local_replies_wipe (afr_local_t *local, afr_private_t *priv);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index f5746c8..1b68c1b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -1129,6 +1129,14 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version = GD_OP_VERSION_RHS_3_0_4,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
++        { .key        = "cluster.heal-wait-queue-length",
++          .voltype    = "cluster/replicate",
++          .type       = DOC,
++          .op_version = GD_OP_VERSION_3_7_10,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
++
++        /* stripe xlator options */
+         { .key         = "cluster.stripe-block-size",
+           .voltype     = "cluster/stripe",
+           .option      = "block-size",
+-- 
+1.7.1
+

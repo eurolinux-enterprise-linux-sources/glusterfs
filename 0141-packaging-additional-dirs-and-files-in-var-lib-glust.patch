@@ -1,0 +1,45 @@
+From d1dc363c016687328fd5d7cb2698a0b759ecdfb9 Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Wed, 11 May 2016 17:20:31 +0530
+Subject: [PATCH 141/158] packaging: additional dirs and files in /var/lib/glusterd/
+
+Restore the %config(noreplace) on /var/lib/glusterd/groups/virt
+
+Add directories /var/lib/glusterd/hooks and /var/lib/glusterd/hooks/1
+to the list for server package ownership
+
+Upstream:
+> BUG: 1326410
+> Gerrit-Url: http://review.gluster.org/14294
+
+Change-Id: I10324b80ba35acfc0dc52465547423e89f92113f
+BUG: 1324820
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74102
+Reviewed-by: Kaleb Keithley <kkeithle@redhat.com>
+Tested-by: Kaleb Keithley <kkeithle@redhat.com>
+---
+ glusterfs.spec.in |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 9ddfd58..60ffa65 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1306,10 +1306,12 @@ exit 0
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd
+ %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/bitd
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/groups
+-            %attr(0644,-,-) %{_sharedstatedir}/glusterd/groups/virt
++            %attr(0644,-,-) %config(noreplace) %{_sharedstatedir}/glusterd/groups/virt
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glusterfind
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glusterfind/.keys
+ %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glustershd
++       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks
++       %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick
+        %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post
+             %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post/disabled-quota-root-xattr-heal.sh
+-- 
+1.7.1
+

@@ -1,0 +1,50 @@
+From 1e56aeea8970fe602d76f12d31ed79e35e7d6101 Mon Sep 17 00:00:00 2001
+From: Ashish Pandey <aspandey@redhat.com>
+Date: Mon, 6 Jun 2016 10:17:54 +0530
+Subject: [PATCH 184/192] cluster/ec: Restrict the launch of replace brick heal
+
+Problem: When features.cache-invalidation is ON, a lot of
+ec_notify function gets called which leads to launch of
+too many heals. This leads to no heal completion,
+which causes accumulation of heals.
+
+Solution: ec_launch_replace_heal should not be launch
+for every event. Replace brick will trigger a child up
+event and then only this heal function should be called.
+
+master-
+http://review.gluster.org/#/c/14649/
+
+release-3.7-
+http://review.gluster.org/#/c/14652/
+
+release-3.8-
+http://review.gluster.org/#/c/14651/
+
+Change-Id: I57b44c6a279d57230daea1d93229be6069245b7d
+BUG: 1342426
+Signed-off-by: Ashish Pandey <aspandey@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/76033
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/cluster/ec/src/ec.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/cluster/ec/src/ec.c b/xlators/cluster/ec/src/ec.c
+index 3133962..4c9740c 100644
+--- a/xlators/cluster/ec/src/ec.c
++++ b/xlators/cluster/ec/src/ec.c
+@@ -517,7 +517,8 @@ unlock:
+         }
+ 
+         if (ec->shd.iamshd &&
+-            ec->xl_notify_count == ec->nodes) {
++            ec->xl_notify_count == ec->nodes &&
++            event == GF_EVENT_CHILD_UP) {
+                 ec_launch_replace_heal (ec);
+         }
+ out:
+-- 
+1.7.1
+

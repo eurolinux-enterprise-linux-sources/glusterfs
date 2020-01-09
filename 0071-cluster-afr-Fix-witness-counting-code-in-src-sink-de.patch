@@ -1,0 +1,197 @@
+From b7c05e5e8c11877eb7bfa034f63dee7100c4828f Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 21 Mar 2016 23:26:43 +0530
+Subject: [PATCH 71/80] cluster/afr: Fix witness counting code in src/sink detection
+
+Problem:
+In afr-v1 pre-op, xattrop increments self xattr first then it increments the
+value on rest. In post-op, xattr value is decreased first on rest and at last
+it gets decremented on self. So for a possible operation to be witnessed i.e.
+a fop is seen by the brick it is important to have at least 1 pending op
+because without completing pre-op fop won't come. The other possibility is when
+fop completes but at the time of post-op after decrementing pending counts on
+others just before decrementing its own pending count, the brick dies.
+
+Fix:
+Fix witness detection code in afr_self_heal_find_direction()
+
+ >BUG: 1322253
+ >Change-Id: Ia7e76482c0a46e775e269bb96ec1b9490a3ac18f
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13811
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >Reviewed-by: Ravishankar N <ravishankar@redhat.com>
+ >(cherry picked from commit e88962f8c49ea1d65fa26703e5c11be3f21af2ba)
+
+ >Change-Id: I5d9a6d323b35409127c26f3ce61c5e1d91395b18
+ >BUG: 1326212
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13975
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+
+BUG: 1319406
+Change-Id: I318faee936c3c7e923af072dc4d6bad6f3665239
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72369
+---
+ tests/basic/afr/entry-self-heal.t              |   47 +++++++++++++++++++++++-
+ xlators/cluster/afr/src/afr-self-heal-common.c |   26 ++++++++++----
+ 2 files changed, 64 insertions(+), 9 deletions(-)
+
+diff --git a/tests/basic/afr/entry-self-heal.t b/tests/basic/afr/entry-self-heal.t
+index 5683785..f077672 100644
+--- a/tests/basic/afr/entry-self-heal.t
++++ b/tests/basic/afr/entry-self-heal.t
+@@ -86,7 +86,11 @@ cd $M0
+ #_me_ is dir on which missing entry self-heal happens, _heal is where dir self-heal happens
+ #spb is split-brain, fool is all fool
+ 
+-TEST mkdir spb_heal spb spb_me_heal spb_me fool_heal fool_me v1_fool_heal v1_fool_me source_creations_heal source_deletions_heal source_creations_me source_deletions_me v1_dirty_me v1_dirty_heal
++#source_self_accusing means there exists source and a sink which self-accuses.
++#This simulates failures where fops failed on the bricks without it going down.
++#Something like EACCESS/EDQUOT etc
++
++TEST mkdir spb_heal spb spb_me_heal spb_me fool_heal fool_me v1_fool_heal v1_fool_me source_creations_heal source_deletions_heal source_creations_me source_deletions_me v1_dirty_me v1_dirty_heal source_self_accusing
+ TEST mkfifo source_deletions_heal/fifo
+ TEST mknod  source_deletions_heal/block b 0 0
+ TEST mknod  source_deletions_heal/char c 0 0
+@@ -102,10 +106,21 @@ TEST touch  source_deletions_me/file
+ TEST ln -s  source_deletions_me/file source_deletions_me/slink
+ TEST mkdir  source_deletions_me/dir1
+ TEST mkdir  source_deletions_me/dir1/dir2
++
++TEST mkfifo source_self_accusing/fifo
++TEST mknod  source_self_accusing/block b 0 0
++TEST mknod  source_self_accusing/char c 0 0
++TEST touch  source_self_accusing/file
++TEST ln -s  source_self_accusing/file source_self_accusing/slink
++TEST mkdir  source_self_accusing/dir1
++TEST mkdir  source_self_accusing/dir1/dir2
++
+ TEST kill_brick $V0 $H0 $B0/${V0}0
++
+ TEST touch spb_heal/0 spb/0 spb_me_heal/0 spb_me/0 fool_heal/0 fool_me/0 v1_fool_heal/0 v1_fool_me/0 v1_dirty_heal/0 v1_dirty_me/0
+ TEST rm -rf source_deletions_heal/fifo source_deletions_heal/block source_deletions_heal/char source_deletions_heal/file source_deletions_heal/slink source_deletions_heal/dir1
+ TEST rm -rf source_deletions_me/fifo source_deletions_me/block source_deletions_me/char source_deletions_me/file source_deletions_me/slink source_deletions_me/dir1
++TEST rm -rf source_self_accusing/fifo source_self_accusing/block source_self_accusing/char source_self_accusing/file source_self_accusing/slink source_self_accusing/dir1
+ 
+ #Test that the files are deleted
+ TEST ! stat $B0/${V0}1/source_deletions_heal/fifo
+@@ -120,6 +135,13 @@ TEST ! stat $B0/${V0}1/source_deletions_me/char
+ TEST ! stat $B0/${V0}1/source_deletions_me/file
+ TEST ! stat $B0/${V0}1/source_deletions_me/slink
+ TEST ! stat $B0/${V0}1/source_deletions_me/dir1
++TEST ! stat $B0/${V0}1/source_self_accusing/fifo
++TEST ! stat $B0/${V0}1/source_self_accusing/block
++TEST ! stat $B0/${V0}1/source_self_accusing/char
++TEST ! stat $B0/${V0}1/source_self_accusing/file
++TEST ! stat $B0/${V0}1/source_self_accusing/slink
++TEST ! stat $B0/${V0}1/source_self_accusing/dir1
++
+ 
+ TEST mkfifo source_creations_heal/fifo
+ TEST mknod  source_creations_heal/block b 0 0
+@@ -162,6 +184,9 @@ setfattr -x trusted.afr.$V0-client-1 $B0/${V0}0/{fool_heal,fool_me}
+ setfattr -n trusted.afr.dirty -v 0x000000000000000000000001 $B0/${V0}1/{fool_heal,fool_me}
+ setfattr -n trusted.afr.$V0-client-0 -v 0x000000000000000000000001 $B0/${V0}1/{v1_fool_heal,v1_fool_me}
+ 
++#simulate self-accusing for source_self_accusing
++TEST setfattr -n trusted.afr.$V0-client-0 -v 0x000000000000000000000006 $B0/${V0}0/source_self_accusing
++
+ $CLI volume start $V0 force
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" afr_child_up_status $V0 1
+ EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" afr_child_up_status $V0 0
+@@ -272,6 +297,7 @@ TEST stat v1_fool_heal
+ TEST stat v1_fool_me
+ TEST stat source_deletions_heal
+ TEST stat source_deletions_me
++TEST stat source_self_accusing
+ TEST stat source_creations_heal
+ TEST stat source_creations_me
+ TEST stat v1_dirty_heal
+@@ -304,7 +330,7 @@ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status_in_shd $V0 0
+ EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status_in_shd $V0 1
+ 
+ TEST $CLI volume heal $V0;
+-EXPECT_WITHIN $HEAL_TIMEOUT "~" print_pending_heals spb_heal spb_me_heal fool_heal fool_me v1_fool_heal v1_fool_me source_deletions_heal source_deletions_me source_creations_heal source_creations_me v1_dirty_heal v1_dirty_me
++EXPECT_WITHIN $HEAL_TIMEOUT "~" print_pending_heals spb_heal spb_me_heal fool_heal fool_me v1_fool_heal v1_fool_me source_deletions_heal source_deletions_me source_creations_heal source_creations_me v1_dirty_heal v1_dirty_me source_self_accusing
+ 
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 spb_heal
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 spb_me_heal
+@@ -314,6 +340,7 @@ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 v1_fool_me
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 source_deletions_heal
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 source_deletions_me
++EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 source_self_accusing
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 source_creations_heal
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 source_creations_me
+ EXPECT "Y${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}${zero_xattr}" heal_status $B0/${V0}0 $B0/${V0}1 v1_dirty_heal
+@@ -361,6 +388,22 @@ TEST ! stat $B0/${V0}1/source_deletions_heal/dir1/dir2
+ TEST ! stat $B0/${V0}0/source_deletions_heal/dir1
+ TEST ! stat $B0/${V0}1/source_deletions_heal/dir1
+ 
++#Check if stale files are deleted on access
++TEST ! stat $B0/${V0}0/source_self_accusing/fifo
++TEST ! stat $B0/${V0}1/source_self_accusing/fifo
++TEST ! stat $B0/${V0}0/source_self_accusing/block
++TEST ! stat $B0/${V0}1/source_self_accusing/block
++TEST ! stat $B0/${V0}0/source_self_accusing/char
++TEST ! stat $B0/${V0}1/source_self_accusing/char
++TEST ! stat $B0/${V0}0/source_self_accusing/file
++TEST ! stat $B0/${V0}1/source_self_accusing/file
++TEST ! stat $B0/${V0}0/source_self_accusing/file
++TEST ! stat $B0/${V0}1/source_self_accusing/file
++TEST ! stat $B0/${V0}0/source_self_accusing/dir1/dir2
++TEST ! stat $B0/${V0}1/source_self_accusing/dir1/dir2
++TEST ! stat $B0/${V0}0/source_self_accusing/dir1
++TEST ! stat $B0/${V0}1/source_self_accusing/dir1
++
+ #Test if the files created as part of full self-heal correctly
+ r=$(get_file_type $B0/${V0}0/source_creations_heal/fifo)
+ EXPECT "$r" get_file_type $B0/${V0}1/source_creations_heal/fifo
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index db9af05..b3dbc95 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -697,15 +697,27 @@ afr_selfheal_find_direction (call_frame_t *frame, xlator_t *this,
+                 }
+         }
+ 
+-        /* In afr-v1 if a file is self-accused but didn't have any pending
+-         * operations on others then it is similar to 'dirty' in afr-v2.
+-         * Consider such cases as witness.
+-         */
+-        for (i = 0; i < priv->child_count; i++) {
+-                if (self_accused[i] && !pending[i])
+-                        witness[i] += matrix[i][i];
++        /* One more class of witness similar to dirty in v2 is where no pending
++         * exists but we have self-accusing markers. This can happen in afr-v1
++         * if the brick crashes just after doing xattrop on self but
++         * before xattrop on the other xattrs on the brick in pre-op. */
++        if (AFR_COUNT (pending, priv->child_count) == 0) {
++                for (i = 0; i < priv->child_count; i++) {
++                        if (self_accused[i])
++                                witness[i] += matrix[i][i];
++                }
++        } else {
++                /* In afr-v1 if a file is self-accused and has pending
++                 * operations on others then it is similar to 'dirty' in afr-v2.
++                 * Consider such cases as witness.
++                 */
++                for (i = 0; i < priv->child_count; i++) {
++                        if (self_accused[i] && pending[i])
++                                witness[i] += matrix[i][i];
++                }
+         }
+ 
++
+         /* count the number of dirty fops witnessed */
+         for (i = 0; i < priv->child_count; i++)
+                 witness[i] += dirty[i];
+-- 
+1.7.1
+

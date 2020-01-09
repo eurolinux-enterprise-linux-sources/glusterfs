@@ -67,7 +67,7 @@ typedef ssize_t (*mnt3_serializer) (struct iovec outmsg, void *args);
 extern void *
 mount3udp_thread (void *argv);
 
-static inline void
+static void
 mnt3_export_free (struct mnt3_export *exp)
 {
         if (!exp)
@@ -207,7 +207,7 @@ out:
  *
  * Not for external use.
  */
-inline void
+void
 __mountdict_remove (struct mount3_state *ms, struct mountentry *me)
 {
         dict_del (ms->mountdict, me->hashkey);
@@ -1062,8 +1062,9 @@ __mnt3_resolve_export_subdir_comp (mnt3_resolve_t *mres)
         /* Wipe the contents of the previous component */
         gf_uuid_copy (gfid, mres->resolveloc.inode->gfid);
         nfs_loc_wipe (&mres->resolveloc);
-        ret = nfs_entry_loc_fill (mres->exp->vol->itable, gfid, nextcomp,
-                                  &mres->resolveloc, NFS_RESOLVE_CREATE);
+        ret = nfs_entry_loc_fill (mres->mstate->nfsx, mres->exp->vol->itable,
+                                  gfid, nextcomp, &mres->resolveloc,
+                                  NFS_RESOLVE_CREATE);
         if ((ret < 0) && (ret != -2)) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, EFAULT,
                         NFS_MSG_RESOLVE_INODE_FAIL, "Failed to resolve and "
@@ -1088,6 +1089,21 @@ err:
         return ret;
 }
 
+int __mnt3_resolve_subdir (mnt3_resolve_t *mres);
+
+/*
+ * Per the AFR2 comments, this function performs the "fresh" lookup
+ * by deleting the inode from cache and calling __mnt3_resolve_subdir
+ * again.
+ */
+int __mnt3_fresh_lookup (mnt3_resolve_t *mres) {
+        inode_unlink (mres->resolveloc.inode,
+                mres->resolveloc.parent, mres->resolveloc.name);
+        strncpy (mres->remainingdir, mres->resolveloc.path,
+                strlen(mres->resolveloc.path));
+        nfs_loc_wipe (&mres->resolveloc);
+        return __mnt3_resolve_subdir (mres);
+}
 
 int32_t
 mnt3_resolve_subdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
@@ -1108,11 +1124,16 @@ mnt3_resolve_subdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         int                     authcode = 0;
         char                    *authorized_host = NULL;
         char                    *authorized_path = NULL;
+        inode_t                 *linked_inode = NULL;
 
         mres = frame->local;
         ms = mres->mstate;
         mntxl = (xlator_t *)cookie;
-        if (op_ret == -1) {
+        if (op_ret == -1 && op_errno == ESTALE) {
+                /* Nuke inode from cache and try the LOOKUP
+                 * request again. */
+                return __mnt3_fresh_lookup (mres);
+        } else if (op_ret == -1) {
                 gf_msg (GF_NFS, GF_LOG_ERROR, op_errno,
                         NFS_MSG_RESOLVE_SUBDIR_FAIL, "path=%s (%s)",
                         mres->resolveloc.path, strerror (op_errno));
@@ -1120,8 +1141,12 @@ mnt3_resolve_subdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto err;
         }
 
-        inode_link (mres->resolveloc.inode, mres->resolveloc.parent,
-                    mres->resolveloc.name, buf);
+        linked_inode = inode_link (mres->resolveloc.inode,
+                                   mres->resolveloc.parent,
+                                   mres->resolveloc.name, buf);
+
+        if (linked_inode)
+                nfs_fix_generation (this, linked_inode);
 
         nfs3_fh_build_child_fh (&mres->parentfh, buf, &fh);
         if (strlen (mres->remainingdir) <= 0) {
@@ -1352,8 +1377,9 @@ __mnt3_resolve_subdir (mnt3_resolve_t *mres)
                 goto err;
 
         rootgfid[15] = 1;
-        ret = nfs_entry_loc_fill (mres->exp->vol->itable, rootgfid, firstcomp,
-                                  &mres->resolveloc, NFS_RESOLVE_CREATE);
+        ret = nfs_entry_loc_fill (mres->mstate->nfsx, mres->exp->vol->itable,
+                                  rootgfid, firstcomp, &mres->resolveloc,
+                                  NFS_RESOLVE_CREATE);
         if ((ret < 0) && (ret != -2)) {
                 gf_msg (GF_MNT, GF_LOG_ERROR, EFAULT,
                         NFS_MSG_RESOLVE_INODE_FAIL, "Failed to resolve and "
@@ -1895,7 +1921,7 @@ out:
  * a write operation.
  *
  */
-inline int
+int
 mnt3_check_cached_fh (struct mount3_state *ms, struct nfs3_fh *fh,
                       const char *host_addr, gf_boolean_t is_write_op)
 {

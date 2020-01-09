@@ -1,0 +1,225 @@
+From 814ae32757bf65eb497b41f5ab504593a05520f0 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 28 Mar 2016 16:31:12 +0530
+Subject: [PATCH 74/80] cluster/afr: Don't lookup/forget inodes
+
+Problem:
+All inodes that are looked-up are always forgotten without fail in
+afr removing the benefits of them being in lru. This same code can
+cause crashes if between inode_lookup, inode_forget in afr if the
+top xlator does inode_forget(0).
+
+Fix:
+Don't use lookup/forget in afr. No benefits are there at the moment
+for keeping this code. It is impossible to prevent top xlators to
+do inode_forget(0). Found similar instances in ec
+and removed them even though those code paths are not going to
+be executed in any place other than heal-daemon.
+
+ >BUG: 1321554
+ >Change-Id: Ia4cb236178f7f129cc898d53f0bbd26f494a2a8d
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13834
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Anuradha Talur <atalur@redhat.com>
+
+ >BUG: 1327864
+ >Change-Id: I3507ed88cd75e069ed302525bfa259cf407871fb
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/14009
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+
+BUG: 1314724
+Change-Id: Ib8607fedd60722877539f36c2f79c94531cc2538
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72372
+---
+ xlators/cluster/afr/src/afr-common.c           |    7 ++-----
+ xlators/cluster/afr/src/afr-self-heal-common.c |   20 ++------------------
+ xlators/cluster/afr/src/afr-self-heal.h        |    3 ---
+ xlators/cluster/afr/src/afr-self-heald.c       |    7 +------
+ xlators/cluster/ec/src/ec-heald.c              |   12 +-----------
+ 5 files changed, 6 insertions(+), 43 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index dcbab23..b799bff 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -1953,12 +1953,11 @@ afr_lookup_sh_metadata_wrap (void *opaque)
+         if (first == -1)
+                 goto out;
+ 
+-        inode = afr_inode_link (local->inode,&replies[first].poststat);
++        inode = inode_link (local->inode, NULL, NULL, &replies[first].poststat);
+         if(!inode)
+                 goto out;
+ 
+         afr_selfheal_metadata (frame, this, inode);
+-        inode_forget (inode, 1);
+         inode_unref (inode);
+ 
+         afr_local_replies_wipe (local, this->private);
+@@ -4839,10 +4838,8 @@ out:
+         AFR_STACK_UNWIND (getxattr, frame, ret, op_errno, dict, NULL);
+         if (dict)
+                dict_unref (dict);
+-        if (inode) {
+-                inode_forget (inode, 1);
++        if (inode)
+                 inode_unref (inode);
+-        }
+         GF_FREE (substr);
+         return ret;
+ }
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index 130388d..2dc3448 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -1275,20 +1275,6 @@ afr_is_entry_set (xlator_t *this, dict_t *xdata)
+ 	return afr_is_pending_set (this, xdata, AFR_ENTRY_TRANSACTION);
+ }
+ 
+-
+-inode_t*
+-afr_inode_link (inode_t *inode, struct iatt *iatt)
+-{
+-	inode_t *linked_inode = NULL;
+-
+-	linked_inode = inode_link (inode, NULL, NULL, iatt);
+-
+-	if (linked_inode)
+-		inode_lookup (linked_inode);
+-        return linked_inode;
+-}
+-
+-
+ /*
+  * This function inspects the looked up replies (in an unlocked manner)
+  * and decides whether a locked verification and possible healing is
+@@ -1415,7 +1401,7 @@ afr_selfheal_unlocked_inspect (call_frame_t *frame, xlator_t *this,
+ 	}
+ 
+ 	if (valid_cnt > 0 && link_inode) {
+-		*link_inode = afr_inode_link (inode, &first);
++		*link_inode = inode_link (inode, NULL, NULL, &first);
+                 if (!*link_inode) {
+                         ret = -EINVAL;
+                         goto out;
+@@ -1576,10 +1562,8 @@ afr_selfheal_do (call_frame_t *frame, xlator_t *this, uuid_t gfid)
+                 ret = 0;
+ 
+ out:
+-        if (inode) {
+-                inode_forget (inode, 1);
++        if (inode)
+                 inode_unref (inode);
+-        }
+         return ret;
+ }
+ /*
+diff --git a/xlators/cluster/afr/src/afr-self-heal.h b/xlators/cluster/afr/src/afr-self-heal.h
+index e0a3341..afc086c 100644
+--- a/xlators/cluster/afr/src/afr-self-heal.h
++++ b/xlators/cluster/afr/src/afr-self-heal.h
+@@ -199,9 +199,6 @@ afr_selfheal_newentry_mark (call_frame_t *frame, xlator_t *this, inode_t *inode,
+                             int source, struct afr_reply *replies,
+                             unsigned char *sources, unsigned char *newentry);
+ 
+-inode_t*
+-afr_inode_link (inode_t *inode, struct iatt *iatt);
+-
+ unsigned int
+ afr_success_count (struct afr_reply *replies, unsigned int count);
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heald.c b/xlators/cluster/afr/src/afr-self-heald.c
+index 1da3cb9..21b13b7 100644
+--- a/xlators/cluster/afr/src/afr-self-heald.c
++++ b/xlators/cluster/afr/src/afr-self-heald.c
+@@ -164,10 +164,8 @@ afr_shd_inode_find (xlator_t *this, xlator_t *subvol, uuid_t gfid)
+ 	struct iatt iatt = {0, };
+ 
+ 	inode = inode_find (this->itable, gfid);
+-	if (inode) {
+-                inode_lookup (inode);
++	if (inode)
+ 		goto out;
+-        }
+ 
+ 	loc.inode = inode_new (this->itable);
+ 	if (!loc.inode)
+@@ -179,8 +177,6 @@ afr_shd_inode_find (xlator_t *this, xlator_t *subvol, uuid_t gfid)
+ 		goto out;
+ 
+ 	inode = inode_link (loc.inode, NULL, NULL, &iatt);
+-	if (inode)
+-		inode_lookup (inode);
+ out:
+ 	loc_wipe (&loc);
+ 	return inode;
+@@ -449,7 +445,6 @@ afr_shd_index_sweep (struct subvol_healer *healer, char *vgfid)
+         ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+                                healer, afr_shd_index_heal);
+ 
+-        inode_forget (loc.inode, 1);
+         loc_wipe (&loc);
+ 
+         if (ret == 0)
+diff --git a/xlators/cluster/ec/src/ec-heald.c b/xlators/cluster/ec/src/ec-heald.c
+index 2e5098a..0e80768 100644
+--- a/xlators/cluster/ec/src/ec-heald.c
++++ b/xlators/cluster/ec/src/ec-heald.c
+@@ -137,10 +137,8 @@ ec_shd_inode_find (xlator_t *this, xlator_t *subvol,
+ 	*inode =  NULL;
+ 
+         *inode = inode_find (this->itable, gfid);
+-        if (*inode) {
+-                inode_lookup (*inode);
++        if (*inode)
+                 goto out;
+-        }
+ 
+         loc.inode = inode_new (this->itable);
+         if (!loc.inode) {
+@@ -157,8 +155,6 @@ ec_shd_inode_find (xlator_t *this, xlator_t *subvol,
+         if (!*inode) {
+                 ret = -ENOMEM;
+                 goto out;
+-        } else {
+-                inode_lookup (*inode);
+         }
+ out:
+         loc_wipe (&loc);
+@@ -267,8 +263,6 @@ out:
+                         uuid_utoa(loc.gfid));
+                 ec_shd_index_purge (subvol, parent->inode, entry->d_name);
+         }
+-        if (loc.inode)
+-                inode_forget (loc.inode, 0);
+         loc_wipe (&loc);
+ 
+         return 0;
+@@ -296,8 +290,6 @@ ec_shd_index_sweep (struct subvol_healer *healer)
+         ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+                                healer, ec_shd_index_heal);
+ out:
+-        if (loc.inode)
+-                inode_forget (loc.inode, 0);
+         loc_wipe (&loc);
+ 
+         return ret;
+@@ -336,8 +328,6 @@ ec_shd_full_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
+         ret = 0;
+ 
+ out:
+-        if (loc.inode)
+-                inode_forget (loc.inode, 0);
+         loc_wipe (&loc);
+         return ret;
+ }
+-- 
+1.7.1
+

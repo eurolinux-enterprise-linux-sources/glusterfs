@@ -1,0 +1,375 @@
+From 546742ac3d17527dbba3305b1081a4bfaeb029b7 Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Fri, 25 Mar 2016 18:48:30 +0530
+Subject: [PATCH 58/80] afr: add mtime based split-brain resolution to CLI
+
+Patch in master: http://review.gluster.org/#/c/13828/
+Patch in release-3.7: http://review.gluster.org/#/c/13838/
+
+Extended the CLI to include support for split-brain resolution based on
+mtime. The command syntax is:
+
+$:gluster volume heal <VOLNAME> split-brain latest-mtime <FILE>
+
+where <FILE> can be either the full file name as seen from the root of the
+volume (or) the gfid-string representation of the file.
+
+Change-Id: I652df015b42d48c36470e7cc775286ec6fa48fea
+BUG: 1311686
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71610
+Reviewed-by: Anuradha Talur <atalur@redhat.com>
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ cli/src/cli-cmd-parser.c                        |   10 +++
+ cli/src/cli-cmd-volume.c                        |    7 ++-
+ cli/src/cli-rpc-ops.c                           |    3 +-
+ heal/src/glfs-heal.c                            |   17 +++--
+ rpc/rpc-lib/src/protocol-common.h               |    1 +
+ tests/basic/afr/split-brain-healing.t           |   43 ++++++++++++
+ xlators/cluster/afr/src/afr-self-heal-common.c  |   81 ++++++++++++++++++++---
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c |    1 +
+ 8 files changed, 145 insertions(+), 18 deletions(-)
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index 1a4c2f5..3b8f923 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -3601,6 +3601,16 @@ cli_cmd_volume_heal_options_parse (const char **words, int wordcount,
+                                 goto out;
+                         goto done;
+                 }
++                if (!strcmp (words[4], "latest-mtime")) {
++                        ret = dict_set_int32 (dict, "heal-op",
++                                       GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME);
++                        if (ret)
++                                goto out;
++                        ret = dict_set_str (dict, "file", (char *)words[5]);
++                        if (ret)
++                                goto out;
++                        goto done;
++                }
+                 if (!strcmp (words[4], "source-brick")) {
+                         ret = dict_set_int32 (dict, "heal-op",
+                                               GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK);
+diff --git a/cli/src/cli-cmd-volume.c b/cli/src/cli-cmd-volume.c
+index f592658..26936c2 100644
+--- a/cli/src/cli-cmd-volume.c
++++ b/cli/src/cli-cmd-volume.c
+@@ -2115,6 +2115,7 @@ cli_print_brick_status (cli_volume_status_t *status)
+ }
+ 
+ #define NEEDS_GLFS_HEAL(op) ((op == GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE) || \
++                             (op == GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME) ||\
+                              (op == GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK) ||      \
+                              (op == GF_SHD_OP_INDEX_SUMMARY) ||               \
+                              (op == GF_SHD_OP_SPLIT_BRAIN_FILES))
+@@ -2143,6 +2144,10 @@ cli_launch_glfs_heal (int heal_op, dict_t *options)
+                 ret = dict_get_str (options, "file", &filename);
+                 runner_add_args (&runner, "bigger-file", filename, NULL);
+                 break;
++        case GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME:
++                ret = dict_get_str (options, "file", &filename);
++                runner_add_args (&runner, "latest-mtime", filename, NULL);
++                break;
+         case GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK:
+                 ret = dict_get_str (options, "heal-source-hostname",
+                                     &hostname);
+@@ -2627,7 +2632,7 @@ struct cli_cmd volume_cmds[] = {
+         { "volume heal <VOLNAME> [enable | disable | full |"
+           "statistics [heal-count [replica <HOSTNAME:BRICKNAME>]] |"
+           "info [healed | heal-failed | split-brain] |"
+-          "split-brain {bigger-file <FILE> |"
++          "split-brain {bigger-file <FILE> | latest-mtime <FILE> |"
+                        "source-brick <HOSTNAME:BRICKNAME> [<FILE>]}]",
+           cli_cmd_volume_heal_cbk,
+           "self-heal commands on volume specified by <VOLNAME>"},
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 275eb54..9b2699a 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -8469,9 +8469,10 @@ gf_cli_heal_volume_cbk (struct rpc_req *req, struct iovec *iov,
+         case    GF_SHD_OP_STATISTICS_HEAL_COUNT_PER_REPLICA:
+                 heal_op_str = "count of entries to be healed per replica";
+                 break;
+-        /* The below 2 cases are never hit; they're coded only to make
++        /* The below 3 cases are never hit; they're coded only to make
+          * compiler warnings go away.*/
+         case    GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE:
++        case    GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME:
+         case    GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK:
+                 break;
+ 
+diff --git a/heal/src/glfs-heal.c b/heal/src/glfs-heal.c
+index 59bd21f..4e381e8 100644
+--- a/heal/src/glfs-heal.c
++++ b/heal/src/glfs-heal.c
+@@ -24,6 +24,7 @@
+ 
+ #define DEFAULT_HEAL_LOG_FILE_DIRECTORY DATADIR "/log/glusterfs"
+ #define USAGE_STR "Usage: %s <VOLNAME> [bigger-file <FILE> | "\
++                  "latest-mtime <FILE> | "\
+                   "source-brick <HOSTNAME:BRICKNAME> [<FILE>] | "\
+                   "split-brain-info]\n"
+ 
+@@ -794,8 +795,9 @@ out:
+ }
+ 
+ int
+-glfsh_heal_from_bigger_file (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
+-                            char *file)
++glfsh_heal_from_bigger_file_or_mtime (glfs_t *fs, xlator_t *top_subvol,
++                                      loc_t *rootloc, char *file,
++                                      gf_xl_afr_op_t heal_op)
+ {
+ 
+         int ret = -1;
+@@ -804,8 +806,7 @@ glfsh_heal_from_bigger_file (glfs_t *fs, xlator_t *top_subvol, loc_t *rootloc,
+         xattr_req = dict_new();
+         if (!xattr_req)
+                 goto out;
+-        ret = dict_set_int32 (xattr_req, "heal-op",
+-                              GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE);
++        ret = dict_set_int32 (xattr_req, "heal-op", heal_op);
+         if (ret)
+                 goto out;
+         ret = glfsh_heal_splitbrain_file (fs, top_subvol, rootloc, file,
+@@ -868,6 +869,9 @@ main (int argc, char **argv)
+                 if (!strcmp (argv[2], "bigger-file")) {
+                         heal_op = GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE;
+                         file = argv[3];
++                } else if (!strcmp (argv[2], "latest-mtime")) {
++                        heal_op = GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME;
++                        file = argv[3];
+                 } else if (!strcmp (argv[2], "source-brick")) {
+                         heal_op = GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK;
+                         hostname = strtok (argv[3], ":");
+@@ -964,8 +968,9 @@ main (int argc, char **argv)
+                                               heal_op);
+                 break;
+         case GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE:
+-                ret = glfsh_heal_from_bigger_file (fs, top_subvol,
+-                                                   &rootloc, file);
++        case GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME:
++                ret = glfsh_heal_from_bigger_file_or_mtime (fs, top_subvol,
++                                                   &rootloc, file, heal_op);
+                         break;
+         case GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK:
+                 ret = glfsh_heal_from_brick (fs, top_subvol, &rootloc,
+diff --git a/rpc/rpc-lib/src/protocol-common.h b/rpc/rpc-lib/src/protocol-common.h
+index 96d315c..fac9eef 100644
+--- a/rpc/rpc-lib/src/protocol-common.h
++++ b/rpc/rpc-lib/src/protocol-common.h
+@@ -243,6 +243,7 @@ typedef enum {
+         GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK,
+         GF_SHD_OP_HEAL_ENABLE,
+         GF_SHD_OP_HEAL_DISABLE,
++        GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME,
+ } gf_xl_afr_op_t ;
+ 
+ struct gf_gsync_detailed_status_ {
+diff --git a/tests/basic/afr/split-brain-healing.t b/tests/basic/afr/split-brain-healing.t
+index 4132d32..2171de3 100644
+--- a/tests/basic/afr/split-brain-healing.t
++++ b/tests/basic/afr/split-brain-healing.t
+@@ -148,6 +148,49 @@ fi
+ EXPECT "0" echo $?
+ EXPECT $SMALLER_FILE_SIZE stat -c %s file4
+ 
++################ Heal file5 using the latest-mtime option  ##############
++subvolume=$(get_replicate_subvol_number file5)
++if [ $subvolume == 0 ]
++then
++        mtime1=$(stat -c %Y $B0/${V0}1/file5)
++        mtime2=$(stat -c %Y $B0/${V0}2/file5)
++        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
++elif [ $subvolume == 1 ]
++then
++        mtime1=$(stat -c %Y $B0/${V0}3/file5)
++        mtime2=$(stat -c %Y $B0/${V0}4/file5)
++        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
++fi
++$CLI volume heal $V0 split-brain latest-mtime /file5
++EXPECT "0" echo $?
++
++#TODO: Uncomment the below after posix_do_utimes() supports utimensat(2) accuracy
++#TEST [ $LATEST_MTIME -eq $mtime1 ]
++#TEST [ $LATEST_MTIME -eq $mtime2 ]
++
++################ Heal file6 using the latest-mtime option and its gfid  ##############
++subvolume=$(get_replicate_subvol_number file6)
++if [ $subvolume == 0 ]
++then
++        GFID=$(gf_get_gfid_xattr $B0/${V0}1/file6)
++        mtime1=$(stat -c %Y $B0/${V0}1/file6)
++        mtime2=$(stat -c %Y $B0/${V0}2/file6)
++        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
++elif [ $subvolume == 1 ]
++then
++        GFID=$(gf_get_gfid_xattr $B0/${V0}3/file6)
++        mtime1=$(stat -c %Y $B0/${V0}3/file6)
++        mtime2=$(stat -c %Y $B0/${V0}4/file6)
++        LATEST_MTIME=$(($mtime1 > $mtime2 ? $mtime1:$mtime2))
++fi
++GFIDSTR="gfid:$(gf_gfid_xattr_to_str $GFID)"
++$CLI volume heal $V0 split-brain latest-mtime $GFIDSTR
++EXPECT "0" echo $?
++
++#TODO: Uncomment the below after posix_do_utimes() supports utimensat(2) accuracy
++#TEST [ $LATEST_MTIME -eq $mtime1 ]
++#TEST [ $LATEST_MTIME -eq $mtime2 ]
++
+ ################ Heal remaining SB'ed files of replica_0 using B1 as source ##############
+ $CLI volume heal $V0 split-brain source-brick $H0:$B0/${V0}1
+ EXPECT "0" echo $?
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index 73d7e94..cbe70f5 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -329,6 +329,10 @@ afr_mark_largest_file_as_source (xlator_t *this, unsigned char *sources,
+         for (i = 0; i < priv->child_count; i++) {
+                 if (!sources[i])
+                         continue;
++                if (!replies[i].valid || replies[i].op_ret != 0) {
++                        sources[i] = 0;
++                        continue;
++                }
+                 if (size <= replies[i].poststat.ia_size) {
+                         size = replies[i].poststat.ia_size;
+                 }
+@@ -344,6 +348,41 @@ afr_mark_largest_file_as_source (xlator_t *this, unsigned char *sources,
+ }
+ 
+ void
++afr_mark_latest_mtime_file_as_source (xlator_t *this, unsigned char *sources,
++                                 struct afr_reply *replies)
++{
++        int i = 0;
++        afr_private_t *priv = NULL;
++        uint32_t mtime = 0;
++        uint32_t mtime_nsec = 0;
++
++        priv = this->private;
++        for (i = 0; i < priv->child_count; i++) {
++                if (!sources[i])
++                        continue;
++                if (!replies[i].valid || replies[i].op_ret != 0) {
++                        sources[i] = 0;
++                        continue;
++                }
++                if ((mtime < replies[i].poststat.ia_mtime) ||
++                    ((mtime == replies[i].poststat.ia_mtime) &&
++                     (mtime_nsec < replies[i].poststat.ia_mtime_nsec))) {
++                        mtime = replies[i].poststat.ia_mtime;
++                        mtime_nsec = replies[i].poststat.ia_mtime_nsec;
++                }
++        }
++        for (i = 0; i < priv->child_count; i++) {
++                if (!sources[i])
++                        continue;
++                if ((mtime > replies[i].poststat.ia_mtime) ||
++                    ((mtime == replies[i].poststat.ia_mtime) &&
++                     (mtime_nsec > replies[i].poststat.ia_mtime_nsec))) {
++                        sources[i] = 0;
++                }
++        }
++}
++
++void
+ afr_mark_active_sinks (xlator_t *this, unsigned char *sources,
+                        unsigned char *locked_on, unsigned char *sinks)
+ {
+@@ -433,6 +472,9 @@ afr_mark_split_brain_source_sinks (call_frame_t *frame, xlator_t *this,
+         }
+         xdata_rsp = local->xdata_rsp;
+ 
++        for (i = 0 ; i < priv->child_count; i++)
++                if (locked_on[i])
++                        sources[i] = 1;
+         switch (heal_op) {
+         case GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE:
+                 if (type == AFR_METADATA_TRANSACTION) {
+@@ -443,9 +485,6 @@ afr_mark_split_brain_source_sinks (call_frame_t *frame, xlator_t *this,
+                                 ret = -1;
+                         goto out;
+                 }
+-                for (i = 0 ; i < priv->child_count; i++)
+-                        if (locked_on[i])
+-                                sources[i] = 1;
+                 afr_mark_largest_file_as_source (this, sources, replies);
+                 if (AFR_COUNT (sources, priv->child_count) != 1) {
+                         ret = dict_set_str (xdata_rsp, "sh-fail-msg",
+@@ -454,11 +493,24 @@ afr_mark_split_brain_source_sinks (call_frame_t *frame, xlator_t *this,
+                                 ret = -1;
+                         goto out;
+                 }
+-                for (i = 0 ; i < priv->child_count; i++)
+-                        if (sources[i])
+-                                source = i;
+-                sinks[source] = 0;
+-                healed_sinks[source] = 0;
++                break;
++        case GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME:
++                if (type == AFR_METADATA_TRANSACTION) {
++                        ret = dict_set_str (xdata_rsp, "sh-fail-msg",
++                                            "Use source-brick option to"
++                                            " heal metadata split-brain");
++                        if (!ret)
++                                ret = -1;
++                        goto out;
++                }
++                afr_mark_latest_mtime_file_as_source (this, sources, replies);
++                if (AFR_COUNT (sources, priv->child_count) != 1) {
++                        ret = dict_set_str (xdata_rsp, "sh-fail-msg",
++                                            "No difference in mtime");
++                        if (!ret)
++                                ret = -1;
++                        goto out;
++                }
+                 break;
+         case GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK:
+                 ret = dict_get_str (xdata_req, "child-name", &name);
+@@ -479,16 +531,25 @@ afr_mark_split_brain_source_sinks (call_frame_t *frame, xlator_t *this,
+                                 ret = -1;
+                         goto out;
+                 }
++                memset (sources, 0, sizeof (*sources) * priv->child_count);
+                 sources[source] = 1;
+-                sinks[source] = 0;
+-                healed_sinks[source] = 0;
+                 break;
+         default:
+                 ret = -1;
+                 goto out;
+         }
++        for (i = 0 ; i < priv->child_count; i++) {
++                if (sources[i]) {
++                        source = i;
++                        break;
++                }
++        }
++        sinks[source] = 0;
++        healed_sinks[source] = 0;
+         ret = source;
+ out:
++        if (ret < 0)
++                memset (sources, 0, sizeof (*sources) * priv->child_count);
+         return ret;
+ 
+ }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index afbd7f2..4b9db28 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -1783,6 +1783,7 @@ glusterd_handle_heal_cmd (xlator_t *this, glusterd_volinfo_t *volinfo,
+         case GF_SHD_OP_HEAL_ENABLE: /* This op should be handled in volume-set*/
+         case GF_SHD_OP_HEAL_DISABLE:/* This op should be handled in volume-set*/
+         case GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE:/*glfsheal cmd*/
++        case GF_SHD_OP_SBRAIN_HEAL_FROM_LATEST_MTIME:/*glfsheal cmd*/
+         case GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK:/*glfsheal cmd*/
+                 ret = -1;
+                 *op_errstr = gf_strdup("Invalid heal-op");
+-- 
+1.7.1
+

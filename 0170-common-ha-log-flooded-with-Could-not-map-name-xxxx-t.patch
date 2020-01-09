@@ -1,0 +1,109 @@
+From 4605a072f5783a313b561f7b12e97750549d77c0 Mon Sep 17 00:00:00 2001
+From: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Date: Thu, 19 May 2016 14:33:55 -0400
+Subject: [PATCH 170/178] common-ha: log flooded with Could not map name=xxxx to a UUID
+
+When the cluster is configured with long (FQDN) cluster members
+the log is flooded with "Could not map name=$shortname to a UUID"
+notices, and setting/getting the attribute is failing
+
+Change-Id: I19c6f66a06563b65970a1a9709dbae272c3e38d4
+BUG: 1337649
+Signed-off-by: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74741
+---
+ extras/ganesha/ocf/ganesha_grace |   18 ++++++++++++++++--
+ extras/ganesha/ocf/ganesha_mon   |   21 ++++++++++++++-------
+ 2 files changed, 30 insertions(+), 9 deletions(-)
+
+diff --git a/extras/ganesha/ocf/ganesha_grace b/extras/ganesha/ocf/ganesha_grace
+index 7c629f5..dc4d657 100644
+--- a/extras/ganesha/ocf/ganesha_grace
++++ b/extras/ganesha/ocf/ganesha_grace
+@@ -95,9 +95,16 @@ ganesha_grace_start()
+ {
+ 	local rc=${OCF_ERR_GENERIC}
+ 	local short_host=$(hostname -s)
++	local long_host=$(hostname)
+ 
+ 	ocf_log debug "ganesha_grace_start()"
+-	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active})
++	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
++        if [ $? -ne 0 ]; then
++	        attr=$(crm_attribute --query --node=${long_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null )
++                if [ $? -ne 0 ]; then
++	                ocf_log info "crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} failed"
++                fi
++        fi
+ 
+ 	# Three possibilities:
+ 	# 1. There is no attribute at all and attr_updater returns
+@@ -153,10 +160,17 @@ ganesha_grace_monitor()
+ {
+ 	local rc=${OCF_ERR_GENERIC}
+ 	local short_host=$(hostname -s)
++	local long_host=$(hostname)
+ 
+ 	ocf_log debug "monitor"
+ 
+-	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active})
++	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
++        if [ $? -ne 0 ]; then
++	        attr=$(crm_attribute --query --node=${long_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
++                if [ $? -ne 0 ]; then
++	                ocf_log info "crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} failed"
++                fi
++        fi
+ 
+ 	# if there is no attribute (yet), maybe it's because
+ 	# this RA started before ganesha_mon (nfs-mon) has had
+diff --git a/extras/ganesha/ocf/ganesha_mon b/extras/ganesha/ocf/ganesha_mon
+index dbb9eaa..974eb86 100644
+--- a/extras/ganesha/ocf/ganesha_mon
++++ b/extras/ganesha/ocf/ganesha_mon
+@@ -125,6 +125,7 @@ ganesha_mon_stop()
+ ganesha_mon_monitor()
+ {
+ 	local short_host=$(hostname -s)
++	local long_host=$(hostname)
+ 	local pid_file="/var/run/ganesha.nfsd.pid"
+ 
+ 	# RHEL6 /etc/init.d/nfs-ganesha adds -p /var/run/ganesha.nfsd.pid
+@@ -153,10 +154,13 @@ ganesha_mon_monitor()
+ 		# track grace-active crm_attr (attr != crm_attr)
+ 		# we can't just use the attr as there's no way to query
+ 		# its value in RHEL6 pacemaker
+-		crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1
+-		if [ $? -ne 0 ]; then
+-			ocf_log info "warning: crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 failed"
+-		fi
++		crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 2> /dev/null
++                if [ $? -ne 0 ]; then
++		        crm_attribute --node=${long_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 2> /dev/null
++		        if [ $? -ne 0 ]; then
++		        	ocf_log info "warning: crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 failed"
++		        fi
++                fi
+ 
+ 		return ${OCF_SUCCESS}
+ 	fi
+@@ -178,10 +182,13 @@ ganesha_mon_monitor()
+ 		ocf_log info "warning: attrd_updater -D -n ${OCF_RESKEY_grace_active} failed"
+ 	fi
+ 
+-	crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0
++	crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0 2> /dev/null
+ 	if [ $? -ne 0 ]; then
+-		ocf_log info "warning: crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0 failed"
+-	fi
++	        crm_attribute --node=${long_host} --name=${OCF_RESKEY_grace_active} --update=0 2> /dev/null
++	        if [ $? -ne 0 ]; then
++		        ocf_log info "warning: crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0 failed"
++	        fi
++        fi
+ 
+ 	sleep ${OCF_RESKEY_grace_delay}
+ 
+-- 
+1.7.1
+

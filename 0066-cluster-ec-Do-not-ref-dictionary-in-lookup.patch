@@ -1,0 +1,72 @@
+From 0031be017dea4d908a8b4a34e809bec88e8b1acc Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Tue, 8 Mar 2016 23:05:08 +0530
+Subject: [PATCH 66/80] cluster/ec: Do not ref dictionary in lookup
+
+Problem:
+1) dict_for_each loops over the elements without any locks, so the members of
+   the dictionary can be ref/unrefed while dict_for_each is executed by another
+   thread leading to crashes.
+
+Basically with distributed ec + disctributed replicate as cold, hot tiers. tier
+sends a lookup which fails on ec. (By this time dict already contains ec
+xattrs) After this lookup_everywhere code path is hit in tier which triggers
+lookup on each of distribute's hash lookup but fails which leads to the cold,
+hot dht's lookup_everywhere in two parallel epoll threads where in ec when it
+tries to set trusted.ec.version/dirty/size as keys in the dictionary, the older
+values against the same key get erased. While this erasing is going on if the
+thread that is doing lookup on afr's subvolume accesses these keys either in
+dict_copy_with_ref or client xlator trying to serialize, that can either lead
+to crash or hang based on if the spin/mutex lock is called on invalid memory.
+
+2) EC deletes GF_CONTENT_KEY from the dictionary, this may lead to extra reads
+   in case of lookup-everwhere for tiered volumes.
+
+Fix:
+Do dict_copy_with_ref() for the lookup-dictionary.
+This is avoiding the problem and is not actually fixing the 1st problem.
+2nd problem will be fixed.
+
+ >Change-Id: I5427aa14c48cb7572977d4de9a28c5ffff2b4b95
+ >BUG: 1315560
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13680
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Xavier Hernandez <xhernandez@datalab.es>
+
+BUG: 1318428
+Change-Id: I91401d978f7bb9d00b7a9c832526f79ad0a30532
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71972
+---
+ xlators/cluster/ec/src/ec-generic.c |   11 ++++-------
+ 1 files changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/xlators/cluster/ec/src/ec-generic.c b/xlators/cluster/ec/src/ec-generic.c
+index 3f5856e..375e49e 100644
+--- a/xlators/cluster/ec/src/ec-generic.c
++++ b/xlators/cluster/ec/src/ec-generic.c
+@@ -906,14 +906,11 @@ void ec_lookup(call_frame_t * frame, xlator_t * this, uintptr_t target,
+         }
+     }
+     if (xdata != NULL) {
+-        fop->xdata = dict_ref(xdata);
+-        if (fop->xdata == NULL) {
+-            gf_msg (this->name, GF_LOG_ERROR, 0,
+-                    EC_MSG_DICT_REF_FAIL, "Failed to reference a "
+-                                             "dictionary.");
+-
++        fop->xdata = dict_copy_with_ref (xdata, NULL);
++        /* Do not log failures here as a memory problem would have already
++         * been logged by the corresponding alloc functions */
++        if (fop->xdata == NULL)
+             goto out;
+-        }
+     }
+ 
+     error = 0;
+-- 
+1.7.1
+

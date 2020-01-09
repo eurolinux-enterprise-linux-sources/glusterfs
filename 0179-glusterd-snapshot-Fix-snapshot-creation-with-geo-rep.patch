@@ -1,0 +1,56 @@
+From c1347a8b73b37cc7e9c2bc651245a76b1780490b Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Wed, 1 Jun 2016 12:42:30 +0530
+Subject: [PATCH 179/183] glusterd/snapshot: Fix snapshot creation with geo-rep
+
+Backport of http://review.gluster.org/#/c/14595 (master)
+
+The construction of path to geo-rep session directory
+is broken with the commit "http://review.gluster.org/13111"
+as it saves the slave volume uuid in 'gsync_slaves'
+dictionary. This patch fixes the same.
+
+Change-Id: Ic7fc3c37d368549feb44b3a08d60157ce61227c3
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+BUG: 1341316
+Reviewed-on: http://review.gluster.org/14597 (3.7)
+Reviewed-on: http://review.gluster.org/14611 (3.8)
+(cherry picked from commit 3bd5c5858fd3df42374934ac8251a8620e6b62b9)
+Reviewed-on: https://code.engineering.redhat.com/gerrit/75702
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Tested-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+---
+ .../mgmt/glusterd/src/glusterd-snapshot-utils.c    |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+index 7c1b1f0..fc778ad 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+@@ -3533,6 +3533,9 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
+                 goto out;
+         }
+ 
++        /* geo-rep session string format being parsed:
++         * "master_node_uuid:ssh://slave_host::slave_vol:slave_voluuid"
++         */
+         token = strtok_r (temp, "/", &save_ptr);
+ 
+         token = strtok_r (NULL, ":", &save_ptr);
+@@ -3549,12 +3552,11 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
+         }
+         ip_i = ip;
+ 
+-        token = strtok_r (NULL, "\0", &save_ptr);
++        token = strtok_r (NULL, ":", &save_ptr);
+         if (!token) {
+                 ret = -1;
+                 goto out;
+         }
+-        token++;
+ 
+         slave_temp = gf_strdup (token);
+         if (!slave) {
+-- 
+1.7.1
+

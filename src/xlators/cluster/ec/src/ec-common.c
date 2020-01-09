@@ -9,6 +9,7 @@
 */
 
 #include "byte-order.h"
+#include "hashfn.h"
 
 #include "ec-mem-types.h"
 #include "ec-data.h"
@@ -19,6 +20,25 @@
 #include "ec-method.h"
 #include "ec.h"
 #include "ec-messages.h"
+
+uint32_t
+ec_select_first_by_read_policy (ec_t *ec, ec_fop_data_t *fop)
+{
+        if (ec->read_policy == EC_ROUND_ROBIN) {
+                return ec->idx;
+        } else if (ec->read_policy == EC_GFID_HASH) {
+                if (fop->use_fd) {
+                        return SuperFastHash((char *)fop->fd->inode->gfid,
+                                   sizeof(fop->fd->inode->gfid)) % ec->nodes;
+                } else {
+                        if (gf_uuid_is_null (fop->loc[0].gfid))
+                                loc_gfid (&fop->loc[0], fop->loc[0].gfid);
+                        return SuperFastHash((char *)fop->loc[0].gfid,
+                                   sizeof(fop->loc[0].gfid)) % ec->nodes;
+                }
+        }
+        return 0;
+}
 
 int32_t ec_child_valid(ec_t * ec, ec_fop_data_t * fop, int32_t idx)
 {
@@ -134,11 +154,12 @@ void ec_lock_update_good(ec_lock_t *lock, ec_fop_data_t *fop)
         return;
     }
 
-    /* When updating the good mask of the lock, we only take into
-     * consideration those bits corresponding to the bricks where
-     * the fop has been executed. */
-    lock->good_mask &= ~fop->mask | fop->remaining;
-    lock->good_mask |= fop->good;
+    /* When updating the good mask of the lock, we only take into consideration
+     * those bits corresponding to the bricks where the fop has been executed.
+     * Bad bricks are removed from good_mask, but once marked as bad it's never
+     * set to good until the lock is released and reacquired */
+
+    lock->good_mask &= fop->good | fop->remaining;
 }
 
 void __ec_fop_set_error(ec_fop_data_t * fop, int32_t error)
@@ -415,12 +436,13 @@ int32_t ec_child_select(ec_fop_data_t * fop)
             fop->minimum = 1;
     }
 
-    first = ec->idx;
-    if (++first >= ec->nodes)
-    {
-        first = 0;
+    if (ec->read_policy == EC_ROUND_ROBIN) {
+            first = ec->idx;
+            if (++first >= ec->nodes) {
+                first = 0;
+            }
+            ec->idx = first;
     }
-    ec->idx = first;
 
     /*Unconditionally wind on healing subvolumes*/
     fop->mask |= fop->healing;
@@ -518,14 +540,12 @@ void ec_dispatch_start(ec_fop_data_t * fop)
 
 void ec_dispatch_one(ec_fop_data_t * fop)
 {
-    ec_t * ec = fop->xl->private;
-
     ec_dispatch_start(fop);
 
     if (ec_child_select(fop))
     {
         fop->expected = 1;
-        fop->first = ec->idx;
+        fop->first = ec_select_first_by_read_policy (fop->xl->private, fop);
 
         ec_dispatch_next(fop, fop->first);
     }
@@ -589,7 +609,7 @@ void ec_dispatch_min(ec_fop_data_t * fop)
     if (ec_child_select(fop))
     {
         fop->expected = count = ec->fragments;
-        fop->first = ec->idx;
+        fop->first = ec_select_first_by_read_policy (fop->xl->private, fop);
         idx = fop->first - 1;
         mask = 0;
         while (count-- > 0)
@@ -625,6 +645,7 @@ ec_lock_t *ec_lock_allocate(ec_fop_data_t *fop, loc_t *loc)
     if (lock != NULL)
     {
         lock->good_mask = -1ULL;
+        INIT_LIST_HEAD(&lock->owners);
         INIT_LIST_HEAD(&lock->waiting);
         INIT_LIST_HEAD(&lock->frozen);
         err = ec_loc_from_loc(fop->xl, &lock->loc, loc);
@@ -871,7 +892,8 @@ ec_prepare_update_cbk (call_frame_t *frame, void *cookie,
                        xlator_t *this, int32_t op_ret, int32_t op_errno,
                        dict_t *dict, dict_t *xdata)
 {
-    ec_fop_data_t *fop = cookie, *parent;
+    struct list_head list;
+    ec_fop_data_t *fop = cookie, *parent, *tmp;
     ec_lock_link_t *link = fop->data;
     ec_lock_t *lock = NULL;
     ec_inode_t *ctx;
@@ -880,15 +902,25 @@ ec_prepare_update_cbk (call_frame_t *frame, void *cookie,
     parent = link->fop;
     ctx = lock->ctx;
 
+    INIT_LIST_HEAD(&list);
+
+    LOCK(&lock->loc.inode->lock);
+
+    list_for_each_entry(link, &lock->owners, owner_list) {
+        if ((link->fop->flags & EC_FLAG_WAITING_SIZE) != 0) {
+            link->fop->flags ^= EC_FLAG_WAITING_SIZE;
+
+            list_add_tail(&link->fop->cbk_list, &list);
+        }
+    }
+
     if (op_ret < 0) {
         gf_msg (this->name, GF_LOG_WARNING, op_errno,
                 EC_MSG_SIZE_VERS_GET_FAIL,
                 "Failed to get size and version");
 
-        goto out;
+        goto unlock;
     }
-
-    LOCK(&lock->loc.inode->lock);
 
     op_errno = -ec_dict_del_array(dict, EC_XATTR_VERSION, ctx->pre_version,
                                   EC_VERSION_SIZE);
@@ -904,37 +936,46 @@ ec_prepare_update_cbk (call_frame_t *frame, void *cookie,
 
     ctx->have_version = _gf_true;
 
-    if (lock->loc.inode->ia_type == IA_IFREG) {
+    if (lock->loc.inode->ia_type == IA_IFREG ||
+        lock->loc.inode->ia_type == IA_INVAL) {
         op_errno = -ec_dict_del_number(dict, EC_XATTR_SIZE, &ctx->pre_size);
         if (op_errno != 0) {
-            gf_msg (this->name, GF_LOG_ERROR, op_errno,
-                    EC_MSG_SIZE_XATTR_GET_FAIL, "Unable to get size xattr");
+            if (lock->loc.inode->ia_type == IA_IFREG) {
+                gf_msg (this->name, GF_LOG_ERROR, op_errno,
+                        EC_MSG_SIZE_XATTR_GET_FAIL,
+                        "Unable to get size xattr");
 
-            goto unlock;
+                goto unlock;
+            }
+        } else {
+            ctx->post_size = ctx->pre_size;
+
+            ctx->have_size = _gf_true;
         }
-        ctx->post_size = ctx->pre_size;
-
-        ctx->have_size = _gf_true;
 
         op_errno = -ec_dict_del_config(dict, EC_XATTR_CONFIG, &ctx->config);
         if (op_errno != 0) {
-            gf_msg (this->name, GF_LOG_ERROR, op_errno,
-                    EC_MSG_CONFIG_XATTR_GET_FAIL,
-                    "Unable to get config xattr");
+            if ((lock->loc.inode->ia_type == IA_IFREG) ||
+                (op_errno != ENODATA)) {
+                gf_msg (this->name, GF_LOG_ERROR, op_errno,
+                        EC_MSG_CONFIG_XATTR_GET_FAIL,
+                        "Unable to get config xattr");
 
-            goto unlock;
+                goto unlock;
+            }
+        } else {
+            if (!ec_config_check(parent, &ctx->config)) {
+                gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                        EC_MSG_CONFIG_XATTR_INVALID,
+                        "Invalid config xattr");
+
+                op_errno = EINVAL;
+
+                goto unlock;
+            }
+
+            ctx->have_config = _gf_true;
         }
-        if (!ec_config_check(parent, &ctx->config)) {
-            gf_msg (this->name, GF_LOG_ERROR, EINVAL,
-                    EC_MSG_CONFIG_XATTR_INVALID,
-                    "Invalid config xattr");
-
-            op_errno = EINVAL;
-
-            goto unlock;
-        }
-
-        ctx->have_config = _gf_true;
     }
 
     ctx->have_info = _gf_true;
@@ -942,12 +983,15 @@ ec_prepare_update_cbk (call_frame_t *frame, void *cookie,
     op_errno = 0;
 
 unlock:
+    lock->getting_size = _gf_false;
+
     UNLOCK(&lock->loc.inode->lock);
-out:
+
     if (op_errno == 0) {
         /* We don't allow the main fop to be executed on bricks that have not
          * succeeded the initial xattrop. */
         parent->mask &= fop->good;
+        ec_lock_update_good (lock, fop);
 
         /*As of now only data healing marks bricks as healing*/
         lock->healing |= fop->healing;
@@ -956,6 +1000,24 @@ out:
         }
     } else {
         ec_fop_set_error(parent, op_errno);
+    }
+
+    while (!list_empty(&list)) {
+        tmp = list_entry(list.next, ec_fop_data_t, cbk_list);
+        list_del_init(&tmp->cbk_list);
+
+        if (op_errno == 0) {
+            tmp->mask &= fop->good;
+
+            /*As of now only data healing marks bricks as healing*/
+            if (ec_is_data_fop (tmp->id)) {
+                tmp->healing |= fop->healing;
+            }
+        } else {
+            ec_fop_set_error(tmp, op_errno);
+        }
+
+        ec_resume(tmp, 0);
     }
 
     return 0;
@@ -968,9 +1030,8 @@ void ec_get_size_version(ec_lock_link_t *link)
     ec_inode_t *ctx;
     ec_fop_data_t *fop;
     dict_t *dict = NULL;
-    uid_t uid;
-    gid_t gid;
     int32_t error = -ENOMEM;
+    gf_boolean_t getting_size;
     uint64_t allzero[EC_VERSION_SIZE] = {0, 0};
 
     lock = link->lock;
@@ -987,14 +1048,31 @@ void ec_get_size_version(ec_lock_link_t *link)
 
     /* Determine if there's something we need to retrieve for the current
      * operation. */
-    if (!lock->query && (lock->loc.inode->ia_type != IA_IFREG)) {
+    if (!lock->query &&
+        (lock->loc.inode->ia_type != IA_IFREG) &&
+        (lock->loc.inode->ia_type != IA_INVAL)) {
         return;
     }
 
-    uid = fop->frame->root->uid;
-    gid = fop->frame->root->gid;
-
     memset(&loc, 0, sizeof(loc));
+
+    LOCK(&lock->loc.inode->lock);
+
+    getting_size = lock->getting_size;
+    lock->getting_size = _gf_true;
+    if (getting_size) {
+        fop->flags |= EC_FLAG_WAITING_SIZE;
+
+        ec_sleep(fop);
+    }
+
+    UNLOCK(&lock->loc.inode->lock);
+
+    if (getting_size) {
+        error = 0;
+
+        goto out;
+    }
 
     dict = dict_new();
     if (dict == NULL) {
@@ -1013,7 +1091,8 @@ void ec_get_size_version(ec_lock_link_t *link)
         goto out;
     }
 
-    if (lock->loc.inode->ia_type == IA_IFREG) {
+    if (lock->loc.inode->ia_type == IA_IFREG ||
+        lock->loc.inode->ia_type == IA_INVAL) {
         error = ec_dict_set_number(dict, EC_XATTR_SIZE, 0);
         if (error == 0) {
             error = ec_dict_set_number(dict, EC_XATTR_CONFIG, 0);
@@ -1060,8 +1139,8 @@ void ec_get_size_version(ec_lock_link_t *link)
     error = 0;
 
 out:
-    fop->frame->root->uid = uid;
-    fop->frame->root->gid = gid;
+    fop->frame->root->uid = fop->uid;
+    fop->frame->root->gid = fop->gid;
 
     loc_wipe(&loc);
 
@@ -1221,34 +1300,121 @@ out:
     }
 }
 
+static void
+ec_lock_update_fd(ec_lock_t *lock, ec_fop_data_t *fop)
+{
+    /* If the fop has an fd available, attach it to the lock structure to be
+     * able to do fxattrop calls instead of xattrop. */
+    if (fop->use_fd) {
+        if (lock->fd != NULL) {
+            __fd_unref(lock->fd);
+        }
+        lock->fd = __fd_ref(fop->fd);
+    }
+}
+
+static void
+ec_lock_wake_shared(ec_lock_t *lock, struct list_head *list)
+{
+    ec_fop_data_t *fop;
+    ec_lock_link_t *link;
+    gf_boolean_t exclusive = _gf_false;
+
+    while (!exclusive && !list_empty(&lock->waiting)) {
+        link = list_entry(lock->waiting.next, ec_lock_link_t, wait_list);
+        fop = link->fop;
+
+        /* If lock is not acquired, at most one fop can be assigned as owner.
+         * The following fops will need to wait in the lock->waiting queue
+         * until the lock has been fully acquired. */
+        exclusive = !lock->acquired;
+
+        /* If the fop is not shareable, only this fop can be assigned as owner.
+         * Other fops will need to wait until this one finishes. */
+        if ((fop->flags & EC_FLAG_LOCK_SHARED) == 0) {
+            exclusive = _gf_true;
+
+            /* Avoid other requests to be assigned as owners. */
+            lock->exclusive = 1;
+        }
+
+        /* If only one fop is allowed, it can be assigned as the owner of the
+         * lock only if there weren't any other owner. */
+        if (exclusive && !list_empty(&lock->owners)) {
+            break;
+        }
+
+        list_move_tail(&link->wait_list, list);
+
+        list_add_tail(&link->owner_list, &lock->owners);
+
+        ec_lock_update_fd(lock, fop);
+    }
+}
+
+static void
+ec_lock_apply(ec_lock_link_t *link)
+{
+    ec_fop_data_t *fop = link->fop;
+
+    fop->mask &= link->lock->good_mask;
+    fop->locked++;
+
+    ec_get_size_version(link);
+    ec_get_real_size(link);
+}
+
+gf_boolean_t ec_lock_acquire(ec_lock_link_t *link);
+
+static void
+ec_lock_resume_shared(struct list_head *list)
+{
+    ec_lock_link_t *link;
+
+    while (!list_empty(list)) {
+        link = list_entry(list->next, ec_lock_link_t, wait_list);
+        list_del_init(&link->wait_list);
+
+        if (link->lock->acquired) {
+            ec_lock_apply(link);
+            ec_lock(link->fop);
+        } else {
+            GF_ASSERT(list_empty(list));
+
+            ec_lock_acquire(link);
+        }
+
+        ec_resume(link->fop, 0);
+    }
+}
+
 void ec_lock_acquired(ec_lock_link_t *link)
 {
+    struct list_head list;
     ec_lock_t *lock;
     ec_fop_data_t *fop;
 
     lock = link->lock;
     fop = link->fop;
 
-    ec_trace("LOCKED", link->fop, "lock=%p", lock);
+    ec_trace("LOCKED", fop, "lock=%p", lock);
 
-    /* If the fop has an fd available, attach it to the lock structure to be
-     * able to do fxattrop calls instead of xattrop. It's safe to change this
-     * here because no xattrop using the fd can start concurrently at this
-     * point. */
-    if (fop->use_fd) {
-        if (lock->fd != NULL) {
-            fd_unref(lock->fd);
-        }
-        lock->fd = fd_ref(fop->fd);
-    }
+    INIT_LIST_HEAD(&list);
+
+    LOCK(&lock->loc.inode->lock);
+
     lock->acquired = _gf_true;
 
-    fop->mask &= lock->good_mask;
+    ec_lock_update_fd(lock, fop);
+    if ((fop->flags & EC_FLAG_LOCK_SHARED) != 0) {
+        ec_lock_wake_shared(lock, &list);
+    }
 
-    fop->locked++;
+    UNLOCK(&lock->loc.inode->lock);
 
-    ec_get_size_version(link);
-    ec_get_real_size(link);
+    ec_lock_apply(link);
+
+    ec_lock_resume_shared(&list);
 }
 
 int32_t ec_locked(call_frame_t *frame, void *cookie, xlator_t *this,
@@ -1282,6 +1448,7 @@ gf_boolean_t ec_lock_acquire(ec_lock_link_t *link)
 
     lock = link->lock;
     fop = link->fop;
+
     if (!lock->acquired) {
         ec_owner_set(fop->frame, lock);
 
@@ -1303,11 +1470,136 @@ gf_boolean_t ec_lock_acquire(ec_lock_link_t *link)
     return _gf_true;
 }
 
+static gf_boolean_t
+ec_lock_assign_owner(ec_lock_link_t *link)
+{
+    ec_fop_data_t *fop;
+    ec_lock_t *lock;
+    ec_lock_link_t *timer_link = NULL;
+    gf_boolean_t assigned = _gf_false;
+
+    GF_ASSERT(list_empty(&link->wait_list));
+
+    fop = link->fop;
+    lock = link->lock;
+
+    LOCK(&lock->loc.inode->lock);
+
+    GF_ASSERT (lock->inserted > 0);
+    lock->inserted--;
+
+    if (lock->release) {
+        ec_trace("LOCK_QUEUE_FREEZE", fop, "lock=%p", lock);
+
+        list_add_tail(&link->wait_list, &lock->frozen);
+
+        /* The lock is frozen, so we move the current reference to refs_frozen.
+         * After that, there should remain at least one ref belonging to the
+         * lock that is processing the release. */
+        lock->refs--;
+        GF_ASSERT(lock->refs > 0);
+        lock->refs_frozen++;
+
+        goto unlock;
+    }
+
+    lock->exclusive |= (fop->flags & EC_FLAG_LOCK_SHARED) == 0;
+
+    if (!list_empty(&lock->owners)) {
+        if (!lock->acquired || (lock->exclusive != 0)) {
+            ec_trace("LOCK_QUEUE_WAIT", fop, "lock=%p", lock);
+
+            list_add_tail(&link->wait_list, &lock->waiting);
+
+            goto unlock;
+        }
+    } else if (lock->timer != NULL) {
+        GF_ASSERT (lock->release == _gf_false);
+
+        timer_link = lock->timer->data;
+        if (gf_timer_call_cancel(fop->xl->ctx, lock->timer) == 0) {
+            ec_trace("UNLOCK_CANCELLED", timer_link->fop, "lock=%p", lock);
+            lock->timer = NULL;
+            lock->refs--;
+            /* There should remain at least 1 ref, the current one. */
+            GF_ASSERT(lock->refs > 0);
+        } else {
+            /* Timer expired and on the way to unlock.
+             * Set lock->release to _gf_true, so that this
+             * lock will be put in frozen list*/
+            timer_link = NULL;
+            lock->release = _gf_true;
+        }
+    }
+
+    list_add_tail(&link->owner_list, &lock->owners);
+
+    assigned = _gf_true;
+
+unlock:
+    if (!assigned) {
+        ec_sleep(fop);
+    }
+
+    UNLOCK(&lock->loc.inode->lock);
+
+    if (timer_link != NULL) {
+        ec_resume(timer_link->fop, 0);
+    }
+
+    return assigned;
+}
+
+static void
+ec_lock_next_owner(ec_lock_link_t *link, ec_cbk_data_t *cbk,
+                   gf_boolean_t release)
+{
+    struct list_head list;
+    ec_lock_t *lock = link->lock;
+    ec_fop_data_t *fop = link->fop;
+    ec_inode_t *ctx = lock->ctx;
+    ec_t *ec = fop->xl->private;
+
+    INIT_LIST_HEAD(&list);
+
+    LOCK(&lock->loc.inode->lock);
+
+    ec_trace("LOCK_DONE", fop, "lock=%p", lock);
+
+    GF_ASSERT(!list_empty(&link->owner_list));
+    list_del_init(&link->owner_list);
+    lock->release |= release;
+
+    if ((fop->error == 0) && (cbk != NULL) && (cbk->op_ret >= 0)) {
+        if (link->update[0]) {
+            ctx->post_version[0]++;
+            if (ec->node_mask & ~fop->good) {
+                ctx->dirty[0]++;
+            }
+        }
+        if (link->update[1]) {
+            ctx->post_version[1]++;
+            if (ec->node_mask & ~fop->good) {
+                ctx->dirty[1]++;
+            }
+        }
+    }
+
+    ec_lock_update_good(lock, fop);
+
+    lock->exclusive -= (fop->flags & EC_FLAG_LOCK_SHARED) == 0;
+    if (list_empty(&lock->owners)) {
+        ec_lock_wake_shared(lock, &list);
+    }
+
+    UNLOCK(&lock->loc.inode->lock);
+
+    ec_lock_resume_shared(&list);
+}
+
 void ec_lock(ec_fop_data_t *fop)
 {
     ec_lock_link_t *link;
-    ec_lock_link_t *timer_link = NULL;
-    ec_lock_t *lock;
 
     /* There is a chance that ec_resume is called on fop even before ec_sleep.
      * Which can result in refs == 0 for fop leading to use after free in this
@@ -1319,125 +1611,54 @@ void ec_lock(ec_fop_data_t *fop)
         /* Since there are only up to 2 locks per fop, this xor will change
          * the order of the locks if fop->first_lock is 1. */
         link = &fop->locks[fop->locked ^ fop->first_lock];
-        lock = link->lock;
 
-        timer_link = NULL;
-
-        LOCK(&lock->loc.inode->lock);
-        GF_ASSERT (lock->inserted > 0);
-        lock->inserted--;
-
-        if (lock->timer != NULL) {
-            GF_ASSERT (lock->release == _gf_false);
-            timer_link = lock->timer->data;
-            if (gf_timer_call_cancel(fop->xl->ctx, lock->timer) == 0) {
-                    ec_trace("UNLOCK_CANCELLED", timer_link->fop,
-                             "lock=%p", lock);
-                    lock->timer = NULL;
-                    lock->refs--;
-                    /* There should remain at least 1 ref, the current one. */
-                    GF_ASSERT(lock->refs > 0);
-            } else {
-                    /* Timer expired and on the way to unlock.
-                     * Set lock->release to _gf_true, so that this
-                     * lock will be put in frozen list*/
-                    timer_link = NULL;
-                    lock->release = _gf_true;
-            }
-        }
-
-        GF_ASSERT(list_empty(&link->wait_list));
-
-        if ((lock->owner != NULL) || lock->release) {
-            if (lock->release) {
-                ec_trace("LOCK_QUEUE_FREEZE", fop, "lock=%p", lock);
-
-                list_add_tail(&link->wait_list, &lock->frozen);
-
-                /* The lock is frozen, so we move the current reference to
-                 * refs_frozen. After that, there should remain at least one
-                 * ref belonging to the lock that is processing the release. */
-                lock->refs--;
-                GF_ASSERT(lock->refs > 0);
-                lock->refs_frozen++;
-            } else {
-                ec_trace("LOCK_QUEUE_WAIT", fop, "lock=%p", lock);
-
-                list_add_tail(&link->wait_list, &lock->waiting);
-            }
-
-            UNLOCK(&lock->loc.inode->lock);
-
-            ec_sleep(fop);
-
+        if (!ec_lock_assign_owner(link) || !ec_lock_acquire(link)) {
             break;
         }
-
-        lock->owner = fop;
-
-        UNLOCK(&lock->loc.inode->lock);
-
-        if (!ec_lock_acquire(link)) {
-            break;
-        }
-
-        if (timer_link != NULL) {
-            ec_resume(timer_link->fop, 0);
-            timer_link = NULL;
-        }
     }
-    ec_resume (fop, 0);
 
-    if (timer_link != NULL) {
-        ec_resume(timer_link->fop, 0);
-    }
+    ec_resume(fop, 0);
 }
 
 void
 ec_lock_unfreeze(ec_lock_link_t *link)
 {
+    struct list_head list;
     ec_lock_t *lock;
 
     lock = link->lock;
+
+    INIT_LIST_HEAD(&list);
 
     LOCK(&lock->loc.inode->lock);
 
     lock->acquired = _gf_false;
     lock->release = _gf_false;
-
     lock->refs--;
-    GF_ASSERT (lock->refs == lock->inserted);
 
-    GF_ASSERT(list_empty(&lock->waiting) && (lock->owner == NULL));
+    GF_ASSERT (lock->refs == lock->inserted);
+    GF_ASSERT(lock->exclusive == 0);
+    GF_ASSERT(list_empty(&lock->waiting) && list_empty(&lock->owners));
 
     list_splice_init(&lock->frozen, &lock->waiting);
     lock->refs += lock->refs_frozen;
     lock->refs_frozen = 0;
-
-    if (!list_empty(&lock->waiting)) {
-        link = list_entry(lock->waiting.next, ec_lock_link_t, wait_list);
-        list_del_init(&link->wait_list);
-
-        lock->owner = link->fop;
-
-        UNLOCK(&lock->loc.inode->lock);
-
-        ec_trace("LOCK_UNFREEZE", link->fop, "lock=%p", lock);
-
-        if (ec_lock_acquire(link)) {
-            ec_lock(link->fop);
-        }
-        ec_resume(link->fop, 0);
-    } else if (lock->refs == 0) {
+    if (lock->refs == 0) {
         ec_trace("LOCK_DESTROY", link->fop, "lock=%p", lock);
 
         lock->ctx->inode_lock = NULL;
-
-        UNLOCK(&lock->loc.inode->lock);
-
-        ec_lock_destroy(lock);
     } else {
-        UNLOCK(&lock->loc.inode->lock);
+        ec_trace("LOCK_UNFREEZE", link->fop, "lock=%p", lock);
+
+        ec_lock_wake_shared(lock, &list);
+    }
+
+    UNLOCK(&lock->loc.inode->lock);
+
+    ec_lock_resume_shared(&list);
+
+    if (lock->refs == 0) {
+        ec_lock_destroy(lock);
     }
 }
 
@@ -1545,11 +1766,12 @@ ec_update_size_version(ec_lock_link_t *link, uint64_t *version,
     ec_lock_t *lock;
     ec_inode_t *ctx;
     dict_t * dict;
-    uid_t uid;
-    gid_t gid;
     int32_t err = -ENOMEM;
 
     fop = link->fop;
+
+    GF_ASSERT(version[0] < 0x100000000);
+    GF_ASSERT(version[1] < 0x100000000);
 
     ec_trace("UPDATE", fop, "version=%ld/%ld, size=%ld, dirty=%ld/%ld",
              version[0], version[1], size, dirty[0], dirty[1]);
@@ -1599,24 +1821,21 @@ ec_update_size_version(ec_lock_link_t *link, uint64_t *version,
         ec_dict_set_number(dict, EC_XATTR_CONFIG, 0);
     }
 
-    uid = fop->frame->root->uid;
-    gid = fop->frame->root->gid;
-
     fop->frame->root->uid = 0;
     fop->frame->root->gid = 0;
 
     if (link->lock->fd == NULL) {
-            ec_xattrop(fop->frame, fop->xl, fop->good, EC_MINIMUM_MIN,
+            ec_xattrop(fop->frame, fop->xl, lock->good_mask, EC_MINIMUM_MIN,
                        ec_update_size_version_done, link, &link->lock->loc,
                        GF_XATTROP_ADD_ARRAY64, dict, NULL);
     } else {
-            ec_fxattrop(fop->frame, fop->xl, fop->good, EC_MINIMUM_MIN,
+            ec_fxattrop(fop->frame, fop->xl, lock->good_mask, EC_MINIMUM_MIN,
                        ec_update_size_version_done, link, link->lock->fd,
                        GF_XATTROP_ADD_ARRAY64, dict, NULL);
     }
 
-    fop->frame->root->uid = uid;
-    fop->frame->root->gid = gid;
+    fop->frame->root->uid = fop->uid;
+    fop->frame->root->gid = fop->gid;
 
     dict_unref(dict);
 
@@ -1708,6 +1927,10 @@ ec_unlock_timer_del(ec_lock_link_t *link)
 
                 lock->release = now = _gf_true;
 
+                /* TODO: If the assertion is really true, following code is
+                 *       not needed. */
+                GF_ASSERT(list_empty(&lock->waiting));
+
                 before = lock->refs + lock->refs_frozen;
                 list_splice_init(&lock->waiting, &lock->frozen);
                 lock->refs_frozen += lock->refs - lock->inserted - 1;
@@ -1749,6 +1972,8 @@ void ec_unlock_timer_add(ec_lock_link_t *link)
     } else if (lock->acquired) {
         ec_t *ec = fop->xl->private;
 
+        GF_ASSERT(list_empty(&lock->owners));
+
         ec_sleep(fop);
 
         /* If healing is needed, the lock needs to be released due to
@@ -1783,6 +2008,8 @@ void ec_unlock_timer_add(ec_lock_link_t *link)
     } else {
         lock->release = _gf_true;
 
+        GF_ASSERT(list_empty(&lock->owners));
+
         UNLOCK(&lock->loc.inode->lock);
 
         ec_lock_unfreeze(link);
@@ -1801,24 +2028,12 @@ void ec_unlock(ec_fop_data_t *fop)
 void ec_flush_size_version(ec_fop_data_t *fop)
 {
     GF_ASSERT(fop->lock_count == 1);
-
-    /* In normal circumstances, ec_update_info() is called after having
-     * executed a normal fop, and it uses fop->good to update only those bricks
-     * that succeeded. In this case we haven't executed any fop, so fop->good
-     * is 0. We use the current good mask of the lock itself to send the
-     * updates.*/
-    fop->good = fop->locks[0].lock->good_mask;
-
     ec_update_info(&fop->locks[0]);
 }
 
 void ec_lock_reuse(ec_fop_data_t *fop)
 {
-    ec_t *ec;
     ec_cbk_data_t *cbk;
-    ec_lock_t *lock;
-    ec_lock_link_t *link;
-    ec_inode_t *ctx;
     int32_t i, count;
     gf_boolean_t release = _gf_false;
 
@@ -1840,57 +2055,8 @@ void ec_lock_reuse(ec_fop_data_t *fop)
         release = _gf_true;
     }
 
-    ec = fop->xl->private;
-
-    for (i = 0; i < fop->lock_count; i++)
-    {
-        link = &fop->locks[i];
-        lock = link->lock;
-        ctx = lock->ctx;
-
-        LOCK(&lock->loc.inode->lock);
-
-        ec_trace("LOCK_DONE", fop, "lock=%p", lock);
-
-        GF_ASSERT(lock->owner == fop);
-        lock->owner = NULL;
-        lock->release |= release;
-
-        if ((fop->error == 0) && (cbk != NULL) && (cbk->op_ret >= 0)) {
-            if (link->update[0]) {
-                ctx->post_version[0]++;
-                if (ec->node_mask & ~fop->good) {
-                    ctx->dirty[0]++;
-                }
-            }
-            if (link->update[1]) {
-                ctx->post_version[1]++;
-                if (ec->node_mask & ~fop->good) {
-                    ctx->dirty[1]++;
-                }
-            }
-        }
-
-        ec_lock_update_good(lock, fop);
-
-        link = NULL;
-        if (!list_empty(&lock->waiting))
-        {
-            link = list_entry(lock->waiting.next, ec_lock_link_t, wait_list);
-            list_del_init(&link->wait_list);
-
-            lock->owner = link->fop;
-        }
-
-        UNLOCK(&lock->loc.inode->lock);
-
-        if (link != NULL)
-        {
-            if (ec_lock_acquire(link)) {
-                ec_lock(link->fop);
-            }
-            ec_resume(link->fop, 0);
-        }
+    for (i = 0; i < fop->lock_count; i++) {
+        ec_lock_next_owner(&fop->locks[i], cbk, release);
     }
 }
 

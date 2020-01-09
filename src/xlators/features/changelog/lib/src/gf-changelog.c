@@ -44,7 +44,7 @@
  */
 xlator_t *master = NULL;
 
-static inline
+static
 gf_private_t *gf_changelog_alloc_priv ()
 {
         int ret = 0;
@@ -134,6 +134,10 @@ gf_changelog_ctx_defaults_init (glusterfs_ctx_t *ctx)
 
         ctx->dict_data_pool = mem_pool_new (data_t, 512);
         if (!ctx->dict_data_pool)
+                return -1;
+
+        ctx->logbuf_pool = mem_pool_new (log_buf_t, 256);
+        if (!ctx->logbuf_pool)
                 return -1;
 
         INIT_LIST_HEAD (&pool->all_frames);

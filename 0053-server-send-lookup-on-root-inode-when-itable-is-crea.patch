@@ -1,0 +1,363 @@
+From 8f8dec367d02bfa3587b4bd00f85474dbb5a948e Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Thu, 31 Mar 2016 07:35:35 +0530
+Subject: [PATCH 53/80] server: send lookup on root inode when itable is created
+
+This is a backport of http://review.gluster.org/#/c/13837
+
+ * xlators like quota, marker, posix_acl can cause problems
+   if inode-ctx are not created.
+   sometime these xlarors may not get lookup on root inode
+   with below cases
+   1) client may not send lookup on root inode (like NSR leader)
+   2) if the xlators on one of the bricks are not up,
+      and client sending lookup during this time: brick
+      can miss the lookup
+   It is always better to make sure that there is one lookup
+   on root. So send a first lookup when the inode table is created
+
+ * When sending lookup on root, new inode is created, we need to
+   use itable->root instead
+
+> Change-Id: Iff2eeaa1a89795328833a7761789ef588f11218f
+> BUG: 1320818
+> Signed-off-by: vmallika <vmallika@redhat.com>
+> Reviewed-on: http://review.gluster.org/13837
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+> Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+
+Change-Id: Ia764b95a420b2793324235fcabfdcad1f73f6bd3
+BUG: 1302355
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71536
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/protocol/server/src/server-handshake.c |  140 +++++++++++++++++++-----
+ xlators/protocol/server/src/server-helpers.c   |    9 ++
+ xlators/protocol/server/src/server-helpers.h   |    4 +
+ xlators/protocol/server/src/server-mem-types.h |    1 +
+ xlators/protocol/server/src/server-resolve.c   |    6 +-
+ xlators/protocol/server/src/server-rpc-fops.c  |    6 +-
+ xlators/protocol/server/src/server.c           |    2 +
+ xlators/protocol/server/src/server.h           |    2 +
+ 8 files changed, 139 insertions(+), 31 deletions(-)
+
+diff --git a/xlators/protocol/server/src/server-handshake.c b/xlators/protocol/server/src/server-handshake.c
+index af07979..77b81fe 100644
+--- a/xlators/protocol/server/src/server-handshake.c
++++ b/xlators/protocol/server/src/server-handshake.c
+@@ -327,12 +327,90 @@ fail:
+         return 0;
+ }
+ 
++void
++server_first_lookup_done (rpcsvc_request_t *req, gf_setvolume_rsp *rsp) {
++
++        server_submit_reply (NULL, req, rsp, NULL, 0, NULL,
++                             (xdrproc_t)xdr_gf_setvolume_rsp);
++
++        GF_FREE (rsp->dict.dict_val);
++        GF_FREE (rsp);
++}
++
++
++int
++server_first_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                       int32_t op_ret, int32_t op_errno,
++                       inode_t *inode, struct iatt *buf, dict_t *xattr,
++                       struct iatt *postparent)
++{
++        rpcsvc_request_t     *req = NULL;
++        gf_setvolume_rsp     *rsp = NULL;
++
++        req = cookie;
++        rsp = frame->local;
++        frame->local = NULL;
++
++        if (op_ret < 0 || buf == NULL)
++                gf_log (this->name, GF_LOG_WARNING, "server first lookup failed"
++                        " on root inode: %s", strerror (op_errno));
++
++        /* Ignore error from lookup, don't set
++         * failure in rsp->op_ret. lookup on a snapview-server
++         * can fail with ESTALE
++         */
++        server_first_lookup_done (req, rsp);
++
++        STACK_DESTROY (frame->root);
++
++        return 0;
++}
++
++int
++server_first_lookup (xlator_t *this, xlator_t *xl, rpcsvc_request_t *req,
++                     gf_setvolume_rsp *rsp)
++{
++        call_frame_t       *frame  = NULL;
++        loc_t               loc    = {0, };
++
++        loc.path = "/";
++        loc.name = "";
++        loc.inode = xl->itable->root;
++        loc.parent = NULL;
++        gf_uuid_copy (loc.gfid, loc.inode->gfid);
++
++        frame = create_frame (this, this->ctx->pool);
++        if (!frame) {
++                gf_log ("fuse", GF_LOG_ERROR, "failed to create frame");
++                goto err;
++        }
++
++        frame->local = (void *)rsp;
++        frame->root->uid = frame->root->gid = 0;
++        frame->root->pid = -1;
++        frame->root->type = GF_OP_TYPE_FOP;
++
++        STACK_WIND_COOKIE (frame, server_first_lookup_cbk, (void *)req, xl,
++                           xl->fops->lookup, &loc, NULL);
++
++        return 0;
++
++err:
++        rsp->op_ret = -1;
++        rsp->op_errno = ENOMEM;
++        server_first_lookup_done (req, rsp);
++
++        frame->local = NULL;
++        STACK_DESTROY (frame->root);
++
++        return -1;
++}
+ 
+ int
+ server_setvolume (rpcsvc_request_t *req)
+ {
+         gf_setvolume_req     args          = {{0,},};
+-        gf_setvolume_rsp     rsp           = {0,};
++        gf_setvolume_rsp    *rsp           = NULL;
+         client_t            *client        = NULL;
+         server_ctx_t        *serv_ctx      = NULL;
+         server_conf_t       *conf          = NULL;
+@@ -644,21 +722,24 @@ server_setvolume (rpcsvc_request_t *req)
+                 goto fail;
+         }
+ 
+-        if ((client->bound_xl != NULL) &&
+-            (ret >= 0)                   &&
+-            (client->bound_xl->itable == NULL)) {
+-                /* create inode table for this bound_xl, if one doesn't
+-                   already exist */
++        LOCK (&conf->itable_lock);
++        {
++                if (client->bound_xl->itable == NULL) {
++                        /* create inode table for this bound_xl, if one doesn't
++                           already exist */
+ 
+-                gf_msg_trace (this->name, 0, "creating inode table with "
+-                              "lru_limit=%"PRId32", xlator=%s",
+-                              conf->inode_lru_limit, client->bound_xl->name);
++                        gf_msg_trace (this->name, 0, "creating inode table with"
++                                      " lru_limit=%"PRId32", xlator=%s",
++                                      conf->inode_lru_limit,
++                                      client->bound_xl->name);
+ 
+-                /* TODO: what is this ? */
+-                client->bound_xl->itable =
+-                        inode_table_new (conf->inode_lru_limit,
+-                                         client->bound_xl);
++                        /* TODO: what is this ? */
++                        client->bound_xl->itable =
++                                inode_table_new (conf->inode_lru_limit,
++                                                 client->bound_xl);
++                }
+         }
++        UNLOCK (&conf->itable_lock);
+ 
+         ret = dict_set_str (reply, "process-uuid",
+                             this->ctx->process_uuid);
+@@ -677,20 +758,25 @@ server_setvolume (rpcsvc_request_t *req)
+                 gf_msg_debug (this->name, 0, "failed to set 'transport-ptr'");
+ 
+ fail:
+-        rsp.dict.dict_len = dict_serialized_length (reply);
+-        if (rsp.dict.dict_len > UINT_MAX) {
++        rsp = GF_CALLOC (1, sizeof (gf_setvolume_rsp),
++                         gf_server_mt_setvolume_rsp_t);
++        GF_ASSERT (rsp);
++
++        rsp->op_ret = 0;
++        rsp->dict.dict_len = dict_serialized_length (reply);
++        if (rsp->dict.dict_len > UINT_MAX) {
+                 gf_msg_debug ("server-handshake", 0, "failed to get serialized"
+                                " length of reply dict");
+                 op_ret   = -1;
+                 op_errno = EINVAL;
+-                rsp.dict.dict_len = 0;
++                rsp->dict.dict_len = 0;
+         }
+ 
+-        if (rsp.dict.dict_len) {
+-                rsp.dict.dict_val = GF_CALLOC (1, rsp.dict.dict_len,
+-                                               gf_server_mt_rsp_buf_t);
+-                if (rsp.dict.dict_val) {
+-                        ret = dict_serialize (reply, rsp.dict.dict_val);
++        if (rsp->dict.dict_len) {
++                rsp->dict.dict_val = GF_CALLOC (1, rsp->dict.dict_len,
++                                                gf_server_mt_rsp_buf_t);
++                if (rsp->dict.dict_val) {
++                        ret = dict_serialize (reply, rsp->dict.dict_val);
+                         if (ret < 0) {
+                                 gf_msg_debug ("server-handshake", 0, "failed "
+                                               "to serialize reply dict");
+@@ -699,8 +785,8 @@ fail:
+                         }
+                 }
+         }
+-        rsp.op_ret   = op_ret;
+-        rsp.op_errno = gf_errno_to_error (op_errno);
++        rsp->op_ret   = op_ret;
++        rsp->op_errno = gf_errno_to_error (op_errno);
+ 
+         /* if bound_xl is NULL or something fails, then put the connection
+          * back. Otherwise the connection would have been added to the
+@@ -717,14 +803,14 @@ fail:
+                 gf_client_put (client, NULL);
+                 req->trans->xl_private = NULL;
+         }
+-        server_submit_reply (NULL, req, &rsp, NULL, 0, NULL,
+-                             (xdrproc_t)xdr_gf_setvolume_rsp);
+ 
++        if (op_ret >= 0 && client->bound_xl->itable)
++                server_first_lookup (this, client->bound_xl, req, rsp);
++        else
++                server_first_lookup_done (req, rsp);
+ 
+         free (args.dict.dict_val);
+ 
+-        GF_FREE (rsp.dict.dict_val);
+-
+         dict_unref (params);
+         dict_unref (reply);
+         dict_unref (config_params);
+diff --git a/xlators/protocol/server/src/server-helpers.c b/xlators/protocol/server/src/server-helpers.c
+index 48df41c..f8621be 100644
+--- a/xlators/protocol/server/src/server-helpers.c
++++ b/xlators/protocol/server/src/server-helpers.c
+@@ -1220,3 +1220,12 @@ out:
+ 
+         return ret;
+ }
++
++inode_t *
++server_inode_new (inode_table_t *itable, uuid_t gfid) {
++        if (__is_root_gfid (gfid))
++                return itable->root;
++        else
++                return inode_new (itable);
++}
++
+diff --git a/xlators/protocol/server/src/server-helpers.h b/xlators/protocol/server/src/server-helpers.h
+index 73b01b1..6cc5829 100644
+--- a/xlators/protocol/server/src/server-helpers.h
++++ b/xlators/protocol/server/src/server-helpers.h
+@@ -58,4 +58,8 @@ int auth_set_username_passwd (dict_t *input_params, dict_t *config_params,
+ 
+ server_ctx_t *server_ctx_get (client_t *client, xlator_t *xlator);
+ int server_process_event_upcall (xlator_t *this, void *data);
++
++inode_t *
++server_inode_new (inode_table_t *itable, uuid_t gfid);
++
+ #endif /* !_SERVER_HELPERS_H */
+diff --git a/xlators/protocol/server/src/server-mem-types.h b/xlators/protocol/server/src/server-mem-types.h
+index 19c3466..9e2fcbc 100644
+--- a/xlators/protocol/server/src/server-mem-types.h
++++ b/xlators/protocol/server/src/server-mem-types.h
+@@ -25,6 +25,7 @@ enum gf_server_mem_types_ {
+         gf_server_mt_rsp_buf_t,
+         gf_server_mt_volfile_ctx_t,
+         gf_server_mt_timer_data_t,
++        gf_server_mt_setvolume_rsp_t,
+         gf_server_mt_end,
+ };
+ #endif /* __SERVER_MEM_TYPES_H__ */
+diff --git a/xlators/protocol/server/src/server-resolve.c b/xlators/protocol/server/src/server-resolve.c
+index 5f3d475..26bf37e 100644
+--- a/xlators/protocol/server/src/server-resolve.c
++++ b/xlators/protocol/server/src/server-resolve.c
+@@ -162,7 +162,8 @@ resolve_gfid_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+         resolve_loc->name = resolve->bname;
+ 
+-        resolve_loc->inode = inode_new (state->itable);
++        resolve_loc->inode = server_inode_new (state->itable,
++                                               resolve_loc->gfid);
+ 
+         inode_path (resolve_loc->parent, resolve_loc->name,
+                     (char **) &resolve_loc->path);
+@@ -209,7 +210,8 @@ resolve_gfid (call_frame_t *frame)
+         else if (!gf_uuid_is_null (resolve->gfid))
+                 gf_uuid_copy (resolve_loc->gfid, resolve->gfid);
+ 
+-        resolve_loc->inode = inode_new (state->itable);
++        resolve_loc->inode = server_inode_new (state->itable,
++                                               resolve_loc->gfid);
+         ret = loc_path (resolve_loc, NULL);
+ 
+         if (state->xdata) {
+diff --git a/xlators/protocol/server/src/server-rpc-fops.c b/xlators/protocol/server/src/server-rpc-fops.c
+index 77d8a51..67c8797 100644
+--- a/xlators/protocol/server/src/server-rpc-fops.c
++++ b/xlators/protocol/server/src/server-rpc-fops.c
+@@ -96,7 +96,8 @@ server_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 state->is_revalidate = 2;
+                 loc_copy (&fresh_loc, &state->loc);
+                 inode_unref (fresh_loc.inode);
+-                fresh_loc.inode = inode_new (state->itable);
++                fresh_loc.inode = server_inode_new (state->itable,
++                                                    fresh_loc.gfid);
+ 
+                 STACK_WIND (frame, server_lookup_cbk,
+                             frame->root->client->bound_xl,
+@@ -3090,7 +3091,8 @@ server_lookup_resume (call_frame_t *frame, xlator_t *bound_xl)
+                 goto err;
+ 
+         if (!state->loc.inode)
+-                state->loc.inode = inode_new (state->itable);
++                state->loc.inode = server_inode_new (state->itable,
++                                                     state->loc.gfid);
+         else
+                 state->is_revalidate = 1;
+ 
+diff --git a/xlators/protocol/server/src/server.c b/xlators/protocol/server/src/server.c
+index 81e9980..347a5fb 100644
+--- a/xlators/protocol/server/src/server.c
++++ b/xlators/protocol/server/src/server.c
+@@ -954,6 +954,8 @@ init (xlator_t *this)
+         INIT_LIST_HEAD (&conf->xprt_list);
+         pthread_mutex_init (&conf->mutex, NULL);
+ 
++        LOCK_INIT (&conf->itable_lock);
++
+          /* Set event threads to the configured default */
+         GF_OPTION_INIT("event-threads", conf->event_threads, int32, out);
+         ret = server_check_event_threads (this, conf, STARTING_EVENT_THREADS,
+diff --git a/xlators/protocol/server/src/server.h b/xlators/protocol/server/src/server.h
+index 37a1367..e1f3bf8 100644
+--- a/xlators/protocol/server/src/server.h
++++ b/xlators/protocol/server/src/server.h
+@@ -72,6 +72,8 @@ struct server_conf {
+                                             * in case if volume set options
+                                             * (say *.allow | *.reject) are
+                                             * tweeked */
++
++        gf_lock_t               itable_lock;
+ };
+ typedef struct server_conf server_conf_t;
+ 
+-- 
+1.7.1
+

@@ -721,6 +721,10 @@ gf_rdma_get_device (rpc_transport_t *this, struct ibv_context *ibctx,
                 }
                 priv->device = trav;
                 trav->context = ibctx;
+
+                trav->next = rdma_ctx->device;
+                rdma_ctx->device = trav;
+
                 iobuf_pool->device[iobuf_pool->rdma_device_count] = trav;
                 iobuf_pool->mr_list[iobuf_pool->rdma_device_count++] = &trav->all_mr;
                 trav->request_ctx_pool
@@ -743,9 +747,6 @@ gf_rdma_get_device (rpc_transport_t *this, struct ibv_context *ibctx,
                 }
 
                 trav->device_name = gf_strdup (device_name);
-
-                trav->next = rdma_ctx->device;
-                rdma_ctx->device = trav;
 
                 trav->send_chan = ibv_create_comp_channel (trav->context);
                 if (!trav->send_chan) {
@@ -863,6 +864,7 @@ gf_rdma_get_device (rpc_transport_t *this, struct ibv_context *ibctx,
 out:
 
         if (trav != NULL) {
+                rdma_ctx->device = trav->next;
                 gf_rdma_destroy_posts (this);
                 mem_pool_destroy (trav->ioq_pool);
                 mem_pool_destroy (trav->request_ctx_pool);
@@ -1733,7 +1735,7 @@ out:
 }
 
 
-static inline void
+static void
 __gf_rdma_deregister_mr (gf_rdma_device_t *device,
                          struct ibv_mr **mr, int count)
 {
@@ -2135,7 +2137,7 @@ out:
 }
 
 
-static inline void
+static void
 __gf_rdma_fill_reply_header (gf_rdma_header_t *header, struct iovec *rpchdr,
                              gf_rdma_reply_info_t *reply_info, int credits)
 {
@@ -2286,7 +2288,7 @@ out:
 }
 
 
-static inline int32_t
+static int32_t
 __gf_rdma_register_local_mr_for_rdma (gf_rdma_peer_t *peer,
                                       struct iovec *vector, int count,
                                       gf_rdma_post_context_t *ctx)
@@ -3382,7 +3384,7 @@ out:
 }
 
 
-static inline int32_t
+static int32_t
 gf_rdma_decode_error_msg (gf_rdma_peer_t *peer, gf_rdma_post_t *post,
                           size_t bytes_in_post)
 {
@@ -3957,7 +3959,7 @@ out:
 }
 
 
-static inline int32_t
+static int32_t
 gf_rdma_recv_request (gf_rdma_peer_t *peer, gf_rdma_post_t *post,
                       gf_rdma_read_chunk_t *readch)
 {

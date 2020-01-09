@@ -1,0 +1,162 @@
+From 5e67c691c1d61e23788835a8f7d3fc66a5d9cf42 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Thu, 31 Mar 2016 14:58:02 +0530
+Subject: [PATCH 47/80] glusterd: build realpath post recreate of brick mount for snapshot
+
+Backport of http://review.gluster.org/#/c/13869
+            http://review.gluster.org/#/c/13905
+
+Commit a60c39d introduced a new field called real_path in brickinfo to hold the
+realpath() conversion. However at restore path for all snapshots and snapshot
+restored volumes the brickpath gets recreated post restoration of bricks  which
+means the realpath () call will fail here for all the snapshots and cloned
+volumes.
+
+Fix is to store the realpath for snapshots and clones post recreating the brick
+mounts. For normal volume it would be done during retrieving the brick details
+from the store.
+
+Change-Id: Ia34853acddb28bcb7f0f70ca85fabcf73276ef13
+BUG: 1322765
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: http://review.gluster.org/13869
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Avra Sengupta <asengupt@redhat.com>
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Smoke: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71478
+---
+ .../bug-1322772-real-path-fix-for-snapshot.t       |   34 ++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-store.c         |   58 ++++++++++++++------
+ 2 files changed, 76 insertions(+), 16 deletions(-)
+ create mode 100644 tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t
+
+diff --git a/tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t b/tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t
+new file mode 100644
+index 0000000..68dc0bb
+--- /dev/null
++++ b/tests/bugs/snapshot/bug-1322772-real-path-fix-for-snapshot.t
+@@ -0,0 +1,34 @@
++#!/bin/bash
++
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../snapshot.rc
++. $(dirname $0)/../../include.rc
++cleanup;
++
++TEST verify_lvm_version
++TEST init_n_bricks 1
++TEST setup_lvm 1
++
++TEST glusterd
++TEST pidof glusterd
++
++TEST $CLI volume create $V0 $H0:$L1
++EXPECT 'Created' volinfo_field $V0 'Status'
++
++TEST $CLI volume start $V0
++EXPECT 'Started' volinfo_field $V0 'Status'
++
++TEST $CLI snapshot create ${V0}_snap $V0
++
++# Simulate a node reboot by unmounting the brick, snap_brick and followed by
++# deleting the brick. Now once glusterd restarts, it should be able to construct
++# and remount the snap brick
++snap_brick=`gluster snap status | grep "Brick Path" | awk -F ":"  '{print $3}'`
++
++pkill gluster
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $L1
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $snap_brick
++rm -rf $snap_brick
++
++TEST glusterd
++TEST pidof glusterd
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 9a2420f..f16417f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -2410,24 +2410,34 @@ glusterd_store_retrieve_bricks (glusterd_volinfo_t *volinfo)
+                        GLUSTERD_ASSIGN_BRICKID_TO_BRICKINFO (brickinfo, volinfo,
+                                                              brickid++);
+                 }
+-                /* By now if the brick is a local brick then it will be able to
+-                 * resolve which is the only thing we want now for checking
+-                 * whether the brickinfo->uuid matches with MY_UUID for realpath
+-                 * check. Hence do not handle error
++                /* Populate brickinfo->real_path for normal volumes, for
++                 * snapshot or snapshot restored volume this would be done post
++                 * creating the brick mounts
+                  */
+-                (void)glusterd_resolve_brick (brickinfo);
+-                if (!gf_uuid_compare(brickinfo->uuid, MY_UUID)) {
+-                        if (!realpath (brickinfo->path, abspath)) {
+-                                gf_msg (this->name, GF_LOG_CRITICAL, errno,
+-                                        GD_MSG_BRICKINFO_CREATE_FAIL, "realpath"
+-                                        " () failed for brick %s. The "
+-                                        "underlying file system may be in bad"
+-                                        " state", brickinfo->path);
+-                                ret = -1;
+-                                goto out;
++                if (!volinfo->is_snap_volume &&
++                    gf_uuid_is_null (volinfo->restored_from_snap)) {
++                        /* By now if the brick is a local brick then it will be
++                         * able to resolve which is the only thing we want now
++                         * for checking  whether the brickinfo->uuid matches
++                         * with MY_UUID for realpath check. Hence do not handle
++                         * error
++                         */
++                        (void)glusterd_resolve_brick (brickinfo);
++                        if (!gf_uuid_compare(brickinfo->uuid, MY_UUID)) {
++                                if (!realpath (brickinfo->path, abspath)) {
++                                        gf_msg (this->name, GF_LOG_CRITICAL,
++                                                errno,
++                                                GD_MSG_BRICKINFO_CREATE_FAIL,
++                                                "realpath() failed for brick %s"
++                                                ". The underlying file system "
++                                                "may be in bad state",
++                                                brickinfo->path);
++                                        ret = -1;
++                                        goto out;
++                                }
++                                strncpy (brickinfo->real_path, abspath,
++                                         strlen(abspath));
+                         }
+-                        strncpy (brickinfo->real_path, abspath,
+-                                 strlen(abspath));
+                 }
+                 cds_list_add_tail (&brickinfo->brick_list, &volinfo->bricks);
+                 brick_count++;
+@@ -3241,6 +3251,7 @@ glusterd_recreate_vol_brick_mounts (xlator_t  *this,
+         glusterd_brickinfo_t    *brickinfo           = NULL;
+         int32_t                  ret                 = -1;
+         struct stat              st_buf              = {0, };
++        char                     abspath[PATH_MAX]   = {0};
+ 
+         GF_ASSERT (this);
+         GF_ASSERT (volinfo);
+@@ -3297,6 +3308,21 @@ glusterd_recreate_vol_brick_mounts (xlator_t  *this,
+                                 GD_MSG_BRK_MNTPATH_MOUNT_FAIL,
+                                 "Failed to mount brick_mount_path");
+                 }
++                if (!gf_uuid_compare(brickinfo->uuid, MY_UUID)) {
++                        if (!realpath (brickinfo->path, abspath)) {
++                                gf_msg (this->name, GF_LOG_CRITICAL,
++                                        errno,
++                                        GD_MSG_BRICKINFO_CREATE_FAIL,
++                                        "realpath() failed for brick %s"
++                                        ". The underlying file system "
++                                        "may be in bad state",
++                                        brickinfo->path);
++                                ret = -1;
++                                goto out;
++                        }
++                        strncpy (brickinfo->real_path, abspath,
++                                 strlen(abspath));
++                }
+ 
+                 if (brick_mount_path) {
+                         GF_FREE (brick_mount_path);
+-- 
+1.7.1
+

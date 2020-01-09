@@ -263,7 +263,7 @@ nfs3_errno_to_nfsstat3 (int errnum)
  * 0 which means something came wrong from upper layer(s). If it
  * happens by any means, then set NFS3 status to NFS3ERR_SERVERFAULT.
  */
-inline nfsstat3
+nfsstat3
 nfs3_cbk_errno_status (int32_t op_ret, int32_t op_errno)
 {
         if ((op_ret == -1) && (op_errno == 0)) {
@@ -782,7 +782,21 @@ nfs3_fill_entryp3 (gf_dirent_t *entry, struct nfs3_fh *dirfh, uint64_t devid)
 
         nfs3_fh_build_child_fh (dirfh, &entry->d_stat, &newfh);
         nfs3_map_deviceid_to_statdev (&entry->d_stat, devid);
-        ent->name_attributes = nfs3_stat_to_post_op_attr (&entry->d_stat);
+        /* *
+         * In tier volume, the readdirp send only to cold subvol
+         * which will populate in the 'T' file entries in the result.
+         * For such files an explicit stat call is required, by setting
+         * following argument client will perform the same.
+         *
+         * The inode value for 'T' files and directory is NULL, so just
+         * skip the check if it is directory.
+         */
+        if (!(IA_ISDIR(entry->d_stat.ia_type)) && (entry->inode == NULL))
+                ent->name_attributes.attributes_follow = FALSE;
+        else
+                ent->name_attributes =
+                        nfs3_stat_to_post_op_attr (&entry->d_stat);
+
         ent->name_handle = nfs3_fh_to_post_op_fh3 (&newfh);
 err:
         return ent;
@@ -3646,6 +3660,7 @@ nfs3_fh_resolve_entry_lookup_cbk (call_frame_t *frame, void *cookie,
         linked_inode = inode_link (inode, cs->resolvedloc.parent,
                         cs->resolvedloc.name, buf);
         if (linked_inode) {
+                nfs_fix_generation (this, linked_inode);
                 inode_lookup (linked_inode);
                 inode_unref (cs->resolvedloc.inode);
                 cs->resolvedloc.inode = linked_inode;
@@ -3688,6 +3703,7 @@ nfs3_fh_resolve_inode_lookup_cbk (call_frame_t *frame, void *cookie,
         linked_inode = inode_link (inode, cs->resolvedloc.parent,
                                    cs->resolvedloc.name, buf);
         if (linked_inode) {
+                nfs_fix_generation (this, linked_inode);
                 inode_lookup (linked_inode);
 		inode_unref (cs->resolvedloc.inode);
 		cs->resolvedloc.inode = linked_inode;
@@ -3757,7 +3773,7 @@ nfs3_fh_resolve_entry_hard (nfs3_call_state_t *cs)
                       ", entry: %s", uuid_utoa (cs->resolvefh.gfid),
                       cs->resolventry);
 
-        ret = nfs_entry_loc_fill (cs->vol->itable, cs->resolvefh.gfid,
+        ret = nfs_entry_loc_fill (cs->nfsx, cs->vol->itable, cs->resolvefh.gfid,
                                   cs->resolventry, &cs->resolvedloc,
                                   NFS_RESOLVE_CREATE);
 
@@ -3798,14 +3814,17 @@ nfs3_fh_resolve_inode (nfs3_call_state_t *cs)
 {
         inode_t         *inode = NULL;
         int             ret = -EFAULT;
+        xlator_t        *this = NULL;
 
         if (!cs)
                 return ret;
 
+        this = cs->nfsx;
         gf_msg_trace (GF_NFS3, 0, "FH needs inode resolution");
         gf_uuid_copy (cs->resolvedloc.gfid, cs->resolvefh.gfid);
+
         inode = inode_find (cs->vol->itable, cs->resolvefh.gfid);
-        if (!inode)
+        if (!inode || inode_ctx_get (inode, this, NULL))
                 ret = nfs3_fh_resolve_inode_hard (cs);
         else
                 ret = nfs3_fh_resolve_inode_done (cs, inode);
@@ -3953,7 +3972,7 @@ __nfs3_fh_auth_get_peer (const rpcsvc_request_t *req, char *peer)
  *          -EACCES for completely unauthorized fop
  *          -EROFS  for unauthorized write operations (rm, mkdir, write)
  */
-inline int
+int
 nfs3_fh_auth_nfsop (nfs3_call_state_t *cs, gf_boolean_t is_write_op)
 {
         struct nfs_state    *nfs = NULL;

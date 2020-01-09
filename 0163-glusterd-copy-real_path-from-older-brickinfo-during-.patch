@@ -1,0 +1,523 @@
+From ca2e9d2a5888ffada7af77b0b8e62f524f1e041c Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Wed, 11 May 2016 18:24:40 +0530
+Subject: [PATCH 163/167] glusterd: copy real_path from older brickinfo during brick import
+
+Backport of http://review.gluster.org/#/c/14306
+            http://review.gluster.org/#/c/14410
+            http://review.gluster.org/#/c/14411
+
+In glusterd_import_new_brick() new_brickinfo->real_path will not be populated
+for the first time and hence if the underlying file system is bad for the same
+brick, import will fail resulting in inconsistent configuration data.
+
+Fix is to populate real_path from old brickinfo object.
+
+Also there were many cases where we were unnecessarily calling realpath() and
+that may cause in failure. For eg - if a remove brick is executed with a brick
+whoose underlying file system has crashed, remove-brick fails since realpath()
+call fails. We'd need to call realpath() here as the value is of no use.Hence
+passing construct_realpath as _gf_false in glusterd_volume_brickinfo_get_by_brick ()
+is a must in such cases.
+
+Note: This is not a straight forward backport. In upstream the code is little
+different as glusterd_volinfo_copy_brick_portinfo () is called differently
+compared to downstream since a patch http://review.gluster.org/13578 is not been
+pulled in downstream. A straight forward backport would end up in a broken
+functionality and hence downstream patch introduces a new function where the
+functionality is seggregated for now to make it work.
+
+This patch also fixes BZ 1335367 & 1335359
+
+Change-Id: I7ec93871dc9e616f5d565ad5e540b2f1cacaf9dc
+BUG: 1335357
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74663
+---
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c     |   10 +-
+ xlators/mgmt/glusterd/src/glusterd-log-ops.c       |    4 +-
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c         |    8 +-
+ xlators/mgmt/glusterd/src/glusterd-rebalance.c     |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-replace-brick.c |   10 +-
+ xlators/mgmt/glusterd/src/glusterd-store.c         |    3 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c         |  128 +++++++++++++++-----
+ xlators/mgmt/glusterd/src/glusterd-utils.h         |    3 +-
+ xlators/mgmt/glusterd/src/glusterd-volgen.c        |    3 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c    |    4 +-
+ 10 files changed, 122 insertions(+), 53 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index d27ea2b..77f2edf 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -1040,7 +1040,7 @@ __glusterd_handle_remove_brick (rpcsvc_request_t *req)
+ 
+                 ret = glusterd_volume_brickinfo_get_by_brick(brick, volinfo,
+                                                              &brickinfo,
+-                                                             _gf_true);
++                                                             _gf_false);
+ 
+                 if (ret) {
+                         snprintf (err_str, sizeof (err_str), "Incorrect brick "
+@@ -1281,7 +1281,7 @@ glusterd_op_perform_add_bricks (glusterd_volinfo_t *volinfo, int32_t count,
+                 goto out;
+         while ( i <= count) {
+                 ret = glusterd_brickinfo_new_from_brick (brick, &brickinfo,
+-                                                         _gf_true);
++                                                         _gf_true, NULL);
+                 if (ret)
+                         goto out;
+ 
+@@ -1493,7 +1493,7 @@ glusterd_op_perform_remove_brick (glusterd_volinfo_t  *volinfo, char *brick,
+ 
+         ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo,
+                                                       &brickinfo,
+-                                                      _gf_true);
++                                                      _gf_false);
+         if (ret)
+                 goto out;
+ 
+@@ -1709,7 +1709,7 @@ glusterd_op_stage_add_brick (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                 }
+ 
+                 ret = glusterd_brickinfo_new_from_brick (brick, &brickinfo,
+-                                                         _gf_true);
++                                                         _gf_true, NULL);
+                 if (ret) {
+                         gf_msg (THIS->name, GF_LOG_ERROR, 0,
+                                 GD_MSG_BRICK_NOT_FOUND,
+@@ -1833,7 +1833,7 @@ glusterd_remove_brick_validate_bricks (gf1_op_commands cmd, int32_t brick_count,
+                 ret =
+                 glusterd_volume_brickinfo_get_by_brick(brick, volinfo,
+                                                        &brickinfo,
+-                                                       _gf_true);
++                                                       _gf_false);
+                 if (ret) {
+                         snprintf (msg, sizeof (msg), "Incorrect brick "
+                                   "%s for volume %s", brick, volinfo->volname);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-log-ops.c b/xlators/mgmt/glusterd/src/glusterd-log-ops.c
+index 2ded2b4..af28a63 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-log-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-log-ops.c
+@@ -151,7 +151,7 @@ glusterd_op_stage_log_rotate (dict_t *dict, char **op_errstr)
+         }
+ 
+         ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo, NULL,
+-                                                      _gf_true);
++                                                      _gf_false);
+         if (ret) {
+                 snprintf (msg, sizeof (msg), "Incorrect brick %s "
+                           "for volume %s", brick, volname);
+@@ -211,7 +211,7 @@ glusterd_op_log_rotate (dict_t *dict)
+                 goto cont;
+ 
+         ret = glusterd_brickinfo_new_from_brick (brick, &tmpbrkinfo,
+-                                                 _gf_true);
++                                                 _gf_false, NULL);
+         if (ret) {
+                 gf_msg ("glusterd", GF_LOG_ERROR, 0,
+                         GD_MSG_BRICK_NOT_FOUND,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index a3a598a..bdb67b3 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -1729,7 +1729,7 @@ glusterd_op_stage_status_volume (dict_t *dict, char **op_errstr)
+ 
+                 ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo,
+                                                               &brickinfo,
+-                                                              _gf_true);
++                                                              _gf_false);
+                 if (ret) {
+                         snprintf (msg, sizeof(msg), "No brick %s in"
+                                   " volume %s", brick, volname);
+@@ -3247,7 +3247,7 @@ glusterd_op_status_volume (dict_t *dict, char **op_errstr,
+                 ret = glusterd_volume_brickinfo_get_by_brick (brick,
+                                                               volinfo,
+                                                               &brickinfo,
+-                                                              _gf_true);
++                                                              _gf_false);
+                 if (ret)
+                         goto out;
+ 
+@@ -5829,7 +5829,7 @@ glusterd_bricks_select_remove_brick (dict_t *dict, char **op_errstr,
+ 
+                 ret = glusterd_volume_brickinfo_get_by_brick (brick, volinfo,
+                                                               &brickinfo,
+-                                                              _gf_true);
++                                                              _gf_false);
+ 
+                 if (ret)
+                         goto out;
+@@ -6689,7 +6689,7 @@ glusterd_bricks_select_status_volume (dict_t *dict, char **op_errstr,
+                 ret = glusterd_volume_brickinfo_get_by_brick (brickname,
+                                                               volinfo,
+                                                               &brickinfo,
+-                                                              _gf_true);
++                                                              _gf_false);
+                 if (ret)
+                         goto out;
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rebalance.c b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+index ff5790b..e40757e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rebalance.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+@@ -608,7 +608,7 @@ glusterd_brick_validation  (dict_t *dict, char *key, data_t *value,
+ 
+         ret = glusterd_volume_brickinfo_get_by_brick (value->data, volinfo,
+                                                       &brickinfo,
+-                                                      _gf_true);
++                                                      _gf_false);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                         GD_MSG_BRICK_NOT_FOUND,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+index 2295729..028024c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+@@ -299,7 +299,7 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
+ 
+         ret = glusterd_volume_brickinfo_get_by_brick (src_brick, volinfo,
+                                                       &src_brickinfo,
+-                                                      _gf_true);
++                                                      _gf_false);
+         if (ret) {
+                 snprintf (msg, sizeof (msg), "brick: %s does not exist in "
+                           "volume: %s", src_brick, volname);
+@@ -359,7 +359,7 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
+         }
+ 
+         ret = glusterd_brickinfo_new_from_brick (dst_brick, &dst_brickinfo,
+-                                                 _gf_true);
++                                                 _gf_true, NULL);
+         if (ret)
+                 goto out;
+ 
+@@ -545,7 +545,7 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
+         GF_ASSERT (conf);
+ 
+         ret = glusterd_brickinfo_new_from_brick (new_brick, &new_brickinfo,
+-                                                 _gf_true);
++                                                 _gf_true, NULL);
+         if (ret)
+                 goto out;
+ 
+@@ -556,7 +556,7 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
+ 
+         ret = glusterd_volume_brickinfo_get_by_brick (old_brick,
+                                                       volinfo, &old_brickinfo,
+-                                                      _gf_true);
++                                                      _gf_false);
+         if (ret)
+                 goto out;
+ 
+@@ -676,7 +676,7 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
+ 
+         ret = glusterd_volume_brickinfo_get_by_brick (src_brick, volinfo,
+                                                       &src_brickinfo,
+-                                                      _gf_true);
++                                                      _gf_false);
+         if (ret) {
+                 gf_msg_debug (this->name, 0,
+                         "Unable to get src-brickinfo");
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 4408081..0ecaa71 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -169,7 +169,8 @@ glusterd_store_is_valid_brickpath (char *volname, char *brick)
+         this = THIS;
+         GF_ASSERT (this);
+ 
+-        ret = glusterd_brickinfo_new_from_brick (brick, &brickinfo, _gf_true);
++        ret = glusterd_brickinfo_new_from_brick (brick, &brickinfo, _gf_false,
++                                                 NULL);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_WARNING, 0,
+                         GD_MSG_BRICK_CREATION_FAIL, "Failed to create brick "
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index afa5fea..0573808 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -1065,7 +1065,8 @@ out:
+ int32_t
+ glusterd_brickinfo_new_from_brick (char *brick,
+                                    glusterd_brickinfo_t **brickinfo,
+-                                   gf_boolean_t construct_real_path)
++                                   gf_boolean_t construct_real_path,
++                                   char **op_errstr)
+ {
+         char                   *hostname      = NULL;
+         char                   *path          = NULL;
+@@ -1113,7 +1114,25 @@ glusterd_brickinfo_new_from_brick (char *brick,
+         strncpy (new_brickinfo->hostname, hostname, 1024);
+         strncpy (new_brickinfo->path, path, 1024);
+ 
+-        if (construct_real_path && new_brickinfo->real_path[0] == '\0') {
++        if (construct_real_path) {
++                ret = glusterd_hostname_to_uuid (new_brickinfo->hostname,
++                                                 new_brickinfo->uuid);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_HOSTNAME_TO_UUID_FAIL,
++                                "Failed to convert hostname %s to uuid",
++                                hostname);
++                        if (op_errstr)
++                                gf_asprintf (op_errstr, "Host %s is not in \' "
++                                             "Peer in Cluster\' state",
++                                             new_brickinfo->hostname);
++                        goto out;
++                }
++        }
++
++        if (construct_real_path &&
++            !gf_uuid_compare (new_brickinfo->uuid, MY_UUID)
++            && new_brickinfo->real_path[0] == '\0') {
+                 if (!realpath (new_brickinfo->path, abspath)) {
+                         /* ENOENT indicates that brick path has not been created
+                          * which is a valid scenario */
+@@ -1439,7 +1458,7 @@ glusterd_volume_brickinfo_get_by_brick (char *brick,
+         GF_ASSERT (volinfo);
+ 
+         ret = glusterd_brickinfo_new_from_brick (brick, &tmp_brickinfo,
+-                                                 construct_real_path);
++                                                 construct_real_path, NULL);
+         if (ret)
+                 goto out;
+ 
+@@ -3056,12 +3075,8 @@ glusterd_import_new_brick (dict_t *peer_data, int32_t vol_count,
+         int                     decommissioned = 0;
+         glusterd_brickinfo_t    *new_brickinfo = NULL;
+         char                    msg[2048] = {0};
+-        xlator_t                *this     = NULL;
+         char                    *brick_uuid_str = NULL;
+-        char                    abspath[PATH_MAX] = {0};
+ 
+-        this = THIS;
+-        GF_ASSERT (this);
+         GF_ASSERT (peer_data);
+         GF_ASSERT (vol_count >= 0);
+         GF_ASSERT (brickinfo);
+@@ -3122,23 +3137,7 @@ glusterd_import_new_brick (dict_t *peer_data, int32_t vol_count,
+         ret = dict_get_str (peer_data, key, &brick_uuid_str);
+         if (ret)
+                 goto out;
+-
+         gf_uuid_parse (brick_uuid_str, new_brickinfo->uuid);
+-        if (!gf_uuid_compare(new_brickinfo->uuid, MY_UUID)) {
+-                if (new_brickinfo->real_path[0] == '\0') {
+-                        if (!realpath (new_brickinfo->path, abspath)) {
+-                                gf_msg (this->name, GF_LOG_CRITICAL, errno,
+-                                        GD_MSG_BRICKINFO_CREATE_FAIL,
+-                                        "realpath() failed for brick %s. The "
+-                                        "underlying file system may be in bad "
+-                                        "state", new_brickinfo->path);
+-                                ret = -1;
+-                                goto out;
+-                        }
+-                        strncpy (new_brickinfo->real_path, abspath,
+-                                 strlen(abspath));
+-                }
+-        }
+ 
+         *brickinfo = new_brickinfo;
+ out:
+@@ -3153,7 +3152,7 @@ out:
+  * It will be "volume" for normal volumes, and snap# like
+  * snap1, snap2, for snapshot volumes
+  */
+-int32_t
++static int32_t
+ glusterd_import_bricks (dict_t *peer_data, int32_t vol_count,
+                         glusterd_volinfo_t *new_volinfo, char *prefix)
+ {
+@@ -3363,6 +3362,7 @@ glusterd_import_volinfo (dict_t *peer_data, int count,
+         char               *parent_volname   = NULL;
+         char               *volname          = NULL;
+         glusterd_volinfo_t *new_volinfo      = NULL;
++        glusterd_volinfo_t *old_volinfo      = NULL;
+         char               *volume_id_str    = NULL;
+         char               *restored_snap    = NULL;
+         char               msg[2048]         = {0};
+@@ -3780,9 +3780,70 @@ glusterd_volume_disconnect_all_bricks (glusterd_volinfo_t *volinfo)
+         return ret;
+ }
+ 
++/* THIS FUNCTION IS CURRENTLY DOWNSTREAM ONLY, ONCE
++ * http://review.gluster.org/13578 IS BACKPORTED THIS FUNCTIONALITY SHOULD BE
++ * MOVED TO glusterd_volinfo_copy_brick_info () WHICH WILL BE IMPORTED BY THE
++ * MENTIONED PATCH
++ */
++static int32_t
++glusterd_volinfo_copy_brick_realpathinfo (glusterd_volinfo_t *old_volinfo,
++                                          glusterd_volinfo_t *new_volinfo)
++{
++        glusterd_brickinfo_t   *new_brickinfo       = NULL;
++        glusterd_brickinfo_t   *old_brickinfo       = NULL;
++        glusterd_conf_t        *priv                = NULL;
++        int                     ret                 = -1;
++        xlator_t               *this                = NULL;
++        char                    abspath[PATH_MAX]   = {0};
++
++        this = THIS;
++        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
++
++        GF_VALIDATE_OR_GOTO (this->name, new_volinfo, out);
++        GF_VALIDATE_OR_GOTO (this->name, old_volinfo, out);
++
++        cds_list_for_each_entry (new_brickinfo, &new_volinfo->bricks,
++                                 brick_list) {
++                ret = glusterd_volume_brickinfo_get (new_brickinfo->uuid,
++                                                     new_brickinfo->hostname,
++                                                     new_brickinfo->path,
++                                                     old_volinfo,
++                                                     &old_brickinfo);
++                if (ret == 0) {
++                        if (old_brickinfo->real_path == '\0') {
++                                if (!realpath (new_brickinfo->path, abspath)) {
++                                        /* Here an ENOENT should also be a
++                                         * failure as the brick is expected to
++                                         * be in existance
++                                         */
++                                        gf_msg (this->name, GF_LOG_CRITICAL,
++                                                errno,
++                                                GD_MSG_BRICKINFO_CREATE_FAIL,
++                                                "realpath () failed for brick "
++                                                "%s. The underlying filesystem "
++                                                "may be in bad state",
++                                                new_brickinfo->path);
++                                        ret = -1;
++                                        goto out;
++                                }
++                                strncpy (new_brickinfo->real_path, abspath,
++                                         strlen(abspath));
++                        } else {
++                                strncpy (new_brickinfo->real_path,
++                                         old_brickinfo->real_path,
++                                         strlen (old_brickinfo->real_path));
++                        }
++                }
++        }
++
++out:
++        return ret;
++
++}
++
+ int32_t
+-glusterd_volinfo_copy_brick_portinfo (glusterd_volinfo_t *new_volinfo,
+-                                      glusterd_volinfo_t *old_volinfo)
++glusterd_volinfo_copy_brick_portinfo (glusterd_volinfo_t *old_volinfo,
++                                      glusterd_volinfo_t *new_volinfo)
+ {
+         char                    pidfile[PATH_MAX+1] = {0,};
+         glusterd_brickinfo_t   *new_brickinfo       = NULL;
+@@ -3790,6 +3851,7 @@ glusterd_volinfo_copy_brick_portinfo (glusterd_volinfo_t *new_volinfo,
+         glusterd_conf_t        *priv                = NULL;
+         int                     ret                 = 0;
+         xlator_t               *this                = NULL;
++        char                    abspath[PATH_MAX]   = {0};
+ 
+         GF_ASSERT (new_volinfo);
+         GF_ASSERT (old_volinfo);
+@@ -3816,8 +3878,8 @@ glusterd_volinfo_copy_brick_portinfo (glusterd_volinfo_t *new_volinfo,
+ 
+                 }
+         }
++
+ out:
+-        ret = 0;
+         return ret;
+ }
+ 
+@@ -4006,8 +4068,8 @@ glusterd_import_friend_volume (dict_t *peer_data, size_t count)
+         glusterd_volinfo_t      *old_volinfo = NULL;
+         glusterd_volinfo_t      *new_volinfo = NULL;
+         glusterd_svc_t          *svc         = NULL;
+-        gf_boolean_t            newexportvalue;
+-        gf_boolean_t            oldexportvalue;
++        gf_boolean_t            newexportvalue = _gf_false;
++        gf_boolean_t            oldexportvalue = _gf_false;
+         char                    *value     = NULL;
+ 
+         GF_ASSERT (peer_data);
+@@ -4033,6 +4095,10 @@ glusterd_import_friend_volume (dict_t *peer_data, size_t count)
+ 
+                  (void) gd_check_and_update_rebalance_info (old_volinfo,
+                                                            new_volinfo);
++
++                /* Copy real_path from the old volinfo always */
++                (void) glusterd_volinfo_copy_brick_realpathinfo (old_volinfo,
++                                                                 new_volinfo);
+                 (void) glusterd_delete_stale_volume (old_volinfo, new_volinfo);
+         }
+ 
+@@ -5847,7 +5913,7 @@ glusterd_new_brick_validate (char *brick, glusterd_brickinfo_t *brickinfo,
+ 
+         if (!brickinfo) {
+                 ret = glusterd_brickinfo_new_from_brick (brick, &newbrickinfo,
+-                                                         _gf_true);
++                                                         _gf_true, NULL);
+                 if (ret)
+                         goto out;
+                 is_allocated = _gf_true;
+@@ -10196,7 +10262,7 @@ gd_should_i_start_rebalance  (glusterd_volinfo_t *volinfo) {
+                         ret = glusterd_volume_brickinfo_get_by_brick (brickname,
+                                                                       volinfo,
+                                                                       &brick,
+-                                                                      _gf_true);
++                                                                      _gf_false);
+                         if (ret)
+                                 goto out;
+                         if (gf_uuid_compare (MY_UUID, brick->uuid) == 0) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.h b/xlators/mgmt/glusterd/src/glusterd-utils.h
+index 9f8a64f..b508b01 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.h
+@@ -120,7 +120,8 @@ glusterd_brickinfo_new (glusterd_brickinfo_t **brickinfo);
+ int32_t
+ glusterd_brickinfo_new_from_brick (char *brick,
+                                    glusterd_brickinfo_t **brickinfo,
+-                                   gf_boolean_t construct_real_path);
++                                   gf_boolean_t construct_real_path,
++                                   char **op_errstr);
+ 
+ int32_t
+ glusterd_volinfo_find (char *volname, glusterd_volinfo_t **volinfo);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index 4a29d26..8617482 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -4867,7 +4867,8 @@ glusterd_is_valid_volfpath (char *volname, char *brick)
+         this = THIS;
+         GF_ASSERT (this);
+ 
+-        ret = glusterd_brickinfo_new_from_brick (brick, &brickinfo, _gf_true);
++        ret = glusterd_brickinfo_new_from_brick (brick, &brickinfo, _gf_false,
++                                                 NULL);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_WARNING, 0,
+                         GD_MSG_BRICKINFO_CREATE_FAIL,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index 3dc0d3f..50870cc 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -1227,7 +1227,7 @@ glusterd_op_stage_create_volume (dict_t *dict, char **op_errstr,
+                 }
+ 
+                 ret = glusterd_brickinfo_new_from_brick (brick, &brick_info,
+-                                                         _gf_true);
++                                                         _gf_true, op_errstr);
+                 if (ret)
+                         goto out;
+ 
+@@ -2300,7 +2300,7 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
+                 goto out;
+         while ( i <= count) {
+                 ret = glusterd_brickinfo_new_from_brick (brick, &brickinfo,
+-                                                         _gf_true);
++                                                         _gf_true, op_errstr);
+                 if (ret)
+                         goto out;
+ 
+-- 
+1.7.1
+

@@ -1,0 +1,146 @@
+From abcb46358062e0c99f4f679141a387f6b942491d Mon Sep 17 00:00:00 2001
+From: Gaurav Kumar Garg <garg.gaurav52@gmail.com>
+Date: Mon, 14 Mar 2016 14:36:11 +0530
+Subject: [PATCH 03/26] glusterd: disabling enable-shared-storage option should not delete volume
+
+This patch is a backport of: http://review.gluster.org/#/c/12232/
+
+Previously, when you create volume with "glusterd_shared_storage" name
+and if user disable, enable-shared-storage option then gluster will
+delete the "glusterd_shared_storage" volume.
+
+With this fix gluster will do appropriate validation of
+enable-shared-storage option and it will not delete volume with
+"glusterd_shared_storage" name if it is a user created volume.
+
+Change-Id: I8cb160fece702a730e25dadbc740e74efc57483e
+BUG: 1319695
+
+  >> Change-Id: I2bd92f938fb3de6ef496a934933bdcea9f251491
+  >> BUG: 1266818
+  >> Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+  >> Reviewed-on: http://review.gluster.org/12232
+  >> Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+  >> Reviewed-by: Anand Nekkunti <anekkunt@redhat.com>
+  >> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+  >> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+
+Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+Change-Id: Ida3dccbb5829b5442b057ffb9b7b7e90955f338a
+Reviewed-on: https://code.engineering.redhat.com/gerrit/70335
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ .../glusterd/bug-1266818-shared-storage-disable.t  |   36 ++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-messages.h      |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c         |   28 ++++++++++++---
+ 3 files changed, 60 insertions(+), 6 deletions(-)
+ create mode 100644 tests/bugs/glusterd/bug-1266818-shared-storage-disable.t
+
+diff --git a/tests/bugs/glusterd/bug-1266818-shared-storage-disable.t b/tests/bugs/glusterd/bug-1266818-shared-storage-disable.t
+new file mode 100644
+index 0000000..a9ccf1b
+--- /dev/null
++++ b/tests/bugs/glusterd/bug-1266818-shared-storage-disable.t
+@@ -0,0 +1,36 @@
++#!/bin/bash
++
++## Test case for BZ 1266818;
++## Disabling enable-shared-storage option should not delete user created
++## volume with name glusterd_shared_storage
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../cluster.rc
++
++cleanup;
++
++## Start a 2 node virtual cluster
++TEST launch_cluster 2;
++
++## Peer probe server 2 from server 1 cli
++TEST $CLI_1 peer probe $H2;
++
++EXPECT_WITHIN $PROBE_TIMEOUT 1 peer_count
++
++## Creating a volume with name glusterd_shared_storage
++TEST $CLI_1 volume create glusterd_shared_storage  $H1:$B1/${V0}0 $H2:$B1/${V0}1
++
++## Disabling enable-shared-storage should not succeed and should not delete the
++## user created volume with name "glusterd_shared_storage"
++TEST ! $CLI_1 volume all enable-shared-storage disable
++
++## Volume with name should exist
++TEST $CLI_1 volume info glusterd_shared_storage
++
++cleanup;
++
++
++
++
++
+diff --git a/xlators/mgmt/glusterd/src/glusterd-messages.h b/xlators/mgmt/glusterd/src/glusterd-messages.h
+index 9b3f517..8dcbcdb 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-messages.h
++++ b/xlators/mgmt/glusterd/src/glusterd-messages.h
+@@ -46,7 +46,7 @@
+ 
+ #define GLUSTERD_COMP_BASE      GLFS_MSGID_GLUSTERD
+ 
+-#define GLFS_NUM_MESSAGES       568
++#define GLFS_NUM_MESSAGES       573
+ 
+ #define GLFS_MSGID_END          (GLUSTERD_COMP_BASE + GLFS_NUM_MESSAGES + 1)
+ /* Messaged with message IDs */
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 86b6c48..444408f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -778,13 +778,19 @@ out:
+ static int
+ glusterd_validate_shared_storage (char *key, char *value, char *errstr)
+ {
+-        int32_t       ret      = -1;
+-        int32_t       exists   = -1;
+-        int32_t       count    = -1;
+-        xlator_t     *this     = NULL;
++        int32_t            ret      = -1;
++        int32_t            exists   = -1;
++        int32_t            count    = -1;
++        char              *op       = NULL;
++        xlator_t          *this     = NULL;
++        glusterd_conf_t   *conf     = NULL;
+ 
+         this = THIS;
+         GF_VALIDATE_OR_GOTO ("glusterd", this, out);
++
++        conf = this->private;
++        GF_VALIDATE_OR_GOTO (this->name, conf, out);
++
+         GF_VALIDATE_OR_GOTO (this->name, key, out);
+         GF_VALIDATE_OR_GOTO (this->name, value, out);
+         GF_VALIDATE_OR_GOTO (this->name, errstr, out);
+@@ -806,7 +812,19 @@ glusterd_validate_shared_storage (char *key, char *value, char *errstr)
+                 goto out;
+         }
+ 
+-        if (strcmp (value, "enable")) {
++        if (!strncmp (value, "disable", strlen ("disable"))) {
++                ret = dict_get_str (conf->opts, GLUSTERD_SHARED_STORAGE_KEY,
++                                                                           &op);
++                if (ret || !strncmp (op, "disable", strlen ("disable"))) {
++                        snprintf (errstr, PATH_MAX, "Shared storage volume "
++                                  "does not exist. Please enable shared storage"
++                                  " for creating shared storage volume.");
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_SHARED_STORAGE_DOES_NOT_EXIST, "%s",
++                                errstr);
++                        ret = -1;
++                        goto out;
++                }
+                 goto out;
+         }
+ 
+-- 
+1.7.1
+

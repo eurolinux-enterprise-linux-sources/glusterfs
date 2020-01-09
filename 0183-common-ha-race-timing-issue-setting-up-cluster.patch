@@ -1,0 +1,179 @@
+From d5858adbaa138383bfa17855fec95c59c989a6c0 Mon Sep 17 00:00:00 2001
+From: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Date: Wed, 1 Jun 2016 16:50:08 -0400
+Subject: [PATCH 183/183] common-ha: race/timing issue setting up cluster
+
+The ganesha_grace resource agent can start before the ganesha_mon
+resource agent, with the result that the crm_attribute that
+ganesha_grace expects to find has not been created yet.
+
+This is never (never? Or just so rarely that it has never actually
+been seen during development) seen with four nodes, but with just
+two nodes it's very repeatable.
+
+Note that when long (FQDN) names are used it is not unexpected to
+see Failed Actions in the output of `pcs status`, e.g.:
+
+* nfs-grace_monitor_5000 on node1.fully.qualified.domain.name.com
+'unknown error' (1): call=20, status=complete, exitreason='none',
+last-rc-change='Wed Jun  1 12:32:32 2016', queued=0ms, exec=0ms
+* nfs-grace_monitor_5000 on node2.fully.qualified.domain.name.com
+'unknown error' (1): call=18, status=complete, exitreason='none',
+last-rc-change='Wed Jun  1 12:32:42 2016', queued=0ms, exec=0ms
+
+and as long as all the ganesha_grace_clone and cluster_ip-1
+resource agents are in Started state then this is okay.
+
+backport master:
+> http://review.gluster.org/14607
+> BUG: 1341768
+release-3.8
+> http://review.gluster.org/14609
+> BUG: 1341770
+release-3.7
+> http://review.gluster.org/14610
+> BUG: 1341772
+> Change-Id: I726c9946ceb1ca92872b321612eb0f4c3cc039d8
+
+Change-Id: I62db41e46af6cfeba546f96a84d0e19d98e06ff5
+BUG: 1341567
+Signed-off-by: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/75679
+Reviewed-by: Jiffin Thottan <jthottan@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ extras/ganesha/ocf/ganesha_grace     |   25 +++++++++++++++----------
+ extras/ganesha/ocf/ganesha_mon       |   33 ++++++++++++++++++---------------
+ extras/ganesha/scripts/ganesha-ha.sh |    5 +++++
+ 3 files changed, 38 insertions(+), 25 deletions(-)
+
+diff --git a/extras/ganesha/ocf/ganesha_grace b/extras/ganesha/ocf/ganesha_grace
+index 21b95dd..84202df 100644
+--- a/extras/ganesha/ocf/ganesha_grace
++++ b/extras/ganesha/ocf/ganesha_grace
+@@ -94,15 +94,20 @@ esac
+ ganesha_grace_start()
+ {
+ 	local rc=${OCF_ERR_GENERIC}
+-	local short_host=$(hostname -s)
+-	local long_host=$(hostname)
++	local host=$(hostname -s)
+ 
+ 	ocf_log debug "ganesha_grace_start()"
+-	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
++	# give ganesha_mon RA a chance to set the crm_attr first
++	# I mislike the sleep, but it's not clear that looping
++	# with a small sleep is necessarily better
++	# start has a 40sec timeout, so a 5sec sleep here is okay
++        sleep 5
++	attr=$(crm_attribute --query --node=${host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
+         if [ $? -ne 0 ]; then
+-	        attr=$(crm_attribute --query --node=${long_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null )
++		host=$(hostname)
++		attr=$(crm_attribute --query --node=${host} --name=${OCF_RESKEY_grace_active} 2> /dev/null )
+                 if [ $? -ne 0 ]; then
+-	                ocf_log info "crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} failed"
++	                ocf_log info "grace start: crm_attribute --query --node=${host} --name=${OCF_RESKEY_grace_active} failed"
+                 fi
+         fi
+ 
+@@ -160,16 +165,16 @@ ganesha_grace_notify()
+ ganesha_grace_monitor()
+ {
+ 	local rc=${OCF_ERR_GENERIC}
+-	local short_host=$(hostname -s)
+-	local long_host=$(hostname)
++	local host=$(hostname -s)
+ 
+ 	ocf_log debug "monitor"
+ 
+-	attr=$(crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
++	attr=$(crm_attribute --query --node=${host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
+         if [ $? -ne 0 ]; then
+-	        attr=$(crm_attribute --query --node=${long_host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
++		host=$(hostname)
++	        attr=$(crm_attribute --query --node=${host} --name=${OCF_RESKEY_grace_active} 2> /dev/null)
+                 if [ $? -ne 0 ]; then
+-	                ocf_log info "crm_attribute --query --node=${short_host} --name=${OCF_RESKEY_grace_active} failed"
++	                ocf_log info "crm_attribute --query --node=${host} --name=${OCF_RESKEY_grace_active} failed"
+                 fi
+         fi
+ 
+diff --git a/extras/ganesha/ocf/ganesha_mon b/extras/ganesha/ocf/ganesha_mon
+index 974eb86..7d0eb6b 100644
+--- a/extras/ganesha/ocf/ganesha_mon
++++ b/extras/ganesha/ocf/ganesha_mon
+@@ -124,8 +124,7 @@ ganesha_mon_stop()
+ 
+ ganesha_mon_monitor()
+ {
+-	local short_host=$(hostname -s)
+-	local long_host=$(hostname)
++	local host=$(hostname -s)
+ 	local pid_file="/var/run/ganesha.nfsd.pid"
+ 
+ 	# RHEL6 /etc/init.d/nfs-ganesha adds -p /var/run/ganesha.nfsd.pid
+@@ -154,13 +153,15 @@ ganesha_mon_monitor()
+ 		# track grace-active crm_attr (attr != crm_attr)
+ 		# we can't just use the attr as there's no way to query
+ 		# its value in RHEL6 pacemaker
+-		crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 2> /dev/null
+-                if [ $? -ne 0 ]; then
+-		        crm_attribute --node=${long_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 2> /dev/null
+-		        if [ $? -ne 0 ]; then
+-		        	ocf_log info "warning: crm_attribute --node=${short_host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 failed"
+-		        fi
+-                fi
++
++		crm_attribute --node=${host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 2> /dev/null
++		if [ $? -ne 0 ]; then
++			host=$(hostname)
++			crm_attribute --node=${host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 2> /dev/null
++			if [ $? -ne 0 ]; then
++				ocf_log info "mon monitor warning: crm_attribute --node=${host} --lifetime=forever --name=${OCF_RESKEY_grace_active} --update=1 failed"
++			fi
++		fi
+ 
+ 		return ${OCF_SUCCESS}
+ 	fi
+@@ -182,13 +183,15 @@ ganesha_mon_monitor()
+ 		ocf_log info "warning: attrd_updater -D -n ${OCF_RESKEY_grace_active} failed"
+ 	fi
+ 
+-	crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0 2> /dev/null
++	host=$(hostname -s)
++	crm_attribute --node=${host} --name=${OCF_RESKEY_grace_active} --update=0 2> /dev/null
+ 	if [ $? -ne 0 ]; then
+-	        crm_attribute --node=${long_host} --name=${OCF_RESKEY_grace_active} --update=0 2> /dev/null
+-	        if [ $? -ne 0 ]; then
+-		        ocf_log info "warning: crm_attribute --node=${short_host} --name=${OCF_RESKEY_grace_active} --update=0 failed"
+-	        fi
+-        fi
++		host=$(hostname)
++		crm_attribute --node=${host} --name=${OCF_RESKEY_grace_active} --update=0 2> /dev/null
++		if [ $? -ne 0 ]; then
++			ocf_log info "mon monitor warning: crm_attribute --node=${host} --name=${OCF_RESKEY_grace_active} --update=0 failed"
++		fi
++	fi
+ 
+ 	sleep ${OCF_RESKEY_grace_delay}
+ 
+diff --git a/extras/ganesha/scripts/ganesha-ha.sh b/extras/ganesha/scripts/ganesha-ha.sh
+index f0796d2..f43dbf4 100644
+--- a/extras/ganesha/scripts/ganesha-ha.sh
++++ b/extras/ganesha/scripts/ganesha-ha.sh
+@@ -511,6 +511,11 @@ setup_create_resources()
+         logger "warning: pcs resource create nfs-mon ocf:heartbeat:ganesha_mon --clone failed"
+     fi
+ 
++    # see comment in (/usr/lib/ocf/resource.d/heartbeat/ganesha_grace
++    # start method. Allow time for ganesha_mon to start and set the
++    # ganesha-active crm_attribute
++    sleep 5
++
+     pcs resource create nfs-grace ocf:heartbeat:ganesha_grace --clone meta notify=true
+     if [ $? -ne 0 ]; then
+         logger "warning: pcs resource create nfs-grace ocf:heartbeat:ganesha_grace --clone failed"
+-- 
+1.7.1
+

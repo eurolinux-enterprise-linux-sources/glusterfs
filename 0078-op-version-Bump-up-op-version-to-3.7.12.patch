@@ -1,0 +1,31 @@
+From dbc99b019b3c6e6d4e358239b7b44fa174901493 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Mon, 18 Apr 2016 12:28:34 +0530
+Subject: [PATCH 78/80] op-version: Bump up op-version to 3.7.12
+
+        Backport of http://review.gluster.org/14017
+
+BUG: 1314724
+Change-Id: I49286ba60281d543f2acacf45c4f824627ef4167
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72391
+---
+ libglusterfs/src/globals.h |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index 35e7b4b..ebc1e2b 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -42,7 +42,7 @@
+  */
+ #define GD_OP_VERSION_MIN  1 /* MIN is the fresh start op-version, mostly
+                                 should not change */
+-#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_7_10 /* MAX VERSION is the maximum
++#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_7_12 /* MAX VERSION is the maximum
+                                                   count in VME table, should
+                                                   keep changing with
+                                                   introduction of newer
+-- 
+1.7.1
+

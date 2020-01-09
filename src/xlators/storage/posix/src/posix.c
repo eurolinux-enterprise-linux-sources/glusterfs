@@ -80,14 +80,58 @@ extern char *marker_xattrs[];
 #define SET_TO_OLD_FS_ID()
 
 #endif
+
+dict_t*
+posix_dict_set_nlink (dict_t *req, dict_t *res, int32_t nlink)
+{
+        int   ret  =  -1;
+
+        if (req == NULL || !dict_get (req, GF_REQUEST_LINK_COUNT_XDATA))
+                goto out;
+
+        if (res == NULL)
+                res = dict_new ();
+        if (res == NULL)
+                goto out;
+
+        ret = dict_set_uint32 (res, GF_RESPONSE_LINK_COUNT_XDATA, nlink);
+        if (ret == -1)
+                gf_msg ("posix", GF_LOG_WARNING, 0, P_MSG_SET_XDATA_FAIL,
+                        "Failed to set GF_RESPONSE_LINK_COUNT_XDATA");
+out:
+        return res;
+}
+
 int
 posix_forget (xlator_t *this, inode_t *inode)
 {
         uint64_t tmp_cache = 0;
-        if (!inode_ctx_del (inode, this, &tmp_cache))
-                dict_destroy ((dict_t *)(long)tmp_cache);
+        int ret = 0;
+        char *unlink_path = NULL;
+        struct posix_private    *priv_posix = NULL;
 
-        return 0;
+        priv_posix = (struct posix_private *) this->private;
+
+        ret = inode_ctx_del (inode, this, &tmp_cache);
+        if (ret < 0) {
+                ret = 0;
+                goto out;
+        }
+        if (tmp_cache == GF_UNLINK_TRUE) {
+                POSIX_GET_FILE_UNLINK_PATH(priv_posix->base_path,
+                                           inode->gfid, unlink_path);
+                if (!unlink_path) {
+                        gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
+                                P_MSG_UNLINK_FAILED,
+                                "Failed to remove gfid :%s",
+                                uuid_utoa (inode->gfid));
+                        ret = -1;
+                        goto out;
+                }
+                ret = sys_unlink(unlink_path);
+        }
+out:
+        return ret;
 }
 
 /* Regular fops */
@@ -614,12 +658,13 @@ out:
 }
 
 static int32_t
-posix_do_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t flags,
-		   off_t offset, size_t len, struct iatt *statpre,
-		   struct iatt *statpost)
+posix_do_fallocate (call_frame_t *frame, xlator_t *this, fd_t *fd,
+                    int32_t flags, off_t offset, size_t len,
+                    struct iatt *statpre, struct iatt *statpost, dict_t *xdata)
 {
-        struct posix_fd *pfd = NULL;
-        int32_t          ret = -1;
+        int32_t             ret    = -1;
+        struct posix_fd    *pfd    = NULL;
+        gf_boolean_t        locked = _gf_false;
 
         DECLARE_OLD_FS_ID_VAR;
 
@@ -635,6 +680,11 @@ posix_do_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t flags,
                 goto out;
         }
 
+        if (dict_get (xdata, GLUSTERFS_WRITE_UPDATE_ATOMIC)) {
+                locked = _gf_true;
+                LOCK(&fd->inode->lock);
+        }
+
         ret = posix_fdstat (this, pfd->fd, statpre);
         if (ret == -1) {
                 ret = -errno;
@@ -643,7 +693,7 @@ posix_do_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t flags,
                 goto out;
         }
 
-	ret = sys_fallocate(pfd->fd, flags, offset, len);
+	ret = sys_fallocate (pfd->fd, flags, offset, len);
 	if (ret == -1) {
 		ret = -errno;
 		goto out;
@@ -658,6 +708,10 @@ posix_do_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t flags,
         }
 
 out:
+        if (locked) {
+                UNLOCK (&fd->inode->lock);
+                locked = _gf_false;
+        }
         SET_TO_OLD_FS_ID ();
 
         return ret;
@@ -760,12 +814,13 @@ err:
 }
 
 static int32_t
-posix_do_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd,
-                  off_t offset, off_t len, struct iatt *statpre,
-                  struct iatt *statpost)
+posix_do_zerofill (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+                   off_t len, struct iatt *statpre, struct iatt *statpost,
+                   dict_t *xdata)
 {
-        struct posix_fd *pfd       = NULL;
-        int32_t          ret       = -1;
+        int32_t            ret       = -1;
+        struct posix_fd   *pfd       = NULL;
+        gf_boolean_t       locked    = _gf_false;
 
         DECLARE_OLD_FS_ID_VAR;
 
@@ -781,6 +836,11 @@ posix_do_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd,
                 goto out;
         }
 
+        if (dict_get (xdata, GLUSTERFS_WRITE_UPDATE_ATOMIC)) {
+                locked = _gf_true;
+                LOCK(&fd->inode->lock);
+        }
+
         ret = posix_fdstat (this, pfd->fd, statpre);
         if (ret == -1) {
                 ret = -errno;
@@ -788,7 +848,8 @@ posix_do_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd,
                         "pre-operation fstat failed on fd = %p", fd);
                 goto out;
         }
-        ret = _posix_do_zerofill(pfd->fd, offset, len, pfd->flags & O_DIRECT);
+
+        ret = _posix_do_zerofill (pfd->fd, offset, len, pfd->flags & O_DIRECT);
         if (ret < 0) {
                 ret = -errno;
                 gf_msg (this->name, GF_LOG_ERROR, errno, P_MSG_ZEROFILL_FAILED,
@@ -796,6 +857,7 @@ posix_do_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd,
                         pfd->fd, len);
                 goto out;
         }
+
         if (pfd->flags & (O_SYNC|O_DSYNC)) {
                 ret = fsync (pfd->fd);
                 if (ret) {
@@ -816,6 +878,10 @@ posix_do_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd,
         }
 
 out:
+	if (locked) {
+		UNLOCK (&fd->inode->lock);
+		locked = _gf_false;
+	}
         SET_TO_OLD_FS_ID ();
 
         return ret;
@@ -835,8 +901,8 @@ _posix_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t keep_siz
 		flags = FALLOC_FL_KEEP_SIZE;
 #endif /* FALLOC_FL_KEEP_SIZE */
 
-	ret = posix_do_fallocate(frame, this, fd, flags, offset, len,
-				 &statpre, &statpost);
+	ret = posix_do_fallocate (frame, this, fd, flags, offset, len,
+				  &statpre, &statpost, xdata);
 	if (ret < 0)
 		goto err;
 
@@ -861,8 +927,8 @@ posix_discard(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
         struct iatt statpre = {0,};
         struct iatt statpost = {0,};
 
-	ret = posix_do_fallocate(frame, this, fd, flags, offset, len,
-				 &statpre, &statpost);
+	ret = posix_do_fallocate (frame, this, fd, flags, offset, len,
+				  &statpre, &statpost, xdata);
 	if (ret < 0)
 		goto err;
 
@@ -883,8 +949,8 @@ posix_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
         struct  iatt statpre             = {0,};
         struct  iatt statpost            = {0,};
 
-        ret = posix_do_zerofill(frame, this, fd, offset, len,
-                                 &statpre, &statpost);
+        ret = posix_do_zerofill (frame, this, fd, offset, len,
+                                 &statpre, &statpost, xdata);
         if (ret < 0)
                 goto err;
 
@@ -1142,7 +1208,8 @@ posix_mknod (call_frame_t *frame, xlator_t *this,
                         goto real_op;
                 }
                 op_ret = posix_create_link_if_gfid_exists (this, uuid_req,
-                                                           real_path);
+                                                           real_path,
+                                                           loc->inode->table);
                 if (!op_ret) {
                         linked = _gf_true;
                         goto post_op;
@@ -1429,16 +1496,93 @@ out:
         return 0;
 }
 
+int
+posix_add_unlink_to_ctx (inode_t *inode, xlator_t *this, char *unlink_path)
+{
+        uint64_t ctx = GF_UNLINK_FALSE;
+        int ret = 0;
+
+        if (!unlink_path) {
+                gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
+                        P_MSG_UNLINK_FAILED,
+                        "Creation of unlink entry failed for gfid: %s",
+                        unlink_path);
+                ret = -1;
+                goto out;
+        }
+
+        ctx = GF_UNLINK_TRUE;
+        ret = posix_inode_ctx_set (inode, this, ctx);
+        if (ret < 0) {
+                goto out;
+        }
+
+out:
+        return ret;
+}
+
+int32_t
+posix_move_gfid_to_unlink (xlator_t *this, uuid_t gfid, loc_t *loc)
+{
+        char *unlink_path = NULL;
+        char *gfid_path = NULL;
+        struct stat  stbuf = {0, };
+        int ret = 0;
+        struct posix_private    *priv_posix = NULL;
+
+        priv_posix = (struct posix_private *) this->private;
+
+        MAKE_HANDLE_GFID_PATH (gfid_path, this, gfid, NULL);
+
+        POSIX_GET_FILE_UNLINK_PATH (priv_posix->base_path,
+                                    loc->inode->gfid, unlink_path);
+        if (!unlink_path) {
+                ret = -1;
+                goto out;
+        }
+        gf_msg_debug (this->name, 0,
+                      "Moving gfid: %s to unlink_path : %s",
+                      gfid_path, unlink_path);
+        ret = sys_rename (gfid_path, unlink_path);
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        P_MSG_UNLINK_FAILED,
+                        "Creation of unlink entry failed for gfid: %s",
+                        unlink_path);
+                goto out;
+        }
+        ret = posix_add_unlink_to_ctx (loc->inode, this, unlink_path);
+        if (ret < 0)
+                goto out;
+
+out:
+        return ret;
+}
+
 int32_t
 posix_unlink_gfid_handle_and_entry (xlator_t *this, const char *real_path,
-                                    struct iatt *stbuf, int32_t *op_errno)
+                                    struct iatt *stbuf, int32_t *op_errno,
+                                    loc_t *loc)
 {
-        int32_t             ret      =   0;
+        int32_t                 ret    = 0;
+        struct posix_private    *priv  = NULL;
+        int fd_count = 0;
+
+        priv = this->private;
 
         /*  Unlink the gfid_handle_first */
-
         if (stbuf && stbuf->ia_nlink == 1) {
-                ret = posix_handle_unset (this, stbuf->ia_gfid, NULL);
+
+                LOCK (&loc->inode->lock);
+
+                if (loc->inode->fd_count == 0) {
+                        UNLOCK (&loc->inode->lock);
+                        ret = posix_handle_unset (this, stbuf->ia_gfid, NULL);
+                } else {
+                        UNLOCK (&loc->inode->lock);
+                        ret = posix_move_gfid_to_unlink (this, stbuf->ia_gfid,
+                                                         loc);
+                }
                 if (ret) {
                         gf_msg (this->name, GF_LOG_ERROR, errno,
                                 P_MSG_UNLINK_FAILED, "unlink of gfid handle "
@@ -1452,7 +1596,6 @@ posix_unlink_gfid_handle_and_entry (xlator_t *this, const char *real_path,
         if (ret == -1) {
                 if (op_errno)
                         *op_errno = errno;
-
                 gf_msg (this->name, GF_LOG_ERROR, errno, P_MSG_UNLINK_FAILED,
                         "unlink of %s failed", real_path);
                 goto err;
@@ -1462,6 +1605,66 @@ posix_unlink_gfid_handle_and_entry (xlator_t *this, const char *real_path,
 
 err:
         return -1;
+}
+
+static
+int32_t posix_set_iatt_in_dict (dict_t *dict, struct iatt *in_stbuf)
+{
+        int ret             = -1;
+        struct iatt *stbuf  = NULL;
+        int32_t len         = sizeof(struct iatt);
+
+        if (!dict || !in_stbuf)
+                return ret;
+
+        stbuf = GF_CALLOC (1, len, gf_common_mt_char);
+        if (!stbuf)
+                return ret;
+
+        memcpy (stbuf, in_stbuf, len);
+
+        ret = dict_set_bin (dict, DHT_IATT_IN_XDATA_KEY, stbuf, len);
+        if (ret)
+                GF_FREE (stbuf);
+
+        return ret;
+}
+
+gf_boolean_t
+posix_skip_non_linkto_unlink (dict_t *xdata, loc_t *loc, char *key,
+                              const char *linkto_xattr, struct iatt *stbuf,
+                              const char *real_path)
+{
+        gf_boolean_t     skip_unlink            = _gf_false;
+        gf_boolean_t     is_dht_linkto_file     = _gf_false;
+        int              unlink_if_linkto       = 0;
+        ssize_t          xattr_size             = -1;
+        int              op_ret                 = -1;
+
+        op_ret = dict_get_int32 (xdata, key,
+                                 &unlink_if_linkto);
+
+        if (!op_ret && unlink_if_linkto) {
+
+                is_dht_linkto_file =  IS_DHT_LINKFILE_MODE (stbuf);
+                if (!is_dht_linkto_file)
+                        return _gf_true;
+
+                LOCK (&loc->inode->lock);
+
+                xattr_size = sys_lgetxattr (real_path, linkto_xattr, NULL, 0);
+
+                if (xattr_size <= 0)
+                        skip_unlink = _gf_true;
+
+                UNLOCK (&loc->inode->lock);
+
+                gf_msg ("posix", GF_LOG_INFO, 0, P_MSG_XATTR_STATUS,
+                        "linkto_xattr status: %"PRIu32" for %s", skip_unlink,
+                        real_path);
+        }
+        return skip_unlink;
+
 }
 
 int32_t
@@ -1474,6 +1677,7 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
         char                   *par_path          = NULL;
         int32_t                fd                 = -1;
         struct iatt            stbuf              = {0,};
+        struct iatt            postbuf            = {0,};
         struct posix_private  *priv               = NULL;
         struct iatt            preparent          = {0,};
         struct iatt            postparent         = {0,};
@@ -1482,10 +1686,14 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
         int32_t                unlink_if_linkto   = 0;
         int32_t                check_open_fd      = 0;
         int32_t                skip_unlink        = 0;
+        int32_t                fdstat_requested   = 0;
         int32_t                ctr_link_req       = 0;
         ssize_t                xattr_size         = -1;
         int32_t                is_dht_linkto_file = 0;
-        dict_t                 *unwind_dict        = NULL;
+        dict_t                *unwind_dict        = NULL;
+        void                  *uuid               = NULL;
+        char                   uuid_str[GF_UUID_BUF_SIZE] = {0};
+        char                   gfid_str[GF_UUID_BUF_SIZE] = {0};
 
         DECLARE_OLD_FS_ID_VAR;
 
@@ -1512,6 +1720,20 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
 
         priv = this->private;
 
+        op_ret = dict_get_ptr (xdata, TIER_LINKFILE_GFID, &uuid);
+
+        if (!op_ret && gf_uuid_compare (uuid, stbuf.ia_gfid)) {
+                op_errno = ENOENT;
+                op_ret = -1;
+                gf_uuid_unparse (uuid, uuid_str);
+                gf_uuid_unparse (stbuf.ia_gfid, gfid_str);
+                gf_msg_debug (this->name, op_errno, "Mismatch in gfid for path "
+                              "%s. Aborting the unlink. loc->gfid = %s, "
+                              "stbuf->ia_gfid = %s", real_path,
+                              uuid_str, gfid_str);
+                goto out;
+        }
+
         op_ret = dict_get_int32 (xdata, DHT_SKIP_OPEN_FD_UNLINK,
                                  &check_open_fd);
 
@@ -1535,50 +1757,40 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
                         goto out;
                 }
         }
-
-
-        op_ret = dict_get_int32 (xdata, DHT_SKIP_NON_LINKTO_UNLINK,
-                                 &unlink_if_linkto);
-
-        if (!op_ret && unlink_if_linkto) {
-
-                LOCK (&loc->inode->lock);
-
-                xattr_size = sys_lgetxattr (real_path, LINKTO, NULL, 0);
-
-                if (xattr_size <= 0) {
-                        skip_unlink = 1;
-                } else {
-                       is_dht_linkto_file =  IS_DHT_LINKFILE_MODE (&stbuf);
-                       if (!is_dht_linkto_file)
-                               skip_unlink = 1;
-                }
-
-                UNLOCK (&loc->inode->lock);
-
-                gf_msg (this->name, GF_LOG_INFO, 0, P_MSG_XATTR_STATUS,
-                        "linkto_xattr status: %"PRIu32" for %s", skip_unlink,
-                        real_path);
-
-                if (skip_unlink) {
-                        op_ret = -1;
-                        op_errno = EBUSY;
-                        goto out;
-                }
+        /*
+         * If either of the function return true, skip_unlink.
+         * If first first function itself return true,
+         * we don't need to call second function, skip unlink.
+         */
+        skip_unlink = posix_skip_non_linkto_unlink (xdata, loc,
+                                                    DHT_SKIP_NON_LINKTO_UNLINK,
+                                                    DHT_LINKTO, &stbuf,
+                                                    real_path);
+        skip_unlink = skip_unlink || posix_skip_non_linkto_unlink (xdata, loc,
+                                                    TIER_SKIP_NON_LINKTO_UNLINK,
+                                                    TIER_LINKTO, &stbuf,
+                                                    real_path);
+        if (skip_unlink) {
+                op_ret = -1;
+                op_errno = EBUSY;
+                goto out;
         }
 
+        if (IA_ISREG (loc->inode->ia_type) &&
+            xdata && dict_get (xdata, DHT_IATT_IN_XDATA_KEY)) {
+                fdstat_requested = 1;
+        }
 
-        if (priv->background_unlink) {
-                if (IA_ISREG (loc->inode->ia_type)) {
-                        fd = open (real_path, O_RDONLY);
-                        if (fd == -1) {
-                                op_ret = -1;
-                                op_errno = errno;
-                                gf_msg (this->name, GF_LOG_ERROR, errno,
-                                        P_MSG_OPEN_FAILED,
-                                        "open of %s failed", real_path);
-                                goto out;
-                        }
+        if (fdstat_requested ||
+            (priv->background_unlink && IA_ISREG (loc->inode->ia_type))) {
+                fd = open (real_path, O_RDONLY);
+                if (fd == -1) {
+                        op_ret = -1;
+                        op_errno = errno;
+                        gf_msg (this->name, GF_LOG_ERROR, errno,
+                                P_MSG_OPEN_FAILED,
+                                "open of %s failed", real_path);
+                        goto out;
                 }
         }
 
@@ -1606,9 +1818,27 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
         }
 
         op_ret =  posix_unlink_gfid_handle_and_entry (this, real_path, &stbuf,
-                                                      &op_errno);
+                                                      &op_errno, loc);
         if (op_ret == -1) {
                 goto out;
+        }
+
+        unwind_dict = dict_new ();
+        if (!unwind_dict) {
+                op_errno = -ENOMEM;
+                op_ret = -1;
+                goto out;
+        }
+        if (fdstat_requested) {
+                op_ret = posix_fdstat (this, fd, &postbuf);
+                if (op_ret == -1) {
+                        op_errno = errno;
+                        gf_msg (this->name, GF_LOG_ERROR, errno,
+                                P_MSG_FSTAT_FAILED, "post operation "
+                                "fstat failed on fd=%d", fd);
+                        goto out;
+                }
+                op_ret = posix_set_iatt_in_dict (unwind_dict, &postbuf);
         }
 
         op_ret = posix_pstat (this, loc->pargfid, par_path, &postparent);
@@ -1620,46 +1850,8 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
                 goto out;
         }
 
-        /*
-         *
-         * Check if there is a CTR_REQUEST_LINK_COUNT_XDATA from CTR Xlator
-         *
-         * */
-        op_ret = dict_get_int32 (xdata, CTR_REQUEST_LINK_COUNT_XDATA,
-                                 &ctr_link_req);
-        if (op_ret) {
-                /*Since no request no response*/
-                op_ret = 0;
-                goto out;
-        }
-
-        /* Sending back inode link count to ctr_unlink(changetimerecoder xlator)
-         * via "CTR_RESPONSE_LINK_COUNT_XDATA" key using unwind_dict.
-         * CTR Xlator will clear all the records if the link count has become 1
-         * i.e this was the last hard link.
-         * */
-        unwind_dict = dict_new ();
-        /* Even if unwind_dict fails to alloc memory we will not mark the FOP
-         * unsuccessful
-         * because this dict is only used by CTR Xlator to clear
-         * all records if link count == 0*/
-        if (!unwind_dict) {
-                op_ret = 0;
-                goto out;
-        }
-        /* Even if unwind_dict fails to set CTR_RESPONSE_LINK_COUNT_XDATA we
-         * will not mark the FOP unsuccessful
-         * because this dict is only used by CTR Xlator to clear
-         * all records if link count == 0*/
-        op_ret = dict_set_uint32 (unwind_dict, CTR_RESPONSE_LINK_COUNT_XDATA,
-                                stbuf.ia_nlink);
-        if (op_ret == -1) {
-                gf_msg (this->name, GF_LOG_WARNING, 0, P_MSG_SET_XDATA_FAIL,
-                        "Failed to set CTR_RESPONSE_LINK_COUNT_XDATA");
-        }
-
+        unwind_dict = posix_dict_set_nlink (xdata, unwind_dict, stbuf.ia_nlink);
         op_ret = 0;
-
 out:
         SET_TO_OLD_FS_ID ();
 
@@ -1958,6 +2150,7 @@ posix_rename (call_frame_t *frame, xlator_t *this,
         int                   nlink           = 0;
         char                 *pgfid_xattr_key = NULL;
         int32_t               nlink_samepgfid = 0;
+        dict_t               *unwind_dict     = NULL;
 
         DECLARE_OLD_FS_ID_VAR;
 
@@ -2137,15 +2330,19 @@ unlock:
                 goto out;
         }
 
+        if (was_present)
+                unwind_dict = posix_dict_set_nlink (xdata, NULL, nlink);
         op_ret = 0;
-
 out:
 
         SET_TO_OLD_FS_ID ();
 
         STACK_UNWIND_STRICT (rename, frame, op_ret, op_errno, &stbuf,
                              &preoldparent, &postoldparent,
-                             &prenewparent, &postnewparent, NULL);
+                             &prenewparent, &postnewparent, unwind_dict);
+
+        if (unwind_dict)
+                dict_unref (unwind_dict);
 
         return 0;
 }
@@ -3236,7 +3433,7 @@ _handle_setxattr_keyvalue_pair (dict_t *d, char *k, data_t *v,
 }
 
 #ifdef GF_DARWIN_HOST_OS
-static inline int
+static int
 map_xattr_flags(int flags)
 {
         /* DARWIN has different defines on XATTR_ flags.
@@ -3251,31 +3448,6 @@ map_xattr_flags(int flags)
         return darwinflags;
 }
 #endif
-
-static
-int32_t posix_set_iatt_in_dict (dict_t *dict, struct iatt *in_stbuf)
-{
-        int ret             = -1;
-        struct iatt *stbuf  = NULL;
-        int32_t len         = sizeof(struct iatt);
-
-        if (!dict || !in_stbuf)
-                return ret;
-
-        stbuf = GF_CALLOC (1, len, gf_common_mt_char);
-        if (!stbuf)
-                return ret;
-
-        memcpy (stbuf, in_stbuf, len);
-
-        ret = dict_set_bin (dict, DHT_IATT_IN_XDATA_KEY, stbuf, len);
-        if (ret)
-                GF_FREE (stbuf);
-
-        return ret;
-}
-
-
 
 int32_t
 posix_setxattr (call_frame_t *frame, xlator_t *this,
@@ -3814,14 +3986,14 @@ posix_get_ancestry (xlator_t *this, inode_t *leaf_inode,
 
         priv = this->private;
 
-        if (!priv->update_pgfid_nlinks)
-                goto out;
-
         if (IA_ISDIR (leaf_inode->ia_type)) {
                 ret = posix_get_ancestry_directory (this, leaf_inode,
                                                     head, path, type, op_errno,
                                                     xdata);
         } else  {
+
+                if (!priv->update_pgfid_nlinks)
+                        goto out;
                 ret = posix_get_ancestry_non_directory (this, leaf_inode,
                                                         head, path, type,
                                                         op_errno, xdata);
@@ -3874,6 +4046,14 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
 
         op_ret = -1;
         priv = this->private;
+
+        /* Allow access to stime xattr only to geo-rep worker */
+        if (frame->root->pid != GF_CLIENT_PID_GSYNCD && name &&
+            fnmatch ("*.glusterfs.*.stime", name, FNM_PERIOD) == 0) {
+                op_ret = -1;
+                op_errno = ENOATTR;
+                goto out;
+        }
 
         if (loc->inode && IA_ISDIR(loc->inode->ia_type) && name &&
             ZR_FILE_CONTENT_REQUEST(name)) {
@@ -4184,6 +4364,10 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
         list_offset = 0;
         while (remaining_size > 0) {
                 strcpy (keybuffer, list + list_offset);
+                if (frame->root->pid != GF_CLIENT_PID_GSYNCD &&
+                    fnmatch ("*.glusterfs.*.stime", keybuffer, FNM_PERIOD) == 0)
+                        goto ignore;
+
                 size = sys_lgetxattr (real_path, keybuffer, NULL, 0);
                 if (size == -1) {
                         op_ret = -1;
@@ -4231,6 +4415,7 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
                         goto out;
                 }
 
+ignore:
                 remaining_size -= strlen (keybuffer) + 1;
                 list_offset += strlen (keybuffer) + 1;
 
@@ -4293,7 +4478,7 @@ posix_fgetxattr (call_frame_t *frame, xlator_t *this,
         _fd = pfd->fd;
 
         /* Get the total size */
-        dict = get_new_dict ();
+        dict = dict_new ();
         if (!dict) {
                 goto out;
         }
@@ -4458,7 +4643,6 @@ done:
         if (dict) {
                 dict_del (dict, GFID_XATTR_KEY);
                 dict_del (dict, GF_XATTR_VOL_ID_KEY);
-                dict_ref (dict);
         }
 
 out:
@@ -5906,9 +6090,13 @@ posix_rchecksum (call_frame_t *frame, xlator_t *this,
         int                     op_ret          = -1;
         int                     op_errno        = 0;
         int                     ret             = 0;
+        ssize_t                 bytes_read      = 0;
         int32_t                 weak_checksum   = 0;
+        int32_t                 zerofillcheck   = 0;
         unsigned char           strong_checksum[MD5_DIGEST_LENGTH] = {0};
         struct posix_private    *priv           = NULL;
+        dict_t                  *rsp_xdata      = NULL;
+        gf_boolean_t            buf_has_zeroes  = _gf_false;
 
         VALIDATE_OR_GOTO (frame, out);
         VALIDATE_OR_GOTO (this, out);
@@ -5919,6 +6107,12 @@ posix_rchecksum (call_frame_t *frame, xlator_t *this,
 
         alloc_buf = _page_aligned_alloc (len, &buf);
         if (!alloc_buf) {
+                op_errno = ENOMEM;
+                goto out;
+        }
+
+        rsp_xdata = dict_new();
+        if (!rsp_xdata) {
                 op_errno = ENOMEM;
                 goto out;
         }
@@ -5938,12 +6132,12 @@ posix_rchecksum (call_frame_t *frame, xlator_t *this,
                 if (priv->aio_capable && priv->aio_init_done)
                         __posix_fd_set_odirect (fd, pfd, 0, offset, len);
 
-                ret = pread (_fd, buf, len, offset);
-                if (ret < 0) {
+                bytes_read = pread (_fd, buf, len, offset);
+                if (bytes_read < 0) {
                         gf_msg (this->name, GF_LOG_WARNING, errno,
                                 P_MSG_PREAD_FAILED,
-                                "pread of %d bytes returned %d ",
-                                len, ret);
+                                "pread of %d bytes returned %ld ",
+                                len, bytes_read);
 
                         op_errno = errno;
                 }
@@ -5951,17 +6145,34 @@ posix_rchecksum (call_frame_t *frame, xlator_t *this,
         }
         UNLOCK (&fd->lock);
 
-        if (ret < 0)
+        if (bytes_read < 0)
                 goto out;
 
+        if (xdata && dict_get_int32 (xdata, "check-zero-filled",
+                                     &zerofillcheck) == 0) {
+                buf_has_zeroes = (mem_0filled (buf, bytes_read)) ? _gf_false :
+                                 _gf_true;
+                ret = dict_set_uint32 (rsp_xdata, "buf-has-zeroes",
+                                       buf_has_zeroes);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_WARNING, -ret,
+                                P_MSG_DICT_SET_FAILED, "%s: Failed to set "
+                                "dictionary value for key: %s",
+                                uuid_utoa (fd->inode->gfid), "buf-has-zeroes");
+                        op_errno = -ret;
+                        goto out;
+                }
+        }
         weak_checksum = gf_rsync_weak_checksum ((unsigned char *) buf, (size_t) ret);
-        gf_rsync_strong_checksum ((unsigned char *) buf, (size_t) ret, (unsigned char *) strong_checksum);
+        gf_rsync_strong_checksum ((unsigned char *) buf, (size_t) bytes_read,
+                                  (unsigned char *) strong_checksum);
 
         op_ret = 0;
 out:
         STACK_UNWIND_STRICT (rchecksum, frame, op_ret, op_errno,
-                             weak_checksum, strong_checksum, NULL);
-
+                             weak_checksum, strong_checksum, rsp_xdata);
+        if (rsp_xdata)
+                dict_unref (rsp_xdata);
         GF_FREE (alloc_buf);
 
         return 0;
@@ -6151,6 +6362,77 @@ struct posix_private *priv = NULL;
 out:
 	return ret;
 }
+
+int32_t
+posix_create_unlink_dir (xlator_t *this) {
+
+        char  *unlink_path = NULL;
+        char  *landfill_path = NULL;
+        struct posix_private *priv = NULL;
+        struct stat           stbuf;
+        int ret = -1;
+        uuid_t                gfid = {0};
+        char                  gfid_str[64] = {0};
+
+        priv = this->private;
+
+        unlink_path = alloca (strlen (priv->base_path) + 1 +
+                              strlen (GF_UNLINK_PATH) + 1);
+        sprintf (unlink_path, "%s/%s", priv->base_path,
+                 GF_UNLINK_PATH);
+
+        gf_uuid_generate (gfid);
+        uuid_utoa_r (gfid, gfid_str);
+
+        landfill_path = alloca (strlen (priv->base_path) + 1 +
+                                strlen (GF_LANDFILL_PATH) + 1 +
+                                strlen (gfid_str) + 1);
+        sprintf (landfill_path, "%s/%s/%s", priv->base_path,
+                 GF_LANDFILL_PATH, gfid_str);
+
+        ret = sys_stat (unlink_path, &stbuf);
+        switch (ret) {
+        case -1:
+                if (errno != ENOENT) {
+                        gf_msg (this->name, GF_LOG_ERROR, errno,
+                                P_MSG_HANDLE_CREATE,
+                                "Checking for %s failed",
+                                unlink_path);
+                        return -1;
+                }
+                break;
+        case 0:
+                if (!S_ISDIR (stbuf.st_mode)) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                P_MSG_HANDLE_CREATE,
+                                "Not a directory: %s",
+                                unlink_path);
+                        return -1;
+                }
+                ret = sys_rename (unlink_path, landfill_path);
+                if (ret) {
+                        gf_msg (this->name, GF_LOG_ERROR, errno,
+                                P_MSG_HANDLE_CREATE,
+                                "Can not delete directory %s ",
+                                unlink_path);
+                        return -1;
+                }
+                break;
+        default:
+                break;
+        }
+        ret = sys_mkdir (unlink_path, 0600);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, errno,
+                        P_MSG_HANDLE_CREATE,
+                        "Creating directory %s failed",
+                        unlink_path);
+                return -1;
+        }
+
+        return 0;
+}
+
 
 
 /**
@@ -6562,6 +6844,15 @@ init (xlator_t *this)
                 ret = -1;
                 goto out;
 	}
+
+        op_ret = posix_create_unlink_dir (this);
+        if (op_ret == -1) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        P_MSG_HANDLE_CREATE,
+                        "Creation of unlink directory failed");
+                ret = -1;
+                goto out;
+        }
 
 	_private->aio_init_done = _gf_false;
 	_private->aio_capable = _gf_false;

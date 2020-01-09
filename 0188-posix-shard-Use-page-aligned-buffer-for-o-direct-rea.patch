@@ -1,0 +1,104 @@
+From ceaff3dc28477da45127a015a77f4c7cd163633d Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Thu, 2 Jun 2016 19:45:03 +0530
+Subject: [PATCH 188/192] posix, shard: Use page-aligned buffer for o-direct reads
+
+        Backport of: http://review.gluster.org/14639
+        3.7 backport: http://review.gluster.org/#/c/14650/
+
+and also make shard_readv_do() pass the correct flags when
+the original fd is opened with O_DIRECT.
+
+Change-Id: I948e2040520562ca53380db0a16699c21c8ade66
+BUG: 1339136
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/76039
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/features/shard/src/shard.c |    3 ++
+ xlators/storage/posix/src/posix.c  |   40 ++++++++++++++++++++++++++++-------
+ 2 files changed, 35 insertions(+), 8 deletions(-)
+
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index d9a61c1..1139194 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -3013,6 +3013,9 @@ shard_readv_do (call_frame_t *frame, xlator_t *this)
+ 
+         SHARD_SET_ROOT_FS_ID (frame, local);
+ 
++        if (fd->flags & O_DIRECT)
++                local->flags = O_DIRECT;
++
+         while (cur_block <= last_block) {
+                 if (wind_failed) {
+                         shard_readv_do_cbk (frame, (void *) (long) 0,  this, -1,
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index e19da1a..eebf22f 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -2985,6 +2985,8 @@ posix_readv (call_frame_t *frame, xlator_t *this,
+         int32_t                op_ret     = -1;
+         int32_t                op_errno   = 0;
+         int                    _fd        = -1;
++        char                 *buf         = NULL;
++        char                 *alloc_buf   = NULL;
+         struct posix_private * priv       = NULL;
+         struct iobuf         * iobuf      = NULL;
+         struct iobref        * iobref     = NULL;
+@@ -3023,14 +3025,35 @@ posix_readv (call_frame_t *frame, xlator_t *this,
+         }
+ 
+         _fd = pfd->fd;
+-        op_ret = pread (_fd, iobuf->ptr, size, offset);
+-        if (op_ret == -1) {
+-                op_errno = errno;
+-                gf_msg (this->name, GF_LOG_ERROR, errno, P_MSG_READ_FAILED,
+-                        "read failed on gfid=%s, fd=%p, offset=%"PRIu64" "
+-                        "size=%"GF_PRI_SIZET"", uuid_utoa (fd->inode->gfid), fd,
+-                        offset, size);
+-                goto out;
++        if (pfd->flags & O_DIRECT) {
++                alloc_buf = _page_aligned_alloc (size, &buf);
++                if (!alloc_buf) {
++                        op_ret = -1;
++                        op_errno = errno;
++                        goto out;
++                }
++
++                op_ret = pread (_fd, buf, size, offset);
++                if (op_ret == -1) {
++                        op_errno = errno;
++                        gf_msg (this->name, GF_LOG_ERROR, errno,
++                                P_MSG_READ_FAILED, "read failed on gfid=%s, "
++                                "fd=%p, offset=%"PRIu64" size=%"GF_PRI_SIZET", "
++                                "buf=%p", uuid_utoa (fd->inode->gfid), fd,
++                                offset, size, buf);
++                        goto out;
++                }
++                memcpy(iobuf->ptr, buf, size);
++        } else {
++                op_ret = pread (_fd, iobuf->ptr, size, offset);
++                if (op_ret == -1) {
++                        op_errno = errno;
++                        gf_msg (this->name, GF_LOG_ERROR, errno, P_MSG_READ_FAILED,
++                                "read failed on gfid=%s, fd=%p, offset=%"PRIu64" "
++                                "size=%"GF_PRI_SIZET"", uuid_utoa (fd->inode->gfid), fd,
++                                offset, size);
++                        goto out;
++                }
+         }
+ 
+         LOCK (&priv->lock);
+@@ -3073,6 +3096,7 @@ out:
+                 iobref_unref (iobref);
+         if (iobuf)
+                 iobuf_unref (iobuf);
++        GF_FREE (alloc_buf);
+ 
+         return 0;
+ }
+-- 
+1.7.1
+

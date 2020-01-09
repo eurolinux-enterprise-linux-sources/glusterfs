@@ -10,11 +10,11 @@
 ##
 
 # if you wish to compile an rpm with cmocka unit testing...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --with cmocka
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --with cmocka
 %{?_with_cmocka:%global _with_cmocka --enable-cmocka}
 
 # if you wish to compile an rpm without rdma support, compile like this...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without rdma
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without rdma
 %{?_without_rdma:%global _without_rdma --disable-ibverbs}
 
 # No RDMA Support on s390(x)
@@ -23,15 +23,15 @@
 %endif
 
 # if you wish to compile an rpm without epoll...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without epoll
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without epoll
 %{?_without_epoll:%global _without_epoll --disable-epoll}
 
 # if you wish to compile an rpm without fusermount...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without fusermount
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without fusermount
 %{?_without_fusermount:%global _without_fusermount --disable-fusermount}
 
 # if you wish to compile an rpm without geo-replication support, compile like this...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without georeplication
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without georeplication
 %{?_without_georeplication:%global _without_georeplication --disable-georeplication}
 
 # Disable geo-replication on EL5, as its default Python is too old
@@ -40,15 +40,15 @@
 %endif
 
 # if you wish to compile an rpm without the OCF resource agents...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without ocf
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without ocf
 %{?_without_ocf:%global _without_ocf --without-ocf}
 
 # if you wish to build rpms without syslog logging, compile like this
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without syslog
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without syslog
 %{?_without_syslog:%global _without_syslog --disable-syslog}
 
 # disable syslog forcefully as rhel <= 6 doesn't have rsyslog or rsyslog-mmcount
-# Fedora deprecated syslog, see 
+# Fedora deprecated syslog, see
 #  https://fedoraproject.org/wiki/Changes/NoDefaultSyslog
 # (And what about RHEL7?)
 %if ( 0%{?fedora} && 0%{?fedora} >= 20 ) || ( 0%{?rhel} && 0%{?rhel} <= 6 )
@@ -56,7 +56,7 @@
 %endif
 
 # if you wish to compile an rpm without the BD map support...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without bd
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without bd
 %{?_without_bd:%global _without_bd --disable-bd-xlator}
 
 %if ( 0%{?rhel} && 0%{?rhel} < 6 || 0%{?sles_version} )
@@ -64,7 +64,7 @@
 %endif
 
 # if you wish to compile an rpm without the qemu-block support...
-# rpmbuild -ta glusterfs-3.7.5.tar.gz --without qemu-block
+# rpmbuild -ta glusterfs-3.7.9.tar.gz --without qemu-block
 %{?_without_qemu_block:%global _without_qemu_block --disable-qemu-block}
 
 %if ( 0%{?rhel} && 0%{?rhel} < 6 )
@@ -78,11 +78,15 @@
 %endif
 
 ##-----------------------------------------------------------------------------
-## All %global definitions should be placed here and keep them sorted
+## All %%global definitions should be placed here and keep them sorted
 ##
 
 %if ( 0%{?fedora} && 0%{?fedora} > 16 ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
 %global _with_systemd true
+%endif
+
+%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 7 )
+%global _with_firewalld --enable-firewalld
 %endif
 
 %if 0%{?_tmpfilesdir:1}
@@ -165,7 +169,7 @@ Release:          0.1%{?prereltag:.%{prereltag}}%{?dist}
 Vendor:           Fedora Project
 %else
 Name:             glusterfs
-Version:          3.7.5
+Version:          3.7.9
 Release:          0.0%{?dist}
 Vendor:           Gluster Community
 %endif
@@ -180,7 +184,7 @@ Source6:          rhel5-load-fuse-modules
 Source7:          glusterfsd.service
 Source8:          glusterfsd.init
 %else
-Source0:          glusterfs-3.7.5.tar.gz
+Source0:          glusterfs-3.7.9.tar.gz
 %endif
 
 BuildRoot:        %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
@@ -192,7 +196,7 @@ BuildRequires:    python-simplejson
 BuildRequires:    systemd-units
 %endif
 
-Requires:         %{name}-libs = %{version}-%{release}
+Requires:         %{name}-libs%{?_isa} = %{version}-%{release}
 BuildRequires:    bison flex
 BuildRequires:    gcc make automake libtool
 BuildRequires:    ncurses-devel readline-devel
@@ -225,6 +229,10 @@ BuildRequires:    glib2-devel
 BuildRequires:    libattr-devel
 %endif
 
+%if (0%{?_with_firewalld:1})
+BuildRequires:    firewalld
+%endif
+
 Obsoletes:        hekafs
 Obsoletes:        %{name}-common < %{version}-%{release}
 Obsoletes:        %{name}-core < %{version}-%{release}
@@ -248,10 +256,8 @@ and client framework.
 %package api
 Summary:          GlusterFS api library
 Group:            System Environment/Daemons
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-client-xlators = %{version}-%{release}
-# we provide the Python package/namespace 'gluster'
-#Provides:         python-gluster = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
 
 %description api
 GlusterFS is a distributed file-system capable of scaling to several
@@ -267,8 +273,8 @@ This package provides the glusterfs libgfapi library.
 %package api-devel
 Summary:          Development Libraries
 Group:            Development/Libraries
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-devel = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-devel%{?_isa} = %{version}-%{release}
 Requires:         libacl-devel
 
 %description api-devel
@@ -285,7 +291,7 @@ This package provides the api include files.
 %package cli
 Summary:          GlusterFS CLI
 Group:            Applications/File
-Requires:         %{name}-libs = %{version}-%{release}
+Requires:         %{name}-libs%{?_isa} = %{version}-%{release}
 
 %description cli
 GlusterFS is a distributed file-system capable of scaling to several
@@ -301,9 +307,9 @@ This package provides the GlusterFS CLI application and its man page
 %package devel
 Summary:          Development Libraries
 Group:            Development/Libraries
-Requires:         %{name} = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
 # Needed for the Glupy examples to work
-Requires:         %{name}-extra-xlators = %{version}-%{release}
+Requires:         %{name}-extra-xlators%{?_isa} = %{version}-%{release}
 
 %description devel
 GlusterFS is a distributed file-system capable of scaling to several
@@ -342,8 +348,8 @@ Group:            Applications/File
 BuildRequires:    fuse-devel
 Requires:         attr
 
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-client-xlators = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
 
 Obsoletes:        %{name}-client < %{version}-%{release}
 Provides:         %{name}-client = %{version}-%{release}
@@ -364,9 +370,9 @@ glusterfs(d) binary.
 Summary:          NFS-Ganesha configuration
 Group:            Applications/File
 
-Requires:         %{name}-server = %{version}-%{release}
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
 Requires:         nfs-ganesha-gluster
-Requires:         pcs
+Requires:         pcs, /usr/bin/dbus-send
 
 %description ganesha
 GlusterFS is a distributed file-system capable of scaling to several
@@ -384,8 +390,8 @@ NFS-Ganesha as the NFS server using GlusterFS
 %package geo-replication
 Summary:          GlusterFS Geo-replication
 Group:            Applications/File
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-server = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
 Requires:         python python-ctypes
 Requires:         rsync
 
@@ -404,14 +410,6 @@ This package provides support to geo-replication.
 %package libs
 Summary:          GlusterFS common libraries
 Group:            Applications/File
-%if ( 0%{!?_without_syslog:1} )
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
-Requires:         rsyslog-mmjsonparse
-%endif
-%if ( 0%{?rhel} && 0%{?rhel} == 6 )
-Requires:         rsyslog-mmcount
-%endif
-%endif
 
 %description libs
 GlusterFS is a distributed file-system capable of scaling to several
@@ -452,7 +450,7 @@ Summary:          GlusterFS rdma support for ib-verbs
 Group:            Applications/File
 BuildRequires:    libibverbs-devel
 BuildRequires:    librdmacm-devel >= 1.0.15
-Requires:         %{name} = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
 
 %description rdma
 GlusterFS is a distributed file-system capable of scaling to several
@@ -469,9 +467,9 @@ This package provides support to ib-verbs library.
 %package regression-tests
 Summary:          Development Tools
 Group:            Development/Tools
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-fuse = %{version}-%{release}
-Requires:         %{name}-server = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-fuse%{?_isa} = %{version}-%{release}
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
 ## thin provisioning support
 Requires:         lvm2 >= 2.02.89
 Requires:         perl(App::Prove) perl(Test::Harness) gcc util-linux-ng
@@ -497,7 +495,7 @@ Group:            System Environment/Base
 Group:            Productivity/Clustering/HA
 %endif
 # for glusterd
-Requires:         %{name}-server
+Requires:         %{name}-server%{?_isa} = %{version}-%{release}
 # depending on the distribution, we need pacemaker or resource-agents
 Requires:         %{_prefix}/lib/ocf/resource.d
 
@@ -518,13 +516,14 @@ like Pacemaker.
 %package server
 Summary:          Clustered file-system server
 Group:            System Environment/Daemons
-Requires:         %{name} = %{version}-%{release}
-Requires:         %{name}-libs = %{version}-%{release}
-Requires:         %{name}-cli = %{version}-%{release}
+Requires:         %{name}%{?_isa} = %{version}-%{release}
+Requires:         %{name}-cli%{?_isa} = %{version}-%{release}
+Requires:         %{name}-libs%{?_isa} = %{version}-%{release}
 # some daemons (like quota) use a fuse-mount, glusterfsd is part of -fuse
-Requires:         %{name}-fuse = %{version}-%{release}
+Requires:         %{name}-fuse%{?_isa} = %{version}-%{release}
 # self-heal daemon, rebalance, nfs-server etc. are actually clients
-Requires:         %{name}-client-xlators = %{version}-%{release}
+Requires:         %{name}-api%{?_isa} = %{version}-%{release}
+Requires:         %{name}-client-xlators%{?_isa} = %{version}-%{release}
 # psmisc for killall, lvm2 for snapshot, and nfs-utils and
 # rpcbind/portmap for gnfs server
 Requires:         psmisc
@@ -586,6 +585,10 @@ This package provides the translators needed on any GlusterFS client.
 # For whatever reason, install-sh is sometimes missing. When this gets fixed,
 # there is no need to run ./autogen or have a BuildRequires for automake.
 [ -e 'install-sh' -o -e 'install.sh' ] || ./autogen.sh
+%if ( 0%{?rhel} && 0%{?rhel} < 6 )
+CFLAGS=-DUSE_INSECURE_OPENSSL
+export CFLAGS
+%endif
 %configure \
 ./autogen.sh && %configure \
         %{?_with_cmocka} \
@@ -594,6 +597,7 @@ This package provides the translators needed on any GlusterFS client.
         %{?_without_epoll} \
         %{?_without_fusermount} \
         %{?_without_georeplication} \
+        %{?_with_firewalld} \
         %{?_without_ocf} \
         %{?_without_qemu_block} \
         %{?_without_rdma} \
@@ -720,23 +724,6 @@ install -D -p -m 0644 extras/glusterfs-georep-logrotate \
     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs-georep
 %endif
 
-%if ( 0%{!?_without_syslog:1} )
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
-install -D -p -m 0644 extras/gluster-rsyslog-7.2.conf \
-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
-%endif
-
-%if ( 0%{?rhel} && 0%{?rhel} == 6 )
-install -D -p -m 0644 extras/gluster-rsyslog-5.8.conf \
-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
-%endif
-
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
-install -D -p -m 0644 extras/logger.conf.example \
-    %{buildroot}%{_sysconfdir}/glusterfs/logger.conf.example
-%endif
-%endif
-
 # the rest of the ghosts
 touch %{buildroot}%{_sharedstatedir}/glusterd/glusterd.info
 touch %{buildroot}%{_sharedstatedir}/glusterd/options
@@ -744,21 +731,12 @@ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop/post
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop/pre
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start/post
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start/pre
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset/post
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset/pre
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/remove-brick
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/remove-brick/post
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/remove-brick/pre
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/post
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set
-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set/post
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set/pre
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/create
 mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/create/post
@@ -779,20 +757,6 @@ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/nfs/run
 touch %{buildroot}%{_sharedstatedir}/glusterd/nfs/nfs-server.vol
 touch %{buildroot}%{_sharedstatedir}/glusterd/nfs/run/nfs.pid
 
-%{__install} -p -m 0744 extras/hook-scripts/start/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start/post
-%{__install} -p -m 0744 extras/hook-scripts/stop/pre/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop/pre
-%{__install} -p -m 0744 extras/hook-scripts/set/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set/post
-%{__install} -p -m 0744 extras/hook-scripts/add-brick/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/post
-%{__install} -p -m 0744 extras/hook-scripts/add-brick/pre/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
-%{__install} -p -m 0744 extras/hook-scripts/reset/post/*.sh   \
-    %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset/post
-
-
 find ./tests ./run-tests.sh -type f | cpio -pd %{buildroot}%{_prefix}/share/glusterfs
 
 ## Install bash completion for cli
@@ -804,33 +768,34 @@ install -p -m 0744 -D extras/command-completion/gluster.bash \
 rm -rf %{buildroot}
 
 ##-----------------------------------------------------------------------------
-## All %post should be placed here and keep them sorted
+## All %%post should be placed here and keep them sorted
 ##
 %post
+/sbin/ldconfig
 %if ( 0%{!?_without_syslog:1} )
 %if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
 %_init_restart rsyslog
+exit 0
 %endif
 %endif
 
-%post api
-/sbin/ldconfig
+%post api -p /sbin/ldconfig
 
-%post fuse
 %if ( 0%{?rhel} == 5 )
+%post fuse
 modprobe fuse
+exit 0
 %endif
 
 %if ( 0%{!?_without_georeplication:1} )
 %post geo-replication
-#restart glusterd.
 if [ $1 -ge 1 ]; then
     %_init_restart glusterd
 fi
+exit 0
 %endif
 
-%post libs
-/sbin/ldconfig
+%post libs -p /sbin/ldconfig
 
 %post server
 # Legacy server
@@ -874,6 +839,15 @@ if [ -e /etc/ld.so.conf.d/glusterfs.conf ]; then
     rm -f /etc/ld.so.conf.d/glusterfs.conf
     /sbin/ldconfig
 fi
+
+%if (0%{?_with_firewalld:1})
+#reload service files if firewalld running
+if $(systemctl is-active firewalld 1>/dev/null 2>&1); then
+  #firewalld-filesystem is not available for rhel7, so command used for reload.
+  firewall-cmd  --reload 1>/dev/null 2>&1
+fi
+%endif
+
 pidof -c -o %PPID -x glusterd &> /dev/null
 if [ $? -eq 0 ]; then
     kill -9 `pgrep -f gsyncd.py` &> /dev/null
@@ -895,9 +869,10 @@ else
     #rpm_script_t context.
     rm -rf /var/run/glusterd.socket
 fi
+exit 0
 
 ##-----------------------------------------------------------------------------
-## All %preun should be placed here and keep them sorted
+## All %%preun should be placed here and keep them sorted
 ##
 %preun server
 if [ $1 -eq 0 ]; then
@@ -916,9 +891,10 @@ if [ $1 -ge 1 ]; then
     fi
     %_init_restart glusterd
 fi
+exit 0
 
 ##-----------------------------------------------------------------------------
-## All %postun should be placed here and keep them sorted
+## All %%postun should be placed here and keep them sorted
 ##
 %postun
 /sbin/ldconfig
@@ -928,22 +904,24 @@ fi
 %endif
 %endif
 
-%postun api
-/sbin/ldconfig
+%postun api -p /sbin/ldconfig
 
-%postun libs
-/sbin/ldconfig
+%postun libs -p /sbin/ldconfig
+
+%if (0%{?_with_firewalld:1})
+%postun server
+#reload service files if firewalld running
+if $(systemctl is-active firewalld 1>/dev/null 2>&1); then
+    firewall-cmd  --reload
+fi
+exit 0
+%endif
 
 ##-----------------------------------------------------------------------------
-## All files should be placed here and keep them grouped
+## All %%files should be placed here and keep them grouped
 ##
 %files
 %doc ChangeLog COPYING-GPLV2 COPYING-LGPLV3 INSTALL README.md THANKS
-%if ( 0%{!?_without_syslog:1} )
-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
-%{_sysconfdir}/rsyslog.d/gluster.conf.example
-%endif
-%endif
 %{_mandir}/man8/*gluster*.8*
 %exclude %{_mandir}/man8/gluster.8*
 %dir %{_localstatedir}/log/glusterfs
@@ -987,7 +965,10 @@ fi
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/performance/stat-prefetch.so
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/performance/write-behind.so
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/system/posix-acl.so
-
+%dir %{_localstatedir}/run/gluster
+%if 0%{?_tmpfilesdir:1}
+%{_tmpfilesdir}/gluster.conf
+%endif
 
 %files api
 %exclude %{_libdir}/*.so
@@ -1066,6 +1047,8 @@ fi
 %{_sysconfdir}/ganesha/*
 %attr(0755,-,-) %{_libexecdir}/ganesha/*
 %attr(0755,-,-) %{_prefix}/lib/ocf/resource.d/heartbeat/*
+%{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
+%{_sharedstatedir}/glusterd/hooks/1/reset/post/S31ganesha-reset.sh
 
 %if ( 0%{!?_without_georeplication:1} )
 %files geo-replication
@@ -1087,10 +1070,11 @@ fi
 %{_datadir}/glusterfs/scripts/gsync-upgrade.sh
 %{_datadir}/glusterfs/scripts/generate-gfid-file.sh
 %{_datadir}/glusterfs/scripts/gsync-sync-gfid
+%{_datadir}/glusterfs/scripts/schedule_georep.py*
 %ghost %attr(0644,-,-) %{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
-%endif
 %{_libexecdir}/glusterfs/gfind_missing_files
 %{_sbindir}/gfind_missing_files
+%endif
 
 %files libs
 %{_libdir}/*.so.*
@@ -1125,10 +1109,6 @@ fi
 %doc extras/clear_xattrs.sh
 %config(noreplace) %{_sysconfdir}/sysconfig/glusterd
 %config(noreplace) %{_sysconfdir}/glusterfs
-%dir %{_localstatedir}/run/gluster
-%if 0%{?_tmpfilesdir:1}
-%{_tmpfilesdir}/gluster.conf
-%endif
 %dir %{_sharedstatedir}/glusterd
 %dir %{_sharedstatedir}/glusterd/groups
 %config(noreplace) %{_sharedstatedir}/glusterd/groups/virt
@@ -1136,16 +1116,14 @@ fi
 %if ( 0%{_for_fedora_koji_builds} )
 %config(noreplace) %{_sysconfdir}/sysconfig/glusterfsd
 %endif
-%config %{_sharedstatedir}/glusterd/hooks/1/add-brick/post/disabled-quota-root-xattr-heal.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/set/post/S30samba-set.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/set/post/S32gluster_enable_shared_storage.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/start/post/S29CTDBsetup.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/start/post/S30samba-start.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S30samba-stop.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/stop/pre/S29CTDB-teardown.sh
-%config %{_sharedstatedir}/glusterd/hooks/1/reset/post/S31ganesha-reset.sh
+%{_sharedstatedir}/glusterd/hooks/1/add-brick/post/disabled-quota-root-xattr-heal.sh
+%{_sharedstatedir}/glusterd/hooks/1/add-brick/pre/S28Quota-enable-root-xattr-heal.sh
+%{_sharedstatedir}/glusterd/hooks/1/set/post/S30samba-set.sh
+%{_sharedstatedir}/glusterd/hooks/1/set/post/S32gluster_enable_shared_storage.sh
+%{_sharedstatedir}/glusterd/hooks/1/start/post/S29CTDBsetup.sh
+%{_sharedstatedir}/glusterd/hooks/1/start/post/S30samba-start.sh
+%{_sharedstatedir}/glusterd/hooks/1/stop/pre/S30samba-stop.sh
+%{_sharedstatedir}/glusterd/hooks/1/stop/pre/S29CTDB-teardown.sh
 # init files
 %_init_glusterd
 %if ( 0%{_for_fedora_koji_builds} )
@@ -1190,30 +1168,32 @@ fi
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/post
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
+%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete
+%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete/post
+%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/reset/post
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/post
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/post
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop
 %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/pre
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete
-%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete/post
 
 %ghost %attr(0644,-,-) %config(noreplace) %{_sharedstatedir}/glusterd/glusterd.info
 %ghost %attr(0600,-,-) %{_sharedstatedir}/glusterd/options
 # This is really ugly, but I have no idea how to mark these directories in
 # any other way. They should belong to the glusterfs-server package, but
 # don't exist after installation. They are generated on the first start...
-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/post
-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/pre
-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick
-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/post
-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/pre
-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/pre
 %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create
 %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/post
 %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/pre
 %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/post
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/reset/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/pre
+%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/post
 %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glustershd
 %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/vols
 %ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/peers
@@ -1231,8 +1211,31 @@ fi
 %{_libexecdir}/glusterfs/peer_add_secret_pub
 %{_sharedstatedir}/glusterd/hooks/1/delete/post/S57glusterfind-delete-post.py
 
+%if ( 0%{?_with_firewalld:1} )
+/usr/lib/firewalld/services/glusterfs.xml
+%endif
+
 
 %changelog
+* Tue Mar 8 2016 Kaleb S. KEITHLEY <kkeithle@redhat.com>
+- %%pre, %%post etc. scriptlet cleanup, ... -p /sbin/ldconfig (#1315935)
+
+* Wed Feb 24 2016 Aravinda VK <avishwan@redhat.com>
+- Added schedule_georep.py script to glusterfs-georep rpm (#1309191)
+
+* Sun Jan 17 2016 Niels de Vos <ndevos@redhat.com>
+- glusterfs-server depends on -api (#1296931)
+
+* Mon Dec 28 2015 Niels de Vos <ndevos@redhat.com>
+- hook scripts in glusterfs-ganesha use dbus-send, add dependency (#1294446)
+
+* Tue Dec 22 2015 Niels de Vos <ndevos@redhat.com>
+- move hook scripts for nfs-ganesha to the -ganesha sub-package
+- use standard 'make' installation for the hook scripts (#1174765)
+
+* Tue Sep 15 2015 Anand Nekkunti <anekkunt@redhat.com>
+- adding glusterfs-firewalld service (#1057295)
+
 * Tue Sep 1 2015 Kaleb S. KEITHLEY <kkeithle@redhat.com>
 - erroneous ghost of ../hooks/1/delete causes install failure (#1258976)
 
@@ -1277,9 +1280,6 @@ fi
 
 * Sat Mar 28 2015 Mohammed Rafi KC <rkavunga@redhat.com>
 - Add dependency for librdmacm version >= 1.0.15 (#1206744)
-
-* Thu Mar 26 2015 Kaleb S. KEITHLEY <kkeithle@redhat.com>
-- attr dependency (#1174627)
 
 * Tue Mar 24 2015 Niels de Vos <ndevos@redhat.com>
 - move libgfdb (with sqlite dependency) to -server subpackage (#1194753)
@@ -1368,6 +1368,9 @@ fi
 
 * Wed Apr 02 2014 Arumugam Balamurugan <barumuga@redhat.com>
 - add version/release dynamically (#1074919)
+
+* Thu Mar 27 2014 Kaleb S. KEITHLEY <kkeithle@redhat.com>
+- attr dependency (#1184626)
 
 * Wed Mar 26 2014 Poornima G <pgurusid@redhat.com>
 - Include the hook scripts of add-brick, volume start, stop and set

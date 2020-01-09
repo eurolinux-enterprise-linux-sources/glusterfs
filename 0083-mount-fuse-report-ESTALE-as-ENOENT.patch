@@ -1,0 +1,39 @@
+From e7c003c517773fb5daa14dac6bde13e850e5df90 Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Wed, 23 Mar 2016 13:47:27 +0530
+Subject: [PATCH 083/104] mount/fuse: report ESTALE as ENOENT
+
+When the inode/gfid is missing, brick report back as an ESTALE
+error. However, most of the applications don't accept ESTALE as an
+error for a file-system object missing, changing their behaviour.
+
+For eg., rm -rf ignores ENOENT errors during unlink of
+files/directories. But with ESTALE error it doesn't send rmdir on a
+directory if unlink had failed with ESTALE for any of the files or
+directories within it.
+
+BUG: 1115367
+Change-Id: I5e56bc0c53f52179940b4691acf6b3db853965df
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72724
+---
+ xlators/mount/fuse/src/fuse-bridge.c |    3 +++
+ 1 files changed, 3 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 85b212a..2fbea13 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -348,6 +348,9 @@ send_fuse_err (xlator_t *this, fuse_in_header_t *finh, int error)
+         struct iovec iov_out;
+         inode_t  *inode = NULL;
+ 
++        if (error == ESTALE)
++                error = ENOENT;
++
+         fouh.error = -error;
+         iov_out.iov_base = &fouh;
+ 
+-- 
+1.7.1
+

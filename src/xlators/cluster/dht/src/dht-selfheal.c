@@ -387,7 +387,7 @@ out:
         return fixit;
 }
 
-inline int
+int
 dht_layout_span (dht_layout_t *layout)
 {
         int i = 0, count = 0;
@@ -612,7 +612,9 @@ dht_selfheal_dir_xattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         dht_local_t  *local = NULL;
         call_frame_t *prev = NULL;
         xlator_t     *subvol = NULL;
+        struct iatt  *stbuf = NULL;
         int           i = 0;
+        int           ret = 0;
         dht_layout_t *layout = NULL;
         int           err = 0;
         int           this_call_cnt = 0;
@@ -627,6 +629,12 @@ dht_selfheal_dir_xattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         else
                 err = op_errno;
 
+        ret = dict_get_bin (xdata, DHT_IATT_IN_XDATA_KEY, (void **) &stbuf);
+        if (ret < 0) {
+                gf_msg_debug (this->name, 0, "key = %s not present in dict",
+                              DHT_IATT_IN_XDATA_KEY);
+        }
+
         for (i = 0; i < layout->cnt; i++) {
                 if (layout->list[i].xlator == subvol) {
                         layout->list[i].err = err;
@@ -634,6 +642,7 @@ dht_selfheal_dir_xattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 }
         }
 
+        dht_iatt_merge (this, &local->stbuf, stbuf, prev->this);
         this_call_cnt = dht_frame_return (frame);
 
         if (is_last_call (this_call_cnt)) {
@@ -651,6 +660,7 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
 {
         xlator_t          *subvol = NULL;
         dict_t            *xattr = NULL;
+        dict_t            *xdata = NULL;
         int                ret = 0;
         xlator_t          *this = NULL;
         int32_t           *disk_layout = NULL;
@@ -676,6 +686,28 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
 
         xattr = get_new_dict ();
         if (!xattr) {
+                goto err;
+        }
+
+        xdata = dict_new ();
+        if (!xdata)
+                goto err;
+
+        ret = dict_set_str (xdata, GLUSTERFS_INTERNAL_FOP_KEY, "yes");
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_WARNING, 0, DHT_MSG_DICT_SET_FAILED,
+                        "%s: Failed to set dictionary value: key = %s,"
+                        " gfid = %s", loc->path,
+                        GLUSTERFS_INTERNAL_FOP_KEY, gfid);
+                goto err;
+        }
+
+        ret = dict_set_dynstr_with_alloc (xdata, DHT_IATT_IN_XDATA_KEY, "yes");
+        if (ret < 0) {
+                gf_msg (this->name, GF_LOG_WARNING, 0, DHT_MSG_DICT_SET_FAILED,
+                        "%s: Failed to set dictionary value: key = %s,"
+                        " gfid = %s", loc->path,
+                        DHT_IATT_IN_XDATA_KEY, gfid);
                 goto err;
         }
 
@@ -720,6 +752,17 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
                                         loc->path, QUOTA_LIMIT_KEY);
                         }
                 }
+                data = dict_get (local->xattr, QUOTA_LIMIT_OBJECTS_KEY);
+                if (data) {
+                        ret = dict_add (xattr, QUOTA_LIMIT_OBJECTS_KEY, data);
+                        if (ret) {
+                                gf_msg (this->name, GF_LOG_ERROR, 0,
+                                        DHT_MSG_DICT_SET_FAILED,
+                                        "%s: Failed to set dictionary value:"
+                                        " key = %s",
+                                        loc->path, QUOTA_LIMIT_OBJECTS_KEY);
+                        }
+                }
         }
 
         if (!gf_uuid_is_null (local->gfid))
@@ -727,15 +770,19 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
 
         STACK_WIND (frame, dht_selfheal_dir_xattr_cbk,
                     subvol, subvol->fops->setxattr,
-                    loc, xattr, 0, NULL);
+                    loc, xattr, 0, xdata);
 
         dict_unref (xattr);
+        dict_unref (xdata);
 
         return 0;
 
 err:
         if (xattr)
                 dict_destroy (xattr);
+
+        if (xdata)
+                dict_unref (xdata);
 
         GF_FREE (disk_layout);
 
@@ -1284,7 +1331,7 @@ dht_selfheal_layout_alloc_start (xlator_t *this, loc_t *loc,
         return start;
 }
 
-static inline int
+static int
 dht_get_layout_count (xlator_t *this, dht_layout_t *layout, int new_layout)
 {
         int i = 0;
@@ -1569,14 +1616,15 @@ dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
                                    dht_layout_t *layout)
 {
         xlator_t    *this = NULL;
-        uint32_t     chunk = 0;
+        double       chunk = 0;
         int          i = 0;
         uint32_t     start = 0;
         int          bricks_to_use = 0;
         int          err = 0;
         int          start_subvol = 0;
         uint32_t     curr_size;
-        uint32_t     total_size = 0;
+        uint32_t     range_size;
+        uint64_t     total_size = 0;
         int          real_i;
         dht_conf_t   *priv;
         gf_boolean_t weight_by_size;
@@ -1609,9 +1657,9 @@ dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
 
         if (weight_by_size && total_size) {
                 /* We know total_size is not zero. */
-                chunk = ((unsigned long) 0xffffffff) / total_size;
+                chunk = ((double) 0xffffffff) / ((double) total_size);
                 gf_msg_debug (this->name, 0,
-                              "chunk size = 0xffffffff / %u = 0x%x",
+                              "chunk size = 0xffffffff / %lu = %f",
                               total_size, chunk);
         }
         else {
@@ -1649,17 +1697,18 @@ dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
                 else {
                         curr_size = 1;
                 }
+                range_size = chunk * curr_size;
                 gf_msg_debug (this->name, 0,
                               "assigning range size 0x%x to %s",
-                              chunk * curr_size,
+                              range_size,
                               layout->list[i].xlator->name);
-                DHT_SET_LAYOUT_RANGE(layout, i, start, chunk * curr_size,
+                DHT_SET_LAYOUT_RANGE(layout, i, start, range_size,
                                      loc->path);
                 if (++bricks_used >= bricks_to_use) {
                         layout->list[i].stop = 0xffffffff;
                         goto done;
                 }
-                start += (chunk * curr_size);
+                start += range_size;
         }
 
 done:

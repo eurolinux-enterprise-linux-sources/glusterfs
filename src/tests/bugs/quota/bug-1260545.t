@@ -10,7 +10,6 @@ QDD=$(dirname $0)/quota
 build_tester $(dirname $0)/../../basic/quota.c -o $QDD
 
 TEST glusterd
-TEST pidof glusterd;
 TEST $CLI volume info;
 
 TEST $CLI volume create $V0 $H0:$B0/${V0}1 $H0:$B0/${V0}2;
@@ -20,11 +19,12 @@ TEST $CLI volume quota $V0 enable;
 
 TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 $M0;
 
-TEST $CLI volume quota $V0 limit-usage / 15MB
+TEST $CLI volume quota $V0 limit-usage / 10MB
 TEST $CLI volume quota $V0 hard-timeout 0
 TEST $CLI volume quota $V0 soft-timeout 0
 
 TEST $QDD $M0/f1 256 40
+TEST ! $QDD $M0/f2 256 40
 
 EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT "10.0MB" quotausage "/"
 
@@ -49,11 +49,6 @@ TEST [ `echo $var | awk '{print $5}'` = "0"  ]
 TEST [ `echo $var | awk '{print $6}'` = "0"  ]
 
 EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT "10.0MB" quotausage "/"
-
-rm -f $M0/f1
-TEST $CLI volume stop $V0
-TEST $CLI volume delete $V0
-EXPECT "1" get_aux
 
 rm -f $QDD
 cleanup;

@@ -52,6 +52,9 @@ enum gf_cli_defrag_type {
 	GF_DEFRAG_CMD_STATUS_TIER = 1 + 6,
 	GF_DEFRAG_CMD_START_DETACH_TIER = 1 + 7,
 	GF_DEFRAG_CMD_STOP_DETACH_TIER = 1 + 8,
+	GF_DEFRAG_CMD_PAUSE_TIER = 1 + 9,
+	GF_DEFRAG_CMD_RESUME_TIER = 1 + 10,
+	GF_DEFRAG_CMD_DETACH_STATUS = 1 + 11,
 };
 typedef enum gf_cli_defrag_type gf_cli_defrag_type;
 
@@ -88,7 +91,8 @@ enum gf_bitrot_type {
 	GF_BITROT_OPTION_TYPE_SCRUB_FREQ = 0 + 4,
 	GF_BITROT_OPTION_TYPE_SCRUB = 0 + 5,
 	GF_BITROT_OPTION_TYPE_EXPIRY_TIME = 0 + 6,
-	GF_BITROT_OPTION_TYPE_MAX = 0 + 7,
+	GF_BITROT_CMD_SCRUB_STATUS = 0 + 7,
+	GF_BITROT_OPTION_TYPE_MAX = 0 + 8,
 };
 typedef enum gf_bitrot_type gf_bitrot_type;
 

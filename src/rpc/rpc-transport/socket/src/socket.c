@@ -581,11 +581,12 @@ __socket_rwv (rpc_transport_t *this, struct iovec *vector, int count,
 
                         if (__does_socket_rwv_error_need_logging (priv,
                                                                   write)) {
-                                gf_log (this->name, GF_LOG_WARNING,
-                                        "%s on %s failed (%s)",
-                                        write ? "writev":"readv",
-                                        this->peerinfo.identifier,
-                                        strerror (errno));
+                                GF_LOG_OCCASIONALLY(priv->log_ctr, this->name,
+                                                    GF_LOG_WARNING,
+                                                    "%s on %s failed (%s)",
+                                                    write ? "writev":"readv",
+                                                    this->peerinfo.identifier,
+                                                    strerror (errno));
                         }
 
 			if (priv->use_ssl && priv->ssl_ssl) {
@@ -1186,7 +1187,7 @@ out:
 }
 
 
-static inline int
+static int
 __socket_read_simple_msg (rpc_transport_t *this)
 {
         int                           ret            = 0;
@@ -1255,7 +1256,7 @@ out:
 }
 
 
-static inline int
+static int
 __socket_read_simple_request (rpc_transport_t *this)
 {
         return __socket_read_simple_msg (this);
@@ -1272,7 +1273,7 @@ __socket_read_simple_request (rpc_transport_t *this)
 #define rpc_progver_addr(buf) (buf + RPC_MSGTYPE_SIZE + 8)
 #define rpc_procnum_addr(buf) (buf + RPC_MSGTYPE_SIZE + 12)
 
-static inline int
+static int
 __socket_read_vectored_request (rpc_transport_t *this, rpcsvc_vector_sizer vector_sizer)
 {
         socket_private_t *priv                   = NULL;
@@ -1444,7 +1445,7 @@ out:
         return ret;
 }
 
-static inline int
+static int
 __socket_read_request (rpc_transport_t *this)
 {
         socket_private_t *priv               = NULL;
@@ -1525,7 +1526,7 @@ out:
 }
 
 
-static inline int
+static int
 __socket_read_accepted_successful_reply (rpc_transport_t *this)
 {
         socket_private_t *priv              = NULL;
@@ -1652,7 +1653,7 @@ out:
 #define rpc_reply_verflen_addr(fragcurrent) ((char *)fragcurrent - 4)
 #define rpc_reply_accept_status_addr(fragcurrent) ((char *)fragcurrent - 4)
 
-static inline int
+static int
 __socket_read_accepted_reply (rpc_transport_t *this)
 {
         socket_private_t *priv           = NULL;
@@ -1748,7 +1749,7 @@ out:
 }
 
 
-static inline int
+static int
 __socket_read_denied_reply (rpc_transport_t *this)
 {
         return __socket_read_simple_msg (this);
@@ -1758,7 +1759,7 @@ __socket_read_denied_reply (rpc_transport_t *this)
 #define rpc_reply_status_addr(fragcurrent) ((char *)fragcurrent - 4)
 
 
-static inline int
+static int
 __socket_read_vectored_reply (rpc_transport_t *this)
 {
         socket_private_t *priv           = NULL;
@@ -1824,7 +1825,7 @@ out:
 }
 
 
-static inline int
+static int
 __socket_read_simple_reply (rpc_transport_t *this)
 {
         return __socket_read_simple_msg (this);
@@ -1832,7 +1833,7 @@ __socket_read_simple_reply (rpc_transport_t *this)
 
 #define rpc_xid_addr(buf) (buf)
 
-static inline int
+static int
 __socket_read_reply (rpc_transport_t *this)
 {
         socket_private_t   *priv         = NULL;
@@ -1907,7 +1908,7 @@ out:
 
 
 /* returns the number of bytes yet to be read in a fragment */
-static inline int
+static int
 __socket_read_frag (rpc_transport_t *this)
 {
         socket_private_t *priv           = NULL;
@@ -1984,7 +1985,7 @@ out:
 }
 
 
-static inline void
+static void
 __socket_reset_priv (socket_private_t *priv)
 {
         struct gf_sock_incoming   *in    = NULL;
@@ -3077,7 +3078,7 @@ handler:
                 rpc_transport_ref (this);
                 refd = _gf_true;
 
-                if (priv->own_thread) {
+                if (!ret && priv->own_thread) {
                         if (pipe(priv->pipe) < 0) {
                                 gf_log(this->name,GF_LOG_ERROR,
                                 "could not create pipe");
@@ -3996,8 +3997,12 @@ socket_init (rpc_transport_t *this)
 
                 SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_SSLv2);
                 SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_SSLv3);
+#ifdef SSL_OP_NO_TICKET
                 SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_TICKET);
+#endif
+#ifdef SSL_OP_NO_COMPRESSION
                 SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_COMPRESSION);
+#endif
 
 		if ((bio = BIO_new_file(dh_param, "r")) == NULL) {
 			gf_log(this->name,GF_LOG_ERROR,
@@ -4006,7 +4011,7 @@ socket_init (rpc_transport_t *this)
 		}
 
 		if (bio != NULL) {
-#ifdef ERR_R_DH_LIB
+#ifdef HAVE_OPENSSL_DH_H
                         DH *dh;
                         unsigned long err;
 
@@ -4024,15 +4029,15 @@ socket_init (rpc_transport_t *this)
                                        "DH ciphers are disabled.",
                                        dh_param, ERR_error_string(err, NULL));
                         }
-#else /* ERR_R_DH_LIB */
+#else /* HAVE_OPENSSL_DH_H */
                         BIO_free(bio);
                         gf_log(this->name, GF_LOG_ERROR,
                                "OpenSSL has no DH support");
-#endif /* ERR_R_DH_LIB */
+#endif /* HAVE_OPENSSL_DH_H */
                 }
 
                 if (ec_curve != NULL) {
-#ifdef ERR_R_ECDH_LIB
+#ifdef HAVE_OPENSSL_ECDH_H
                         EC_KEY *ecdh = NULL;
                         int nid;
                         unsigned long err;
@@ -4053,10 +4058,10 @@ socket_init (rpc_transport_t *this)
 				       "ECDH ciphers are disabled.",
                                        ec_curve, ERR_error_string(err, NULL));
 			}
-#else /* ERR_R_ECDH_LIB */
+#else /* HAVE_OPENSSL_ECDH_H */
                         gf_log(this->name, GF_LOG_ERROR,
                                "OpenSSL has no ECDH support");
-#endif /* ERR_R_ECDH_LIB */
+#endif /* HAVE_OPENSSL_ECDH_H */
                 }
 
 		/* This must be done after DH and ECDH setups */

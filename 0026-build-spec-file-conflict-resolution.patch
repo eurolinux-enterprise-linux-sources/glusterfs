@@ -1,0 +1,82 @@
+From a7f01aa1b62d30fba69f8f871c3344eee5eb9aaf Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 22 Mar 2016 23:33:13 +0530
+Subject: [PATCH 26/26] build: spec file conflict resolution
+
+Missed conflict resolution for removing references to
+gluster.conf.example as mentioned in patch titled:
+packaging: gratuitous dependencies on rsyslog-mm{count,jsonparse}
+by Kaleb
+
+References to hook scripts S31ganesha-start.sh and
+S31ganesha-reset.sh got lost in the downstream only
+patch conflict resolution.
+
+Commented blanket reference to %{_sharedsstatedir}/glusterd/*
+in section %files server to avoid rpmbuild warning related to
+multiple references to hook scripts and other files under
+/var/lib/glusterd.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: I9d409f1595ab985ed9f79d9d4f4298877609ba17
+BUG: 1320390
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/70535
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ glusterfs.spec.in |   23 +++++------------------
+ 1 files changed, 5 insertions(+), 18 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index db826ee..7e9d7f3 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -772,23 +772,6 @@ install -D -p -m 0644 extras/glusterfs-georep-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs-georep
+ %endif
+ 
+-%if ( 0%{!?_without_syslog:1} )
+-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
+-install -D -p -m 0644 extras/gluster-rsyslog-7.2.conf \
+-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
+-%endif
+-
+-%if ( 0%{?rhel} && 0%{?rhel} == 6 )
+-install -D -p -m 0644 extras/gluster-rsyslog-5.8.conf \
+-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
+-%endif
+-
+-%if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
+-install -D -p -m 0644 extras/logger.conf.example \
+-    %{buildroot}%{_sysconfdir}/glusterfs/logger.conf.example
+-%endif
+-%endif
+-
+ touch %{buildroot}%{_sharedstatedir}/glusterd/glusterd.info
+ touch %{buildroot}%{_sharedstatedir}/glusterd/options
+ subdirs=("add-brick" "create" "copy-file" "delete" "gsync-create" "remove-brick" "reset" "set" "start" "stop")
+@@ -1197,6 +1180,8 @@ exit 0
+ %{_sysconfdir}/ganesha/*
+ %attr(0755,-,-) %{_libexecdir}/ganesha/*
+ %attr(0755,-,-) %{_prefix}/lib/ocf/resource.d/heartbeat/*
++%{_sharedstatedir}/glusterd/hooks/1/start/post/S31ganesha-start.sh
++%{_sharedstatedir}/glusterd/hooks/1/reset/post/S31ganesha-reset.sh
+ %endif
+ 
+ %if ( 0%{?_build_server} )
+@@ -1269,7 +1254,9 @@ exit 0
+ %{_tmpfilesdir}/gluster.conf
+ %endif
+ %dir %{_sharedstatedir}/glusterd
+-%{_sharedstatedir}/glusterd/*
++# Commented 1 line below to remove multiple references
++# to hook scripts etc.
++# %{_sharedstatedir}/glusterd/*
+ %config(noreplace) %{_sharedstatedir}/glusterd/groups/virt
+ # Legacy configs
+ %if ( 0%{_for_fedora_koji_builds} )
+-- 
+1.7.1
+

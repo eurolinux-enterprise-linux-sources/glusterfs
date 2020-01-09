@@ -1,0 +1,206 @@
+From 87501a984a96223012d7878ccc689510b2c3d77b Mon Sep 17 00:00:00 2001
+From: hari gowtham <hgowtham@redhat.com>
+Date: Mon, 16 May 2016 10:55:17 +0530
+Subject: [PATCH 165/167] tier/cli : printing a warning instead of skipping the node
+
+        back-port of : http://review.gluster.org/#/c/14347/8
+        back-port of : http://review.gluster.org/#/c/14459/
+
+Problem: skipping the status of the nodes down creates confusion
+to the user as one might see the status as completed for all nodes
+and while performing detach commit, the operation will fail as the
+node is down
+
+Fix: Display a warning message
+
+Note: When the last node is down (as per the peer list) then
+warning message can't be displayed as the total number of peers
+participating in the transaction is considered to be the total count.
+
+>Change-Id: Ib7afbd1b26df3378e4d537db06f41f5c105ad86e
+>BUG: 1324439
+>Signed-off-by: hari gowtham <hgowtham@redhat.com>
+
+>Change-Id: Id797bb45433c442f63b189ad16e0e95492a43721
+>BUG: 1337908
+>Signed-off-by: hari gowtham <hgowtham@redhat.com>
+
+Change-Id: Ifed8767729eaf6835ce4aef4f519d3ea509101a4
+BUG: 1322695
+Signed-off-by: hari gowtham <hgowtham@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74790
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ cli/src/cli-rpc-ops.c            |   30 +++++++++++++++++++++++++-----
+ tests/basic/tier/new-tier-cmds.t |   16 ++--------------
+ tests/tier.rc                    |   13 +++++++++++++
+ 3 files changed, 40 insertions(+), 19 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index a3787c4..ea25b0a 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -1509,7 +1509,8 @@ out:
+ }
+ 
+ int
+-gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
++gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type,
++                               gf_boolean_t is_tier)
+ {
+         int                ret          = -1;
+         int                count        = 0;
+@@ -1528,6 +1529,7 @@ gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
+         int                hrs          = 0;
+         int                min          = 0;
+         int                sec          = 0;
++        gf_boolean_t       down         = _gf_false;
+ 
+         ret = dict_get_int32 (dict, "count", &count);
+         if (ret) {
+@@ -1562,6 +1564,7 @@ gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
+                         gf_log ("cli", GF_LOG_TRACE, "failed to get status");
+                         gf_log ("cli", GF_LOG_ERROR, "node down and has failed"
+                                 " to set dict");
++                        down = _gf_true;
+                         continue;
+                         /* skip this node if value not available*/
+                 } else if (ret) {
+@@ -1650,6 +1653,11 @@ gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
+                 }
+                 GF_FREE(size_str);
+         }
++        if (is_tier && down)
++                cli_out ("WARNING: glusterd might be down on one or more nodes."
++                         " Please check the nodes that are down using \'gluster"
++                         " peer status\' and start the glusterd on those nodes,"
++                         " else tier detach commit might fail!");
+ out:
+         return ret;
+ }
+@@ -1667,6 +1675,7 @@ gf_cli_print_tier_status (dict_t *dict, enum gf_task_types task_type)
+         gf_defrag_status_t status_rcd   = GF_DEFRAG_STATUS_NOT_STARTED;
+         char               *status_str  = NULL;
+         char               *size_str    = NULL;
++        gf_boolean_t       down         = _gf_false;
+ 
+         ret = dict_get_int32 (dict, "count", &count);
+         if (ret) {
+@@ -1695,6 +1704,7 @@ gf_cli_print_tier_status (dict_t *dict, enum gf_task_types task_type)
+                                 "failed to get status", count, i);
+                         gf_log ("cli", GF_LOG_ERROR, "node down and has failed"
+                                 " to set dict");
++                        down = _gf_true;
+                         continue;
+                         /*skipping this node as value unavailable*/
+                 } else if (ret) {
+@@ -1733,8 +1743,11 @@ gf_cli_print_tier_status (dict_t *dict, enum gf_task_types task_type)
+                 status_str = cli_vol_task_status_str[status_rcd];
+                 cli_out ("%-20s %-20"PRIu64" %-20"PRIu64" %-20s",
+                          node_name, promoted, demoted, status_str);
+-
+         }
++        if (down)
++                cli_out ("WARNING: glusterd might be down on one or more nodes."
++                         " Please check the nodes that are down using \'gluster"
++                         " peer status\' and start the glusterd on those nodes.");
+ out:
+         return ret;
+ }
+@@ -1893,9 +1906,14 @@ gf_cli_defrag_volume_cbk (struct rpc_req *req, struct iovec *iov,
+ 
+         if (cmd == GF_DEFRAG_CMD_STATUS_TIER)
+                 ret = gf_cli_print_tier_status (dict, GF_TASK_TYPE_REBALANCE);
++        else if (cmd == GF_DEFRAG_CMD_DETACH_STATUS)
++                ret = gf_cli_print_rebalance_status (dict,
++                                                     GF_TASK_TYPE_REBALANCE,
++                                                     _gf_true);
+         else
+                 ret = gf_cli_print_rebalance_status (dict,
+-                                                     GF_TASK_TYPE_REBALANCE);
++                                                     GF_TASK_TYPE_REBALANCE,
++                                                     _gf_false);
+ 
+         if (ret)
+                 gf_log ("cli", GF_LOG_ERROR,
+@@ -2491,7 +2509,8 @@ xml_output:
+                 goto out;
+         }
+ 
+-        ret = gf_cli_print_rebalance_status (dict, GF_TASK_TYPE_REMOVE_BRICK);
++        ret = gf_cli_print_rebalance_status (dict, GF_TASK_TYPE_REMOVE_BRICK,
++                                             _gf_true);
+         if (ret) {
+                 gf_log ("cli", GF_LOG_ERROR, "Failed to print remove-brick "
+                         "rebalance status");
+@@ -2669,7 +2688,8 @@ xml_output:
+                 goto out;
+         }
+ 
+-        ret = gf_cli_print_rebalance_status (dict, GF_TASK_TYPE_REMOVE_BRICK);
++        ret = gf_cli_print_rebalance_status (dict, GF_TASK_TYPE_REMOVE_BRICK,
++                                             _gf_false);
+         if (ret) {
+                 gf_log ("cli", GF_LOG_ERROR, "Failed to print remove-brick "
+                         "rebalance status");
+diff --git a/tests/basic/tier/new-tier-cmds.t b/tests/basic/tier/new-tier-cmds.t
+index ce8dbae..ad2c84d 100644
+--- a/tests/basic/tier/new-tier-cmds.t
++++ b/tests/basic/tier/new-tier-cmds.t
+@@ -19,18 +19,6 @@ function create_dist_tier_vol () {
+         TEST $CLI_1 volume attach-tier $V0 $H1:$B1/${V0}_h1 $H2:$B2/${V0}_h2 $H3:$B3/${V0}_h3
+ }
+ 
+-function tier_detach_commit () {
+-	$CLI_1 volume tier $V0 detach commit | grep "success" | wc -l
+-}
+-
+-function tier_detach_status_node_down () {
+-        $CLI_1 volume tier $V0 detach status | wc -l
+-}
+-
+-function tier_status_node_down () {
+-	$CLI_1 volume tier $V0 status | wc -l
+-}
+-
+ cleanup;
+ 
+ #setup cluster and test volume
+@@ -58,10 +46,10 @@ TEST $CLI_1 volume tier $V0 detach status
+ TEST kill_node 2
+ 
+ #check if we have the rest of the node available printed in the output of detach status
+-EXPECT_WITHIN $PROCESS_UP_TIMEOUT "4" tier_detach_status_node_down
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" tier_detach_status_node_down
+ 
+ #check if we have the rest of the node available printed in the output of tier status
+-EXPECT_WITHIN $PROCESS_UP_TIMEOUT "5" tier_status_node_down
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" tier_status_node_down
+ 
+ TEST $glusterd_2;
+ 
+diff --git a/tests/tier.rc b/tests/tier.rc
+index ee37e07..69512c3 100644
+--- a/tests/tier.rc
++++ b/tests/tier.rc
+@@ -134,3 +134,16 @@ function rebalance_run_time () {
+ 
+     echo $total;
+ }
++
++function tier_detach_commit () {
++	$CLI_1 volume tier $V0 detach commit | grep "success" | wc -l
++}
++
++function tier_detach_status_node_down () {
++        $CLI_1 volume tier $V0 detach status | grep "WARNING" | wc -l
++}
++
++function tier_status_node_down () {
++	$CLI_1 volume tier $V0 status | grep "WARNING" | wc -l
++}
++
+-- 
+1.7.1
+

@@ -1,0 +1,42 @@
+From 5a586c2bd6a6f7cf9b1b8e027ba36bd519607ce3 Mon Sep 17 00:00:00 2001
+From: Sakshi Bansal <sabansal@redhat.com>
+Date: Thu, 5 Nov 2015 15:09:31 +0530
+Subject: [PATCH 128/139] glusterd: remove-brick commit should not succeed when migration failed
+
+While remove a brick if the data migration was not successful,
+remove-brick commit should not succeed as this can lead to
+data loss.
+
+upstream master : http://review.gluster.org/#/c/12513/
+release-3.8 : http://review.gluster.org/#/c/14190
+
+Change-Id: Icca757a2c30ce58bd840e486e8046734b4f4676f
+BUG: 1258875
+Signed-off-by: Sakshi Bansal <sabansal@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73466
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index 8f163e5..547b82d 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -2144,6 +2144,12 @@ glusterd_op_stage_remove_brick (dict_t *dict, char **op_errstr)
+                         goto out;
+                 }
+ 
++                if (volinfo->rebal.defrag_status == GF_DEFRAG_STATUS_FAILED) {
++                        errstr = gf_strdup ("use 'force' option as migration "
++                                            "has failed");
++                        goto out;
++                }
++
+                 ret = glusterd_remove_brick_validate_bricks (cmd, brick_count,
+                                                              dict, volinfo,
+                                                              &errstr);
+-- 
+1.7.1
+

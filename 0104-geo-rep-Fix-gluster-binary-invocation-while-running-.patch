@@ -1,0 +1,150 @@
+From ca5477127e48f6a597098045d70cb525d79648ae Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Fri, 29 Apr 2016 13:03:40 +0530
+Subject: [PATCH 104/104] geo-rep: Fix gluster binary invocation while running as cron
+
+When scheduler script was executed as cron, it was unable to detect
+the Gluster binaries.
+
+BUG: 1331376
+Change-Id: Ic9c533586ed9a472765f69aa2f87d004c46d4340
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: http://review.gluster.org/14111
+Reviewed-on: http://review.gluster.org/14122
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73379
+---
+ .gitignore                                         |    1 +
+ configure.ac                                       |   17 +++++++++++++++++
+ extras/geo-rep/Makefile.am                         |    4 +++-
+ .../{schedule_georep.py => schedule_georep.py.in}  |   18 ++++++++++--------
+ 4 files changed, 31 insertions(+), 9 deletions(-)
+ rename extras/geo-rep/{schedule_georep.py => schedule_georep.py.in} (96%)
+
+diff --git a/configure.ac b/configure.ac
+index ff746ff..a6ad6b1 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -211,6 +211,7 @@ AC_CONFIG_FILES([Makefile
+                 extras/ocf/volume
+                 extras/LinuxRPM/Makefile
+                 extras/geo-rep/Makefile
++                extras/geo-rep/schedule_georep.py
+                 extras/firewalld/Makefile
+                 extras/hook-scripts/add-brick/Makefile
+                 extras/hook-scripts/add-brick/pre/Makefile
+@@ -1090,6 +1091,22 @@ case $host_os in
+         ;;
+ esac
+ 
++# Default value for sbindir
++prefix_temp=$prefix
++exec_prefix_temp=$exec_prefix
++
++test "${prefix}" = "NONE" && prefix="${ac_default_prefix}"
++test "${exec_prefix}" = "NONE" && exec_prefix='${prefix}'
++sbintemp="${sbindir}"
++eval sbintemp=\"${sbintemp}\"
++eval sbintemp=\"${sbintemp}\"
++SBIN_DIR=${sbintemp}
++
++prefix=$prefix_temp
++exec_prefix=$exec_prefix_temp
++
++AC_SUBST(SBIN_DIR)
++
+ # lazy umount emulation
+ UMOUNTD_SUBDIR=""
+ if test "x${GF_HOST_OS}" != "xGF_LINUX_HOST_OS" ; then
+diff --git a/extras/geo-rep/Makefile.am b/extras/geo-rep/Makefile.am
+index dcf0fc8..6c334b0 100644
+--- a/extras/geo-rep/Makefile.am
++++ b/extras/geo-rep/Makefile.am
+@@ -10,4 +10,6 @@ gsync_sync_gfid_SOURCES = gsync-sync-gfid.c
+ gsync_sync_gfid_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src
+ 
+ EXTRA_DIST = gsync-sync-gfid.c gsync-upgrade.sh generate-gfid-file.sh \
+-	get-gfid.sh slave-upgrade.sh schedule_georep.py
++	get-gfid.sh slave-upgrade.sh schedule_georep.py.in
++
++CLEANFILES = schedule_georep.py
+diff --git a/extras/geo-rep/schedule_georep.py b/extras/geo-rep/schedule_georep.py.in
+similarity index 96%
+rename from extras/geo-rep/schedule_georep.py
+rename to extras/geo-rep/schedule_georep.py.in
+index 74fc693..c931111 100644
+--- a/extras/geo-rep/schedule_georep.py
++++ b/extras/geo-rep/schedule_georep.py.in
+@@ -130,7 +130,7 @@ def glustermount(hostname, volname):
+     Automatically unmounts it in case of Exceptions/out of context
+     """
+     mnt = tempfile.mkdtemp(prefix="georepsetup_")
+-    execute(["glusterfs",
++    execute(["@SBIN_DIR@/glusterfs",
+              "--volfile-server", hostname,
+              "--volfile-id", volname,
+              "-l", SESSION_MOUNT_LOG_FILE,
+@@ -152,7 +152,7 @@ def get_bricks(volname):
+     parsed.
+     """
+     value = []
+-    cmd = ["gluster", "volume", "info", volname, "--xml"]
++    cmd = ["@SBIN_DIR@/gluster", "volume", "info", volname, "--xml"]
+     info = execute(cmd)
+     try:
+         tree = etree.fromstring(info)
+@@ -169,7 +169,7 @@ def get_bricks(volname):
+ def get_georep_status(mastervol, slave):
+     session_keys = set()
+     out = {}
+-    cmd = ["gluster", "volume", "geo-replication"]
++    cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication"]
+     if mastervol is not None:
+         cmd += [mastervol]
+         if slave:
+@@ -357,20 +357,20 @@ def main(args):
+     turns = 1
+ 
+     # Stop Force
+-    cmd = ["gluster", "volume", "geo-replication", args.mastervol,
++    cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication", args.mastervol,
+            "%s::%s" % (args.slave, args.slavevol), "stop", "force"]
+     execute(cmd)
+     output_ok("Stopped Geo-replication")
+ 
+     # Set Checkpoint to NOW
+-    cmd = ["gluster", "volume", "geo-replication", args.mastervol,
++    cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication", args.mastervol,
+            "%s::%s" % (args.slave, args.slavevol), "config", "checkpoint",
+            "now"]
+     execute(cmd)
+     output_ok("Set Checkpoint")
+ 
+     # Start the Geo-replication
+-    cmd = ["gluster", "volume", "geo-replication", args.mastervol,
++    cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication", args.mastervol,
+            "%s::%s" % (args.slave, args.slavevol), "start"]
+     execute(cmd)
+     output_ok("Started Geo-replication and watching Status for "
+@@ -421,7 +421,8 @@ def main(args):
+ 
+         if summary["checkpoints_ok"]:
+             output_ok("Stopping Geo-replication session now")
+-            cmd = ["gluster", "volume", "geo-replication", args.mastervol,
++            cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication",
++                   args.mastervol,
+                    "%s::%s" % (args.slave, args.slavevol), "stop"]
+             execute(cmd)
+             break
+@@ -436,7 +437,8 @@ def main(args):
+         turns += 1
+         duration = int(time.time()) - start_time
+         if args.timeout > 0 and duration > (args.timeout * 60):
+-            cmd = ["gluster", "volume", "geo-replication", args.mastervol,
++            cmd = ["@SBIN_DIR@/gluster", "volume", "geo-replication",
++                   args.mastervol,
+                    "%s::%s" % (args.slave, args.slavevol), "stop", "force"]
+             execute(cmd)
+             output_notok("Timed out, Stopping Geo-replication("
+-- 
+1.7.1
+

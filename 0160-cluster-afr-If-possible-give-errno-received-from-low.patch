@@ -1,0 +1,51 @@
+From ff274ab6b20e448a66b55958452dba8151063433 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Tue, 17 May 2016 06:38:57 +0530
+Subject: [PATCH 160/167] cluster/afr: If possible give errno received from lower xlators
+
+In case of 3 way replication with quorum enabled with sharding,
+if one bricks is brought down and brought back up sometimes
+fops fail with EROFS because the mknod of shard file fails with
+two good nodes with EEXIST. So even when quorum is not met, it
+makes sense to unwind with the errno returned by lower xlators
+as much as possible.
+
+ >Change-Id: Iabd91cd7c270f5dfe6cbd18c50e59c299a331552
+ >BUG: 1336612
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/14369
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Ravishankar N <ravishankar@redhat.com>
+
+release-3.7: http://review.gluster.org/14452
+
+BUG: 1330044
+Change-Id: I5029c666708a0103afefc6ff7a84fecd4a8fae4a
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74759
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+Tested-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+---
+ xlators/cluster/afr/src/afr-transaction.c |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index d83a45c..9c97f75 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -738,7 +738,9 @@ afr_handle_quorum (call_frame_t *frame)
+         }
+ 
+         local->op_ret = -1;
+-        local->op_errno = afr_quorum_errno (priv);
++        local->op_errno = afr_final_errno (local, priv);
++        if (local->op_errno == 0)
++                local->op_errno = afr_quorum_errno (priv);
+ }
+ 
+ int
+-- 
+1.7.1
+

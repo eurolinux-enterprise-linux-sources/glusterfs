@@ -1,0 +1,51 @@
+From 5df73ce534aceaf1a26f42c1a4fe90babd4e5bd4 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Mon, 21 Mar 2016 22:31:02 +0530
+Subject: [PATCH 14/26] libglusterfs/glusterd: Fix compilation errors
+
+1. Removed duplicate definition of GD_OP_VER_PERSISTENT_AFR_XATTRS introduced in
+d367a88 where GD_OP_VER_PERSISTENT_AFR_XATTRS was redfined
+
+2. Fixed incorrect op-version
+
+Label: DOWNSTREAM ONLY
+
+BUG: 1319619
+Change-Id: Icfa3206e8a41a11875641f57523732b80837f8f6
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/70384
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+---
+ libglusterfs/src/globals.h                 |    2 --
+ xlators/mgmt/glusterd/src/glusterd-store.c |    2 +-
+ 2 files changed, 1 insertions(+), 3 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index fa8c0a9..cc23b6c 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -72,8 +72,6 @@
+ 
+ #define GD_OP_VERSION_3_7_7    30707 /* Op-version for GlusterFS 3.7.7 */
+ 
+-#define GD_OP_VER_PERSISTENT_AFR_XATTRS GD_OP_VERSION_3_6_0
+-
+ #include "xlator.h"
+ 
+ /* THIS */
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 61af29a..ef12d42 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -959,7 +959,7 @@ glusterd_volume_exclude_options_write (int fd, glusterd_volinfo_t *volinfo)
+                         goto out;
+         }
+ 
+-        if (conf->op_version >= GD_OP_VERSION_3_6_0) {
++        if (conf->op_version >= GD_OP_VERSION_3_7_0) {
+                 snprintf (buf, sizeof (buf), "%d", volinfo->disperse_count);
+                 ret = gf_store_save_value (fd,
+                                            GLUSTERD_STORE_KEY_VOL_DISPERSE_CNT,
+-- 
+1.7.1
+

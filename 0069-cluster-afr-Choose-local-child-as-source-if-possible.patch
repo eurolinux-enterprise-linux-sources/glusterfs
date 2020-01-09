@@ -1,0 +1,272 @@
+From bdb10b5f21dc668de5fa5cf2dccb46d64d08d6ec Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Wed, 2 Mar 2016 22:09:44 +0530
+Subject: [PATCH 69/80] cluster/afr: Choose local child as source if possible
+
+It is better to choose local brick as source if possible to prevent
+over the wire read thus saving on bandwidth. Also changed code to not
+attempt data-heal if 'source' is selected as arbiter.
+
+ >Change-Id: I9a328d0198422280b13a30ab99545370a301dfea
+ >BUG: 1314150
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13585
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+ >Tested-by: Krutika Dhananjay <kdhananj@redhat.com>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+ >(cherry picked from commit 2807e3fc005630213ab7ad251fef13d61c07ac6b)
+
+ >Change-Id: I24ea66683f81e238a6c1850664a49fe554011a0a
+ >BUG: 1322521
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13860
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Ravishankar N <ravishankar@redhat.com>
+
+BUG: 1314724
+Change-Id: I742c4a95ff5f01a5be501cf868171346b0aedbb4
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72367
+---
+ xlators/cluster/afr/src/afr-common.c             |    1 +
+ xlators/cluster/afr/src/afr-self-heal-common.c   |   29 ++++++++++++++++++++++
+ xlators/cluster/afr/src/afr-self-heal-data.c     |   12 ++-------
+ xlators/cluster/afr/src/afr-self-heal-entry.c    |   10 +------
+ xlators/cluster/afr/src/afr-self-heal-metadata.c |   22 ++++++----------
+ xlators/cluster/afr/src/afr-self-heal.h          |    3 ++
+ xlators/cluster/afr/src/afr-self-heald.c         |    3 ++
+ xlators/cluster/afr/src/afr.c                    |    7 +++++
+ xlators/cluster/afr/src/afr.h                    |    1 +
+ 9 files changed, 57 insertions(+), 31 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 308766c..dcbab23 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -1891,6 +1891,7 @@ afr_local_discovery_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+          * the slowest local subvolume is far preferable to a remote one.
+          */
+         if (is_local) {
++                priv->local[child_index] = 1;
+                 /* Don't set arbiter as read child. */
+                 if (AFR_IS_ARBITER_BRICK(priv, child_index))
+                         goto out;
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index cbe70f5..db9af05 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -1594,3 +1594,32 @@ afr_throttled_selfheal (call_frame_t *frame, xlator_t *this)
+                                       "pending, background self-heal rejected.");
+         }
+ }
++
++int
++afr_choose_source_by_policy (afr_private_t *priv, unsigned char *sources,
++                             afr_transaction_type type)
++{
++        int source = -1;
++        int i      = 0;
++
++        /* Give preference to local child to save on bandwidth */
++        for (i = 0; i < priv->child_count; i++) {
++                if (priv->local[i] && sources[i]) {
++                        if ((type == AFR_DATA_TRANSACTION) &&
++                            AFR_IS_ARBITER_BRICK (priv, i))
++                                continue;
++
++                        source = i;
++                        goto out;
++                }
++        }
++
++        for (i = 0; i < priv->child_count; i++) {
++                if (sources[i]) {
++                        source = i;
++                        goto out;
++                }
++        }
++out:
++        return source;
++}
+diff --git a/xlators/cluster/afr/src/afr-self-heal-data.c b/xlators/cluster/afr/src/afr-self-heal-data.c
+index ebf262e..332471c 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-data.c
++++ b/xlators/cluster/afr/src/afr-self-heal-data.c
+@@ -577,7 +577,6 @@ __afr_selfheal_data_finalize_source (call_frame_t *frame, xlator_t *this,
+ 				     struct afr_reply *replies,
+                                      uint64_t *witness)
+ {
+-	int i = 0;
+ 	afr_private_t *priv = NULL;
+ 	int source = -1;
+ 	int sources_count = 0;
+@@ -614,13 +613,9 @@ __afr_selfheal_data_finalize_source (call_frame_t *frame, xlator_t *this,
+ 
+ out:
+         afr_mark_active_sinks (this, sources, locked_on, healed_sinks);
++        source = afr_choose_source_by_policy (priv, sources,
++                                              AFR_DATA_TRANSACTION);
+ 
+-        for (i = 0; i < priv->child_count; i++) {
+-                if (sources[i]) {
+-                        source = i;
+-                        break;
+-                }
+-        }
+ 	return source;
+ }
+ 
+@@ -734,8 +729,7 @@ __afr_selfheal_data (call_frame_t *frame, xlator_t *this, fd_t *fd,
+ 
+ 		source = ret;
+ 
+-                if (AFR_IS_ARBITER_BRICK(priv, source) &&
+-                    AFR_COUNT (sources, priv->child_count) == 1) {
++                if (AFR_IS_ARBITER_BRICK(priv, source)) {
+                         did_sh = _gf_false;
+                         goto unlock;
+                 }
+diff --git a/xlators/cluster/afr/src/afr-self-heal-entry.c b/xlators/cluster/afr/src/afr-self-heal-entry.c
+index fe0596c..0837e5a 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-entry.c
++++ b/xlators/cluster/afr/src/afr-self-heal-entry.c
+@@ -361,7 +361,6 @@ __afr_selfheal_entry_finalize_source (xlator_t *this, unsigned char *sources,
+                                       struct afr_reply *replies,
+                                       uint64_t *witness)
+ {
+-	int i = 0;
+ 	afr_private_t *priv = NULL;
+ 	int source = -1;
+ 	int sources_count = 0;
+@@ -378,13 +377,8 @@ __afr_selfheal_entry_finalize_source (xlator_t *this, unsigned char *sources,
+ 		return -1;
+ 	}
+ 
+-	for (i = 0; i < priv->child_count; i++) {
+-		if (sources[i]) {
+-			source = i;
+-			break;
+-		}
+-	}
+-
++        source = afr_choose_source_by_policy (priv, sources,
++                                              AFR_ENTRY_TRANSACTION);
+ 	return source;
+ }
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heal-metadata.c b/xlators/cluster/afr/src/afr-self-heal-metadata.c
+index b58767c..778f2a1 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-metadata.c
++++ b/xlators/cluster/afr/src/afr-self-heal-metadata.c
+@@ -209,7 +209,7 @@ __afr_selfheal_metadata_finalize_source (call_frame_t *frame, xlator_t *this,
+ {
+ 	int i = 0;
+ 	afr_private_t *priv = NULL;
+-	struct iatt first = {0, };
++	struct iatt srcstat = {0, };
+ 	int source = -1;
+ 	int sources_count = 0;
+ 
+@@ -262,23 +262,17 @@ __afr_selfheal_metadata_finalize_source (call_frame_t *frame, xlator_t *this,
+         if (afr_dict_contains_heal_op(frame))
+                 return -EIO;
+ 
+-	for (i = 0; i < priv->child_count; i++) {
+-		if (!sources[i])
+-			continue;
+-		if (source == -1) {
+-			source = i;
+-			first = replies[i].poststat;
+-                        break;
+-		}
+-	}
++        source = afr_choose_source_by_policy (priv, sources,
++                                              AFR_METADATA_TRANSACTION);
++        srcstat = replies[source].poststat;
+ 
+ 	for (i = 0; i < priv->child_count; i++) {
+ 		if (!sources[i] || i == source)
+ 			continue;
+-		if (!IA_EQUAL (first, replies[i].poststat, type) ||
+-		    !IA_EQUAL (first, replies[i].poststat, uid) ||
+-		    !IA_EQUAL (first, replies[i].poststat, gid) ||
+-		    !IA_EQUAL (first, replies[i].poststat, prot)) {
++		if (!IA_EQUAL (srcstat, replies[i].poststat, type) ||
++		    !IA_EQUAL (srcstat, replies[i].poststat, uid) ||
++		    !IA_EQUAL (srcstat, replies[i].poststat, gid) ||
++		    !IA_EQUAL (srcstat, replies[i].poststat, prot)) {
+                         gf_msg_debug (this->name, 0, "%s: iatt mismatch "
+                                       "for source(%d) vs (%d)",
+                                       uuid_utoa
+diff --git a/xlators/cluster/afr/src/afr-self-heal.h b/xlators/cluster/afr/src/afr-self-heal.h
+index b298fa1..b0f545f 100644
+--- a/xlators/cluster/afr/src/afr-self-heal.h
++++ b/xlators/cluster/afr/src/afr-self-heal.h
+@@ -266,4 +266,7 @@ afr_selfheal_lock_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ int
+ afr_locked_fill (call_frame_t *frame, xlator_t *this,
+                  unsigned char *locked_on);
++int
++afr_choose_source_by_policy (afr_private_t *priv, unsigned char *sources,
++                             afr_transaction_type type);
+ #endif /* !_AFR_SELFHEAL_H */
+diff --git a/xlators/cluster/afr/src/afr-self-heald.c b/xlators/cluster/afr/src/afr-self-heald.c
+index d77a9ec..1da3cb9 100644
+--- a/xlators/cluster/afr/src/afr-self-heald.c
++++ b/xlators/cluster/afr/src/afr-self-heald.c
+@@ -521,14 +521,17 @@ afr_shd_index_healer (void *data)
+ 	struct subvol_healer *healer = NULL;
+ 	xlator_t *this = NULL;
+ 	int ret = 0;
++	afr_private_t *priv = NULL;
+ 
+ 	healer = data;
+ 	THIS = this = healer->this;
++	priv = this->private;
+ 
+ 	for (;;) {
+ 		afr_shd_healer_wait (healer);
+ 
+ 		ASSERT_LOCAL(this, healer);
++		priv->local[healer->subvol] = healer->local;
+ 
+ 		do {
+ 		        gf_msg_debug (this->name, 0,
+diff --git a/xlators/cluster/afr/src/afr.c b/xlators/cluster/afr/src/afr.c
+index d65895a..49ce495 100644
+--- a/xlators/cluster/afr/src/afr.c
++++ b/xlators/cluster/afr/src/afr.c
+@@ -389,6 +389,13 @@ init (xlator_t *this)
+ 
+         priv->wait_count = 1;
+ 
++        priv->local = GF_CALLOC (sizeof (unsigned char), child_count,
++                                 gf_afr_mt_char);
++        if (!priv->local) {
++                ret = -ENOMEM;
++                goto out;
++        }
++
+         priv->child_up = GF_CALLOC (sizeof (unsigned char), child_count,
+                                     gf_afr_mt_char);
+         if (!priv->child_up) {
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index dec4eaa..e507fd7 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -66,6 +66,7 @@ typedef struct _afr_private {
+         inode_t *root_inode;
+ 
+         unsigned char *child_up;
++        unsigned char *local;
+ 
+         char **pending_key;
+ 
+-- 
+1.7.1
+

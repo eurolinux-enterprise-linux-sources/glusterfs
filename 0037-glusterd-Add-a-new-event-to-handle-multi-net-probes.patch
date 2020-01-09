@@ -1,0 +1,167 @@
+From c3056edcb2feae2a2d24e8d5cccfe94ae2c98903 Mon Sep 17 00:00:00 2001
+From: Kaushal M <kaushal@redhat.com>
+Date: Tue, 22 Mar 2016 16:32:32 +0530
+Subject: [PATCH 37/80] glusterd: Add a new event to handle multi-net probes
+
+This allows GlusterD to send updates to all other nodes when attaching
+new addresses using multi-net peer probe.
+
+Change-Id: I62846be750ab3721912e7b49656594347ea61723
+BUG: 1314373
+Signed-off-by: Kaushal M <kaushal@redhat.com>
+Reviewed-upstream-on: http://review.gluster.org/13840
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71313
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handler.c |    4 ++--
+ xlators/mgmt/glusterd/src/glusterd-rpc-ops.c |    4 ++--
+ xlators/mgmt/glusterd/src/glusterd-sm.c      |   12 ++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-sm.h      |    1 +
+ 4 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index 377f4f8..2b0dc9e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -3681,8 +3681,8 @@ glusterd_probe_begin (rpcsvc_request_t *req, const char *hoststr, int port,
+                                                      _gf_false);
+                 if (ret)
+                         goto out;
+-                //this is just to rename so inject local acc for cluster update
+-                ret = glusterd_friend_sm_new_event (GD_FRIEND_EVENT_LOCAL_ACC,
++                // Injecting a NEW_NAME event to update cluster
++                ret = glusterd_friend_sm_new_event (GD_FRIEND_EVENT_NEW_NAME,
+                                                     &event);
+                 if (!ret) {
+                         event->peername = gf_strdup (peerinfo->hostname);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c b/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c
+index 5a06455..c865261 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c
+@@ -330,8 +330,8 @@ __glusterd_probe_cbk (struct rpc_req *req, struct iovec *iov,
+                         goto reply;
+                 }
+ 
+-                /* Injecting LOCAL_ACC to send update */
+-                ret = glusterd_friend_sm_new_event (GD_FRIEND_EVENT_LOCAL_ACC,
++                /* Injecting EVENT_NEW_NAME to send update */
++                ret = glusterd_friend_sm_new_event (GD_FRIEND_EVENT_NEW_NAME,
+                                                     &event);
+                 if (!ret) {
+                         event->peername = gf_strdup (peerinfo->hostname);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-sm.c b/xlators/mgmt/glusterd/src/glusterd-sm.c
+index f1bdcbd..8ae17a5 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-sm.c
+@@ -71,6 +71,7 @@ static char *glusterd_friend_sm_event_names[] = {
+         "GD_FRIEND_EVENT_RCVD_REMOVE_FRIEND",
+         "GD_FRIEND_EVENT_REMOVE_FRIEND",
+         "GD_FRIEND_EVENT_CONNECTED",
++        "GD_FRIEND_EVENT_NEW_NAME",
+         "GD_FRIEND_EVENT_MAX"
+ };
+ 
+@@ -1059,6 +1060,7 @@ glusterd_sm_t glusterd_state_default [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_probe}, //EVENT_CONNECTED
++        {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_NEW_NAME
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_MAX
+ };
+ 
+@@ -1075,6 +1077,7 @@ glusterd_sm_t glusterd_state_probe_rcvd [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_CONNECTED_RCVD, glusterd_ac_none}, //EVENT_CONNECTED
++        {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_NEW_NAME
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_MAX
+ };
+ 
+@@ -1091,6 +1094,7 @@ glusterd_sm_t glusterd_state_connected_rcvd [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_CONNECTED_RCVD, glusterd_ac_none}, //EVENT_CONNECTED
++        {GD_FRIEND_STATE_CONNECTED_RCVD, glusterd_ac_none}, //EVENT_NEW_NAME
+         {GD_FRIEND_STATE_CONNECTED_RCVD, glusterd_ac_none}, //EVENT_MAX
+ };
+ 
+@@ -1107,6 +1111,7 @@ glusterd_sm_t glusterd_state_connected_accepted [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_none}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_CONNECTED_ACCEPTED, glusterd_ac_none}, //EVENT_CONNECTED
++        {GD_FRIEND_STATE_CONNECTED_ACCEPTED, glusterd_ac_none}, //EVENT_NEW_NAME
+         {GD_FRIEND_STATE_CONNECTED_ACCEPTED, glusterd_ac_none}, //EVENT_MAX
+ };
+ 
+@@ -1123,6 +1128,7 @@ glusterd_sm_t  glusterd_state_req_sent [] = {
+         {GD_FRIEND_STATE_REQ_SENT, glusterd_ac_none}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_REQ_SENT, glusterd_ac_none},//EVENT_CONNECTED
++        {GD_FRIEND_STATE_REQ_SENT, glusterd_ac_none},//EVENT_NEW_NAME
+         {GD_FRIEND_STATE_REQ_SENT, glusterd_ac_none},//EVENT_MAX
+ };
+ 
+@@ -1139,6 +1145,7 @@ glusterd_sm_t  glusterd_state_req_rcvd [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_handle_friend_remove_req}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_CONNECTED_RCVD, glusterd_ac_none},//EVENT_CONNECTED
++        {GD_FRIEND_STATE_CONNECTED_RCVD, glusterd_ac_none},//EVENT_NEW_NAME
+         {GD_FRIEND_STATE_REQ_RCVD, glusterd_ac_none},//EVENT_MAX
+ };
+ 
+@@ -1155,6 +1162,7 @@ glusterd_sm_t  glusterd_state_befriended [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_handle_friend_remove_req}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_BEFRIENDED, glusterd_ac_friend_add},//EVENT_CONNECTED
++        {GD_FRIEND_STATE_BEFRIENDED, glusterd_ac_send_friend_update},//EVENT_NEW_NAME
+         {GD_FRIEND_STATE_BEFRIENDED, glusterd_ac_none},//EVENT_MAX
+ };
+ 
+@@ -1171,6 +1179,7 @@ glusterd_sm_t  glusterd_state_req_sent_rcvd [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_handle_friend_remove_req}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_REQ_SENT_RCVD, glusterd_ac_none},//EVENT_CONNECTED
++        {GD_FRIEND_STATE_REQ_SENT_RCVD, glusterd_ac_none},//EVENT_NEW_NAME
+         {GD_FRIEND_STATE_REQ_SENT_RCVD, glusterd_ac_none},//EVENT_MAX
+ };
+ 
+@@ -1187,6 +1196,7 @@ glusterd_sm_t  glusterd_state_rejected [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_handle_friend_remove_req}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_REJECTED, glusterd_ac_friend_add},//EVENT_CONNECTED
++        {GD_FRIEND_STATE_REJECTED, glusterd_ac_none},//EVENT_NEW_NAME
+         {GD_FRIEND_STATE_REQ_RCVD, glusterd_ac_none},//EVENT_MAX
+ };
+ 
+@@ -1203,6 +1213,7 @@ glusterd_sm_t  glusterd_state_req_accepted [] = {
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_handle_friend_remove_req}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_CONNECTED_ACCEPTED, glusterd_ac_reverse_probe_begin},//EVENT_CONNECTED
++        {GD_FRIEND_STATE_REQ_ACCEPTED, glusterd_ac_none},//EVENT_NEW_NAME
+         {GD_FRIEND_STATE_REQ_SENT, glusterd_ac_none},//EVENT_MAX
+ };
+ 
+@@ -1219,6 +1230,7 @@ glusterd_sm_t  glusterd_state_unfriend_sent [] = {
+         {GD_FRIEND_STATE_UNFRIEND_SENT, glusterd_ac_none}, //EVENT_RCVD_REMOVE_FRIEND
+         {GD_FRIEND_STATE_DEFAULT, glusterd_ac_friend_remove}, //EVENT_REMOVE_FRIEND
+         {GD_FRIEND_STATE_UNFRIEND_SENT, glusterd_ac_none},//EVENT_CONNECTED
++        {GD_FRIEND_STATE_UNFRIEND_SENT, glusterd_ac_none},//EVENT_NEW_NAME
+         {GD_FRIEND_STATE_UNFRIEND_SENT, glusterd_ac_none},//EVENT_MAX
+ };
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-sm.h b/xlators/mgmt/glusterd/src/glusterd-sm.h
+index 60e7514..6fff147 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-sm.h
++++ b/xlators/mgmt/glusterd/src/glusterd-sm.h
+@@ -147,6 +147,7 @@ typedef enum glusterd_friend_sm_event_type_ {
+         GD_FRIEND_EVENT_RCVD_REMOVE_FRIEND,
+         GD_FRIEND_EVENT_REMOVE_FRIEND,
+         GD_FRIEND_EVENT_CONNECTED,
++        GD_FRIEND_EVENT_NEW_NAME,
+         GD_FRIEND_EVENT_MAX
+ } glusterd_friend_sm_event_type_t;
+ 
+-- 
+1.7.1
+

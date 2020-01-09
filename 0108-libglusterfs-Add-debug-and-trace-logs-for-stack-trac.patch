@@ -1,0 +1,160 @@
+From 43ffd6e0bb651ce4152e2b70faa844312ef5dba3 Mon Sep 17 00:00:00 2001
+From: Raghavendra Talur <rtalur@redhat.com>
+Date: Mon, 15 Feb 2016 18:16:04 +0530
+Subject: [PATCH 108/139] libglusterfs: Add debug and trace logs for stack trace
+
+        Backport of http://review.gluster.org/13448
+        commit c4d67a8338b42d6485f49999f310cbb9ed5359c5
+
+It has become very difficult to identify the xlator which returned
+negative op_ret. Being able to just change the log level and
+visualize the stack is helpful in such cases.
+
+Change-Id: I6545b4802c1ab4d0d230d5e9e036afb2384882e1
+BUG: 1332077
+Signed-off-by: Raghavendra Talur <rtalur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73399
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ libglusterfs/src/stack.h            |   53 ++++++++++++++++++++++++++++++++--
+ xlators/cluster/stripe/src/stripe.c |    6 ++--
+ 2 files changed, 52 insertions(+), 7 deletions(-)
+
+diff --git a/libglusterfs/src/stack.h b/libglusterfs/src/stack.h
+index 21f9d17..cbf7e9a 100644
+--- a/libglusterfs/src/stack.h
++++ b/libglusterfs/src/stack.h
+@@ -263,6 +263,11 @@ STACK_RESET (call_stack_t *stack)
+                 UNLOCK(&frame->root->stack_lock);                       \
+                 old_THIS = THIS;                                        \
+                 THIS = obj;                                             \
++                gf_msg_trace ("stack-trace", 0,                         \
++                              "stack-address: %p, "                     \
++                              "winding from %s to %s",                  \
++                              frame->root, old_THIS->name,              \
++                              THIS->name);                              \
+                 if (frame->this->ctx->measure_latency)                  \
+                         gf_latency_begin (_new, fn);                    \
+                 fn (_new, obj, params);                                 \
+@@ -279,6 +284,11 @@ STACK_RESET (call_stack_t *stack)
+                 frame->wind_to = #fn;                                   \
+                 old_THIS = THIS;                                        \
+                 THIS = obj;                                             \
++                gf_msg_trace ("stack-trace", 0,                         \
++                              "stack-address: %p, "                     \
++                              "winding from %s to %s",                  \
++                              frame->root, old_THIS->name,              \
++                              THIS->name);                              \
+                 fn (frame, obj, params);                                \
+                 THIS = old_THIS;                                        \
+         } while (0)
+@@ -313,6 +323,11 @@ STACK_RESET (call_stack_t *stack)
+                 fn##_cbk = rfn;                                         \
+                 old_THIS = THIS;                                        \
+                 THIS = obj;                                             \
++                gf_msg_trace ("stack-trace", 0,                         \
++                              "stack-address: %p, "                     \
++                              "winding from %s to %s",                  \
++                              frame->root, old_THIS->name,              \
++                              THIS->name);                              \
+                 if (obj->ctx->measure_latency)                          \
+                         gf_latency_begin (_new, fn);                    \
+                 fn (_new, obj, params);                                 \
+@@ -321,7 +336,7 @@ STACK_RESET (call_stack_t *stack)
+ 
+ 
+ /* return from function */
+-#define STACK_UNWIND(frame, params ...)                                 \
++#define STACK_UNWIND(frame, op_ret, op_errno, params ...)               \
+         do {                                                            \
+                 ret_fn_t      fn = NULL;                                \
+                 call_frame_t *_parent = NULL;                           \
+@@ -331,6 +346,20 @@ STACK_RESET (call_stack_t *stack)
+                                 LG_MSG_FRAME_ERROR, "!frame");          \
+                         break;                                          \
+                 }                                                       \
++                if (op_ret < 0) {                                       \
++                        gf_msg_debug ("stack-trace", op_errno,          \
++                                      "stack-address: %p, "             \
++                                      "%s returned %d error: %s",       \
++                                      frame->root, THIS->name,          \
++                                      (int32_t)op_ret,                  \
++                                      strerror(op_errno));              \
++                } else {                                                \
++                        gf_msg_trace ("stack-trace", 0,                 \
++                                      "stack-address: %p, "             \
++                                      "%s returned %d",                 \
++                                      frame->root, THIS->name,          \
++                                      (int32_t)op_ret);                 \
++                }                                                       \
+                 fn = frame->ret;                                        \
+                 _parent = frame->parent;                                \
+                 LOCK(&frame->root->stack_lock);                         \
+@@ -344,13 +373,14 @@ STACK_RESET (call_stack_t *stack)
+                 frame->unwind_from = __FUNCTION__;                      \
+                 if (frame->this->ctx->measure_latency)                  \
+                         gf_latency_end (frame);                         \
+-                fn (_parent, frame->cookie, _parent->this, params);     \
++                fn (_parent, frame->cookie, _parent->this, op_ret,      \
++                    op_errno, params);                                  \
+                 THIS = old_THIS;                                        \
+         } while (0)
+ 
+ 
+ /* return from function in type-safe way */
+-#define STACK_UNWIND_STRICT(op, frame, params ...)                      \
++#define STACK_UNWIND_STRICT(op, frame, op_ret, op_errno, params ...)    \
+         do {                                                            \
+                 fop_##op##_cbk_t      fn = NULL;                        \
+                 call_frame_t *_parent = NULL;                           \
+@@ -361,6 +391,20 @@ STACK_RESET (call_stack_t *stack)
+                                 LG_MSG_FRAME_ERROR, "!frame");          \
+                         break;                                          \
+                 }                                                       \
++                if (op_ret < 0) {                                       \
++                        gf_msg_debug ("stack-trace", op_errno,          \
++                                      "stack-address: %p, "             \
++                                      "%s returned %d error: %s",       \
++                                      frame->root, THIS->name,          \
++                                      (int32_t)op_ret,                  \
++                                      strerror(op_errno));              \
++                } else {                                                \
++                        gf_msg_trace ("stack-trace", 0,                 \
++                                      "stack-address: %p, "             \
++                                      "%s returned %d",                 \
++                                      frame->root, THIS->name,          \
++                                      (int32_t)op_ret);                 \
++                }                                                       \
+                 fn = (fop_##op##_cbk_t )frame->ret;                     \
+                 _parent = frame->parent;                                \
+                 LOCK(&frame->root->stack_lock);                         \
+@@ -374,7 +418,8 @@ STACK_RESET (call_stack_t *stack)
+                 frame->unwind_from = __FUNCTION__;                      \
+                 if (frame->this->ctx->measure_latency)                  \
+                         gf_latency_end (frame);                         \
+-                fn (_parent, frame->cookie, _parent->this, params);     \
++                fn (_parent, frame->cookie, _parent->this, op_ret,      \
++                    op_errno, params);                                  \
+                 THIS = old_THIS;                                        \
+         } while (0)
+ 
+diff --git a/xlators/cluster/stripe/src/stripe.c b/xlators/cluster/stripe/src/stripe.c
+index 7847912..287b646 100644
+--- a/xlators/cluster/stripe/src/stripe.c
++++ b/xlators/cluster/stripe/src/stripe.c
+@@ -4939,9 +4939,9 @@ out:
+                 /* all entries are directories */
+                 frame->local = NULL;
+                 STRIPE_STACK_UNWIND (readdir, frame,
+-                                     local ? local->op_ret : -1,
+-                                     local ? local->op_errno : EINVAL,
+-                                     local ? &local->entries : NULL,
++                                     (local ? local->op_ret : -1),
++                                     (local ? local->op_errno : EINVAL),
++                                     (local ? &local->entries : NULL),
+                                      NULL);
+                 gf_dirent_free (&local->entries);
+                 stripe_local_wipe (local);
+-- 
+1.7.1
+

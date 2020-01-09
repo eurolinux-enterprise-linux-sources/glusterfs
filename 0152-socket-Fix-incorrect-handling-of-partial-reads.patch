@@ -1,0 +1,63 @@
+From cb7e11f4503c1fe08d821d9d92e34601c542bd83 Mon Sep 17 00:00:00 2001
+From: Xavier Hernandez <xhernandez@datalab.es>
+Date: Mon, 9 May 2016 12:50:39 +0200
+Subject: [PATCH 152/158] socket: Fix incorrect handling of partial reads
+
+The usage of function local variables in the protocol state
+machine caused an incorrect behaviour when a partial read
+from the socket forced the function to return and restart
+later when more data was available. At this point the local
+variables contained incorrect data.
+
+Change-Id: I4db1f4ef5c46a3d2d7f7c5328e906188c3af49e6
+BUG: 1334985
+Signed-off-by: Xavier Hernandez <xhernandez@datalab.es>
+Reviewed-on: http://review.gluster.org/14270
+Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+Smoke: Gluster Build System <jenkins@build.gluster.com>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Raghavendra G <rgowdapp@redhat.com>
+CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74342
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ rpc/rpc-transport/socket/src/socket.c |    8 +++++---
+ 1 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/rpc/rpc-transport/socket/src/socket.c b/rpc/rpc-transport/socket/src/socket.c
+index 43caa70..b857198 100644
+--- a/rpc/rpc-transport/socket/src/socket.c
++++ b/rpc/rpc-transport/socket/src/socket.c
+@@ -1649,7 +1649,6 @@ __socket_read_accepted_successful_reply (rpc_transport_t *this)
+         gfs3_read_rsp     read_rsp          = {0, };
+         ssize_t           size              = 0;
+         ssize_t           default_read_size = 0;
+-        char             *proghdr_buf       = NULL;
+         XDR               xdr;
+         struct gf_sock_incoming      *in         = NULL;
+         struct gf_sock_incoming_frag *frag       = NULL;
+@@ -1669,7 +1668,9 @@ __socket_read_accepted_successful_reply (rpc_transport_t *this)
+                 default_read_size = xdr_sizeof ((xdrproc_t) xdr_gfs3_read_rsp,
+                                                 &read_rsp);
+ 
+-                proghdr_buf = frag->fragcurrent;
++                /* We need to store the current base address because we will
++                 * need it after a partial read. */
++                in->proghdr_base_addr = frag->fragcurrent;
+ 
+                 __socket_proto_init_pending (priv, default_read_size);
+ 
+@@ -1682,7 +1683,8 @@ __socket_read_accepted_successful_reply (rpc_transport_t *this)
+                 __socket_proto_read (priv, ret);
+ 
+                 /* there can be 'xdata' in read response, figure it out */
+-                xdrmem_create (&xdr, proghdr_buf, default_read_size,
++                default_read_size = frag->fragcurrent - in->proghdr_base_addr;
++                xdrmem_create (&xdr, in->proghdr_base_addr, default_read_size,
+                                XDR_DECODE);
+ 
+                 /* This will fail if there is xdata sent from server, if not,
+-- 
+1.7.1
+

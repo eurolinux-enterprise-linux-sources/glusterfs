@@ -1,0 +1,71 @@
+From 10585bbac1d1b868599e8262a618e90a26f6558c Mon Sep 17 00:00:00 2001
+From: Soumya Koduri <skoduri@redhat.com>
+Date: Wed, 13 Apr 2016 12:50:49 +0530
+Subject: [PATCH 102/104] inode: Always fetch first entry from the inode lists during inode_table_destroy
+
+In inode_table_destroy, we iterate through lru and active lists
+to move the entries to purge list so that they can be destroyed
+during inode_table_prune.
+
+But if used "list_for_each_entry" or "list_for_each_entry_safe"
+to iterate, we could end up accessing the entries which may have
+got moved to different(purge) lists in the process and can result
+in either infinite loop or crash. The safe approach seems to fetch
+the first entry of the list in each iteration till it gets empty.
+
+This is backport of below fix -
+        http://review.gluster.org/13987 (master)
+        http://review.gluster.org/#/c/14089/ (release-3.7)
+
+Change-Id: I24a18881833bd9419c2d8e5e8807bc71ec396479
+BUG: 1325975
+Signed-off-by: Soumya Koduri <skoduri@redhat.com>
+Reviewed-on: http://review.gluster.org/13987
+Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73330
+Tested-by: Niels de Vos <ndevos@redhat.com>
+---
+ libglusterfs/src/inode.c |   16 ++++++++--------
+ 1 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/libglusterfs/src/inode.c b/libglusterfs/src/inode.c
+index 097b6d3..c45e7d1 100644
+--- a/libglusterfs/src/inode.c
++++ b/libglusterfs/src/inode.c
+@@ -1731,7 +1731,7 @@ inode_table_destroy_all (glusterfs_ctx_t *ctx) {
+ void
+ inode_table_destroy (inode_table_t *inode_table) {
+ 
+-        inode_t  *tmp = NULL, *trav = NULL;
++        inode_t  *trav = NULL;
+ 
+         if (inode_table == NULL)
+                 return;
+@@ -1771,15 +1771,15 @@ inode_table_destroy (inode_table_t *inode_table) {
+                  * traverse the lru list till it gets empty.
+                  */
+                 while (!list_empty (&inode_table->lru)) {
+-                        list_for_each_entry_safe (trav, tmp, &inode_table->lru,
+-                                                  list) {
+-                                __inode_forget (trav, 0);
+-                                __inode_retire (trav);
+-                        }
++                        trav = list_first_entry (&inode_table->lru,
++                                                 inode_t, list);
++                        __inode_forget (trav, 0);
++                        __inode_retire (trav);
+                 }
+ 
+-                list_for_each_entry_safe (trav, tmp, &inode_table->active,
+-                                          list) {
++                while (!list_empty (&inode_table->active)) {
++                        trav = list_first_entry (&inode_table->active,
++                                                 inode_t, list);
+                         /* forget and unref the inode to retire and add it to
+                          * purge list. By this time there should not be any
+                          * inodes present in the active list except for root
+-- 
+1.7.1
+

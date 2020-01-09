@@ -552,10 +552,11 @@ out:
 
 static int
 print_brick_details (dict_t *dict, int volcount, int start_index,
-                     int end_index)
+                     int end_index, int replica_count)
 {
         char           key[1024]   = {0,};
         int            index       = start_index;
+        int            isArbiter   = 0;
         int            ret         = -1;
         char          *brick       = NULL;
 #ifdef HAVE_BD_XLATOR
@@ -563,12 +564,23 @@ print_brick_details (dict_t *dict, int volcount, int start_index,
 #endif
 
         while (index <= end_index) {
+                memset (key, 0, sizeof (key));
                 snprintf (key, 1024, "volume%d.brick%d", volcount, index);
                 ret = dict_get_str (dict, key, &brick);
                 if (ret)
                         goto out;
+                memset (key, 0, sizeof(key));
+                snprintf (key, sizeof (key), "volume%d.brick%d.isArbiter",
+                          volcount, index);
+                if (dict_get (dict, key))
+                        isArbiter = 1;
+                else
+                        isArbiter = 0;
 
-                cli_out ("Brick%d: %s", index, brick);
+                if (isArbiter)
+                        cli_out ("Brick%d: %s (arbiter)", index, brick);
+                else
+                        cli_out ("Brick%d: %s", index, brick);
 #ifdef HAVE_BD_XLATOR
                 snprintf (key, 1024, "volume%d.vg%d", volcount, index);
                 ret = dict_get_str (dict, key, &caps);
@@ -584,14 +596,22 @@ out:
 void
 gf_cli_print_number_of_bricks (int type, int brick_count, int dist_count,
                                int stripe_count, int replica_count,
-                               int disperse_count, int redundancy_count)
+                               int disperse_count, int redundancy_count,
+                               int arbiter_count)
 {
        if (type == GF_CLUSTER_TYPE_STRIPE_REPLICATE) {
-               cli_out ("Number of Bricks: %d x %d x %d = %d",
-                        (brick_count / dist_count),
-                        stripe_count,
-                        replica_count,
-                        brick_count);
+               if (arbiter_count == 0) {
+                       cli_out ("Number of Bricks: %d x %d x %d = %d",
+                                (brick_count / dist_count),
+                                stripe_count,
+                                replica_count,
+                                brick_count);
+               } else {
+                       cli_out ("Number of Bricks: %d x %d x (%d + %d) = %d",
+                                (brick_count / dist_count),
+                                stripe_count, replica_count - arbiter_count,
+                                arbiter_count, brick_count);
+               }
        } else if (type == GF_CLUSTER_TYPE_NONE ||
                   type == GF_CLUSTER_TYPE_TIER) {
                cli_out ("Number of Bricks: %d", brick_count);
@@ -603,9 +623,16 @@ gf_cli_print_number_of_bricks (int type, int brick_count, int dist_count,
        } else {
                /* For both replicate and stripe, dist_count is
                   good enough */
-               cli_out ("Number of Bricks: %d x %d = %d",
-                        (brick_count / dist_count),
-                        dist_count, brick_count);
+               if (arbiter_count == 0) {
+                       cli_out ("Number of Bricks: %d x %d = %d",
+                                (brick_count / dist_count),
+                                dist_count, brick_count);
+               } else {
+                       cli_out ("Number of Bricks: %d x (%d + %d) = %d",
+                                (brick_count / dist_count),
+                                dist_count - arbiter_count, arbiter_count,
+                                brick_count);
+               }
        }
 
 }
@@ -618,6 +645,7 @@ gf_cli_print_tier_info (dict_t *dict, int i, int brick_count)
         int                  cold_type              = 0;
         int                  cold_brick_count       = 0;
         int                  cold_replica_count     = 0;
+        int                  cold_arbiter_count     = 0;
         int                  cold_disperse_count    = 0;
         int                  cold_redundancy_count  = 0;
         int                  cold_dist_count        = 0;
@@ -651,6 +679,12 @@ gf_cli_print_tier_info (dict_t *dict, int i, int brick_count)
         memset (key, 0, sizeof (key));
         snprintf (key, 256, "volume%d.cold_replica_count", i);
         ret = dict_get_int32 (dict, key, &cold_replica_count);
+        if (ret)
+                goto out;
+
+        memset (key, 0, sizeof (key));
+        snprintf (key, 256, "volume%d.cold_arbiter_count", i);
+        ret = dict_get_int32 (dict, key, &cold_arbiter_count);
         if (ret)
                 goto out;
 
@@ -698,9 +732,10 @@ gf_cli_print_tier_info (dict_t *dict, int i, int brick_count)
                  cli_vol_type_str[vol_type]);
         gf_cli_print_number_of_bricks (hot_type,
                         hot_brick_count, hot_dist_count, 0,
-                        hot_replica_count, 0, 0);
+                        hot_replica_count, 0, 0, 0);
 
-        ret = print_brick_details (dict, i, 1, hot_brick_count);
+        ret = print_brick_details (dict, i, 1, hot_brick_count,
+                                   hot_replica_count);
         if (ret)
                 goto out;
 
@@ -716,10 +751,10 @@ gf_cli_print_tier_info (dict_t *dict, int i, int brick_count)
         gf_cli_print_number_of_bricks (cold_type,
                 cold_brick_count,
                 cold_dist_count, 0, cold_replica_count,
-                cold_disperse_count, cold_redundancy_count);
+                cold_disperse_count, cold_redundancy_count, cold_arbiter_count);
 
         ret = print_brick_details (dict, i, hot_brick_count+1,
-                                   brick_count);
+                                   brick_count, cold_replica_count);
         if (ret)
                 goto out;
 out:
@@ -742,6 +777,7 @@ gf_cli_get_volume_cbk (struct rpc_req *req, struct iovec *iov,
         int32_t                    replica_count        = 0;
         int32_t                    disperse_count       = 0;
         int32_t                    redundancy_count     = 0;
+        int32_t                    arbiter_count        = 0;
         int32_t                    vol_type             = 0;
         int32_t                    transport            = 0;
         char                      *volume_id_str        = NULL;
@@ -905,6 +941,11 @@ xml_output:
                 if (ret)
                         goto out;
 
+                snprintf (key, sizeof(key), "volume%d.arbiter_count", i);
+                ret = dict_get_int32 (dict, key, &arbiter_count);
+                if (ret)
+                        goto out;
+
                 snprintf (key, 256, "volume%d.transport", i);
                 ret = dict_get_int32 (dict, key, &transport);
                 if (ret)
@@ -962,7 +1003,8 @@ next:
 #endif
                 gf_cli_print_number_of_bricks (type, brick_count,
                                 dist_count, stripe_count, replica_count,
-                                disperse_count, redundancy_count);
+                                disperse_count, redundancy_count,
+                                arbiter_count);
 
                 cli_out ("Transport-type: %s",
                          ((transport == 0)?"tcp":
@@ -980,7 +1022,8 @@ next:
 
                 } else {
                         cli_out ("Bricks:");
-                        ret = print_brick_details (dict, i, j, brick_count);
+                        ret = print_brick_details (dict, i, j, brick_count,
+                                                  replica_count);
                         if (ret)
                                 goto out;
                 }
@@ -1482,6 +1525,9 @@ gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
         double             elapsed      = 0;
         char               *status_str  = NULL;
         char               *size_str    = NULL;
+        int                hrs          = 0;
+        int                min          = 0;
+        int                sec          = 0;
 
         ret = dict_get_int32 (dict, "count", &count);
         if (ret) {
@@ -1492,7 +1538,7 @@ gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
 
         cli_out ("%40s %16s %13s %13s %13s %13s %20s %18s", "Node",
                  "Rebalanced-files", "size", "scanned", "failures", "skipped",
-                 "status", "run time in secs");
+                 "status", "run time in h:m:s");
         cli_out ("%40s %16s %13s %13s %13s %13s %20s %18s", "---------",
                  "-----------", "-----------", "-----------", "-----------",
                  "-----------", "------------", "--------------");
@@ -1579,16 +1625,20 @@ gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
 
                 status_str = cli_vol_task_status_str[status_rcd];
                 size_str = gf_uint64_2human_readable(size);
+                hrs = elapsed / 3600;
+                min = ((int) elapsed % 3600) / 60;
+                sec = ((int) elapsed % 3600) % 60;
+
                 if (size_str) {
                         cli_out ("%40s %16"PRIu64 " %13s" " %13"PRIu64 " %13"
-                                 PRIu64" %13"PRIu64 " %20s %18.2f", node_name,
-                                 files, size_str, lookup, failures, skipped,
-                                 status_str, elapsed);
+                                 PRIu64" %13"PRIu64 " %20s %8d:%d:%d",
+                                 node_name, files, size_str, lookup, failures,
+                                 skipped, status_str, hrs, min, sec);
                 } else {
                         cli_out ("%40s %16"PRIu64 " %13"PRIu64 " %13"PRIu64
-                                 " %13"PRIu64" %13"PRIu64 " %20s %18.2f",
+                                 " %13"PRIu64" %13"PRIu64 " %20s %8d:%d:%d",
                                  node_name, files, size, lookup, failures,
-                                 skipped, status_str, elapsed);
+                                 skipped, status_str, hrs, min, sec);
                 }
                 GF_FREE(size_str);
         }
@@ -1745,12 +1795,25 @@ gf_cli_defrag_volume_cbk (struct rpc_req *req, struct iovec *iov,
                                  * case since unlock failures can be highlighted
                                  * event though rebalance command was successful
                                  */
-                                snprintf (msg, sizeof (msg),
-                                          "Rebalance on %s has been started "
-                                          "successfully. Use rebalance status "
-                                          "command to check status of the "
-                                          "rebalance process.\nID: %s\n%s",
-                                          volname, task_id_str, rsp.op_errstr);
+                                 if (cmd == GF_DEFRAG_CMD_START_TIER) {
+                                         snprintf (msg, sizeof (msg),
+                                                         "Attach tier is successful "
+                                                         "on %s. use tier status to "
+                                                         "check the status.\nID: %s"
+                                                         "\n%s",
+                                                         volname, task_id_str,
+                                                         rsp.op_errstr);
+                                 } else {
+                                         snprintf (msg, sizeof (msg),
+                                                   "Rebalance on %s has been "
+                                                   "started successfully. Use "
+                                                   "rebalance status command to"
+                                                   " check status of the "
+                                                   "rebalance process.\nID: "
+                                                   "%s\n%s", volname,
+                                                   task_id_str,
+                                                   rsp.op_errstr);
+                                 }
                          } else {
                                 snprintf (msg, sizeof (msg),
                                           "Starting rebalance on volume %s has "
@@ -1823,11 +1886,26 @@ done:
                                     rsp.op_errstr);
         else {
                 if (rsp.op_ret)
-                        cli_err ("volume rebalance: %s: failed: %s", volname,
-                                 msg);
+
+                        if (cmd == GF_DEFRAG_CMD_START_TIER || cmd ==
+                            GF_DEFRAG_CMD_STATUS_TIER) {
+                                cli_err ("Tiering Migration Functionality: %s:"
+                                         " failed%s%s", volname,
+                                         strlen (msg) ? ": " : "", msg);
+                        } else
+                                cli_err ("volume rebalance: %s: failed%s%s",
+                                         volname, strlen (msg) ? ": " : "",
+                                         msg);
                 else
-                        cli_out ("volume rebalance: %s: success: %s", volname,
-                                 msg);
+                        if (cmd == GF_DEFRAG_CMD_START_TIER || cmd ==
+                            GF_DEFRAG_CMD_STATUS_TIER) {
+                                cli_out ("Tiering Migration Functionality: %s:"
+                                         " success%s%s", volname,
+                                         strlen (msg) ? ": " : "", msg);
+                        } else
+                                cli_out ("volume rebalance: %s: success%s%s",
+                                         volname, strlen (msg) ? ": " : "",
+                                         msg);
         }
         ret = rsp.op_ret;
 
@@ -2338,10 +2416,10 @@ gf_cli_detach_tier_status_cbk (struct rpc_req *req, struct iovec *iov,
         ret = rsp.op_ret;
         if (rsp.op_ret == -1) {
                 if (strcmp (rsp.op_errstr, ""))
-                        snprintf (msg, sizeof (msg), "volume detach-tier %s: "
+                        snprintf (msg, sizeof (msg), "volume tier detach %s: "
                                   "failed: %s", cmd_str, rsp.op_errstr);
                 else
-                        snprintf (msg, sizeof (msg), "volume detach-tier %s: "
+                        snprintf (msg, sizeof (msg), "volume tier detach %s: "
                                   "failed", cmd_str);
 
                 if (global_state->mode & GLUSTER_MODE_XML)
@@ -2925,7 +3003,8 @@ static int
 print_quota_list_usage_output (cli_local_t *local, char *path, int64_t avail,
                                char *sl_str, quota_limits_t *limits,
                                quota_meta_t *used_space, gf_boolean_t sl,
-                               gf_boolean_t hl, double sl_num)
+                               gf_boolean_t hl, double sl_num,
+                               gf_boolean_t limit_set)
 {
         int32_t         ret          = -1;
         char           *used_str     = NULL;
@@ -2933,17 +3012,20 @@ print_quota_list_usage_output (cli_local_t *local, char *path, int64_t avail,
         char           *hl_str       = NULL;
         char           *sl_val       = NULL;
 
-        hl_str = gf_uint64_2human_readable (limits->hl);
         used_str = gf_uint64_2human_readable (used_space->size);
-        avail_str = gf_uint64_2human_readable (avail);
 
-        sl_val = gf_uint64_2human_readable (sl_num);
+        if (limit_set) {
+                hl_str = gf_uint64_2human_readable (limits->hl);
+                avail_str = gf_uint64_2human_readable (avail);
+
+                sl_val = gf_uint64_2human_readable (sl_num);
+        }
 
         if (global_state->mode & GLUSTER_MODE_XML) {
                 ret = cli_quota_xml_output (local, path, limits->hl,
                                             sl_str, sl_num, used_space->size,
                                             avail, sl ? "Yes" : "No",
-                                            hl ? "Yes" : "No");
+                                            hl ? "Yes" : "No", limit_set);
                 if (ret) {
                         gf_log ("cli", GF_LOG_ERROR, "Failed to "
                                 "output in xml format for quota "
@@ -2952,14 +3034,22 @@ print_quota_list_usage_output (cli_local_t *local, char *path, int64_t avail,
                 goto out;
         }
 
-        if (!used_str) {
-                cli_out ("%-40s %7s %7s(%s) %8"PRIu64 "%9"PRIu64" %15s %18s",
-                         path, hl_str, sl_str, sl_val, used_space->size, avail,
-                         sl ? "Yes" : "No", hl ? "Yes" : "No");
+        if (limit_set) {
+                if (!used_str) {
+                        cli_out ("%-40s %7s %7s(%s) %8"PRIu64 "%9"PRIu64""
+                                 "%15s %18s", path, hl_str, sl_str, sl_val,
+                                 used_space->size, avail,
+                                 sl ? "Yes" : "No", hl ? "Yes" : "No");
+                } else {
+                        cli_out ("%-40s %7s %7s(%s) %8s %7s %15s %20s",
+                                 path, hl_str, sl_str, sl_val, used_str,
+                                 avail_str, sl ? "Yes" : "No",
+                                 hl ? "Yes" : "No");
+                }
         } else {
-                cli_out ("%-40s %7s %7s(%s) %8s %7s %15s %20s", path, hl_str,
-                         sl_str, sl_val, used_str, avail_str, sl ? "Yes" : "No",
-                         hl ? "Yes" : "No");
+                        cli_out ("%-36s %10s %10s %14s %9s %15s %18s",
+                                 path, "N/A", "N/A", used_str, "N/A",
+                                 "N/A", "N/A");
         }
 
         ret = 0;
@@ -2967,6 +3057,7 @@ out:
         GF_FREE (hl_str);
         GF_FREE (used_str);
         GF_FREE (avail_str);
+        GF_FREE (sl_val);
 
         return ret;
 }
@@ -2975,7 +3066,8 @@ static int
 print_quota_list_object_output (cli_local_t *local, char *path, int64_t avail,
                                char *sl_str, quota_limits_t *limits,
                                quota_meta_t *used_space, gf_boolean_t sl,
-                               gf_boolean_t hl, double sl_num)
+                               gf_boolean_t hl, double sl_num,
+                               gf_boolean_t limit_set)
 {
         int32_t         ret       = -1;
         int64_t         sl_val    = sl_num;
@@ -2984,7 +3076,8 @@ print_quota_list_object_output (cli_local_t *local, char *path, int64_t avail,
                 ret = cli_quota_object_xml_output (local, path, sl_str, sl_val,
                                                    limits, used_space, avail,
                                                    sl ? "Yes" : "No",
-                                                   hl ? "Yes" : "No");
+                                                   hl ? "Yes" : "No",
+                                                   limit_set);
                 if (ret) {
                         gf_log ("cli", GF_LOG_ERROR, "Failed to "
                                 "output in xml format for quota "
@@ -2993,11 +3086,17 @@ print_quota_list_object_output (cli_local_t *local, char *path, int64_t avail,
                 goto out;
         }
 
-        cli_out ("%-40s %9"PRIu64" %9s(%"PRId64") %10"PRIu64" %10"PRIu64
-                 "%11"PRIu64" %15s %20s", path, limits->hl, sl_str, sl_val,
-                 used_space->file_count, used_space->dir_count,
-                 avail, sl ? "Yes" : "No", hl ? "Yes" : "No");
-
+        if (limit_set) {
+                cli_out ("%-40s %9"PRIu64" %9s(%"PRId64") %10"PRIu64""
+                         "%10"PRIu64" %11"PRIu64" %15s %20s",
+                         path, limits->hl, sl_str, sl_val,
+                         used_space->file_count, used_space->dir_count,
+                         avail, sl ? "Yes" : "No", hl ? "Yes" : "No");
+        } else {
+                cli_out ("%-40s %9s %9s %10"PRIu64" %10"PRIu64" %11s %15s %20s",
+                         path, "N/A", "N/A", used_space->file_count,
+                         used_space->dir_count, "N/A", "N/A", "N/A");
+        }
         ret = 0;
 
 out:
@@ -3008,7 +3107,7 @@ out:
 static int
 print_quota_list_output (cli_local_t *local, char *path, char *default_sl,
                          quota_limits_t *limits, quota_meta_t *used_space,
-                         int type)
+                         int type, gf_boolean_t limit_set)
 {
         int64_t         avail            = 0;
         char            percent_str[20]  = {0};
@@ -3022,43 +3121,45 @@ print_quota_list_output (cli_local_t *local, char *path, char *default_sl,
         GF_ASSERT (local);
         GF_ASSERT (path);
 
-        if (limits->sl < 0) {
-                ret = gf_string2percent (default_sl, &sl_num);
-                sl_num = (sl_num * limits->hl) / 100;
-                sl_final = default_sl;
-        } else {
-                sl_num = (limits->sl * limits->hl) / 100;
-                snprintf (percent_str, sizeof (percent_str), "%"PRIu64"%%",
-                          limits->sl);
-                sl_final = percent_str;
-        }
-        if (type == GF_QUOTA_OPTION_TYPE_LIST)
-                used_size = used_space->size;
-        else
-                used_size = used_space->file_count + used_space->dir_count;
-
-        if (limits->hl > used_size) {
-                avail = limits->hl - used_size;
-                hl = _gf_false;
-                if (used_size > sl_num)
-                        sl = _gf_true;
+        if (limit_set) {
+                if (limits->sl < 0) {
+                        ret = gf_string2percent (default_sl, &sl_num);
+                        sl_num = (sl_num * limits->hl) / 100;
+                        sl_final = default_sl;
+                } else {
+                        sl_num = (limits->sl * limits->hl) / 100;
+                        snprintf (percent_str, sizeof (percent_str), "%"PRIu64"%%",
+                                        limits->sl);
+                        sl_final = percent_str;
+                }
+                if (type == GF_QUOTA_OPTION_TYPE_LIST)
+                        used_size = used_space->size;
                 else
-                        sl = _gf_false;
-        } else {
-                avail = 0;
-                hl = sl = _gf_true;
+                        used_size = used_space->file_count + used_space->dir_count;
+
+                if (limits->hl > used_size) {
+                        avail = limits->hl - used_size;
+                        hl = _gf_false;
+                        if (used_size > sl_num)
+                                sl = _gf_true;
+                        else
+                                sl = _gf_false;
+                } else {
+                        avail = 0;
+                        hl = sl = _gf_true;
+                }
         }
 
         if (type == GF_QUOTA_OPTION_TYPE_LIST)
                 ret = print_quota_list_usage_output (local, path, avail,
                                                      sl_final, limits,
                                                      used_space, sl, hl,
-                                                     sl_num);
+                                                     sl_num, limit_set);
         else
                 ret = print_quota_list_object_output (local, path, avail,
                                                       sl_final, limits,
                                                       used_space, sl, hl,
-                                                      sl_num);
+                                                      sl_num, limit_set);
 
         return ret;
 }
@@ -3072,15 +3173,16 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
         quota_limits_t  limits           = {0,};
         quota_meta_t    used_space       = {0,};
         char           *key              = NULL;
+        gf_boolean_t    limit_set        = _gf_true;
 
         GF_ASSERT (local);
         GF_ASSERT (mountdir);
         GF_ASSERT (path);
 
         if (type == GF_QUOTA_OPTION_TYPE_LIST)
-                key = "trusted.glusterfs.quota.limit-set";
+                key = QUOTA_LIMIT_KEY;
         else
-                key = "trusted.glusterfs.quota.limit-objects";
+                key = QUOTA_LIMIT_OBJECTS_KEY;
 
 
         ret = sys_lgetxattr (mountdir, key, (void *)&limits, sizeof (limits));
@@ -3095,8 +3197,20 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
 #if defined(ENOATTR) && (ENOATTR != ENODATA)
                 case ENOATTR:
 #endif
-                        cli_err ("%-40s %s", path, "Limit not set");
+                        /* If it's an ENOATTR, quota/inode-quota is
+                         * configured(limit is set atleast for one directory).
+                         * The user is trying to issue 'list/list-objects'
+                         * command for a directory on which quota limit is
+                         * not set and we are showing the used-space in case
+                         * of list-usage and showing (dir_count, file_count)
+                         * in case of list-objects. Other labels are
+                         * shown "N/A".
+                         */
+
+                        limit_set = _gf_false;
+                        goto enoattr;
                         break;
+
                 default:
                         cli_err ("%-40s %s", path, strerror (errno));
                         break;
@@ -3108,8 +3222,8 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
         limits.hl = ntoh64 (limits.hl);
         limits.sl = ntoh64 (limits.sl);
 
-        xattr_size = sys_lgetxattr (mountdir, "trusted.glusterfs.quota.size",
-                                    NULL, 0);
+enoattr:
+        xattr_size = sys_lgetxattr (mountdir, QUOTA_SIZE_KEY, NULL, 0);
         if (xattr_size < (sizeof (int64_t) * 2) &&
             type == GF_QUOTA_OPTION_TYPE_LIST_OBJECTS) {
                 ret = -1;
@@ -3118,13 +3232,13 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
                  * and the xattr healing is not completed.
                  */
         } else if (xattr_size > (sizeof (int64_t) * 2)) {
-                ret = sys_lgetxattr (mountdir, "trusted.glusterfs.quota.size",
+                ret = sys_lgetxattr (mountdir, QUOTA_SIZE_KEY,
                                      &used_space, sizeof (used_space));
         } else if (xattr_size > 0) {
                 /* This is for compatibility.
                  * Older version had only file usage
                  */
-                ret = sys_lgetxattr (mountdir, "trusted.glusterfs.quota.size",
+                ret = sys_lgetxattr (mountdir, QUOTA_SIZE_KEY,
                              &(used_space.size), sizeof (used_space.size));
                 used_space.file_count = 0;
                 used_space.dir_count = 0;
@@ -3144,7 +3258,7 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
         used_space.dir_count = ntoh64 (used_space.dir_count);
 
         ret = print_quota_list_output (local, path, default_sl, &limits,
-                                       &used_space, type);
+                                       &used_space, type, limit_set);
 out:
         return ret;
 }
@@ -3186,12 +3300,6 @@ gf_cli_print_limit_list_from_dict (cli_local_t *local, char *volname,
                         cli_out ("quota: %s", err_str);
                 }
                 ret = 0;
-                goto out;
-        }
-
-        /* Check if the mount is online before doing any listing */
-        if (!_quota_aux_mount_online (volname)) {
-                ret = -1;
                 goto out;
         }
 
@@ -3237,8 +3345,7 @@ out:
 }
 
 int
-print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
-                              int32_t list_count)
+print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict)
 {
         char             *path          = NULL;
         char             *default_sl    = NULL;
@@ -3249,6 +3356,7 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
         quota_limits_t   limits         = {0, };
         quota_limits_t  *size_limits    = NULL;
         int32_t          type           = 0;
+        int32_t          success_count  = 0;
 
         GF_ASSERT (frame);
 
@@ -3312,7 +3420,25 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
                 goto out;
         }
 
-        if (list_count == 0) {
+        LOCK (&local->lock);
+        {
+                ret = dict_get_int32 (gd_rsp_dict, "quota-list-success-count",
+                                      &success_count);
+                if (ret)
+                        success_count = 0;
+
+                ret = dict_set_int32 (gd_rsp_dict,
+                                      "quota-list-success-count",
+                                      success_count + 1);
+        }
+        UNLOCK (&local->lock);
+        if (ret) {
+                gf_log ("cli", GF_LOG_ERROR, "Failed to set "
+                        "quota-list-success-count in dict");
+                goto out;
+        }
+
+        if (success_count == 0) {
                 if (!(global_state->mode & GLUSTER_MODE_XML)) {
                         print_quota_list_header (type);
                 } else {
@@ -3327,7 +3453,7 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
         }
 
         ret = print_quota_list_output (local, path, default_sl, &limits,
-                                       &used_space, type);
+                                       &used_space, type, _gf_true);
 out:
         return ret;
 }
@@ -3417,7 +3543,8 @@ cli_quotad_getlimit_cbk (struct rpc_req *req, struct iovec *iov,
                                 "unserialize req-buffer to dictionary");
                         goto out;
                 }
-                print_quota_list_from_quotad (frame, dict, list_count);
+
+                print_quota_list_from_quotad (frame, dict);
         }
 
 out:
@@ -4426,7 +4553,7 @@ gf_cli_detach_tier (call_frame_t *frame, xlator_t *this,
         } else {
                 /* Need rebalance status to be sent :-) */
                 if (command == GF_OP_CMD_STATUS)
-                        cmd |= GF_DEFRAG_CMD_STATUS;
+                        cmd |= GF_DEFRAG_CMD_DETACH_STATUS;
                 else
                         cmd |= GF_DEFRAG_CMD_STOP_DETACH_TIER;
 
@@ -5570,10 +5697,7 @@ gf_cli_gsync_set_cbk (struct rpc_req *req, struct iovec *iov,
                         status_detail = dict_get_str_boolean (dict,
                                                               "status-detail",
                                                               _gf_false);
-                        if (status_detail)
-                                ret = gf_cli_gsync_status_output (dict, status_detail);
-                        else
-                                ret = gf_cli_gsync_status_output (dict, status_detail);
+                        ret = gf_cli_gsync_status_output (dict, status_detail);
                 break;
 
                 case GF_GSYNC_OPTION_TYPE_DELETE:
@@ -8358,13 +8482,10 @@ gf_cli_heal_volume_cbk (struct rpc_req *req, struct iovec *iov,
         }
 
         if (rsp.op_ret) {
-                if (strcmp (rsp.op_errstr, "")) {
-                        cli_err ("%s", rsp.op_errstr);
-                } else {
-                        cli_err ("%s%s on volume %s has been unsuccessful",
-                                 operation, heal_op_str, volname);
-                }
-
+                cli_err ("%s%s on volume %s has been unsuccessful on "
+                         "bricks that are down. Please check if all brick "
+                         "processes are running.",
+                         operation, heal_op_str, volname);
                 ret = rsp.op_ret;
                 goto out;
         } else {
@@ -10602,10 +10723,138 @@ out:
 }
 
 int
+gf_cli_print_bitrot_scrub_status (dict_t *dict)
+{
+        int            i                = 1;
+        int            j                = 0;
+        int            ret              = -1;
+        int            count            = 0;
+        char           key[256]         = {0,};
+        char           *volname         = NULL;
+        char           *node_name       = NULL;
+        char           *scrub_freq      = NULL;
+        char           *state_scrub     = NULL;
+        char           *scrub_impact    = NULL;
+        char           *bad_file_str    = NULL;
+        char           *scrub_log_file  = NULL;
+        char           *bitrot_log_file = NULL;
+        uint64_t       scrub_files      = 0;
+        uint64_t       unsigned_files   = 0;
+        uint64_t       scrub_time       = 0;
+        uint64_t       days             = 0;
+        uint64_t       hour             = 0;
+        uint64_t       minut            = 0;
+        uint64_t       second           = 0;
+        char          *last_scrub       = NULL;
+        uint64_t       error_count      = 0;
+
+
+        ret = dict_get_str (dict, "volname", &volname);
+        if (ret)
+                gf_log ("cli", GF_LOG_TRACE, "failed to get volume name");
+
+        ret = dict_get_str (dict, "features.scrub", &state_scrub);
+        if (ret)
+                gf_log ("cli", GF_LOG_TRACE, "failed to get scrub state value");
+
+        ret = dict_get_str (dict, "features.scrub-throttle", &scrub_impact);
+        if (ret)
+                gf_log ("cli", GF_LOG_TRACE, "failed to get scrub impact "
+                        "value");
+
+        ret = dict_get_str (dict, "features.scrub-freq", &scrub_freq);
+        if (ret)
+                gf_log ("cli", GF_LOG_TRACE, "failed to get scrub -freq value");
+
+        ret = dict_get_str (dict, "bitrot_log_file", &bitrot_log_file);
+        if (ret)
+                gf_log ("cli", GF_LOG_TRACE, "failed to get bitrot log file "
+                        "location");
+
+        ret = dict_get_str (dict, "scrub_log_file", &scrub_log_file);
+        if (ret)
+                gf_log ("cli", GF_LOG_TRACE, "failed to get scrubber log file "
+                        "location");
+
+        ret = dict_get_int32 (dict, "count", &count);
+        if (ret) {
+                gf_log ("cli", GF_LOG_ERROR, "count not get count value from"
+                        " dictionary");
+                goto out;
+        }
+
+        cli_out ("\n%s: %s\n", "Volume name ", volname);
+
+        cli_out ("%s: %s\n", "State of scrub", state_scrub);
+
+        cli_out ("%s: %s\n", "Scrub impact", scrub_impact);
+
+        cli_out ("%s: %s\n", "Scrub frequency", scrub_freq);
+
+        cli_out ("%s: %s\n", "Bitrot error log location", bitrot_log_file);
+
+        cli_out ("%s: %s\n", "Scrubber error log location", scrub_log_file);
+
+
+        for (i = 1; i <= count; i++) {
+                /* Reset the variables to prevent carryover of values */
+                node_name       = NULL;
+                last_scrub      = NULL;
+                scrub_time      = 0;
+                days            = 0;
+                hour            = 0;
+                minut           = 0;
+                second          = 0;
+                error_count     = 0;
+                scrub_files     = 0;
+                unsigned_files  = 0;
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "node-name-%d", i);
+                ret = dict_get_str (dict, key, &node_name);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE, "failed to get node-name");
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "error-count-%d", i);
+                ret = dict_get_uint64 (dict, key, &error_count);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE, "failed to get error "
+                                "count");
+
+                cli_out ("\n%s\n", "=========================================="
+                         "===============");
+
+                cli_out ("%s: %s\n", "Node", node_name);
+
+                cli_out ("%s: %"PRIu64 "\n", "Error count", error_count);
+
+                if (error_count) {
+                        cli_out ("%s:\n", "Corrupted object's [GFID]");
+                        /* Printing list of bad file's (Corrupted object's)*/
+                        for (j = 0; j < error_count; j++) {
+                                memset (key, 0, 256);
+                                snprintf (key, 256, "quarantine-%d-%d", j, i);
+                                ret = dict_get_str (dict, key, &bad_file_str);
+                                if (!ret) {
+                                        cli_out ("%s\n", bad_file_str);
+                                }
+                        }
+                }
+        }
+        cli_out ("%s\n", "=========================================="
+                 "===============");
+
+out:
+        return 0;
+}
+
+int
 gf_cli_bitrot_cbk (struct rpc_req *req, struct iovec *iov,
                    int count, void *myframe)
 {
         int                  ret                       = -1;
+        int                  type                      = 0;
         gf_cli_rsp           rsp                       = {0, };
         dict_t               *dict                     = NULL;
         call_frame_t         *frame                    = NULL;
@@ -10659,6 +10908,22 @@ gf_cli_bitrot_cbk (struct rpc_req *req, struct iovec *iov,
 
         gf_log ("cli", GF_LOG_DEBUG, "Received resp to bit rot command");
 
+        ret = dict_get_int32 (dict, "type", &type);
+        if (ret) {
+                gf_log ("cli", GF_LOG_ERROR, "Failed to get command type");
+                goto out;
+        }
+
+        if ((type == GF_BITROT_CMD_SCRUB_STATUS) &&
+             !(global_state->mode & GLUSTER_MODE_XML)) {
+                ret = gf_cli_print_bitrot_scrub_status (dict);
+                if (ret) {
+                        gf_log ("cli", GF_LOG_ERROR, "Failed to print bitrot "
+                                "scrub status");
+                }
+                goto out;
+        }
+
 xml_output:
         if (global_state->mode & GLUSTER_MODE_XML) {
                 ret = cli_xml_output_vol_profile (dict, rsp.op_ret,
@@ -10685,7 +10950,6 @@ out:
         cli_cmd_broadcast_response (ret);
 
         return ret;
-
 }
 
 int32_t

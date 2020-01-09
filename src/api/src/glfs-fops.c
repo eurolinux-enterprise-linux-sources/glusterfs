@@ -77,6 +77,7 @@ glfs_loc_link (loc_t *loc, struct iatt *iatt)
 {
 	int ret = -1;
         inode_t *old_inode = NULL;
+        uint64_t ctx_value = LOOKUP_NOT_NEEDED;
 
 	if (!loc->inode) {
 		errno = EINVAL;
@@ -91,6 +92,7 @@ glfs_loc_link (loc_t *loc, struct iatt *iatt)
          */
 	loc->inode = inode_link (loc->inode, loc->parent, loc->name, iatt);
 	if (loc->inode) {
+                inode_ctx_set (loc->inode, THIS, &ctx_value);
 		inode_lookup (loc->inode);
                 inode_unref (old_inode);
 		ret = 0;
@@ -523,6 +525,7 @@ pub_glfs_lseek (struct glfs_fd *glfd, off_t offset, int whence)
 {
 	struct stat sb = {0, };
 	int         ret = -1;
+        off_t       off = -1;
 
         DECLARE_OLD_THIS;
 	__GLFS_ENTRY_VALIDATE_FD (glfd, invalid_fs);
@@ -530,9 +533,11 @@ pub_glfs_lseek (struct glfs_fd *glfd, off_t offset, int whence)
 	switch (whence) {
 	case SEEK_SET:
 		glfd->offset = offset;
+                ret = 0;
 		break;
 	case SEEK_CUR:
 		glfd->offset += offset;
+                ret = 0;
 		break;
 	case SEEK_END:
 		ret = pub_glfs_fstat (glfd, &sb);
@@ -542,11 +547,16 @@ pub_glfs_lseek (struct glfs_fd *glfd, off_t offset, int whence)
 		}
 		glfd->offset = sb.st_size + offset;
 		break;
+        default:
+                errno = EINVAL;
 	}
 
         __GLFS_EXIT_FS;
 
-	return glfd->offset;
+        if (ret != -1)
+                off = glfd->offset;
+
+        return off;
 
 invalid_fs:
         return -1;
@@ -2846,12 +2856,25 @@ glfs_getxattr_common (struct glfs *fs, const char *path, const char *name,
         DECLARE_OLD_THIS;
         __GLFS_ENTRY_VALIDATE_FS (fs, invalid_fs);
 
+        if (!name || *name == '\0') {
+                ret = -1;
+                errno = EINVAL;
+                goto out;
+        }
+
+        if (strlen(name) > GF_XATTR_NAME_MAX) {
+                ret = -1;
+                errno = ENAMETOOLONG;
+                goto out;
+        }
+
 	subvol = glfs_active_subvol (fs);
 	if (!subvol) {
 		ret = -1;
 		errno = EIO;
 		goto out;
 	}
+
 retry:
 	if (follow)
 		ret = glfs_resolve (fs, subvol, path, &loc, &iatt, reval);
@@ -2915,6 +2938,18 @@ pub_glfs_fgetxattr (struct glfs_fd *glfd, const char *name, void *value,
 
         DECLARE_OLD_THIS;
 	__GLFS_ENTRY_VALIDATE_FD (glfd, invalid_fs);
+
+        if (!name || *name == '\0') {
+                ret = -1;
+                errno = EINVAL;
+                goto out;
+        }
+
+        if (strlen(name) > GF_XATTR_NAME_MAX) {
+                ret = -1;
+                errno = ENAMETOOLONG;
+                goto out;
+        }
 
 	subvol = glfs_active_subvol (glfd->fs);
 	if (!subvol) {
@@ -3109,12 +3144,25 @@ glfs_setxattr_common (struct glfs *fs, const char *path, const char *name,
         DECLARE_OLD_THIS;
         __GLFS_ENTRY_VALIDATE_FS (fs, invalid_fs);
 
+        if (!name || *name == '\0') {
+                ret = -1;
+                errno = EINVAL;
+                goto out;
+        }
+
+        if (strlen(name) > GF_XATTR_NAME_MAX) {
+                ret = -1;
+                errno = ENAMETOOLONG;
+                goto out;
+        }
+
 	subvol = glfs_active_subvol (fs);
 	if (!subvol) {
 		ret = -1;
 		errno = EIO;
 		goto out;
 	}
+
 retry:
 	if (follow)
 		ret = glfs_resolve (fs, subvol, path, &loc, &iatt, reval);
@@ -3183,6 +3231,18 @@ pub_glfs_fsetxattr (struct glfs_fd *glfd, const char *name, const void *value,
 
         DECLARE_OLD_THIS;
 	__GLFS_ENTRY_VALIDATE_FD (glfd, invalid_fs);
+
+        if (!name || *name == '\0') {
+                ret = -1;
+                errno = EINVAL;
+                goto out;
+        }
+
+        if (strlen(name) > GF_XATTR_NAME_MAX) {
+                ret = -1;
+                errno = ENAMETOOLONG;
+                goto out;
+        }
 
 	subvol = glfs_active_subvol (glfd->fs);
 	if (!subvol) {

@@ -1,0 +1,116 @@
+From 4eacfb3a1212f71958d371404a47416d30601831 Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Sat, 2 Apr 2016 12:02:22 +0530
+Subject: [PATCH 55/80] posix_acl: skip acl_permits for special clients
+
+This is a backport of http://review.gluster.org/13894
+
+> Change-Id: I3f478b7e4ecab517200f50eb09f65a634c029437
+> BUG: 1320818
+> Signed-off-by: vmallika <vmallika@redhat.com>
+> Reviewed-on: http://review.gluster.org/13894
+> Smoke: Gluster Build System <jenkins@build.gluster.com>
+> NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+> Reviewed-by: jiffin tony Thottan <jthottan@redhat.com>
+> CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+
+Change-Id: Ic0ffefae00d498631c2212dd69d818a9e5787d38
+BUG: 1302355
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71538
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/system/posix-acl/src/posix-acl.c |   39 +++++++++++++++++++++--------
+ 1 files changed, 28 insertions(+), 11 deletions(-)
+
+diff --git a/xlators/system/posix-acl/src/posix-acl.c b/xlators/system/posix-acl/src/posix-acl.c
+index 1ec3144..3ebdca4 100644
+--- a/xlators/system/posix-acl/src/posix-acl.c
++++ b/xlators/system/posix-acl/src/posix-acl.c
+@@ -158,11 +158,16 @@ sticky_permits (call_frame_t *frame, inode_t *parent, inode_t *inode)
+         struct posix_acl_ctx  *par = NULL;
+         struct posix_acl_ctx  *ctx = NULL;
+ 
++        if ((0 > frame->root->pid) || frame_is_super_user (frame))
++                return 1;
++
+         par = posix_acl_ctx_get (parent, frame->this);
+-        ctx = posix_acl_ctx_get (inode, frame->this);
++        if (par == NULL)
++                return 0;
+ 
+-        if (frame_is_super_user (frame))
+-                return 1;
++        ctx = posix_acl_ctx_get (inode, frame->this);
++        if (ctx == NULL)
++                return 0;
+ 
+         if (!(par->perm & S_ISVTX))
+                 return 1;
+@@ -192,16 +197,12 @@ acl_permits (call_frame_t *frame, inode_t *inode, int want)
+ 
+         conf = frame->this->private;
+ 
++        if ((0 > frame->root->pid) || frame_is_super_user (frame))
++                goto green;
++
+         ctx = posix_acl_ctx_get (inode, frame->this);
+-        if (!ctx) {
+-                gf_log_callingfn (frame->this->name, GF_LOG_ERROR,
+-                                  "inode ctx is NULL for %s",
+-                                  uuid_utoa (inode->gfid));
++        if (!ctx)
+                 goto red;
+-        }
+-
+-        if (frame_is_super_user (frame))
+-                goto green;
+ 
+         posix_acl_get (inode, frame->this, &acl, NULL);
+         if (!acl) {
+@@ -318,12 +319,20 @@ posix_acl_ctx_new (inode_t *inode, xlator_t *this)
+ {
+         struct posix_acl_ctx *ctx = NULL;
+ 
++        if (inode == NULL) {
++                gf_log_callingfn (this->name, GF_LOG_WARNING, "inode is NULL");
++                return NULL;
++        }
++
+         LOCK (&inode->lock);
+         {
+                 ctx = __posix_acl_ctx_get (inode, this, _gf_true);
+         }
+         UNLOCK (&inode->lock);
+ 
++        if (ctx == NULL)
++                gf_log_callingfn (this->name, GF_LOG_ERROR, "creating inode ctx"
++                                  "failed for %s", uuid_utoa (inode->gfid));
+         return ctx;
+ }
+ 
+@@ -332,12 +341,20 @@ posix_acl_ctx_get (inode_t *inode, xlator_t *this)
+ {
+         struct posix_acl_ctx *ctx = NULL;
+ 
++        if (inode == NULL) {
++                gf_log_callingfn (this->name, GF_LOG_WARNING, "inode is NULL");
++                return NULL;
++        }
++
+         LOCK (&inode->lock);
+         {
+                 ctx = __posix_acl_ctx_get (inode, this, _gf_false);
+         }
+         UNLOCK (&inode->lock);
+ 
++        if (ctx == NULL)
++                gf_log_callingfn (this->name, GF_LOG_ERROR, "inode ctx is NULL "
++                                  "for %s", uuid_utoa (inode->gfid));
+         return ctx;
+ }
+ 
+-- 
+1.7.1
+

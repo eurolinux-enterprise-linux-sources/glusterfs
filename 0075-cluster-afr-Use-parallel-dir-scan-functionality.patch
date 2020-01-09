@@ -1,0 +1,224 @@
+From 821ff5e9964323b4161fa873554b1596c79f0c11 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Thu, 17 Mar 2016 09:32:17 +0530
+Subject: [PATCH 75/80] cluster/afr: Use parallel dir scan functionality
+
+ >BUG: 1221737
+ >Change-Id: I0ed71a72f0e33bd733723e00a01cf28378c5534e
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13755
+ >Reviewed-on: http://review.gluster.org/13992
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+
+ >BUG: 1325857
+ >Change-Id: I7c6b2ea065edd7f5dafffeb42fd6c601b4ab8d14
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/14010
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+
+BUG: 1314724
+Change-Id: I0858bd709028a139d26e852fba4cb6258835d6ec
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72373
+---
+ libglusterfs/src/globals.h                      |    2 +
+ xlators/cluster/afr/src/afr-self-heald.c        |   40 ++++++++++++++++-------
+ xlators/cluster/afr/src/afr-self-heald.h        |    2 +
+ xlators/cluster/afr/src/afr.c                   |   29 ++++++++++++++++
+ xlators/cluster/afr/src/afr.h                   |    1 -
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |   11 ++++++
+ 6 files changed, 72 insertions(+), 13 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index 4fe4bcb..35e7b4b 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -74,6 +74,8 @@
+ 
+ #define GD_OP_VERSION_3_7_10    30710 /* Op-version for GlusterFS 3.7.10 */
+ 
++#define GD_OP_VERSION_3_7_12    30712 /* Op-version for GlusterFS 3.7.12 */
++
+ #include "xlator.h"
+ 
+ /* THIS */
+diff --git a/xlators/cluster/afr/src/afr-self-heald.c b/xlators/cluster/afr/src/afr-self-heald.c
+index 21b13b7..d89692d 100644
+--- a/xlators/cluster/afr/src/afr-self-heald.c
++++ b/xlators/cluster/afr/src/afr-self-heald.c
+@@ -320,14 +320,18 @@ afr_shd_selfheal (struct subvol_healer *healer, int child, uuid_t gfid)
+ 
+ 	ret = afr_selfheal (this, gfid);
+ 
+-	if (ret == -EIO) {
+-		eh = shd->split_brain;
+-		crawl_event->split_brain_count++;
+-	} else if (ret < 0) {
+-		crawl_event->heal_failed_count++;
+-	} else if (ret == 0) {
+-		crawl_event->healed_count++;
+-	}
++        LOCK (&priv->lock);
++        {
++                if (ret == -EIO) {
++                        eh = shd->split_brain;
++                        crawl_event->split_brain_count++;
++                } else if (ret < 0) {
++                        crawl_event->heal_failed_count++;
++                } else if (ret == 0) {
++                        crawl_event->healed_count++;
++                }
++        }
++        UNLOCK (&priv->lock);
+ 
+ 	if (eh) {
+ 		shd_event = GF_CALLOC (1, sizeof(*shd_event),
+@@ -430,6 +434,7 @@ afr_shd_index_sweep (struct subvol_healer *healer, char *vgfid)
+ 	afr_private_t *priv   = NULL;
+ 	int           ret     = 0;
+ 	xlator_t      *subvol = NULL;
++	dict_t        *xdata  = NULL;
+ 
+ 	priv = healer->this->private;
+ 	subvol = priv->children[healer->subvol];
+@@ -439,17 +444,28 @@ afr_shd_index_sweep (struct subvol_healer *healer, char *vgfid)
+ 	        gf_msg (healer->this->name, GF_LOG_WARNING,
+                         0, AFR_MSG_INDEX_DIR_GET_FAILED,
+ 		        "unable to get index-dir on %s", subvol->name);
+-		return -errno;
++		ret = -errno;
++	        goto out;
+ 	}
+ 
+-        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+-                               healer, afr_shd_index_heal);
++        xdata = dict_new ();
++        if (!xdata || dict_set_int32 (xdata, "get-gfid-type", 1)) {
++                ret = -ENOMEM;
++                goto out;
++        }
+ 
+-        loc_wipe (&loc);
++        ret = syncop_mt_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
++                                  healer, afr_shd_index_heal, xdata,
++                                 priv->shd.max_threads, priv->shd.wait_qlength);
+ 
+         if (ret == 0)
+                 ret = healer->crawl_event.healed_count;
+ 
++out:
++        loc_wipe (&loc);
++
++        if (xdata)
++                dict_unref (xdata);
+ 	return ret;
+ }
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heald.h b/xlators/cluster/afr/src/afr-self-heald.h
+index 58b088e..f591515 100644
+--- a/xlators/cluster/afr/src/afr-self-heald.h
++++ b/xlators/cluster/afr/src/afr-self-heald.h
+@@ -56,6 +56,8 @@ typedef struct {
+ 
+         eh_t                    *split_brain;
+         eh_t                    **statistics;
++        uint32_t                max_threads;
++        uint32_t                wait_qlength;
+ } afr_self_heald_t;
+ 
+ 
+diff --git a/xlators/cluster/afr/src/afr.c b/xlators/cluster/afr/src/afr.c
+index 49ce495..c47e637 100644
+--- a/xlators/cluster/afr/src/afr.c
++++ b/xlators/cluster/afr/src/afr.c
+@@ -221,6 +221,12 @@ reconfigure (xlator_t *this, dict_t *options)
+         GF_OPTION_RECONF ("consistent-metadata", priv->consistent_metadata,
+                           options, bool, out);
+ 
++        GF_OPTION_RECONF ("shd-max-threads", priv->shd.max_threads,
++                          options, uint32, out);
++
++        GF_OPTION_RECONF ("shd-wait-qlength", priv->shd.wait_qlength,
++                          options, uint32, out);
++
+         priv->did_discovery = _gf_false;
+ 
+         ret = 0;
+@@ -331,6 +337,11 @@ init (xlator_t *this)
+                         fav_child->name, fav_child->name);
+         }
+ 
++        GF_OPTION_INIT ("shd-max-threads", priv->shd.max_threads,
++                         uint32, out);
++
++        GF_OPTION_INIT ("shd-wait-qlength", priv->shd.wait_qlength,
++                         uint32, out);
+ 
+         GF_OPTION_INIT ("background-self-heal-count",
+                         priv->background_self_heal_count, uint32, out);
+@@ -833,5 +844,23 @@ struct volume_options options[] = {
+           .type = GF_OPTION_TYPE_INT,
+           .description = "subset of child_count. Has to be 0 or 1."
+         },
++        { .key   = {"shd-max-threads"},
++          .type  = GF_OPTION_TYPE_INT,
++          .min   = 1,
++          .max   = 64,
++          .default_value = "1",
++           .description = "Maximum number of threads SHD can use per local "
++                          "brick.  This can substantially lower heal times, "
++                          "but can also crush your bricks if you don't have "
++                          "the storage hardware to support this."
++        },
++        { .key   = {"shd-wait-qlength"},
++          .type  = GF_OPTION_TYPE_INT,
++          .min   = 1,
++          .max   = 655536,
++          .default_value = "1024",
++           .description = "This option can be used to control number of heals"
++                          " that can wait in SHD per subvolume",
++        },
+         { .key  = {NULL} },
+ };
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index e507fd7..1a08ff5 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -144,7 +144,6 @@ typedef struct _afr_private {
+ 	/* pump dependencies */
+ 	void                   *pump_private;
+ 	gf_boolean_t           use_afr_in_pump;
+-
+ } afr_private_t;
+ 
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 0381dd1..274248d 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -2699,6 +2699,17 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version  = GD_OP_VERSION_3_7_6,
+           .flags       = OPT_FLAG_CLIENT_OPT
+         },
++        { .key        = "cluster.shd-max-threads",
++          .voltype    = "cluster/replicate",
++          .op_version = GD_OP_VERSION_3_7_12,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
++        { .key        = "cluster.shd-wait-qlength",
++          .voltype    = "cluster/replicate",
++          .op_version = GD_OP_VERSION_3_7_12,
++          .flags      = OPT_FLAG_CLIENT_OPT
++        },
++
+         { .key         = NULL
+         }
+ };
+-- 
+1.7.1
+

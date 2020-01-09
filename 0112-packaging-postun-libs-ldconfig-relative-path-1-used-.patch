@@ -1,0 +1,95 @@
+From 29f2c5ac0e0abfa07816e1edcdd9706beb8cdead Mon Sep 17 00:00:00 2001
+From: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Date: Fri, 29 Apr 2016 15:30:50 -0400
+Subject: [PATCH 112/139] packaging: %postun libs ldconfig: relative path `1' used to build cache
+
+%postun libs isn't 'closed' by the following %postun server on RHEL6
+due to the %ifdef...%endif
+
+But -server has /usr/lib*/libgfdb.so.x, so we should be running
+/sbin/ldconfig! Which conveniently fixes the closing issue.
+
+See mainline:
+>> Change-Id: Icc365eefc5453c40e02b59288a4e8023b82baa7b
+>> BUG: 1330583
+>> http://review.gluster.org/14081
+release-3.7:
+> Change-Id: I7c2daf1408aaee6340e6983cfaba207c5d13f5a1
+> BUG: 1328836
+> http://review.gluster.org/14082
+
+Change-Id: Ib9ba2808a9c4c4bc0418f16c6247ec36dad39546
+BUG: 1328194
+Signed-off-by: Kaleb S KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73366
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Tested-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in |   18 +++++++++++++-----
+ 1 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 89037aa..9455cb0 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -806,9 +806,9 @@ rm -rf %{buildroot}
+ %if ( 0%{!?_without_syslog:1} )
+ %if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
+ %_init_restart rsyslog
+-exit 0
+ %endif
+ %endif
++exit 0
+ 
+ %post api -p /sbin/ldconfig
+ 
+@@ -932,7 +932,10 @@ fi
+ %endif
+ 
+ ##-----------------------------------------------------------------------------
+-## All %%postun should be placed here and keep them sorted
++## All %%postun should be placed here and keep them sorted as best we can
++## making sure to "close" each one to avoid
++##   ldconfig: relative path `1' used to build cache
++## errors
+ ##
+ %postun
+ /sbin/ldconfig
+@@ -944,19 +947,21 @@ fi
+ 
+ %postun api -p /sbin/ldconfig
+ 
+-%postun libs -p /sbin/ldconfig
+-
+ %if ( 0%{?_build_server} )
+-%if (0%{?_with_firewalld:1})
+ %postun server
++/sbin/ldconfig
++%if (0%{?_with_firewalld:1})
+ #reload service files if firewalld running
+ if $(systemctl is-active firewalld 1>/dev/null 2>&1); then
+     firewall-cmd  --reload
+ fi
+ exit 0
+ %endif
++exit 0
+ %endif
+ 
++%postun libs -p /sbin/ldconfig
++
+ ##-----------------------------------------------------------------------------
+ ## All %%files should be placed here and keep them grouped
+ ##
+@@ -1937,6 +1942,9 @@ end
+ 
+ 
+ %changelog
++* Fri Apr 29 2016 Kaleb S. KEITHLEY <kkeithle@redhat.com>
++- %%pre, %%post etc. scriptlet cleanup again, (#1331844)
++
+ * Tue Apr 12 2016 Kaleb S. KEITHLEY <kkeithle@redhat.com>
+ - pacemaker dependencies on RHEL6 (#1292034)
+ 
+-- 
+1.7.1
+

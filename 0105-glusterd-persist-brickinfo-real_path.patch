@@ -1,0 +1,161 @@
+From 53092bbaab60944c19e7477940d3edd140e7e720 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 26 Apr 2016 15:27:43 +0530
+Subject: [PATCH 105/139] glusterd: persist brickinfo->real_path
+
+Backport of http://review.gluster.org/14124
+            http://review.gluster.org/14075
+
+Since real_path was not persisted and gets constructed at every glusterd
+restart, glusterd will fail to come up if one of the brick's underlying file
+system is crashed.
+
+Solution is to construct real_path only once and get it persisted.
+
+Change-Id: I97abc30372c1ffbbb2d43b716d7af09172147b47
+BUG: 1330385
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: http://review.gluster.org/14075
+CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+Smoke: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Kaushal M <kaushal@redhat.com>
+NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+Reviewed-on: http://review.gluster.org/14124
+Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73410
+---
+ xlators/mgmt/glusterd/src/glusterd-store.c |   39 ++++++++++++++++++----------
+ xlators/mgmt/glusterd/src/glusterd-store.h |    1 +
+ xlators/mgmt/glusterd/src/glusterd-utils.c |   24 +++++++++--------
+ 3 files changed, 39 insertions(+), 25 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 8b76cbf..4408081 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -383,6 +383,11 @@ glusterd_store_brickinfo_write (int fd, glusterd_brickinfo_t *brickinfo)
+         if (ret)
+                 goto out;
+ 
++        ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_BRICK_REAL_PATH,
++                                   brickinfo->path);
++        if (ret)
++                goto out;
++
+         snprintf (value, sizeof(value), "%d", brickinfo->port);
+         ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_BRICK_PORT, value);
+ 
+@@ -2314,6 +2319,10 @@ glusterd_store_retrieve_bricks (glusterd_volinfo_t *volinfo)
+                                     strlen (GLUSTERD_STORE_KEY_BRICK_PATH))) {
+                                 strncpy (brickinfo->path, value,
+                                          sizeof (brickinfo->path));
++                        } else if (!strncmp (key, GLUSTERD_STORE_KEY_BRICK_REAL_PATH,
++                                    strlen (GLUSTERD_STORE_KEY_BRICK_REAL_PATH))) {
++                                strncpy (brickinfo->real_path, value,
++                                         sizeof (brickinfo->real_path));
+                         } else if (!strncmp (key, GLUSTERD_STORE_KEY_BRICK_PORT,
+                                     strlen (GLUSTERD_STORE_KEY_BRICK_PORT))) {
+                                 gf_string2int (value, &brickinfo->port);
+@@ -2414,8 +2423,8 @@ glusterd_store_retrieve_bricks (glusterd_volinfo_t *volinfo)
+                  * snapshot or snapshot restored volume this would be done post
+                  * creating the brick mounts
+                  */
+-                if (!volinfo->is_snap_volume &&
+-                    gf_uuid_is_null (volinfo->restored_from_snap)) {
++                if (brickinfo->real_path[0] == '\0' && !volinfo->is_snap_volume
++                    && gf_uuid_is_null (volinfo->restored_from_snap)) {
+                         /* By now if the brick is a local brick then it will be
+                          * able to resolve which is the only thing we want now
+                          * for checking  whether the brickinfo->uuid matches
+@@ -3309,19 +3318,21 @@ glusterd_recreate_vol_brick_mounts (xlator_t  *this,
+                                 "Failed to mount brick_mount_path");
+                 }
+                 if (!gf_uuid_compare(brickinfo->uuid, MY_UUID)) {
+-                        if (!realpath (brickinfo->path, abspath)) {
+-                                gf_msg (this->name, GF_LOG_CRITICAL,
+-                                        errno,
+-                                        GD_MSG_BRICKINFO_CREATE_FAIL,
+-                                        "realpath() failed for brick %s"
+-                                        ". The underlying file system "
+-                                        "may be in bad state",
+-                                        brickinfo->path);
+-                                ret = -1;
+-                                goto out;
++                        if (brickinfo->real_path[0] == '\0') {
++                                if (!realpath (brickinfo->path, abspath)) {
++                                        gf_msg (this->name, GF_LOG_CRITICAL,
++                                                errno,
++                                                GD_MSG_BRICKINFO_CREATE_FAIL,
++                                                "realpath() failed for brick %s"
++                                                ". The underlying file system "
++                                                "may be in bad state",
++                                                brickinfo->path);
++                                        ret = -1;
++                                        goto out;
++                                }
++                                strncpy (brickinfo->real_path, abspath,
++                                         strlen(abspath));
+                         }
+-                        strncpy (brickinfo->real_path, abspath,
+-                                 strlen(abspath));
+                 }
+ 
+                 if (brick_mount_path) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.h b/xlators/mgmt/glusterd/src/glusterd-store.h
+index 683edae..93096d9 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.h
++++ b/xlators/mgmt/glusterd/src/glusterd-store.h
+@@ -90,6 +90,7 @@ typedef enum glusterd_store_ver_ac_{
+ 
+ #define GLUSTERD_STORE_KEY_BRICK_HOSTNAME       "hostname"
+ #define GLUSTERD_STORE_KEY_BRICK_PATH           "path"
++#define GLUSTERD_STORE_KEY_BRICK_REAL_PATH      "real_path"
+ #define GLUSTERD_STORE_KEY_BRICK_PORT           "listen-port"
+ #define GLUSTERD_STORE_KEY_BRICK_RDMA_PORT      "rdma.listen-port"
+ #define GLUSTERD_STORE_KEY_BRICK_DECOMMISSIONED "decommissioned"
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index d100ec3..1c6541c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -1113,7 +1113,7 @@ glusterd_brickinfo_new_from_brick (char *brick,
+         strncpy (new_brickinfo->hostname, hostname, 1024);
+         strncpy (new_brickinfo->path, path, 1024);
+ 
+-        if (construct_real_path) {
++        if (construct_real_path && new_brickinfo->real_path[0] == '\0') {
+                 if (!realpath (new_brickinfo->path, abspath)) {
+                         /* ENOENT indicates that brick path has not been created
+                          * which is a valid scenario */
+@@ -3103,17 +3103,19 @@ glusterd_import_new_brick (dict_t *peer_data, int32_t vol_count,
+ 
+         gf_uuid_parse (brick_uuid_str, new_brickinfo->uuid);
+         if (!gf_uuid_compare(new_brickinfo->uuid, MY_UUID)) {
+-                if (!realpath (new_brickinfo->path, abspath)) {
+-                        gf_msg (this->name, GF_LOG_CRITICAL, errno,
+-                                GD_MSG_BRICKINFO_CREATE_FAIL, "realpath() "
+-                                "failed for brick %s. The underlying file "
+-                                "system may be in bad state",
+-                                new_brickinfo->path);
+-                        ret = -1;
+-                        goto out;
++                if (new_brickinfo->real_path[0] == '\0') {
++                        if (!realpath (new_brickinfo->path, abspath)) {
++                                gf_msg (this->name, GF_LOG_CRITICAL, errno,
++                                        GD_MSG_BRICKINFO_CREATE_FAIL,
++                                        "realpath() failed for brick %s. The "
++                                        "underlying file system may be in bad "
++                                        "state", new_brickinfo->path);
++                                ret = -1;
++                                goto out;
++                        }
++                        strncpy (new_brickinfo->real_path, abspath,
++                                 strlen(abspath));
+                 }
+-                strncpy (new_brickinfo->real_path, abspath,
+-                         strlen(abspath));
+         }
+ 
+         *brickinfo = new_brickinfo;
+-- 
+1.7.1
+

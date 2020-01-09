@@ -1,0 +1,46 @@
+From afc282fde961ec2b7d77b18dc44dbfa72288fd56 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Tue, 24 May 2016 12:35:02 +0530
+Subject: [PATCH 172/178] glusterd: Fix signature of glusterd_volinfo_copy_brick_portinfo
+
+Commit ca2e9d2 in downstream introduced an accidental change in the signature of
+glusterd_volinfo_copy_brick_portinfo () which caused new volume's
+brickinfo->port to zeroed out.
+
+Label : DOWNSTREAM ONLY
+
+Change-Id: I31a45a824f7165ea3a86bb4ba4eca15f2e47e8f8
+BUG: 1337384
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74996
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c |    5 ++---
+ 1 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 0573808..01fd446 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -3842,8 +3842,8 @@ out:
+ }
+ 
+ int32_t
+-glusterd_volinfo_copy_brick_portinfo (glusterd_volinfo_t *old_volinfo,
+-                                      glusterd_volinfo_t *new_volinfo)
++glusterd_volinfo_copy_brick_portinfo (glusterd_volinfo_t *new_volinfo,
++                                      glusterd_volinfo_t *old_volinfo)
+ {
+         char                    pidfile[PATH_MAX+1] = {0,};
+         glusterd_brickinfo_t   *new_brickinfo       = NULL;
+@@ -3851,7 +3851,6 @@ glusterd_volinfo_copy_brick_portinfo (glusterd_volinfo_t *old_volinfo,
+         glusterd_conf_t        *priv                = NULL;
+         int                     ret                 = 0;
+         xlator_t               *this                = NULL;
+-        char                    abspath[PATH_MAX]   = {0};
+ 
+         GF_ASSERT (new_volinfo);
+         GF_ASSERT (old_volinfo);
+-- 
+1.7.1
+

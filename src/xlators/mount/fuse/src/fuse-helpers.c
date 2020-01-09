@@ -638,6 +638,10 @@ fuse_ignore_xattr_set (fuse_private_t *priv, char *key)
               || (fnmatch ("system.posix_acl_access",
                            key, FNM_PERIOD) == 0)
               || (fnmatch ("glusterfs.gfid.newfile",
+                           key, FNM_PERIOD) == 0)
+              || (fnmatch ("*.glusterfs.shard.block-size",
+                           key, FNM_PERIOD) == 0)
+              || (fnmatch ("*.glusterfs.shard.file-size",
                            key, FNM_PERIOD) == 0)))
                 ret = -1;
 
@@ -646,5 +650,31 @@ fuse_ignore_xattr_set (fuse_private_t *priv, char *key)
                 " client pid [%d]", (ret ? "disallowing" : "allowing"), key,
                 priv->client_pid);
 
+        return ret;
+}
+
+int
+fuse_check_selinux_cap_xattr (fuse_private_t *priv, char *name)
+{
+        int ret = -1;
+
+        if (strcmp (name, "security.selinux") &&
+                        strcmp (name, "security.capability")) {
+                /* if xattr name is not of interest, no validations needed */
+                ret = 0;
+                goto out;
+        }
+
+        if ((strcmp (name, "security.selinux") == 0) &&
+            (priv->selinux)) {
+                ret = 0;
+        }
+
+        if ((strcmp (name, "security.capability") == 0) &&
+            ((priv->capability) || (priv->selinux))) {
+                ret = 0;
+        }
+
+out:
         return ret;
 }

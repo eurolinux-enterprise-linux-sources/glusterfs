@@ -1811,10 +1811,21 @@ pl_lk (call_frame_t *frame, xlator_t *this,
         posix_lock_t *conf       = NULL;
         int           ret        = 0;
 
-        if ((flock->l_start < 0) || (flock->l_len < 0)) {
+        if ((flock->l_start < 0) ||
+            ((flock->l_start + flock->l_len) < 0)) {
                 op_ret = -1;
                 op_errno = EINVAL;
                 goto unwind;
+        }
+
+        /* As per 'man 3 fcntl', the value of l_len may be
+         * negative. In such cases, lock request should be
+         * considered for the range starting at 'l_start+l_len'
+         * and ending at 'l_start-1'. Update the fields accordingly.
+         */
+        if (flock->l_len < 0) {
+                flock->l_start += flock->l_len;
+                flock->l_len = abs (flock->l_len);
         }
 
         pl_inode = pl_inode_get (this, fd->inode);
@@ -2175,6 +2186,23 @@ pl_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
         PL_LOCAL_GET_REQUESTS (frame, this, xdata, NULL, loc);
         STACK_WIND (frame, pl_lookup_cbk, FIRST_CHILD(this),
                     FIRST_CHILD(this)->fops->lookup, loc, xdata);
+        return 0;
+}
+
+int32_t
+pl_fstat_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int32_t op_ret,
+              int32_t op_errno, struct iatt *buf, dict_t *xdata)
+{
+        PL_STACK_UNWIND (fstat, xdata, frame, op_ret, op_errno, buf, xdata);
+        return 0;
+}
+
+int32_t
+pl_fstat (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *xdata)
+{
+        PL_LOCAL_GET_REQUESTS (frame, this, xdata, fd, NULL);
+        STACK_WIND (frame, pl_fstat_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->fstat, fd, xdata);
         return 0;
 }
 
@@ -2765,6 +2793,7 @@ pl_fentrylk (call_frame_t *frame, xlator_t *this,
 struct xlator_fops fops = {
         .lookup      = pl_lookup,
         .create      = pl_create,
+        .fstat       = pl_fstat,
         .truncate    = pl_truncate,
         .ftruncate   = pl_ftruncate,
         .open        = pl_open,

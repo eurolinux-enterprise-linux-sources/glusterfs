@@ -1,0 +1,1296 @@
+From d367a8854eb63b10b5ea3962eae0018ee588980b Mon Sep 17 00:00:00 2001
+From: Kaushal M <kmadappa@redhat.com>
+Date: Thu, 11 Jun 2015 18:21:17 +0530
+Subject: [PATCH 02/26] glusterd: fix op-versions for RHS backwards compatability
+
+Backport of https://code.engineering.redhat.com/gerrit/#/c/60485/
+
+This change fixes the op-version of different features and checks to maintain
+backwards compatability with RHS-3.0 and before.
+
+Label: DOWNSTREAM ONLY
+
+BUG: 1319619
+Change-Id: Icb282444da179b12fbd6ed9f491514602f1a38c2
+Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/70348
+---
+ libglusterfs/src/globals.h                         |   43 +++--
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c     |    8 +-
+ xlators/mgmt/glusterd/src/glusterd-handler.c       |   12 +-
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c         |   16 +-
+ xlators/mgmt/glusterd/src/glusterd-peer-utils.c    |    8 +-
+ xlators/mgmt/glusterd/src/glusterd-rebalance.c     |    4 +-
+ xlators/mgmt/glusterd/src/glusterd-replace-brick.c |    4 +-
+ xlators/mgmt/glusterd/src/glusterd-rpc-ops.c       |    6 +-
+ xlators/mgmt/glusterd/src/glusterd-sm.c            |    2 +-
+ .../mgmt/glusterd/src/glusterd-snapshot-utils.c    |   12 +-
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c      |    4 +-
+ xlators/mgmt/glusterd/src/glusterd-store.c         |   25 ++--
+ xlators/mgmt/glusterd/src/glusterd-syncop.c        |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c         |    8 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c    |   12 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c    |  186 ++++++++++----------
+ 16 files changed, 182 insertions(+), 170 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index be6a06b..fa8c0a9 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -17,23 +17,28 @@
+ #define GD_MIN_OP_VERSION_KEY "minimum-operating-version"
+ #define GD_MAX_OP_VERSION_KEY "maximum-operating-version"
+ 
+-/* Gluster versions - OP-VERSION mapping
++/* RHS versions - OP-VERSION mapping
+  *
+- * 3.3.x                - 1
+- * 3.4.x                - 2
+- * 3.5.0                - 3
+- * 3.5.1                - 30501
+- * 3.6.0                - 30600
+- * 3.7.0                - 30700
+- * 3.7.1                - 30701
+- * 3.7.2                - 30702
++ * RHS-2.0 Z    - 1
++ * RHS-2.1 Z    - 2
++ * RHS-2.1 u5   - 20105
++ * RHS-3.0      - 30000
++ * RHS-3.0.4    - 30004
++ * RHGS-3.1     - 30702
+  *
+- * Starting with Gluster v3.6, the op-version will be multi-digit integer values
+- * based on the Glusterfs version, instead of a simply incrementing integer
+- * value. The op-version for a given X.Y.Z release will be an integer XYZ, with
+- * Y and Z 2 digit always 2 digits wide and padded with 0 when needed. This
+- * should allow for some gaps between two Y releases for backports of features
+- * in Z releases.
++ *
++ * NOTE:
++ * Starting with RHS-3.0, the op-version will be multi-digit integer values
++ * based on the RHS version, instead of a simply incrementing integer value. The
++ * op-version for a given RHS X(Major).Y(Minor).Z(Update) release will be an
++ * integer with digits XYZ. The Y and Z values will be 2 digits wide always
++ * padded with 0 as needed. This should allow for some gaps between two Y
++ * releases for backports of features in Z releases.
++ *
++ * NOTE:
++ * Starting with RHGS-3.1, the op-version will be the same as the upstream
++ * GlusterFS op-versions. This is to allow proper access to upstream clients of
++ * version 3.7.x or greater, proper access to the RHGS volumes.
+  */
+ #define GD_OP_VERSION_MIN  1 /* MIN is the fresh start op-version, mostly
+                                 should not change */
+@@ -43,7 +48,13 @@
+                                                   introduction of newer
+                                                   versions */
+ 
+-#define GD_OP_VERSION_3_6_0    30600 /* Op-Version for GlusterFS 3.6.0 */
++#define GD_OP_VERSION_RHS_3_0    30000 /* Op-Version of RHS 3.0 */
++
++#define GD_OP_VER_PERSISTENT_AFR_XATTRS GD_OP_VERSION_RHS_3_0
++
++#define GD_OP_VERSION_RHS_2_1_5  20105 /* RHS 2.1 update 5 */
++
++#define GD_OP_VERSION_RHS_3_0_4  30004 /* Op-Version of RHS 3.0.4 */
+ 
+ #define GD_OP_VERSION_3_7_0    30700 /* Op-version for GlusterFS 3.7.0 */
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index 99b5261..859795b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -1287,7 +1287,7 @@ glusterd_op_perform_add_bricks (glusterd_volinfo_t *volinfo, int32_t count,
+                 /* A bricks mount dir is required only by snapshots which were
+                  * introduced in gluster-3.6.0
+                  */
+-                if (conf->op_version >= GD_OP_VERSION_3_6_0) {
++                if (conf->op_version >= GD_OP_VERSION_RHS_3_0) {
+                         brick_mount_dir = NULL;
+ 
+                         snprintf (key, sizeof(key), "brick%d.mount_dir", i);
+@@ -1691,7 +1691,7 @@ glusterd_op_stage_add_brick (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                         /* A bricks mount dir is required only by snapshots which were
+                          * introduced in gluster-3.6.0
+                          */
+-                        if (conf->op_version >= GD_OP_VERSION_3_6_0) {
++                        if (conf->op_version >= GD_OP_VERSION_RHS_3_0) {
+                                 ret = glusterd_get_brick_mount_dir
+                                         (brickinfo->path, brickinfo->hostname,
+                                          brickinfo->mount_dir);
+@@ -1992,12 +1992,12 @@ glusterd_op_stage_remove_brick (dict_t *dict, char **op_errstr)
+                 }
+ 
+                 /* Check if the connected clients are all of version
+-                 * glusterfs-3.6 and higher. This is needed to prevent some data
++                 * RHS-2.1u5 and higher. This is needed to prevent some data
+                  * loss issues that could occur when older clients are connected
+                  * when rebalance is run.
+                  */
+                 ret = glusterd_check_client_op_version_support
+-                        (volname, GD_OP_VERSION_3_6_0, NULL);
++                        (volname, GD_OP_VERSION_RHS_2_1_5, NULL);
+                 if (ret) {
+                         ret = gf_asprintf (op_errstr, "Volume %s has one or "
+                                            "more connected clients of a version"
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index fd01f02..9dce8ff 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -750,7 +750,7 @@ glusterd_op_txn_begin (rpcsvc_request_t *req, glusterd_op_t op, void *ctx,
+         }
+ 
+         /* Based on the op_version, acquire a cluster or mgmt_v3 lock */
+-        if (priv->op_version < GD_OP_VERSION_3_6_0) {
++        if (priv->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = glusterd_lock (MY_UUID);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+@@ -800,7 +800,7 @@ glusterd_op_txn_begin (rpcsvc_request_t *req, glusterd_op_t op, void *ctx,
+ local_locking_done:
+         /* If no volname is given as a part of the command, locks will
+          * not be held, hence sending stage event. */
+-        if (volname || (priv->op_version < GD_OP_VERSION_3_6_0))
++        if (volname || (priv->op_version < GD_OP_VERSION_RHS_3_0))
+                 event_type = GD_OP_EVENT_START_LOCK;
+         else {
+                 txn_op_info.state.state = GD_OP_STATE_LOCK_SENT;
+@@ -832,7 +832,7 @@ out:
+         if (locked && ret) {
+                 /* Based on the op-version, we release the
+                  * cluster or mgmt_v3 lock */
+-                if (priv->op_version < GD_OP_VERSION_3_6_0)
++                if (priv->op_version < GD_OP_VERSION_RHS_3_0)
+                         glusterd_unlock (MY_UUID);
+                 else {
+                         ret = glusterd_mgmt_v3_unlock (volname, MY_UUID,
+@@ -4339,11 +4339,11 @@ __glusterd_handle_status_volume (rpcsvc_request_t *req)
+         }
+ 
+         if ((cmd & GF_CLI_STATUS_SNAPD) &&
+-            (conf->op_version < GD_OP_VERSION_3_6_0)) {
++            (conf->op_version < GD_OP_VERSION_RHS_3_0)) {
+                 snprintf (err_str, sizeof (err_str), "The cluster is operating "
+                           "at a lesser version than %d. Getting the status of "
+                           "snapd is not allowed in this state",
+-                          GD_OP_VERSION_3_6_0);
++                          GD_OP_VERSION_RHS_3_0);
+                 ret = -1;
+                 goto out;
+         }
+@@ -5189,7 +5189,7 @@ __glusterd_peer_rpc_notify (struct rpc_clnt *rpc, void *mydata,
+                         glusterd_friend_sm_state_name_get (peerinfo->state.state));
+ 
+                 if (peerinfo->connected) {
+-                        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++                        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                                 glusterd_get_lock_owner (&uuid);
+                                 if (!gf_uuid_is_null (uuid) &&
+                                     !gf_uuid_compare (peerinfo->uuid, uuid))
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 8c39c30..86b6c48 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -196,7 +196,7 @@ glusterd_generate_txn_id (dict_t *dict, uuid_t **txn_id)
+         if (!*txn_id)
+                 goto out;
+ 
+-        if (priv->op_version < GD_OP_VERSION_3_6_0)
++        if (priv->op_version < GD_OP_VERSION_RHS_3_0)
+                 gf_uuid_copy (**txn_id, priv->global_txn_id);
+         else
+                 gf_uuid_generate (**txn_id);
+@@ -1603,11 +1603,11 @@ glusterd_op_stage_status_volume (dict_t *dict, char **op_errstr)
+         }
+ 
+         if ((cmd & GF_CLI_STATUS_SNAPD) &&
+-            (priv->op_version < GD_OP_VERSION_3_6_0)) {
++            (priv->op_version < GD_OP_VERSION_RHS_3_0)) {
+                 snprintf (msg, sizeof (msg), "The cluster is operating at "
+                           "version less than %d. Getting the "
+                           "status of snapd is not allowed in this state.",
+-                          GD_OP_VERSION_3_6_0);
++                          GD_OP_VERSION_RHS_3_0);
+                 ret = -1;
+                 goto out;
+         }
+@@ -3448,7 +3448,7 @@ glusterd_op_ac_send_lock (glusterd_op_sm_event_t *event, void *ctx)
+                         continue;
+ 
+                 /* Based on the op_version, acquire a cluster or mgmt_v3 lock */
+-                if (priv->op_version < GD_OP_VERSION_3_6_0) {
++                if (priv->op_version < GD_OP_VERSION_RHS_3_0) {
+                         proc = &peerinfo->mgmt->proctable
+                                           [GLUSTERD_MGMT_CLUSTER_LOCK];
+                         if (proc->fn) {
+@@ -3550,7 +3550,7 @@ glusterd_op_ac_send_unlock (glusterd_op_sm_event_t *event, void *ctx)
+                         continue;
+                 /* Based on the op_version,
+                  * release the cluster or mgmt_v3 lock */
+-                if (priv->op_version < GD_OP_VERSION_3_6_0) {
++                if (priv->op_version < GD_OP_VERSION_RHS_3_0) {
+                         proc = &peerinfo->mgmt->proctable
+                                           [GLUSTERD_MGMT_CLUSTER_UNLOCK];
+                         if (proc->fn) {
+@@ -4539,7 +4539,7 @@ glusterd_op_modify_op_ctx (glusterd_op_t op, void *ctx)
+                 count = brick_index_max + other_count + 1;
+ 
+                 /*
+-                 * a glusterd lesser than version 3.7 will be sending the
++                 * a glusterd lesser than version RHS-3.0.4 will be sending the
+                  * rdma port in older key. Changing that value from here
+                  * to support backward compatibility
+                  */
+@@ -4558,7 +4558,7 @@ glusterd_op_modify_op_ctx (glusterd_op_t op, void *ctx)
+                          }
+                  }
+                  glusterd_volinfo_find (volname, &volinfo);
+-                 if (conf->op_version < GD_OP_VERSION_3_7_0 &&
++                 if (conf->op_version < GD_OP_VERSION_RHS_3_0_4 &&
+                      volinfo->transport_type == GF_TRANSPORT_RDMA) {
+                          ret = glusterd_op_modify_port_key (op_ctx,
+                                                             brick_index_max);
+@@ -5127,7 +5127,7 @@ glusterd_op_txn_complete (uuid_t *txn_id)
+         glusterd_op_clear_errstr ();
+ 
+         /* Based on the op-version, we release the cluster or mgmt_v3 lock */
+-        if (priv->op_version < GD_OP_VERSION_3_6_0) {
++        if (priv->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = glusterd_unlock (MY_UUID);
+                 /* unlock cant/shouldnt fail here!! */
+                 if (ret)
+diff --git a/xlators/mgmt/glusterd/src/glusterd-peer-utils.c b/xlators/mgmt/glusterd/src/glusterd-peer-utils.c
+index 607ad3d..155add4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-peer-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-peer-utils.c
+@@ -526,7 +526,7 @@ out:
+  * @prefix. All the parameters are compulsory.
+  *
+  * The complete address list is added to the dict only if the cluster op-version
+- * is >= GD_OP_VERSION_3_6_0
++ * is >= GD_OP_VERSION_3_7_0
+  */
+ int
+ gd_add_friend_to_dict (glusterd_peerinfo_t *friend, dict_t *dict,
+@@ -581,7 +581,7 @@ gd_add_friend_to_dict (glusterd_peerinfo_t *friend, dict_t *dict,
+                 goto out;
+         }
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_3_7_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -771,7 +771,7 @@ gd_update_peerinfo_from_dict (glusterd_peerinfo_t *peerinfo, dict_t *dict,
+                 GF_FREE (peerinfo->hostname);
+         peerinfo->hostname = gf_strdup (hostname);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_3_7_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -885,7 +885,7 @@ gd_add_peer_hostnames_to_dict (glusterd_peerinfo_t *peerinfo, dict_t *dict,
+         conf = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, (conf != NULL), out);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_3_7_0) {
+                 ret = 0;
+                 goto out;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rebalance.c b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+index 356cc90..09d5883 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rebalance.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+@@ -684,13 +684,13 @@ glusterd_op_stage_rebalance (dict_t *dict, char **op_errstr)
+         case GF_DEFRAG_CMD_START:
+         case GF_DEFRAG_CMD_START_LAYOUT_FIX:
+                 /* Check if the connected clients are all of version
+-                 * glusterfs-3.6 and higher. This is needed to prevent some data
++                 * RHS-2.1u5 and higher. This is needed to prevent some data
+                  * loss issues that could occur when older clients are connected
+                  * when rebalance is run. This check can be bypassed by using
+                  * 'force'
+                  */
+                 ret = glusterd_check_client_op_version_support
+-                        (volname, GD_OP_VERSION_3_6_0, NULL);
++                        (volname, GD_OP_VERSION_RHS_2_1_5, NULL);
+                 if (ret) {
+                         ret = gf_asprintf (op_errstr, "Volume %s has one or "
+                                            "more connected clients of a version"
+diff --git a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+index f1c3637..d0a1126 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+@@ -496,7 +496,7 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
+                 if (ret)
+                         goto out;
+ 
+-        } else if (priv->op_version >= GD_OP_VERSION_3_6_0) {
++        } else if (priv->op_version >= GD_OP_VERSION_RHS_3_0) {
+                 /* A bricks mount dir is required only by snapshots which were
+                  * introduced in gluster-3.6.0
+                  */
+@@ -635,7 +635,7 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
+         /* A bricks mount dir is required only by snapshots which were
+          * introduced in gluster-3.6.0
+          */
+-        if (conf->op_version >= GD_OP_VERSION_3_6_0) {
++        if (conf->op_version >= GD_OP_VERSION_RHS_3_0) {
+                 ret = dict_get_str (dict, "brick1.mount_dir", &brick_mount_dir);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_ERROR, errno,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c b/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c
+index acc4e55..5a06455 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rpc-ops.c
+@@ -297,11 +297,11 @@ __glusterd_probe_cbk (struct rpc_req *req, struct iovec *iov,
+          * we need to add the new hostname to the peer.
+          *
+          * This addition should only be done for cluster op-version >=
+-         * GD_OP_VERSION_3_6_0 as address lists are only supported from then on.
++         * GD_OP_VERSION_3_7_0 as address lists are only supported from then on.
+          * Also, this update should only be done when an explicit CLI probe
+          * command was used to begin the probe process.
+          */
+-        if ((conf->op_version >= GD_OP_VERSION_3_6_0) &&
++        if ((conf->op_version >= GD_OP_VERSION_3_7_0) &&
+             (gf_uuid_compare (rsp.uuid, peerinfo->uuid) == 0)) {
+                 ctx = ((call_frame_t *)myframe)->local;
+                 /* Presence of ctx->req implies this probe was started by a cli
+@@ -1540,7 +1540,7 @@ glusterd_rpc_friend_add (call_frame_t *frame, xlator_t *this,
+                 goto out;
+         }
+ 
+-        if (priv->op_version >= GD_OP_VERSION_3_6_0) {
++        if (priv->op_version >= GD_OP_VERSION_RHS_3_0) {
+                 ret = glusterd_add_missed_snaps_to_export_dict (peer_data);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-sm.c b/xlators/mgmt/glusterd/src/glusterd-sm.c
+index cbc5eeb..f1bdcbd 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-sm.c
+@@ -936,7 +936,7 @@ glusterd_ac_handle_friend_add_req (glusterd_friend_sm_event_t *event, void *ctx)
+         /* Compare missed_snapshot list with the peer *
+          * if volume comparison is successful */
+         if ((op_ret == 0) &&
+-            (conf->op_version >= GD_OP_VERSION_3_6_0)) {
++            (conf->op_version >= GD_OP_VERSION_RHS_3_0)) {
+                 ret = glusterd_import_friend_missed_snap_list (ev_ctx->vols);
+                 if (ret) {
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+index 70c796a..e95d6ab 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+@@ -472,7 +472,7 @@ gd_add_brick_snap_details_to_dict (dict_t *dict, char *prefix,
+         GF_VALIDATE_OR_GOTO (this->name, (prefix != NULL), out);
+         GF_VALIDATE_OR_GOTO (this->name, (brickinfo != NULL), out);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -554,7 +554,7 @@ gd_add_vol_snap_details_to_dict (dict_t *dict, char *prefix,
+         GF_VALIDATE_OR_GOTO (this->name, (volinfo != NULL), out);
+         GF_VALIDATE_OR_GOTO (this->name, (prefix != NULL), out);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -882,7 +882,7 @@ gd_import_new_brick_snap_details (dict_t *dict, char *prefix,
+         GF_VALIDATE_OR_GOTO (this->name, (prefix != NULL), out);
+         GF_VALIDATE_OR_GOTO (this->name, (brickinfo != NULL), out);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -942,8 +942,8 @@ out:
+  * Imports the snapshot details of a volume if required and available
+  *
+  * Snapshot details will be imported only if cluster.op_version is greater than
+- * or equal to GD_OP_VERSION_3_6_0, the op-version from which volume snapshot is
+- * supported.
++ * or equal to GD_OP_VERSION_RHS_3_0, the op-version from which volume snapshot
++ * is supported.
+  */
+ int
+ gd_import_volume_snap_details (dict_t *dict, glusterd_volinfo_t *volinfo,
+@@ -965,7 +965,7 @@ gd_import_volume_snap_details (dict_t *dict, glusterd_volinfo_t *volinfo,
+         GF_VALIDATE_OR_GOTO (this->name, (prefix != NULL), out);
+         GF_VALIDATE_OR_GOTO (this->name, (volname != NULL), out);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = 0;
+                 goto out;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index f66ee1e..3365e5f 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -9091,7 +9091,7 @@ glusterd_handle_snapshot_fn (rpcsvc_request_t *req)
+                 goto out;
+         }
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 snprintf (err_str, sizeof (err_str), "Cluster operating version"
+                           " is lesser than the supported version "
+                           "for a snapshot");
+@@ -9099,7 +9099,7 @@ glusterd_handle_snapshot_fn (rpcsvc_request_t *req)
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                         GD_MSG_UNSUPPORTED_VERSION,
+                         "%s (%d < %d)", err_str,
+-                        conf->op_version, GD_OP_VERSION_3_6_0);
++                        conf->op_version, GD_OP_VERSION_RHS_3_0);
+                 ret = -1;
+                 goto out;
+         }
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 361ecb8..4be1317 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -309,7 +309,7 @@ gd_store_brick_snap_details_write (int fd, glusterd_brickinfo_t *brickinfo)
+         GF_VALIDATE_OR_GOTO (this->name, (fd > 0), out);
+         GF_VALIDATE_OR_GOTO (this->name, (brickinfo != NULL), out);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -790,7 +790,7 @@ glusterd_volume_write_snap_details (int fd, glusterd_volinfo_t *volinfo)
+         GF_VALIDATE_OR_GOTO (this->name, (fd > 0), out);
+         GF_VALIDATE_OR_GOTO (this->name, (volinfo != NULL), out);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -2157,7 +2157,7 @@ glusterd_store_retrieve_snapd (glusterd_volinfo_t *volinfo)
+         conf = THIS->private;
+         GF_ASSERT (volinfo);
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0) {
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0) {
+                 ret = 0;
+                 goto out;
+         }
+@@ -2165,15 +2165,16 @@ glusterd_store_retrieve_snapd (glusterd_volinfo_t *volinfo)
+         /*
+          * This is needed for upgrade situations. Say a volume is created with
+          * older version of glusterfs and upgraded to a glusterfs version equal
+-         * to or greater than GD_OP_VERSION_3_6_0. The older glusterd would not
+-         * have created the snapd.info file related to snapshot daemon for user
+-         * serviceable snapshots. So as part of upgrade when the new glusterd
+-         * starts, as part of restore (restoring the volume to be precise), it
+-         * tries to snapd related info from snapd.info file. But since there was
+-         * no such file till now, the restore operation fails. Thus, to prevent
+-         * it from happening check whether user serviceable snapshots features
+-         * is enabled before restoring snapd. If its disbaled, then simply
+-         * exit by returning success (without even checking for the snapd.info).
++         * to or greater than GD_OP_VERSION_RHS_3_0. The older glusterd would
++         * not have created the snapd.info file related to snapshot daemon for
++         * user serviceable snapshots. So as part of upgrade when the new
++         * glusterd starts, as part of restore (restoring the volume to be
++         * precise), it tries to snapd related info from snapd.info file. But
++         * since there was no such file till now, the restore operation fails.
++         * Thus, to prevent it from happening check whether user serviceable
++         * snapshots features is enabled before restoring snapd. If its
++         * disbaled, then simply exit by returning success (without even
++         * checking for the snapd.info).
+          */
+ 
+         if (!dict_get_str_boolean (volinfo->dict, "features.uss", _gf_false)) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-syncop.c b/xlators/mgmt/glusterd/src/glusterd-syncop.c
+index 8ff7bde..18272f4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-syncop.c
++++ b/xlators/mgmt/glusterd/src/glusterd-syncop.c
+@@ -1782,7 +1782,7 @@ gd_sync_task_begin (dict_t *op_ctx, rpcsvc_request_t * req)
+                 goto out;
+         }
+ 
+-        if (conf->op_version < GD_OP_VERSION_3_6_0)
++        if (conf->op_version < GD_OP_VERSION_RHS_3_0)
+                 cluster_lock = _gf_true;
+ 
+         /* Based on the op_version, acquire a cluster or mgmt_v3 lock */
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 73cdf16..bc4f7ae 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -9967,10 +9967,10 @@ gd_update_volume_op_versions (glusterd_volinfo_t *volinfo)
+         }
+ 
+         if (volinfo->type == GF_CLUSTER_TYPE_DISPERSE) {
+-                if (volinfo->op_version < GD_OP_VERSION_3_6_0)
+-                        volinfo->op_version = GD_OP_VERSION_3_6_0;
+-                if (volinfo->client_op_version < GD_OP_VERSION_3_6_0)
+-                        volinfo->client_op_version = GD_OP_VERSION_3_6_0;
++                if (volinfo->op_version < GD_OP_VERSION_3_7_0)
++                        volinfo->op_version = GD_OP_VERSION_3_7_0;
++                if (volinfo->client_op_version < GD_OP_VERSION_3_7_0)
++                        volinfo->client_op_version = GD_OP_VERSION_3_7_0;
+         }
+ 
+         return;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index 8fd24f9..afbd7f2 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -1261,7 +1261,7 @@ glusterd_op_stage_create_volume (dict_t *dict, char **op_errstr,
+                         /* A bricks mount dir is required only by snapshots which were
+                          * introduced in gluster-3.6.0
+                          */
+-                        if (priv->op_version >= GD_OP_VERSION_3_6_0) {
++                        if (priv->op_version >= GD_OP_VERSION_RHS_3_0) {
+                                 ret = glusterd_get_brick_mount_dir
+                                         (brick_info->path, brick_info->hostname,
+                                          brick_info->mount_dir);
+@@ -1538,7 +1538,7 @@ glusterd_op_stage_start_volume (dict_t *dict, char **op_errstr,
+                 /* A bricks mount dir is required only by snapshots which were
+                  * introduced in gluster-3.6.0
+                  */
+-                if (priv->op_version >= GD_OP_VERSION_3_6_0) {
++                if (priv->op_version >= GD_OP_VERSION_RHS_3_0) {
+                         if (strlen(brickinfo->mount_dir) < 1) {
+                                 ret = glusterd_get_brick_mount_dir
+                                         (brickinfo->path, brickinfo->hostname,
+@@ -2210,10 +2210,10 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
+                                  "redundancy count for volume %s", volname);
+                         goto out;
+                 }
+-                if (priv->op_version < GD_OP_VERSION_3_6_0) {
++                if (priv->op_version < GD_OP_VERSION_3_7_0) {
+                         gf_msg (this->name, GF_LOG_ERROR, 0,
+                                 GD_MSG_UNSUPPORTED_VERSION, "Disperse volume "
+-                                "needs op-version 3.6.0 or higher");
++                                "needs op-version 30700 or higher");
+                         ret = -1;
+                         goto out;
+                 }
+@@ -2315,7 +2315,7 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
+                 /* A bricks mount dir is required only by snapshots which were
+                  * introduced in gluster-3.6.0
+                  */
+-                if (priv->op_version >= GD_OP_VERSION_3_6_0) {
++                if (priv->op_version >= GD_OP_VERSION_RHS_3_0) {
+                         brick_mount_dir = NULL;
+                         snprintf (key, sizeof(key), "brick%d.mount_dir", i);
+                         ret = dict_get_str (dict, key, &brick_mount_dir);
+@@ -2478,7 +2478,7 @@ glusterd_op_start_volume (dict_t *dict, char **op_errstr)
+         /* A bricks mount dir is required only by snapshots which were
+          * introduced in gluster-3.6.0
+          */
+-        if (conf->op_version >= GD_OP_VERSION_3_6_0) {
++        if (conf->op_version >= GD_OP_VERSION_RHS_3_0) {
+                 cds_list_for_each_entry (brickinfo, &volinfo->bricks,
+                                          brick_list) {
+                         brick_count++;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index b882168..ccc800c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -913,7 +913,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = "cluster.subvols-per-directory",
+           .voltype     = "cluster/distribute",
+           .option      = "directory-layout-spread",
+-          .op_version  = 2,
++          .op_version  = 1,
+           .validate_fn = validate_subvols_per_directory,
+           .flags       = OPT_FLAG_CLIENT_OPT
+         },
+@@ -925,27 +925,27 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key        = "cluster.rsync-hash-regex",
+           .voltype    = "cluster/distribute",
+           .type       = NO_DOC,
+-          .op_version = 3,
++          .op_version = 2,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.extra-hash-regex",
+           .voltype    = "cluster/distribute",
+           .type       = NO_DOC,
+-          .op_version = 3,
++          .op_version = 2,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.dht-xattr-name",
+           .voltype    = "cluster/distribute",
+           .option     = "xattr-name",
+           .type       = NO_DOC,
+-          .op_version = 3,
++          .op_version = 2,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.randomize-hash-range-by-gfid",
+           .voltype    = "cluster/distribute",
+           .option     = "randomize-hash-range-by-gfid",
+           .type       = NO_DOC,
+-          .op_version = GD_OP_VERSION_3_6_0,
++          .op_version = GD_OP_VERSION_3_7_0,
+           .flags      = OPT_FLAG_CLIENT_OPT,
+         },
+         { .key         = "cluster.rebal-throttle",
+@@ -967,12 +967,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype    = "cluster/nufa",
+           .option     = "local-volume-name",
+           .type       = NO_DOC,
+-          .op_version = 3,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.weighted-rebalance",
+           .voltype    = "cluster/distribute",
+-          .op_version = GD_OP_VERSION_3_6_0,
++          .op_version = GD_OP_VERSION_3_7_0,
+         },
+ 
+         /* Switch xlator options (Distribute special case) */
+@@ -980,14 +980,14 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype    = "cluster/distribute",
+           .option     = "!switch",
+           .type       = NO_DOC,
+-          .op_version = 3,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.switch-pattern",
+           .voltype    = "cluster/switch",
+           .option     = "pattern.switch.case",
+           .type       = NO_DOC,
+-          .op_version = 3,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+ 
+@@ -1110,18 +1110,18 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key        = "cluster.readdir-failover",
+           .voltype    = "cluster/replicate",
+-          .op_version = 2,
++          .op_version = 1,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.ensure-durability",
+           .voltype    = "cluster/replicate",
+-          .op_version = 3,
++          .op_version = 2,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "cluster.consistent-metadata",
+           .voltype    = "cluster/replicate",
+           .type       = DOC,
+-          .op_version = GD_OP_VERSION_3_7_0,
++          .op_version = GD_OP_VERSION_RHS_3_0_4,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "cluster.stripe-block-size",
+@@ -1181,45 +1181,45 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = "diagnostics.brick-logger",
+           .voltype     = "debug/io-stats",
+           .option      = "!logger",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key        = "diagnostics.client-logger",
+           .voltype    = "debug/io-stats",
+           .option     = "!logger",
+-          .op_version = GD_OP_VERSION_3_6_0,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "diagnostics.brick-log-format",
+           .voltype     = "debug/io-stats",
+           .option      = "!log-format",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key        = "diagnostics.client-log-format",
+           .voltype    = "debug/io-stats",
+           .option     = "!log-format",
+-          .op_version = GD_OP_VERSION_3_6_0,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "diagnostics.brick-log-buf-size",
+           .voltype     = "debug/io-stats",
+           .option      = "!log-buf-size",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key        = "diagnostics.client-log-buf-size",
+           .voltype    = "debug/io-stats",
+           .option     = "!log-buf-size",
+-          .op_version = GD_OP_VERSION_3_6_0,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "diagnostics.brick-log-flush-timeout",
+           .voltype     = "debug/io-stats",
+           .option      = "!log-flush-timeout",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key        = "diagnostics.client-log-flush-timeout",
+           .voltype    = "debug/io-stats",
+           .option     = "!log-flush-timeout",
+-          .op_version = GD_OP_VERSION_3_6_0,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+ 
+@@ -1284,7 +1284,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key         = "performance.least-rate-limit",
+           .voltype     = "performance/io-threads",
+-          .op_version  = 2
++          .op_version  = 1
+         },
+ 
+         /* Other perf xlators' options */
+@@ -1303,7 +1303,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key        = "performance.nfs.flush-behind",
+           .voltype    = "performance/write-behind",
+           .option     = "flush-behind",
+-          .op_version = 1,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.write-behind-window-size",
+@@ -1329,43 +1329,43 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key        = "performance.nfs.write-behind-window-size",
+           .voltype    = "performance/write-behind",
+           .option     = "cache-size",
+-          .op_version = 1,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.strict-o-direct",
+           .voltype    = "performance/write-behind",
+           .option     = "strict-O_DIRECT",
+-          .op_version = 2,
++          .op_version = 1,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.nfs.strict-o-direct",
+           .voltype    = "performance/write-behind",
+           .option     = "strict-O_DIRECT",
+-          .op_version = 2,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.strict-write-ordering",
+           .voltype    = "performance/write-behind",
+           .option     = "strict-write-ordering",
+-          .op_version = 2,
++          .op_version = 1,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.nfs.strict-write-ordering",
+           .voltype    = "performance/write-behind",
+           .option     = "strict-write-ordering",
+-          .op_version = 2,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.lazy-open",
+           .voltype    = "performance/open-behind",
+           .option     = "lazy-open",
+-          .op_version = 3,
++          .op_version = 2,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.read-after-open",
+           .voltype    = "performance/open-behind",
+           .option     = "read-after-open",
+-          .op_version = 3,
++          .op_version = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key        = "performance.read-ahead-page-count",
+@@ -1387,7 +1387,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+ 	  .voltype     = "encryption/crypt",
+ 	  .option      = "!feat",
+ 	  .value       = "off",
+-	  .op_version  = 3,
++	  .op_version  = GD_OP_VERSION_RHS_3_0,
+ 	  .description = "enable/disable client-side encryption for "
+                          "the volume.",
+ 	  .flags       = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT
+@@ -1395,17 +1395,17 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+ 
+         { .key         = "encryption.master-key",
+           .voltype     = "encryption/crypt",
+-          .op_version  = 3,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "encryption.data-key-size",
+           .voltype     = "encryption/crypt",
+-          .op_version  = 3,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "encryption.block-size",
+           .voltype     = "encryption/crypt",
+-          .op_version  = 3,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+ 
+@@ -1447,7 +1447,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key        = "network.remote-dio",
+           .voltype    = "protocol/client",
+           .option     = "filter-O_DIRECT",
+-          .op_version = 2,
++          .op_version = 1,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "client.own-thread",
+@@ -1458,7 +1458,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key         = "client.event-threads",
+           .voltype     = "protocol/client",
+-          .op_version  = GD_OP_VERSION_3_7_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0_4,
+         },
+ 
+         /* Server xlator options */
+@@ -1502,17 +1502,17 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = "server.root-squash",
+           .voltype     = "protocol/server",
+           .option      = "root-squash",
+-          .op_version  = 2
++          .op_version  = 1
+         },
+         { .key         = "server.anonuid",
+           .voltype     = "protocol/server",
+           .option      = "anonuid",
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+         { .key         = "server.anongid",
+           .voltype     = "protocol/server",
+           .option      = "anongid",
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+         { .key         = "server.statedump-path",
+           .voltype     = "protocol/server",
+@@ -1523,7 +1523,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "protocol/server",
+           .option      = "rpc.outstanding-rpc-limit",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "features.lock-heal",
+           .voltype     = "protocol/server",
+@@ -1548,11 +1548,11 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .option      = "!ssl-allow",
+           .value       = "*",
+           .type        = NO_DOC,
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_3_7_0,
+         },
+         { .key         = "server.manage-gids",
+           .voltype     = "protocol/server",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "server.dynamic-auth",
+           .voltype     = "protocol/server",
+@@ -1561,11 +1561,11 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = "client.send-gids",
+           .voltype     = "protocol/client",
+           .type        = NO_DOC,
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "server.gid-timeout",
+           .voltype     = "protocol/server",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "server.own-thread",
+           .voltype     = "protocol/server",
+@@ -1575,7 +1575,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key         = "server.event-threads",
+           .voltype     = "protocol/server",
+-          .op_version  = GD_OP_VERSION_3_7_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0_4,
+         },
+ 
+         /* Generic transport options */
+@@ -1602,12 +1602,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = SSL_CERT_DEPTH_OPT,
+           .voltype     = "rpc-transport/socket",
+           .option      = "!ssl-cert-depth",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_3_7_0,
+         },
+         { .key         = SSL_CIPHER_LIST_OPT,
+           .voltype     = "rpc-transport/socket",
+           .option      = "!ssl-cipher-list",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_3_7_0,
+         },
+         { .key        = SSL_DH_PARAM_OPT,
+           .voltype     = "rpc-transport/socket",
+@@ -1642,7 +1642,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "performance/readdir-ahead",
+           .option      = "!perf",
+           .value       = "off",
+-          .op_version  = 3,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .description = "enable/disable readdir-ahead translator in the volume.",
+           .flags       = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT
+         },
+@@ -1751,7 +1751,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "features/qemu-block",
+           .option      = "!feat",
+           .value       = "off",
+-          .op_version  = 3,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .description = "enable/disable file-snapshot feature in the "
+                          "volume.",
+           .flags       = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT
+@@ -1759,7 +1759,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+ 
+         { .key         = "features.uss",
+           .voltype     = "features/snapview-server",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .value       = "off",
+           .flags       = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT,
+           .validate_fn = validate_uss,
+@@ -1769,7 +1769,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+ 
+         { .key         = "features.snapshot-directory",
+           .voltype     = "features/snapview-client",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .value       = ".snaps",
+           .flags       = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT,
+           .validate_fn = validate_uss_dir,
+@@ -1780,7 +1780,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+ 
+         { .key         = "features.show-snapshot-directory",
+           .voltype     = "features/snapview-client",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .value       = "off",
+           .flags       = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT,
+           .description = "show entry point in readdir output of "
+@@ -1795,35 +1795,35 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "features/cdc",
+           .option      = "!feat",
+           .value       = "off",
+-          .op_version  = 3,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+           .description = "enable/disable network compression translator",
+           .flags       = OPT_FLAG_XLATOR_OPT
+         },
+         { .key         = "network.compression.window-size",
+           .voltype     = "features/cdc",
+           .option      = "window-size",
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+         { .key         = "network.compression.mem-level",
+           .voltype     = "features/cdc",
+           .option      = "mem-level",
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+         { .key         = "network.compression.min-size",
+           .voltype     = "features/cdc",
+           .option      = "min-size",
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+         { .key         = "network.compression.compression-level",
+           .voltype     = "features/cdc",
+           .option      = "compression-level",
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+         { .key         = "network.compression.debug",
+           .voltype     = "features/cdc",
+           .option      = "debug",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+ #endif
+ 
+@@ -1846,25 +1846,25 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype       = "features/quota",
+           .option        = "default-soft-limit",
+           .type          = NO_DOC,
+-          .op_version    = 3,
++          .op_version    = 2,
+         },
+         { .key           = "features.soft-timeout",
+           .voltype       = "features/quota",
+           .option        = "soft-timeout",
+           .type          = NO_DOC,
+-          .op_version    = 3,
++          .op_version    = 2,
+         },
+         { .key           = "features.hard-timeout",
+           .voltype       = "features/quota",
+           .option        = "hard-timeout",
+           .type          = NO_DOC,
+-          .op_version    = 3,
++          .op_version    = 2,
+         },
+         { .key           = "features.alert-time",
+           .voltype       = "features/quota",
+           .option        = "alert-time",
+           .type          = NO_DOC,
+-          .op_version    = 3,
++          .op_version    = 2,
+         },
+         { .key           = "features.quota-deem-statfs",
+           .voltype       = "features/quota",
+@@ -1979,25 +1979,25 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "debug/error-gen",
+           .option      = "failure",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "debug.error-number",
+           .voltype     = "debug/error-gen",
+           .option      = "error-no",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "debug.random-failure",
+           .voltype     = "debug/error-gen",
+           .option      = "random-failure",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "debug.error-fops",
+           .voltype     = "debug/error-gen",
+           .option      = "enable",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+ 
+ 
+@@ -2048,7 +2048,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "nfs/server",
+           .option      = "rpc.outstanding-rpc-limit",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "nfs.port",
+           .voltype     = "nfs/server",
+@@ -2123,7 +2123,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "nfs/server",
+           .option      = "nfs.acl",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "nfs.mount-udp",
+           .voltype     = "nfs/server",
+@@ -2141,13 +2141,13 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "nfs/server",
+           .option      = "nfs.rpc-statd",
+           .type        = NO_DOC,
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "nfs.log-level",
+           .voltype     = "nfs/server",
+           .option      = "nfs.log-level",
+           .type        = NO_DOC,
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "nfs.server-aux-gids",
+           .voltype     = "nfs/server",
+@@ -2159,31 +2159,31 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "nfs/server",
+           .option      = "nfs.drc",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 1
+         },
+         { .key         = "nfs.drc-size",
+           .voltype     = "nfs/server",
+           .option      = "nfs.drc-size",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 1
+         },
+         { .key         = "nfs.read-size",
+           .voltype     = "nfs/server",
+           .option      = "nfs3.read-size",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "nfs.write-size",
+           .voltype     = "nfs/server",
+           .option      = "nfs3.write-size",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "nfs.readdir-size",
+           .voltype     = "nfs/server",
+           .option      = "nfs3.readdir-size",
+           .type        = GLOBAL_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+ 
+         /* Cli options for Export authentication on nfs mount */
+@@ -2210,7 +2210,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key        = "features.read-only",
+           .voltype    = "features/read-only",
+           .option     = "read-only",
+-          .op_version = 1,
++          .op_version = 2,
+           .flags      = OPT_FLAG_CLIENT_OPT | OPT_FLAG_XLATOR_OPT
+         },
+         { .key        = "features.worm",
+@@ -2226,15 +2226,15 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key         = "storage.batch-fsync-mode",
+           .voltype     = "storage/posix",
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "storage.batch-fsync-delay-usec",
+           .voltype     = "storage/posix",
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "storage.xattr-user-namespace-mode",
+           .voltype     = "storage/posix",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "storage.owner-uid",
+           .voltype     = "storage/posix",
+@@ -2248,20 +2248,20 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key         = "storage.node-uuid-pathinfo",
+           .voltype     = "storage/posix",
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "storage.health-check-interval",
+           .voltype     = "storage/posix",
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .option      = "update-link-count-parent",
+           .key         = "storage.build-pgfid",
+           .voltype     = "storage/posix",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "storage.bd-aio",
+           .voltype     = "storage/bd",
+-          .op_version  = 3
++          .op_version  = GD_OP_VERSION_RHS_3_0
+         },
+         { .key        = "config.memory-accounting",
+           .voltype    = "mgmt/glusterd",
+@@ -2277,43 +2277,43 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = GLUSTERD_QUORUM_TYPE_KEY,
+           .voltype     = "mgmt/glusterd",
+           .value       = "off",
+-          .op_version  = 2
++          .op_version  = 1
+         },
+         { .key         = GLUSTERD_QUORUM_RATIO_KEY,
+           .voltype     = "mgmt/glusterd",
+           .value       = "0",
+-          .op_version  = 2
++          .op_version  = 1
+         },
+         /* changelog translator - global tunables */
+         { .key         = "changelog.changelog",
+           .voltype     = "features/changelog",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "changelog.changelog-dir",
+           .voltype     = "features/changelog",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "changelog.encoding",
+           .voltype     = "features/changelog",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "changelog.rollover-time",
+           .voltype     = "features/changelog",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "changelog.fsync-interval",
+           .voltype     = "features/changelog",
+           .type        = NO_DOC,
+-          .op_version  = 3
++          .op_version  = 2
+         },
+         { .key         = "changelog.changelog-barrier-timeout",
+           .voltype     = "features/changelog",
+           .value       = BARRIER_TIMEOUT,
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "changelog.capture-del-path",
+           .voltype     = "features/changelog",
+@@ -2324,16 +2324,16 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .voltype     = "features/barrier",
+           .value       = "disable",
+           .type        = NO_DOC,
+-          .op_version  = GD_OP_VERSION_3_7_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "features.barrier-timeout",
+           .voltype     = "features/barrier",
+           .value       = BARRIER_TIMEOUT,
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         { .key         = "cluster.op-version",
+           .voltype     = "mgmt/glusterd",
+-          .op_version  = GD_OP_VERSION_3_6_0,
++          .op_version  = GD_OP_VERSION_RHS_3_0,
+         },
+         /*Trash translator options */
+         { .key         = "features.trash",
+-- 
+1.7.1
+

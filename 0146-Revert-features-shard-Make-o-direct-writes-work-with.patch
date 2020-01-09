@@ -1,0 +1,50 @@
+From 89f12813b68f4fa7e469534037f7630d53dc79f0 Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Fri, 13 May 2016 12:54:37 +0530
+Subject: [PATCH 146/158] Revert "features/shard: Make o-direct writes work with sharding"
+
+This reverts commit cda89700fc54c391bfca23cbb0c68224ae3f576f.
+
+Change-Id: I6fe05545fdd0f1a30c121060ff3c5b5a270fedbb
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/74265
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/features/shard/src/shard.c |    6 ------
+ 1 files changed, 0 insertions(+), 6 deletions(-)
+
+diff --git a/xlators/features/shard/src/shard.c b/xlators/features/shard/src/shard.c
+index 78bb82d..c7a57e0 100644
+--- a/xlators/features/shard/src/shard.c
++++ b/xlators/features/shard/src/shard.c
+@@ -3591,7 +3591,6 @@ shard_common_inode_write_do (call_frame_t *frame, xlator_t *this)
+         shard_local_t  *local             = NULL;
+         struct iovec   *vec               = NULL;
+         gf_boolean_t    wind_failed       = _gf_false;
+-        gf_boolean_t    odirect           = _gf_false;
+         off_t           orig_offset       = 0;
+         off_t           shard_offset      = 0;
+         off_t           vec_offset        = 0;
+@@ -3622,9 +3621,6 @@ shard_common_inode_write_do (call_frame_t *frame, xlator_t *this)
+                 return 0;
+         }
+ 
+-        if ((fd->flags & O_DIRECT) && (local->fop == GF_FOP_WRITE))
+-                odirect = _gf_true;
+-
+         while (cur_block <= last_block) {
+                 if (wind_failed) {
+                         shard_common_inode_write_do_cbk (frame,
+@@ -3682,8 +3678,6 @@ shard_common_inode_write_do (call_frame_t *frame, xlator_t *this)
+                                                                  NULL, NULL);
+                                 goto next;
+                         }
+-                        if (odirect)
+-                                local->flags |= O_SYNC;
+                 }
+ 
+                 shard_common_inode_write_wind (frame, this, anon_fd,
+-- 
+1.7.1
+

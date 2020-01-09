@@ -1,0 +1,192 @@
+From 5bf1dbf4ed8b96e96f3c2f0b511f1aa2b1f178ff Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Fri, 12 Feb 2016 17:17:30 +0530
+Subject: [PATCH 118/139] performance/write-behind: guaranteed retry after a short write
+
+* Don't mark the request with a fake EIO after a short write.
+* retry the remaining buffer at least once before unwinding reply to
+  application. This way we capture correct error from backend (ENOSPC,
+  EDQUOT etc).
+
+Thanks to "Vijaikumar Mallikarjuna"<vmallika@redhat.com> for the test
+script.
+
+Change-Id: I73a18b39b661a7424db1a7855a980469a51da8f9
+BUG: 1224180
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/73672
+---
+ tests/bugs/quota/bug-1292020.t                     |   25 ++++++
+ tests/bugs/write-behind/bug-1279730.t              |    4 +-
+ .../performance/write-behind/src/write-behind.c    |   87 ++++++++++++++++----
+ 3 files changed, 98 insertions(+), 18 deletions(-)
+ create mode 100644 tests/bugs/quota/bug-1292020.t
+
+diff --git a/tests/bugs/quota/bug-1292020.t b/tests/bugs/quota/bug-1292020.t
+new file mode 100644
+index 0000000..14b311c
+--- /dev/null
++++ b/tests/bugs/quota/bug-1292020.t
+@@ -0,0 +1,25 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++function write_sample_data () {
++        dd if=/dev/zero of=$M0/f1 bs=256k count=400 2>&1 | grep -i exceeded
++}
++
++cleanup;
++
++TEST glusterd;
++TEST pidof glusterd;
++
++TEST $CLI volume create $V0 $H0:$B0/$V0
++TEST $CLI volume start $V0;
++TEST $CLI volume quota $V0 enable;
++TEST $CLI volume quota $V0 limit-usage / 1
++
++TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0;
++EXPECT "exceeded" write_sample_data
++
++TEST $CLI volume stop $V0
++TEST $CLI volume delete $V0
++cleanup;
+diff --git a/tests/bugs/write-behind/bug-1279730.t b/tests/bugs/write-behind/bug-1279730.t
+index 38e564b..1c7db1f 100755
+--- a/tests/bugs/write-behind/bug-1279730.t
++++ b/tests/bugs/write-behind/bug-1279730.t
+@@ -7,7 +7,7 @@
+ cleanup;
+ 
+ ## Start and create a volume
+-TEST glusterd;
++TEST glusterd
+ TEST pidof glusterd;
+ TEST $CLI volume info;
+ 
+@@ -15,6 +15,8 @@ TEST $CLI volume create $V0 $H0:$B0/$V0;
+ TEST $CLI volume start $V0;
+ TEST $CLI volume quota $V0 enable
+ TEST $CLI volume quota $V0 limit-usage / 4
++TEST $CLI volume quota $V0 hard-timeout 0
++TEST $CLI volume quota $V0 soft-timeout 0
+ 
+ TEST glusterfs --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id $V0 $M0
+ 
+diff --git a/xlators/performance/write-behind/src/write-behind.c b/xlators/performance/write-behind/src/write-behind.c
+index 9d5570a..5089f05 100644
+--- a/xlators/performance/write-behind/src/write-behind.c
++++ b/xlators/performance/write-behind/src/write-behind.c
+@@ -700,6 +700,74 @@ __wb_request_waiting_on (wb_request_t *req)
+ 
+ 
+ void
++__wb_add_request_for_retry (wb_request_t *req)
++{
++        wb_inode_t *wb_inode = NULL;
++
++        if (!req)
++                goto out;
++
++        wb_inode = req->wb_inode;
++
++        /* response was unwound and no waiter waiting on this request, retry
++           till a flush or fsync (subject to conf->resync_after_fsync).
++        */
++	wb_inode->transit -= req->total_size;
++
++        req->total_size = 0;
++
++        list_del_init (&req->winds);
++        list_del_init (&req->todo);
++        list_del_init (&req->wip);
++
++        /* sanitize ordering flags to retry */
++        req->ordering.go = 0;
++
++        /* Add back to todo list to retry */
++        list_add (&req->todo, &wb_inode->todo);
++
++out:
++        return;
++}
++
++void
++__wb_add_head_for_retry (wb_request_t *head)
++{
++	wb_request_t *req      = NULL, *tmp = NULL;
++
++        if (!head)
++                goto out;
++
++        list_for_each_entry_safe_reverse (req, tmp, &head->winds,
++                                          winds) {
++                __wb_add_request_for_retry (req);
++        }
++
++        __wb_add_request_for_retry (head);
++
++out:
++        return;
++}
++
++
++void
++wb_add_head_for_retry (wb_request_t *head)
++{
++        if (!head)
++                goto out;
++
++        LOCK (&head->wb_inode->lock);
++        {
++                __wb_add_head_for_retry (head);
++        }
++        UNLOCK (&head->wb_inode->lock);
++
++out:
++        return;
++}
++
++
++void
+ __wb_fulfill_request_err (wb_request_t *req, int32_t op_errno)
+ {
+ 	wb_inode_t   *wb_inode = NULL;
+@@ -739,22 +807,7 @@ __wb_fulfill_request_err (wb_request_t *req, int32_t op_errno)
+                 }
+         }
+ 
+-        /* response was unwound and no waiter waiting on this request, retry
+-           till a flush or fsync (subject to conf->resync_after_fsync).
+-        */
+-	wb_inode->transit -= req->total_size;
+-
+-        req->total_size = 0;
+-
+-        list_del_init (&req->winds);
+-        list_del_init (&req->todo);
+-        list_del_init (&req->wip);
+-
+-        /* sanitize ordering flags to retry */
+-        req->ordering.go = 0;
+-
+-        /* Add back to todo list to retry */
+-        list_add (&req->todo, &wb_inode->todo);
++        __wb_add_request_for_retry (req);
+ 
+         return;
+ }
+@@ -921,7 +974,7 @@ done:
+ 
+         __wb_request_unref (head);
+ 
+-        wb_fulfill_err (req, EIO);
++        wb_add_head_for_retry (req);
+ out:
+         return;
+ }
+-- 
+1.7.1
+

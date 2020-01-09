@@ -1,0 +1,255 @@
+From 70a866b408cff38f60293b729e715aa56789326f Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Mon, 21 Mar 2016 16:57:48 +0530
+Subject: [PATCH 64/80] tools/glusterfind: Handling Unicode file names
+
+Unicode filenames handled cleanly with this patch. Changelog
+files and output files are opened with utf-8 encoding using codecs.open.
+
+urllib.quote_plus and unquote_plus will not handle Unicode so, encode
+Unicode to 8-bit string version before calling unquote. urllib.quote_plus
+requires 8-bit string itself so do not decode to Unicode if we need to use
+quote_plus(when --no-encode=false). Decode to unicode in --no-encode is set.
+
+BUG: 1309437
+Change-Id: If5561c749ab5529445650d322c831eb4da22b65a
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: http://review.gluster.org/13798
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: http://review.gluster.org/13856
+Reviewed-on: https://code.engineering.redhat.com/gerrit/71831
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+---
+ tools/glusterfind/src/changelog.py     |    3 +-
+ tools/glusterfind/src/changelogdata.py |   65 +++++++++++++-------------------
+ tools/glusterfind/src/main.py          |   12 ++---
+ tools/glusterfind/src/utils.py         |    2 +-
+ 4 files changed, 34 insertions(+), 48 deletions(-)
+
+diff --git a/tools/glusterfind/src/changelog.py b/tools/glusterfind/src/changelog.py
+index a58a7eb..283a035 100644
+--- a/tools/glusterfind/src/changelog.py
++++ b/tools/glusterfind/src/changelog.py
+@@ -17,6 +17,7 @@ import logging
+ from argparse import ArgumentParser, RawDescriptionHelpFormatter
+ import hashlib
+ import urllib
++import codecs
+ 
+ import libgfchangelog
+ from utils import mkdirp, symlink_gfid_to_path
+@@ -212,7 +213,7 @@ def parse_changelog_to_db(changelog_data, filename, args):
+     """
+     Parses a Changelog file and populates data in gfidpath table
+     """
+-    with open(filename) as f:
++    with codecs.open(filename, encoding="utf-8") as f:
+         changelogfile = os.path.basename(filename)
+         for line in f:
+             data = line.strip().split(" ")
+diff --git a/tools/glusterfind/src/changelogdata.py b/tools/glusterfind/src/changelogdata.py
+index abb8b01..0e32d7b 100644
+--- a/tools/glusterfind/src/changelogdata.py
++++ b/tools/glusterfind/src/changelogdata.py
+@@ -146,10 +146,7 @@ class ChangelogData(object):
+ 
+         for key, value in filters.items():
+             query += " AND %s = ?" % key
+-            if isinstance(value, int):
+-                params.append(value)
+-            else:
+-                params.append(unicode(value, "utf8"))
++            params.append(value)
+ 
+         return self.cursor_reader.execute(query, params)
+ 
+@@ -161,10 +158,7 @@ class ChangelogData(object):
+ 
+         for key, value in filters.items():
+             query += " AND %s = ?" % key
+-            if isinstance(value, int):
+-                params.append(value)
+-            else:
+-                params.append(unicode(value, "utf8"))
++            params.append(value)
+ 
+         return self.cursor_reader.execute(query, params)
+ 
+@@ -175,10 +169,7 @@ class ChangelogData(object):
+ 
+         for key, value in filters.items():
+             query += " AND %s = ?" % key
+-            if isinstance(value, int):
+-                params.append(value)
+-            else:
+-                params.append(unicode(value, "utf8"))
++            params.append(value)
+ 
+         self.cursor.execute(query, params)
+ 
+@@ -189,10 +180,7 @@ class ChangelogData(object):
+         params = []
+         for key, value in data.items():
+             fields.append(key)
+-            if isinstance(value, int):
+-                params.append(value)
+-            else:
+-                params.append(unicode(value, "utf8"))
++            params.append(value)
+ 
+         values_substitute = len(fields)*["?"]
+         query += "%s) VALUES(%s)" % (",".join(fields),
+@@ -205,20 +193,14 @@ class ChangelogData(object):
+         update_fields = []
+         for key, value in data.items():
+             update_fields.append("%s = ?" % key)
+-            if isinstance(value, int):
+-                params.append(value)
+-            else:
+-                params.append(unicode(value, "utf8"))
++            params.append(value)
+ 
+         query = "UPDATE %s SET %s WHERE 1 = 1" % (tablename,
+                                                   ", ".join(update_fields))
+ 
+         for key, value in filters.items():
+             query += " AND %s = ?" % key
+-            if isinstance(value, int):
+-                params.append(value)
+-            else:
+-                params.append(unicode(value, "utf8"))
++            params.append(value)
+ 
+         self.cursor.execute(query, params)
+ 
+@@ -230,12 +212,8 @@ class ChangelogData(object):
+         params = []
+ 
+         for key, value in filters.items():
+-            print value
+             query += " AND %s = ?" % key
+-            if isinstance(value, int):
+-                params.append(value)
+-            else:
+-                params.append(unicode(value, "utf8"))
++            params.append(value)
+ 
+         self.cursor.execute(query, params)
+         row = self.cursor.fetchone()
+@@ -344,10 +322,15 @@ class ChangelogData(object):
+     def when_create_mknod_mkdir(self, changelogfile, data):
+         # E <GFID> <MKNOD|CREATE|MKDIR> <MODE> <USER> <GRP> <PGFID>/<BNAME>
+         # Add the Entry to DB
+-        pgfid1, bn1 = urllib.unquote_plus(data[6]).split("/", 1)
++        # urllib.unquote_plus will not handle unicode so, encode Unicode to
++        # represent in 8 bit format and then unquote
++        pgfid1, bn1 = urllib.unquote_plus(
++            data[6].encode("utf-8")).split("/", 1)
+ 
+         if self.args.no_encode:
+-            bn1 = bn1.strip()
++            # No urlencode since no_encode is set, so convert again to Unicode
++            # format from previously encoded.
++            bn1 = bn1.decode("utf-8").strip()
+         else:
+             # Quote again the basename
+             bn1 = urllib.quote_plus(bn1.strip())
+@@ -356,13 +339,15 @@ class ChangelogData(object):
+ 
+     def when_rename(self, changelogfile, data):
+         # E <GFID> RENAME <OLD_PGFID>/<BNAME> <PGFID>/<BNAME>
+-        pgfid1, bn1 = urllib.unquote_plus(data[3]).split("/", 1)
+-        pgfid2, bn2 = urllib.unquote_plus(data[4]).split("/", 1)
++        pgfid1, bn1 = urllib.unquote_plus(
++            data[3].encode("utf-8")).split("/", 1)
++        pgfid2, bn2 = urllib.unquote_plus(
++            data[4].encode("utf-8")).split("/", 1)
+ 
+         if self.args.no_encode:
+             # Quote again the basename
+-            bn1 = bn1.strip()
+-            bn2 = bn2.strip()
++            bn1 = bn1.decode("utf-8").strip()
++            bn2 = bn2.decode("utf-8").strip()
+         else:
+             # Quote again the basename
+             bn1 = urllib.quote_plus(bn1.strip())
+@@ -406,10 +391,11 @@ class ChangelogData(object):
+     def when_link_symlink(self, changelogfile, data):
+         # E <GFID> <LINK|SYMLINK> <PGFID>/<BASENAME>
+         # Add as New record in Db as Type NEW
+-        pgfid1, bn1 = urllib.unquote_plus(data[3]).split("/", 1)
++        pgfid1, bn1 = urllib.unquote_plus(
++            data[3].encode("utf-8")).split("/", 1)
+         if self.args.no_encode:
+             # Quote again the basename
+-            bn1 = bn1.strip()
++            bn1 = bn1.decode("utf-8").strip()
+         else:
+             # Quote again the basename
+             bn1 = urllib.quote_plus(bn1.strip())
+@@ -424,10 +410,11 @@ class ChangelogData(object):
+ 
+     def when_unlink_rmdir(self, changelogfile, data):
+         # E <GFID> <UNLINK|RMDIR> <PGFID>/<BASENAME>
+-        pgfid1, bn1 = urllib.unquote_plus(data[3]).split("/", 1)
++        pgfid1, bn1 = urllib.unquote_plus(
++            data[3].encode("utf-8")).split("/", 1)
+ 
+         if self.args.no_encode:
+-            bn1 = bn1.strip()
++            bn1 = bn1.decode("utf-8").strip()
+         else:
+             # Quote again the basename
+             bn1 = urllib.quote_plus(bn1.strip())
+diff --git a/tools/glusterfind/src/main.py b/tools/glusterfind/src/main.py
+index 72f11a7..a87fac4 100644
+--- a/tools/glusterfind/src/main.py
++++ b/tools/glusterfind/src/main.py
+@@ -24,6 +24,7 @@ from utils import setup_logger, human_time, handle_rm_error
+ from utils import get_changelog_rollover_time, cache_output, create_file
+ import conf
+ from changelogdata import OutputMerger
++import codecs
+ 
+ PROG_DESCRIPTION = """
+ GlusterFS Incremental API
+@@ -394,7 +395,7 @@ def enable_volume_options(args):
+ 
+ 
+ def write_output(args, outfilemerger):
+-    with open(args.outfile, "a") as f:
++    with codecs.open(args.outfile, "a", encoding="utf-8") as f:
+         for row in outfilemerger.get():
+             # Multiple paths in case of Hardlinks
+             paths = row[1].split(",")
+@@ -409,12 +410,9 @@ def write_output(args, outfilemerger):
+                 if p_rep == row_2_rep:
+                     continue
+ 
+-                p_rep = p_rep.encode('utf8', 'replace')
+-                row_2_rep = row_2_rep.encode('utf8', 'replace')
+-
+-                f.write("{0} {1} {2}\n".format(row[0],
+-                                               p_rep,
+-                                               row_2_rep))
++                f.write(u"{0} {1} {2}\n".format(row[0],
++                                                p_rep,
++                                                row_2_rep))
+ 
+ 
+ def mode_create(session_dir, args):
+diff --git a/tools/glusterfind/src/utils.py b/tools/glusterfind/src/utils.py
+index b3b0bdf..b05f08e 100644
+--- a/tools/glusterfind/src/utils.py
++++ b/tools/glusterfind/src/utils.py
+@@ -242,4 +242,4 @@ def output_path_prepare(path, args):
+     if args.no_encode:
+         return path
+     else:
+-        return urllib.quote_plus(path)
++        return urllib.quote_plus(path.encode("utf-8"))
+-- 
+1.7.1
+

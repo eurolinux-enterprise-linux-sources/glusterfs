@@ -1,0 +1,120 @@
+From 73b2f3f9cdee6940caa861d489c9cd8d923e12f2 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Thu, 25 Feb 2016 18:45:20 +0530
+Subject: [PATCH 70/80] features/index: Get gfid type in readdir
+
+ >Change-Id: I2a6174e1af70a94a52b0b735fd8504800a7ea173
+ >BUG: 1313135
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13553
+ >Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >Reviewed-by: Anuradha Talur <atalur@redhat.com>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >(cherry picked from commit 459d0a5e173f9d9f597aec89f81e5377425eb8fb)
+
+ >Change-Id: I3384906201129d3e03a56bc4b071302028f6953b
+ >BUG: 1322516
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/13858
+ >Smoke: Gluster Build System <jenkins@build.gluster.com>
+ >CentOS-regression: Gluster Build System <jenkins@build.gluster.com>
+ >NetBSD-regression: NetBSD Build System <jenkins@build.gluster.org>
+ >Reviewed-by: Anuradha Talur <atalur@redhat.com>
+
+BUG: 1314724
+Change-Id: Ia9e4e9f02ef65f67677f52940b0dccb7e228807b
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/72368
+---
+ xlators/features/index/src/index.c |   47 +++++++++++++++++++++++++++++++++++-
+ 1 files changed, 46 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/features/index/src/index.c b/xlators/features/index/src/index.c
+index 18df622..84c22c0 100644
+--- a/xlators/features/index/src/index.c
++++ b/xlators/features/index/src/index.c
+@@ -16,10 +16,16 @@
+ #include "options.h"
+ #include "glusterfs3-xdr.h"
+ #include "syscall.h"
++#include "syncop.h"
+ 
+ #define XATTROP_SUBDIR "xattrop"
+ #define DIRTY_SUBDIR "dirty"
+ 
++struct index_syncop_args {
++        inode_t *parent;
++        gf_dirent_t *entries;
++};
++
+ call_stub_t *
+ __index_dequeue (struct list_head *callstubs)
+ {
+@@ -1181,6 +1187,38 @@ done:
+         return 0;
+ }
+ 
++int
++index_get_gfid_type (void *opaque)
++{
++        gf_dirent_t              *entry = NULL;
++        inode_t                  *inode = NULL;
++        xlator_t                 *this  = THIS;
++        struct index_syncop_args *args  = opaque;
++        loc_t                    loc    = {0};
++        struct iatt              iatt   = {0};
++        int                      ret    = 0;
++
++        list_for_each_entry (entry, &args->entries->list, list) {
++                loc_wipe (&loc);
++                gf_uuid_parse (entry->d_name, loc.gfid);
++                entry->d_type = IA_INVAL;
++                loc.inode = inode_find (args->parent->table, loc.gfid);
++                if (loc.inode) {
++                        entry->d_type = loc.inode->ia_type;
++                        continue;
++                }
++                loc.inode = inode_new (args->parent->table);
++                if (!loc.inode)
++                        continue;
++                ret = syncop_lookup (FIRST_CHILD (this), &loc, &iatt, 0, 0, 0);
++                if (ret == 0)
++                        entry->d_type = iatt.ia_type;
++        }
++        loc_wipe (&loc);
++
++        return 0;
++}
++
+ int32_t
+ index_readdir_wrapper (call_frame_t *frame, xlator_t *this,
+                        fd_t *fd, size_t size, off_t off, dict_t *xdata)
+@@ -1192,6 +1230,7 @@ index_readdir_wrapper (call_frame_t *frame, xlator_t *this,
+         int32_t               op_errno       = 0;
+         int                   count          = 0;
+         gf_dirent_t           entries;
++        struct index_syncop_args args = {0};
+ 
+         INIT_LIST_HEAD (&entries.list);
+ 
+@@ -1217,8 +1256,14 @@ index_readdir_wrapper (call_frame_t *frame, xlator_t *this,
+         /* pick ENOENT to indicate EOF */
+         op_errno = errno;
+         op_ret = count;
++        if (xdata && dict_get (xdata, "get-gfid-type")) {
++                args.parent = fd->inode;
++                args.entries = &entries;
++                ret = synctask_new (this->ctx->env, index_get_gfid_type,
++                                    NULL, NULL, &args);
++        }
+ done:
+-        STACK_UNWIND_STRICT (readdir, frame, op_ret, op_errno, &entries, xdata);
++        STACK_UNWIND_STRICT (readdir, frame, op_ret, op_errno, &entries, NULL);
+         gf_dirent_free (&entries);
+         return 0;
+ }
+-- 
+1.7.1
+

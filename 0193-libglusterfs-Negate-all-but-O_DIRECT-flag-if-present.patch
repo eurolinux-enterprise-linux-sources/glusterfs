@@ -1,0 +1,70 @@
+From 2a003c1b4e01c7c5482c10962ee3d6d0f5667a9d Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Tue, 7 Jun 2016 17:15:56 +0530
+Subject: [PATCH 193/195] libglusterfs: Negate all but O_DIRECT flag if present on anon fds
+
+        Backport of: http://review.gluster.org/#/c/14665/
+
+This is to prevent any unforeseen problems that might arise due to
+writevs and readvs being wound with @flag parameter containing
+O_TRUNC or O_APPEND especially wrt translators like sharding and ec
+where O_TRUNC write or O_APPEND write on individual shards/fragments
+is not the same as O_TRUNC write or O_APPEND write as expected by the
+application.
+
+Change-Id: Idd5b18fa3ee3b8d11f8e0c020dfb56990ca28911
+BUG: 1343549
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/76078
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ libglusterfs/src/fd.c                        |   14 ++++----------
+ xlators/protocol/server/src/server-resolve.c |    5 ++++-
+ 2 files changed, 8 insertions(+), 11 deletions(-)
+
+diff --git a/libglusterfs/src/fd.c b/libglusterfs/src/fd.c
+index 89ba357..5a3658b 100644
+--- a/libglusterfs/src/fd.c
++++ b/libglusterfs/src/fd.c
+@@ -817,17 +817,11 @@ fd_anonymous_with_flags (inode_t *inode, int32_t flags)
+ 
+         LOCK (&inode->lock);
+         {
+-                if (flags == 0)
++                if (flags & O_DIRECT)
++                        flags = GF_ANON_FD_FLAGS | O_DIRECT;
++                else
+                         flags = GF_ANON_FD_FLAGS;
+-                /* If this API is ever called with O_SYNC or O_DSYNC in @flags,
+-                 * reset the bits associated with these flags before calling
+-                 * __fd_anonymous(). That way, posix will do the open() without
+-                 * these flags. And subsequently, posix_writev() (mostly) will
+-                 * do the write within inode->lock on an fd without O_SYNC or
+-                 * O_DSYNC and in its place to an fsync() outside of the locks
+-                 * to simulate the effect of using these flags.
+-                 */
+-                flags &= (~(O_SYNC|O_DSYNC));
++
+                 fd = __fd_anonymous (inode, flags);
+         }
+         UNLOCK (&inode->lock);
+diff --git a/xlators/protocol/server/src/server-resolve.c b/xlators/protocol/server/src/server-resolve.c
+index 4e6ec6a..d3e604f 100644
+--- a/xlators/protocol/server/src/server-resolve.c
++++ b/xlators/protocol/server/src/server-resolve.c
+@@ -458,7 +458,10 @@ resolve_anonfd_simple (call_frame_t *frame)
+ 
+         ret = 0;
+ 
+-        state->fd = fd_anonymous_with_flags (inode, state->flags);
++        if (frame->root->op == GF_FOP_READ || frame->root->op == GF_FOP_WRITE)
++                state->fd = fd_anonymous_with_flags (inode, state->flags);
++        else
++                state->fd = fd_anonymous (inode);
+ out:
+         if (inode)
+                 inode_unref (inode);
+-- 
+1.7.1
+
