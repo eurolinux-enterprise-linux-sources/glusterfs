@@ -10,7 +10,7 @@
 ##
 
 # if you wish to compile an rpm without rdma support, compile like this...
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without rdma
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without rdma
 %{?_without_rdma:%global _without_rdma --disable-ibverbs}
 
 # No RDMA Support on s390(x)
@@ -19,15 +19,15 @@
 %endif
 
 # if you wish to compile an rpm without epoll...
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without epoll
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without epoll
 %{?_without_epoll:%global _without_epoll --disable-epoll}
 
 # if you wish to compile an rpm without fusermount...
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without fusermount
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without fusermount
 %{?_without_fusermount:%global _without_fusermount --disable-fusermount}
 
 # if you wish to compile an rpm without geo-replication support, compile like this...
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without georeplication
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without georeplication
 %{?_without_georeplication:%global _without_georeplication --disable-georeplication}
 
 # Disable geo-replication on EL5, as its default Python is too old
@@ -36,11 +36,11 @@
 %endif
 
 # if you wish to compile an rpm without the OCF resource agents...
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without ocf
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without ocf
 %{?_without_ocf:%global _without_ocf --without-ocf}
 
 # if you wish to build rpms without syslog logging, compile like this
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without syslog
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without syslog
 %{?_without_syslog:%global _without_syslog --disable-syslog}
 
 # disable syslog forcefully as rhel <= 6 doesn't have rsyslog or rsyslog-mmcount
@@ -49,7 +49,7 @@
 %endif
 
 # if you wish to compile an rpm without the BD map support...
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without bd
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without bd
 %{?_without_bd:%global _without_bd --disable-bd-xlator}
 
 %if ( 0%{?rhel} && 0%{?rhel} < 6 || 0%{?sles_version} )
@@ -57,7 +57,7 @@
 %endif
 
 # if you wish to compile an rpm without the qemu-block support...
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without qemu-block
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without qemu-block
 %{?_without_qemu_block:%global _without_qemu_block --disable-qemu-block}
 
 %if ( 0%{?rhel} && 0%{?rhel} < 6 )
@@ -66,7 +66,7 @@
 %endif
 
 # if you wish not to build server rpms, compile like this.
-# rpmbuild -ta glusterfs-3.6.0.54.tar.gz --without server
+# rpmbuild -ta glusterfs-3.6.0.55.tar.gz --without server
 
 %global _build_server 1
 %if "%{?_without_server}"
@@ -162,7 +162,7 @@ Release:          0.1%{?prereltag:.%{prereltag}}%{?dist}
 Vendor:           Fedora Project
 %else
 Name:             glusterfs
-Version:          3.6.0.54
+Version:          3.6.0.55
 Release:          1%{?dist}
 ExclusiveArch:    x86_64 aarch64
 %endif
@@ -180,7 +180,7 @@ Source6:          rhel5-load-fuse-modules
 Source7:          glusterfsd.service
 Source8:          glusterfsd.init
 %else
-Source0:          glusterfs-3.6.0.54.tar.gz
+Source0:          glusterfs-3.6.0.55.tar.gz
 %endif
 
 BuildRoot:        %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
