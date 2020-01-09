@@ -1,0 +1,68 @@
+From 9412be36504b506e67dad8e01996e33c1f590f4a Mon Sep 17 00:00:00 2001
+From: Jiffin Tony Thottan <jthottan@gmail.com>
+Date: Mon, 14 Dec 2015 15:29:21 +0530
+Subject: [PATCH 186/191] nfs : Inform client to perform extra GETATTR call for 'T' files
+
+Due to the changes from http://review.gluster.org/#/c/12722/,
+for tier volume the readirp will be send only to cold subvol,
+therefore the resulting list may contain 'T' files. For those
+files, by performing additional getattr call will populate the
+attributes correctly. This check should be based on inode value
+passed from the readdirp(both T files and directory have NULL
+value) and skip directory in the same.
+
+Backport of http://review.gluster.org/#/c/12960/
+cherry picked from commit 5e36564754e2d83a7666066f4da7f148960a5694
+
+Upstream reference :
+
+>Change-Id: Ieb6724b05301cdbf0a0ef15ad9db51014faa0457
+>BUG: 1291212
+>Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+>Reviewed-on: http://review.gluster.org/12960
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: soumya k <skoduri@redhat.com>
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+
+Change-Id: I5af91ac527ed94a38a1484d7387a4ddf2be7ebf7
+BUG: 1289423
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64016
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ xlators/nfs/server/src/nfs3-helpers.c |   16 +++++++++++++++-
+ 1 files changed, 15 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/nfs/server/src/nfs3-helpers.c b/xlators/nfs/server/src/nfs3-helpers.c
+index ca56404..f2219d2 100644
+--- a/xlators/nfs/server/src/nfs3-helpers.c
++++ b/xlators/nfs/server/src/nfs3-helpers.c
+@@ -782,7 +782,21 @@ nfs3_fill_entryp3 (gf_dirent_t *entry, struct nfs3_fh *dirfh, uint64_t devid)
+ 
+         nfs3_fh_build_child_fh (dirfh, &entry->d_stat, &newfh);
+         nfs3_map_deviceid_to_statdev (&entry->d_stat, devid);
+-        ent->name_attributes = nfs3_stat_to_post_op_attr (&entry->d_stat);
++        /* *
++         * In tier volume, the readdirp send only to cold subvol
++         * which will populate in the 'T' file entries in the result.
++         * For such files an explicit stat call is required, by setting
++         * following argument client will perform the same.
++         *
++         * The inode value for 'T' files and directory is NULL, so just
++         * skip the check if it is directory.
++         */
++        if (!(IA_ISDIR(entry->d_stat.ia_type)) && (entry->inode == NULL))
++                ent->name_attributes.attributes_follow = FALSE;
++        else
++                ent->name_attributes =
++                        nfs3_stat_to_post_op_attr (&entry->d_stat);
++
+         ent->name_handle = nfs3_fh_to_post_op_fh3 (&newfh);
+ err:
+         return ent;
+-- 
+1.7.1
+

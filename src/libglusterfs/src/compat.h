@@ -40,6 +40,10 @@
 #ifdef HAVE_ENDIAN_H
 #include <endian.h>
 #endif
+
+#ifndef _PATH_UMOUNT
+#define _PATH_UMOUNT "/bin/umount"
+#endif
 #endif /* GF_LINUX_HOST_OS */
 
 #ifdef HAVE_XATTR_H
@@ -125,6 +129,11 @@ enum {
 #define sighandler_t sig_t
 #endif
 
+#ifdef __FreeBSD__
+#undef ino_t
+#define ino_t uint64_t
+#endif /* __FreeBSD__ */
+
 #ifndef ino64_t
 #define ino64_t ino_t
 #endif
@@ -153,7 +162,12 @@ enum {
 #define F_GETLK64       F_GETLK
 #define F_SETLK64       F_SETLK
 #define F_SETLKW64      F_SETLKW
+#define FALLOC_FL_KEEP_SIZE     0x01 /* default is extend size */
+#define FALLOC_FL_PUNCH_HOLE    0x02 /* de-allocates range */
 
+#ifndef _PATH_UMOUNT
+  #define _PATH_UMOUNT "/sbin/umount"
+#endif
 #endif /* GF_BSD_HOST_OS */
 
 #ifdef GF_DARWIN_HOST_OS
@@ -176,7 +190,10 @@ enum {
 #define le64toh(x) OSSwapLittleToHostInt64(x)
 
 #define UNIX_PATH_MAX 104
+/* OSX Yosemite now has this defined */
+#ifndef AT_SYMLINK_NOFOLLOW
 #define AT_SYMLINK_NOFOLLOW 0x100
+#endif
 #include <sys/types.h>
 
 #include <sys/un.h>
@@ -232,6 +249,9 @@ int32_t gf_darwin_compat_listxattr (int len, dict_t *dict, int size);
 int32_t gf_darwin_compat_getxattr (const char *key, dict_t *dict);
 int32_t gf_darwin_compat_setxattr (dict_t *dict);
 
+#ifndef _PATH_UMOUNT
+  #define _PATH_UMOUNT "/sbin/umount"
+#endif
 #endif /* GF_DARWIN_HOST_OS */
 
 #ifdef GF_SOLARIS_HOST_OS
@@ -310,6 +330,9 @@ enum {
 
 #ifndef _PATH_MOUNTED
  #define _PATH_MOUNTED "/etc/mtab"
+#endif
+#ifndef _PATH_UMOUNT
+ #define _PATH_UMOUNT "/sbin/umount"
 #endif
 
 #ifndef O_ASYNC
@@ -456,5 +479,7 @@ int gf_mkostemp (char *tmpl, int suffixlen, int flags);
 /* Use run API, see run.h */
 #pragma GCC poison system popen
 #endif
+
+int gf_umount_lazy(char *xlname, char *path, int rmdir);
 
 #endif /* __COMPAT_H__ */

@@ -38,6 +38,7 @@
 #include "xlator.h"
 
 static gf_boolean_t is_mgmt_rpc_reconnect = _gf_false;
+int need_emancipate = 0;
 
 int glusterfs_mgmt_pmap_signin (glusterfs_ctx_t *ctx);
 int glusterfs_volfile_fetch (glusterfs_ctx_t *ctx);
@@ -914,6 +915,10 @@ glusterfs_handle_node_status (rpcsvc_request_t *req)
                 ret = gf_asprintf (&node_name, "%s", "glustershd");
         else if ((cmd & GF_CLI_STATUS_QUOTAD) != 0)
                 ret = gf_asprintf (&node_name, "%s", "quotad");
+        else if ((cmd & GF_CLI_STATUS_BITD) != 0)
+                ret = gf_asprintf (&node_name, "%s", "bitd");
+        else if ((cmd & GF_CLI_STATUS_SCRUB) != 0)
+                ret = gf_asprintf (&node_name, "%s", "scrubber");
 
         else {
                 ret = -1;
@@ -938,6 +943,10 @@ glusterfs_handle_node_status (rpcsvc_request_t *req)
         else if ((cmd & GF_CLI_STATUS_SHD) != 0)
                 ret = gf_asprintf (&subvol_name, "%s-replicate-0", volname);
         else if ((cmd & GF_CLI_STATUS_QUOTAD) != 0)
+                ret = gf_asprintf (&subvol_name, "%s", volname);
+        else if ((cmd & GF_CLI_STATUS_BITD) != 0)
+                ret = gf_asprintf (&subvol_name, "%s", volname);
+        else if ((cmd & GF_CLI_STATUS_SCRUB) != 0)
                 ret = gf_asprintf (&subvol_name, "%s", volname);
         else {
                 ret = -1;
@@ -1568,6 +1577,7 @@ mgmt_getspec_cbk (struct rpc_req *req, struct iovec *iov, int count,
         oldvollen = size;
         memcpy (oldvolfile, rsp.spec, size);
         if (!is_mgmt_rpc_reconnect) {
+                need_emancipate = 1;
                 glusterfs_mgmt_pmap_signin (ctx);
                 is_mgmt_rpc_reconnect =  _gf_true;
         }
@@ -1576,9 +1586,6 @@ out:
         STACK_DESTROY (frame->root);
 
         free (rsp.spec);
-
-        if (ctx)
-                emancipate (ctx, ret);
 
         // Stop if server is running at an unsupported op-version
         if (ENOTSUP == ret) {
@@ -2030,7 +2037,7 @@ glusterfs_mgmt_init (glusterfs_ctx_t *ctx)
         if (ret)
                 goto out;
 
-        rpc = rpc_clnt_new (options, THIS->ctx, THIS->name, 8);
+        rpc = rpc_clnt_new (options, THIS, THIS->name, 8);
         if (!rpc) {
                 ret = -1;
                 gf_log (THIS->name, GF_LOG_WARNING, "failed to create rpc clnt");
@@ -2067,12 +2074,15 @@ mgmt_pmap_signin2_cbk (struct rpc_req *req, struct iovec *iov, int count,
                        void *myframe)
 {
         pmap_signin_rsp  rsp   = {0,};
+        glusterfs_ctx_t *ctx   = NULL;
         call_frame_t    *frame = NULL;
         int              ret   = 0;
 
+        ctx = glusterfsd_ctx;
         frame = myframe;
 
         if (-1 == req->rpc_status) {
+                ret = -1;
                 rsp.op_ret   = -1;
                 rsp.op_errno = EINVAL;
                 goto out;
@@ -2089,9 +2099,13 @@ mgmt_pmap_signin2_cbk (struct rpc_req *req, struct iovec *iov, int count,
         if (-1 == rsp.op_ret) {
                 gf_log (frame->this->name, GF_LOG_ERROR,
                         "failed to register the port with glusterd");
+                ret = -1;
                 goto out;
         }
 out:
+        if (need_emancipate)
+                emancipate (ctx, ret);
+
         STACK_DESTROY (frame->root);
         return 0;
 
@@ -2104,6 +2118,7 @@ mgmt_pmap_signin_cbk (struct rpc_req *req, struct iovec *iov, int count,
         pmap_signin_rsp  rsp   = {0,};
         call_frame_t    *frame = NULL;
         int              ret   = 0;
+        int              emancipate_ret  = -1;
         pmap_signin_req  pmap_req = {0, };
         cmd_args_t      *cmd_args = NULL;
         glusterfs_ctx_t *ctx      = NULL;
@@ -2112,6 +2127,7 @@ mgmt_pmap_signin_cbk (struct rpc_req *req, struct iovec *iov, int count,
         frame = myframe;
 
         if (-1 == req->rpc_status) {
+                ret = -1;
                 rsp.op_ret   = -1;
                 rsp.op_errno = EINVAL;
                 goto out;
@@ -2128,6 +2144,7 @@ mgmt_pmap_signin_cbk (struct rpc_req *req, struct iovec *iov, int count,
         if (-1 == rsp.op_ret) {
                 gf_log (frame->this->name, GF_LOG_ERROR,
                         "failed to register the port with glusterd");
+                ret = -1;
                 goto out;
         }
 
@@ -2136,6 +2153,7 @@ mgmt_pmap_signin_cbk (struct rpc_req *req, struct iovec *iov, int count,
 
         if (!cmd_args->brick_port2) {
                 /* We are done with signin process */
+                emancipate_ret = 0;
                 goto out;
         }
 
@@ -2152,6 +2170,8 @@ mgmt_pmap_signin_cbk (struct rpc_req *req, struct iovec *iov, int count,
         return 0;
 
 out:
+        if (need_emancipate && (ret < 0 || !cmd_args->brick_port2))
+                emancipate (ctx, emancipate_ret);
 
         STACK_DESTROY (frame->root);
         return 0;
@@ -2163,6 +2183,7 @@ glusterfs_mgmt_pmap_signin (glusterfs_ctx_t *ctx)
         call_frame_t     *frame                 = NULL;
         pmap_signin_req   req                   = {0, };
         int               ret                   = -1;
+        int               emancipate_ret        = -1;
         cmd_args_t       *cmd_args              = NULL;
         char              brick_name[PATH_MAX]  = {0,};
 
@@ -2172,6 +2193,7 @@ glusterfs_mgmt_pmap_signin (glusterfs_ctx_t *ctx)
         if (!cmd_args->brick_port || !cmd_args->brick_name) {
                 gf_log ("fsd-mgmt", GF_LOG_DEBUG,
                         "portmapper signin arguments not given");
+                emancipate_ret = 0;
                 goto out;
         }
 
@@ -2190,6 +2212,8 @@ glusterfs_mgmt_pmap_signin (glusterfs_ctx_t *ctx)
                                    (xdrproc_t)xdr_pmap_signin_req);
 
 out:
+        if (need_emancipate && ret < 0)
+                emancipate (ctx, emancipate_ret);
         return ret;
 }
 

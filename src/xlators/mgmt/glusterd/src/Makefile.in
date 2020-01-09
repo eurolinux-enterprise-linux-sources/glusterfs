@@ -77,7 +77,8 @@ glusterd_la_DEPENDENCIES =  \
 	$(top_builddir)/libglusterfs/src/libglusterfs.la \
 	$(top_builddir)/rpc/xdr/src/libgfxdr.la \
 	$(top_builddir)/rpc/rpc-lib/src/libgfrpc.la \
-	$(am__DEPENDENCIES_1)
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
 am_glusterd_la_OBJECTS = glusterd_la-glusterd.lo \
 	glusterd_la-glusterd-handler.lo glusterd_la-glusterd-sm.lo \
 	glusterd_la-glusterd-op-sm.lo glusterd_la-glusterd-utils.lo \
@@ -85,7 +86,8 @@ am_glusterd_la_OBJECTS = glusterd_la-glusterd.lo \
 	glusterd_la-glusterd-handshake.lo glusterd_la-glusterd-pmap.lo \
 	glusterd_la-glusterd-volgen.lo \
 	glusterd_la-glusterd-rebalance.lo \
-	glusterd_la-glusterd-quota.lo glusterd_la-glusterd-geo-rep.lo \
+	glusterd_la-glusterd-ganesha.lo glusterd_la-glusterd-quota.lo \
+	glusterd_la-glusterd-bitrot.lo glusterd_la-glusterd-geo-rep.lo \
 	glusterd_la-glusterd-replace-brick.lo \
 	glusterd_la-glusterd-log-ops.lo \
 	glusterd_la-glusterd-volume-ops.lo \
@@ -95,7 +97,23 @@ am_glusterd_la_OBJECTS = glusterd_la-glusterd.lo \
 	glusterd_la-glusterd-volume-set.lo \
 	glusterd_la-glusterd-locks.lo glusterd_la-glusterd-snapshot.lo \
 	glusterd_la-glusterd-mgmt-handler.lo \
-	glusterd_la-glusterd-mgmt.lo
+	glusterd_la-glusterd-mgmt.lo \
+	glusterd_la-glusterd-peer-utils.lo \
+	glusterd_la-glusterd-statedump.lo \
+	glusterd_la-glusterd-snapshot-utils.lo \
+	glusterd_la-glusterd-conn-mgmt.lo \
+	glusterd_la-glusterd-proc-mgmt.lo \
+	glusterd_la-glusterd-svc-mgmt.lo \
+	glusterd_la-glusterd-shd-svc.lo \
+	glusterd_la-glusterd-nfs-svc.lo \
+	glusterd_la-glusterd-quotad-svc.lo \
+	glusterd_la-glusterd-svc-helper.lo \
+	glusterd_la-glusterd-conn-helper.lo \
+	glusterd_la-glusterd-snapd-svc.lo \
+	glusterd_la-glusterd-snapd-svc-helper.lo \
+	glusterd_la-glusterd-bitd-svc.lo \
+	glusterd_la-glusterd-scrub-svc.lo \
+	glusterd_la-glusterd-server-quorum.lo
 glusterd_la_OBJECTS = $(am_glusterd_la_OBJECTS)
 AM_V_lt = $(am__v_lt_$(V))
 am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
@@ -136,6 +154,7 @@ ETAGS = etags
 CTAGS = ctags
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 ACLOCAL = @ACLOCAL@
+ACL_LIBS = @ACL_LIBS@
 AMTAR = @AMTAR@
 AM_DEFAULT_VERBOSITY = @AM_DEFAULT_VERBOSITY@
 AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
@@ -150,6 +169,7 @@ AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
 BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
 BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
+BUILD_PYTHON_SITE_PACKAGES = @BUILD_PYTHON_SITE_PACKAGES@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -170,12 +190,16 @@ EXEEXT = @EXEEXT@
 FGREP = @FGREP@
 FUSERMOUNT_SUBDIR = @FUSERMOUNT_SUBDIR@
 FUSE_CLIENT_SUBDIR = @FUSE_CLIENT_SUBDIR@
+GEOREP_EXTRAS_SUBDIR = @GEOREP_EXTRAS_SUBDIR@
+GFAPI_EXTRA_LDFLAGS = @GFAPI_EXTRA_LDFLAGS@
+GFAPI_LIBS = @GFAPI_LIBS@
+GFAPI_LT_VERSION = @GFAPI_LT_VERSION@
+GFAPI_VERSION = @GFAPI_VERSION@
 GF_CFLAGS = @GF_CFLAGS@
 GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
@@ -184,6 +208,10 @@ GLIB_LIBS = @GLIB_LIBS@
 GLUPY_SUBDIR = @GLUPY_SUBDIR@
 GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
 GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
+GLUSTERD_VOLFILE = @GLUSTERD_VOLFILE@
+GLUSTERD_WORKDIR = @GLUSTERD_WORKDIR@
+GLUSTERFSD_MISCDIR = @GLUSTERFSD_MISCDIR@
+GLUSTERFS_LIBEXECDIR = @GLUSTERFS_LIBEXECDIR@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -202,15 +230,20 @@ LEX = @LEX@
 LEXLIB = @LEXLIB@
 LEX_OUTPUT_ROOT = @LEX_OUTPUT_ROOT@
 LIBAIO = @LIBAIO@
+LIBGFCHANGELOG_LT_VERSION = @LIBGFCHANGELOG_LT_VERSION@
+LIBGFCHANGELOG_VERSION = @LIBGFCHANGELOG_VERSION@
+LIBGFDB_VERSION = @LIBGFDB_VERSION@
+LIBGFRPC_LT_VERSION = @LIBGFRPC_LT_VERSION@
+LIBGFXDR_LT_VERSION = @LIBGFXDR_LT_VERSION@
+LIBGLUSTERFS_LT_VERSION = @LIBGLUSTERFS_LT_VERSION@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
-LIBZ_CFLAGS = @LIBZ_CFLAGS@
-LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+MATH_LIB = @MATH_LIB@
 MKDIR_P = @MKDIR_P@
 NM = @NM@
 NMEDIT = @NMEDIT@
@@ -227,12 +260,15 @@ PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKGCONFIG_UUID = @PKGCONFIG_UUID@
 PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
 PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
 PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
 PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
+PYTHON_CFLAGS = @PYTHON_CFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
+PYTHON_LIBS = @PYTHON_LIBS@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
 PYTHON_VERSION = @PYTHON_VERSION@
@@ -247,9 +283,22 @@ SIZEOF_INT = @SIZEOF_INT@
 SIZEOF_LONG = @SIZEOF_LONG@
 SIZEOF_LONG_LONG = @SIZEOF_LONG_LONG@
 SIZEOF_SHORT = @SIZEOF_SHORT@
+SQLITE_CFLAGS = @SQLITE_CFLAGS@
+SQLITE_LIBS = @SQLITE_LIBS@
 STRIP = @STRIP@
 SYNCDAEMON_COMPILE = @SYNCDAEMON_COMPILE@
 SYNCDAEMON_SUBDIR = @SYNCDAEMON_SUBDIR@
+UMOUNTD_SUBDIR = @UMOUNTD_SUBDIR@
+UNITTEST_CFLAGS = @UNITTEST_CFLAGS@
+UNITTEST_LDFLAGS = @UNITTEST_LDFLAGS@
+UNITTEST_LIBS = @UNITTEST_LIBS@
+URCU_CDS_CFLAGS = @URCU_CDS_CFLAGS@
+URCU_CDS_LIBS = @URCU_CDS_LIBS@
+URCU_CFLAGS = @URCU_CFLAGS@
+URCU_LIBS = @URCU_LIBS@
+USE_POSIX_ACLS = @USE_POSIX_ACLS@
+UUID_CFLAGS = @UUID_CFLAGS@
+UUID_LIBS = @UUID_LIBS@
 VERSION = @VERSION@
 XML2_CONFIG = @XML2_CONFIG@
 XML_CPPFLAGS = @XML_CPPFLAGS@
@@ -312,49 +361,66 @@ pyexecdir = @pyexecdir@
 pythondir = @pythondir@
 sbindir = @sbindir@
 sharedstatedir = @sharedstatedir@
+shrext_cmds = @shrext_cmds@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
 systemddir = @systemddir@
 target_alias = @target_alias@
+tmpfilesdir = @tmpfilesdir@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 xlator_LTLIBRARIES = glusterd.la
 xlatordir = $(libdir)/glusterfs/$(PACKAGE_VERSION)/xlator/mgmt
 glusterd_la_CPPFLAGS = $(AM_CPPFLAGS) "-DFILTERDIR=\"$(libdir)/glusterfs/$(PACKAGE_VERSION)/filter\""
-glusterd_la_LDFLAGS = -module -avoid-version $(am__append_1)
+glusterd_la_LDFLAGS = -module -avoid-version
 glusterd_la_SOURCES = glusterd.c glusterd-handler.c glusterd-sm.c \
 	glusterd-op-sm.c glusterd-utils.c glusterd-rpc-ops.c \
 	glusterd-store.c glusterd-handshake.c glusterd-pmap.c \
-	glusterd-volgen.c glusterd-rebalance.c glusterd-quota.c \
-	glusterd-geo-rep.c glusterd-replace-brick.c glusterd-log-ops.c \
+	glusterd-volgen.c glusterd-rebalance.c glusterd-ganesha.c \
+	glusterd-quota.c glusterd-bitrot.c glusterd-geo-rep.c \
+	glusterd-replace-brick.c glusterd-log-ops.c \
 	glusterd-volume-ops.c glusterd-brick-ops.c glusterd-mountbroker.c \
 	glusterd-syncop.c glusterd-hooks.c glusterd-volume-set.c \
-        glusterd-locks.c glusterd-snapshot.c glusterd-mgmt-handler.c \
-        glusterd-mgmt.c
+	glusterd-locks.c glusterd-snapshot.c glusterd-mgmt-handler.c \
+	glusterd-mgmt.c glusterd-peer-utils.c glusterd-statedump.c \
+        glusterd-snapshot-utils.c glusterd-conn-mgmt.c \
+	glusterd-proc-mgmt.c glusterd-svc-mgmt.c glusterd-shd-svc.c \
+	glusterd-nfs-svc.c glusterd-quotad-svc.c glusterd-svc-helper.c \
+	glusterd-conn-helper.c glusterd-snapd-svc.c glusterd-snapd-svc-helper.c \
+	glusterd-bitd-svc.c glusterd-scrub-svc.c glusterd-server-quorum.c
 
 glusterd_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la \
-		     $(top_builddir)/rpc/xdr/src/libgfxdr.la \
-		     $(top_builddir)/rpc/rpc-lib/src/libgfrpc.la \
-		     $(XML_LIBS) -lcrypto
-
+	$(top_builddir)/rpc/xdr/src/libgfxdr.la \
+	$(top_builddir)/rpc/rpc-lib/src/libgfrpc.la $(XML_LIBS) \
+	-lcrypto $(URCU_LIBS) $(URCU_CDS_LIBS) $(am__append_1)
 noinst_HEADERS = glusterd.h glusterd-utils.h glusterd-op-sm.h \
 	glusterd-sm.h glusterd-store.h glusterd-mem-types.h \
 	glusterd-pmap.h glusterd-volgen.h glusterd-mountbroker.h \
 	glusterd-syncop.h glusterd-hooks.h glusterd-locks.h \
-	glusterd-mgmt.h glusterd-messages.h glusterd-geo-rep.h
+	glusterd-mgmt.h glusterd-messages.h glusterd-peer-utils.h \
+	glusterd-statedump.h glusterd-snapshot-utils.h glusterd-geo-rep.h \
+	glusterd-conn-mgmt.h glusterd-conn-helper.h glusterd-proc-mgmt.h \
+	glusterd-svc-mgmt.h glusterd-shd-svc.h glusterd-nfs-svc.h \
+	glusterd-quotad-svc.h glusterd-svc-helper.h glusterd-snapd-svc.h \
+	glusterd-snapd-svc-helper.h glusterd-rcu.h glusterd-bitd-svc.h \
+	glusterd-scrub-svc.h $(CONTRIBDIR)/userspace-rcu/rculist-extra.h \
+	glusterd-server-quorum.h glusterd-errno.h
 
 AM_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src \
 	-I$(rpclibdir) -I$(CONTRIBDIR)/rbtree \
 	-I$(top_srcdir)/rpc/xdr/src -I$(top_srcdir)/rpc/rpc-lib/src \
-	-I$(CONTRIBDIR)/uuid -I$(CONTRIBDIR)/mount \
+	-I$(CONTRIBDIR)/mount \
+	-I$(CONTRIBDIR)/userspace-rcu \
 	-DSBIN_DIR=\"$(sbindir)\" -DDATADIR=\"$(localstatedir)\" \
-	-DGSYNCD_PREFIX=\"$(libexecdir)/glusterfs\"\
-        -DSYNCDAEMON_COMPILE=$(SYNCDAEMON_COMPILE) $(XML_CPPFLAGS)
+	-DGSYNCD_PREFIX=\"$(libexecdir)/glusterfs\" \
+	-DCONFDIR=\"$(sysconfdir)/ganesha\" \
+	-DGANESHA_PREFIX=\"$(libexecdir)/ganesha\" \
+	-DSYNCDAEMON_COMPILE=$(SYNCDAEMON_COMPILE) $(XML_CPPFLAGS)
 
-AM_CFLAGS = -Wall $(GF_CFLAGS)
-AM_LDFLAGS = -L$(xlatordir)
+AM_CFLAGS = -Wall $(GF_CFLAGS) $(URCU_CFLAGS) $(URCU_CDS_CFLAGS)
+AM_LDFLAGS = -L$(xlatordir) $(URCU_LIBS) $(URCU_CDS_LIBS)
 CLEANFILES = 
 all: all-am
 
@@ -430,7 +496,12 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-bitd-svc.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-bitrot.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-brick-ops.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-conn-helper.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-conn-mgmt.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-ganesha.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-geo-rep.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-handler.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-handshake.Plo@am__quote@
@@ -440,15 +511,28 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-mgmt-handler.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-mgmt.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-mountbroker.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-nfs-svc.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-op-sm.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-peer-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-pmap.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-proc-mgmt.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-quota.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-quotad-svc.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-rebalance.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-replace-brick.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-rpc-ops.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-scrub-svc.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-server-quorum.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-shd-svc.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-sm.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-snapd-svc-helper.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-snapd-svc.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-snapshot-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-snapshot.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-statedump.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-store.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-svc-helper.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-svc-mgmt.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-syncop.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/glusterd_la-glusterd-volgen.Plo@am__quote@
@@ -568,6 +652,14 @@ glusterd_la-glusterd-rebalance.lo: glusterd-rebalance.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-rebalance.lo `test -f 'glusterd-rebalance.c' || echo '$(srcdir)/'`glusterd-rebalance.c
 
+glusterd_la-glusterd-ganesha.lo: glusterd-ganesha.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-ganesha.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-ganesha.Tpo -c -o glusterd_la-glusterd-ganesha.lo `test -f 'glusterd-ganesha.c' || echo '$(srcdir)/'`glusterd-ganesha.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-ganesha.Tpo $(DEPDIR)/glusterd_la-glusterd-ganesha.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-ganesha.c' object='glusterd_la-glusterd-ganesha.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-ganesha.lo `test -f 'glusterd-ganesha.c' || echo '$(srcdir)/'`glusterd-ganesha.c
+
 glusterd_la-glusterd-quota.lo: glusterd-quota.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-quota.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-quota.Tpo -c -o glusterd_la-glusterd-quota.lo `test -f 'glusterd-quota.c' || echo '$(srcdir)/'`glusterd-quota.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-quota.Tpo $(DEPDIR)/glusterd_la-glusterd-quota.Plo
@@ -575,6 +667,14 @@ glusterd_la-glusterd-quota.lo: glusterd-quota.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-quota.c' object='glusterd_la-glusterd-quota.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-quota.lo `test -f 'glusterd-quota.c' || echo '$(srcdir)/'`glusterd-quota.c
+
+glusterd_la-glusterd-bitrot.lo: glusterd-bitrot.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-bitrot.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-bitrot.Tpo -c -o glusterd_la-glusterd-bitrot.lo `test -f 'glusterd-bitrot.c' || echo '$(srcdir)/'`glusterd-bitrot.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-bitrot.Tpo $(DEPDIR)/glusterd_la-glusterd-bitrot.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-bitrot.c' object='glusterd_la-glusterd-bitrot.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-bitrot.lo `test -f 'glusterd-bitrot.c' || echo '$(srcdir)/'`glusterd-bitrot.c
 
 glusterd_la-glusterd-geo-rep.lo: glusterd-geo-rep.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-geo-rep.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-geo-rep.Tpo -c -o glusterd_la-glusterd-geo-rep.lo `test -f 'glusterd-geo-rep.c' || echo '$(srcdir)/'`glusterd-geo-rep.c
@@ -679,6 +779,134 @@ glusterd_la-glusterd-mgmt.lo: glusterd-mgmt.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-mgmt.c' object='glusterd_la-glusterd-mgmt.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-mgmt.lo `test -f 'glusterd-mgmt.c' || echo '$(srcdir)/'`glusterd-mgmt.c
+
+glusterd_la-glusterd-peer-utils.lo: glusterd-peer-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-peer-utils.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-peer-utils.Tpo -c -o glusterd_la-glusterd-peer-utils.lo `test -f 'glusterd-peer-utils.c' || echo '$(srcdir)/'`glusterd-peer-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-peer-utils.Tpo $(DEPDIR)/glusterd_la-glusterd-peer-utils.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-peer-utils.c' object='glusterd_la-glusterd-peer-utils.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-peer-utils.lo `test -f 'glusterd-peer-utils.c' || echo '$(srcdir)/'`glusterd-peer-utils.c
+
+glusterd_la-glusterd-statedump.lo: glusterd-statedump.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-statedump.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-statedump.Tpo -c -o glusterd_la-glusterd-statedump.lo `test -f 'glusterd-statedump.c' || echo '$(srcdir)/'`glusterd-statedump.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-statedump.Tpo $(DEPDIR)/glusterd_la-glusterd-statedump.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-statedump.c' object='glusterd_la-glusterd-statedump.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-statedump.lo `test -f 'glusterd-statedump.c' || echo '$(srcdir)/'`glusterd-statedump.c
+
+glusterd_la-glusterd-snapshot-utils.lo: glusterd-snapshot-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-snapshot-utils.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-snapshot-utils.Tpo -c -o glusterd_la-glusterd-snapshot-utils.lo `test -f 'glusterd-snapshot-utils.c' || echo '$(srcdir)/'`glusterd-snapshot-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-snapshot-utils.Tpo $(DEPDIR)/glusterd_la-glusterd-snapshot-utils.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-snapshot-utils.c' object='glusterd_la-glusterd-snapshot-utils.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-snapshot-utils.lo `test -f 'glusterd-snapshot-utils.c' || echo '$(srcdir)/'`glusterd-snapshot-utils.c
+
+glusterd_la-glusterd-conn-mgmt.lo: glusterd-conn-mgmt.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-conn-mgmt.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-conn-mgmt.Tpo -c -o glusterd_la-glusterd-conn-mgmt.lo `test -f 'glusterd-conn-mgmt.c' || echo '$(srcdir)/'`glusterd-conn-mgmt.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-conn-mgmt.Tpo $(DEPDIR)/glusterd_la-glusterd-conn-mgmt.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-conn-mgmt.c' object='glusterd_la-glusterd-conn-mgmt.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-conn-mgmt.lo `test -f 'glusterd-conn-mgmt.c' || echo '$(srcdir)/'`glusterd-conn-mgmt.c
+
+glusterd_la-glusterd-proc-mgmt.lo: glusterd-proc-mgmt.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-proc-mgmt.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-proc-mgmt.Tpo -c -o glusterd_la-glusterd-proc-mgmt.lo `test -f 'glusterd-proc-mgmt.c' || echo '$(srcdir)/'`glusterd-proc-mgmt.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-proc-mgmt.Tpo $(DEPDIR)/glusterd_la-glusterd-proc-mgmt.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-proc-mgmt.c' object='glusterd_la-glusterd-proc-mgmt.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-proc-mgmt.lo `test -f 'glusterd-proc-mgmt.c' || echo '$(srcdir)/'`glusterd-proc-mgmt.c
+
+glusterd_la-glusterd-svc-mgmt.lo: glusterd-svc-mgmt.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-svc-mgmt.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-svc-mgmt.Tpo -c -o glusterd_la-glusterd-svc-mgmt.lo `test -f 'glusterd-svc-mgmt.c' || echo '$(srcdir)/'`glusterd-svc-mgmt.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-svc-mgmt.Tpo $(DEPDIR)/glusterd_la-glusterd-svc-mgmt.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-svc-mgmt.c' object='glusterd_la-glusterd-svc-mgmt.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-svc-mgmt.lo `test -f 'glusterd-svc-mgmt.c' || echo '$(srcdir)/'`glusterd-svc-mgmt.c
+
+glusterd_la-glusterd-shd-svc.lo: glusterd-shd-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-shd-svc.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-shd-svc.Tpo -c -o glusterd_la-glusterd-shd-svc.lo `test -f 'glusterd-shd-svc.c' || echo '$(srcdir)/'`glusterd-shd-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-shd-svc.Tpo $(DEPDIR)/glusterd_la-glusterd-shd-svc.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-shd-svc.c' object='glusterd_la-glusterd-shd-svc.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-shd-svc.lo `test -f 'glusterd-shd-svc.c' || echo '$(srcdir)/'`glusterd-shd-svc.c
+
+glusterd_la-glusterd-nfs-svc.lo: glusterd-nfs-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-nfs-svc.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-nfs-svc.Tpo -c -o glusterd_la-glusterd-nfs-svc.lo `test -f 'glusterd-nfs-svc.c' || echo '$(srcdir)/'`glusterd-nfs-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-nfs-svc.Tpo $(DEPDIR)/glusterd_la-glusterd-nfs-svc.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-nfs-svc.c' object='glusterd_la-glusterd-nfs-svc.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-nfs-svc.lo `test -f 'glusterd-nfs-svc.c' || echo '$(srcdir)/'`glusterd-nfs-svc.c
+
+glusterd_la-glusterd-quotad-svc.lo: glusterd-quotad-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-quotad-svc.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-quotad-svc.Tpo -c -o glusterd_la-glusterd-quotad-svc.lo `test -f 'glusterd-quotad-svc.c' || echo '$(srcdir)/'`glusterd-quotad-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-quotad-svc.Tpo $(DEPDIR)/glusterd_la-glusterd-quotad-svc.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-quotad-svc.c' object='glusterd_la-glusterd-quotad-svc.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-quotad-svc.lo `test -f 'glusterd-quotad-svc.c' || echo '$(srcdir)/'`glusterd-quotad-svc.c
+
+glusterd_la-glusterd-svc-helper.lo: glusterd-svc-helper.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-svc-helper.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-svc-helper.Tpo -c -o glusterd_la-glusterd-svc-helper.lo `test -f 'glusterd-svc-helper.c' || echo '$(srcdir)/'`glusterd-svc-helper.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-svc-helper.Tpo $(DEPDIR)/glusterd_la-glusterd-svc-helper.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-svc-helper.c' object='glusterd_la-glusterd-svc-helper.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-svc-helper.lo `test -f 'glusterd-svc-helper.c' || echo '$(srcdir)/'`glusterd-svc-helper.c
+
+glusterd_la-glusterd-conn-helper.lo: glusterd-conn-helper.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-conn-helper.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-conn-helper.Tpo -c -o glusterd_la-glusterd-conn-helper.lo `test -f 'glusterd-conn-helper.c' || echo '$(srcdir)/'`glusterd-conn-helper.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-conn-helper.Tpo $(DEPDIR)/glusterd_la-glusterd-conn-helper.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-conn-helper.c' object='glusterd_la-glusterd-conn-helper.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-conn-helper.lo `test -f 'glusterd-conn-helper.c' || echo '$(srcdir)/'`glusterd-conn-helper.c
+
+glusterd_la-glusterd-snapd-svc.lo: glusterd-snapd-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-snapd-svc.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-snapd-svc.Tpo -c -o glusterd_la-glusterd-snapd-svc.lo `test -f 'glusterd-snapd-svc.c' || echo '$(srcdir)/'`glusterd-snapd-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-snapd-svc.Tpo $(DEPDIR)/glusterd_la-glusterd-snapd-svc.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-snapd-svc.c' object='glusterd_la-glusterd-snapd-svc.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-snapd-svc.lo `test -f 'glusterd-snapd-svc.c' || echo '$(srcdir)/'`glusterd-snapd-svc.c
+
+glusterd_la-glusterd-snapd-svc-helper.lo: glusterd-snapd-svc-helper.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-snapd-svc-helper.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-snapd-svc-helper.Tpo -c -o glusterd_la-glusterd-snapd-svc-helper.lo `test -f 'glusterd-snapd-svc-helper.c' || echo '$(srcdir)/'`glusterd-snapd-svc-helper.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-snapd-svc-helper.Tpo $(DEPDIR)/glusterd_la-glusterd-snapd-svc-helper.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-snapd-svc-helper.c' object='glusterd_la-glusterd-snapd-svc-helper.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-snapd-svc-helper.lo `test -f 'glusterd-snapd-svc-helper.c' || echo '$(srcdir)/'`glusterd-snapd-svc-helper.c
+
+glusterd_la-glusterd-bitd-svc.lo: glusterd-bitd-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-bitd-svc.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-bitd-svc.Tpo -c -o glusterd_la-glusterd-bitd-svc.lo `test -f 'glusterd-bitd-svc.c' || echo '$(srcdir)/'`glusterd-bitd-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-bitd-svc.Tpo $(DEPDIR)/glusterd_la-glusterd-bitd-svc.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-bitd-svc.c' object='glusterd_la-glusterd-bitd-svc.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-bitd-svc.lo `test -f 'glusterd-bitd-svc.c' || echo '$(srcdir)/'`glusterd-bitd-svc.c
+
+glusterd_la-glusterd-scrub-svc.lo: glusterd-scrub-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-scrub-svc.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-scrub-svc.Tpo -c -o glusterd_la-glusterd-scrub-svc.lo `test -f 'glusterd-scrub-svc.c' || echo '$(srcdir)/'`glusterd-scrub-svc.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-scrub-svc.Tpo $(DEPDIR)/glusterd_la-glusterd-scrub-svc.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-scrub-svc.c' object='glusterd_la-glusterd-scrub-svc.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-scrub-svc.lo `test -f 'glusterd-scrub-svc.c' || echo '$(srcdir)/'`glusterd-scrub-svc.c
+
+glusterd_la-glusterd-server-quorum.lo: glusterd-server-quorum.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT glusterd_la-glusterd-server-quorum.lo -MD -MP -MF $(DEPDIR)/glusterd_la-glusterd-server-quorum.Tpo -c -o glusterd_la-glusterd-server-quorum.lo `test -f 'glusterd-server-quorum.c' || echo '$(srcdir)/'`glusterd-server-quorum.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/glusterd_la-glusterd-server-quorum.Tpo $(DEPDIR)/glusterd_la-glusterd-server-quorum.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd-server-quorum.c' object='glusterd_la-glusterd-server-quorum.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(glusterd_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o glusterd_la-glusterd-server-quorum.lo `test -f 'glusterd-server-quorum.c' || echo '$(srcdir)/'`glusterd-server-quorum.c
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -892,11 +1120,10 @@ uninstall-am: uninstall-xlatorLTLIBRARIES
 
 
 install-data-hook:
-
-@GF_INSTALL_VAR_LIB_GLUSTERD_TRUE@	$(mkdir_p) $(localstatedir)/lib/
-@GF_INSTALL_VAR_LIB_GLUSTERD_TRUE@	(stat $(sysconfdir)/glusterd && \
-@GF_INSTALL_VAR_LIB_GLUSTERD_TRUE@	    mv $(sysconfdir)/glusterd $(localstatedir)/lib/) || true;
-@GF_INSTALL_VAR_LIB_GLUSTERD_TRUE@	(ln -sf $(localstatedir)/lib/glusterd $(sysconfdir)/glusterd) || true;
+@GF_INSTALL_GLUSTERD_WORKDIR_TRUE@	$(MKDIR_P) $(DESTDIR)$(GLUSTERD_WORKDIR)
+@GF_INSTALL_GLUSTERD_WORKDIR_TRUE@	(stat $(DESTDIR)$(sysconfdir)/glusterd && \
+@GF_INSTALL_GLUSTERD_WORKDIR_TRUE@	    mv $(DESTDIR)$(sysconfdir)/glusterd $(DESTDIR)$(GLUSTERD_WORKDIR)) || true;
+@GF_INSTALL_GLUSTERD_WORKDIR_TRUE@	(ln -sf $(DESTDIR)$(GLUSTERD_WORKDIR) $(sysconfdir)/glusterd) || true;
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

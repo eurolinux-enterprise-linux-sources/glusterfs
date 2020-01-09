@@ -1,0 +1,41 @@
+From bfe14d2ab7dd3034656ffd0b8308402e7533ebb6 Mon Sep 17 00:00:00 2001
+From: Gaurav Kumar Garg <ggarg@redhat.com>
+Date: Wed, 1 Jul 2015 17:55:47 +0530
+Subject: [PATCH 26/28] extra: "enable-shared-storage" key should create shared-storage
+
+This patch is backport of: http://review.gluster.org/11491
+
+Currently while creating shared storage it accept only
+"cluster.enable-shared-storage" key. It should also
+accept "enable-shared-storage" key.
+
+  >> Change-Id: I4c68782f4b7927ec8cd725e411b0b9db17d9c48d
+  >> BUG: 1238224
+  >> Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+
+Change-Id: I35293ddcb50035ffa4e6445c208da8750fc96f1b
+BUG: 1236153
+Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59443
+Reviewed-by: Krishnan Parthasarathi <kparthas@redhat.com>
+Tested-by: Krishnan Parthasarathi <kparthas@redhat.com>
+---
+ .../set/post/S32gluster_enable_shared_storage.sh   |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh b/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh
+index 9080219..ad51bab 100755
+--- a/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh
++++ b/extras/hook-scripts/set/post/S32gluster_enable_shared_storage.sh
+@@ -2,7 +2,7 @@
+ 
+ key=`echo $3 | cut -d '=' -f 1`
+ val=`echo $3 | cut -d '=' -f 2`
+-if [ "$key" != "cluster.enable-shared-storage" ]; then
++if [ ! "$key" -eq "enable-shared-storage" -o "$key" -eq "cluster.enable-shared-storage" ]; then
+     exit;
+ fi
+ if [ "$val" != 'enable' ]; then
+-- 
+1.7.1
+

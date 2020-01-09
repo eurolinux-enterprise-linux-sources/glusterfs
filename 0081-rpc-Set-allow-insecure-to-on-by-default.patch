@@ -1,0 +1,75 @@
+From 8e4723cb0b9d56942f41b0aba3c7d448b2dc4205 Mon Sep 17 00:00:00 2001
+From: Raghavendra Talur <rtalur@redhat.com>
+Date: Tue, 3 Nov 2015 16:48:13 +0500
+Subject: [PATCH 81/98] rpc: Set allow-insecure to on by default
+
+New requirements from Manila require allow-insecure to
+be set to on by default so that manual effort required to
+configure is less.
+
+This is a special downstream only patch. A upstream patch
+for 3.7 branch can be found at
+http://review.gluster.org/#/c/11758/2.
+
+That patch changes even bind-insecure value to be on by default
+and is not recommended downstream.
+
+Change-Id: I8b9ccaf2b269d22641e5b17569d7536934300836
+BUG: 1261248
+Signed-off-by: Raghavendra Talur <rtalur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60698
+Reviewed-by: Kaushal Madappa <kaushal@redhat.com>
+Reviewed-by: Anand Nekkunti <anekkunt@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ rpc/rpc-lib/src/rpcsvc-auth.c |   13 ++++++++++++-
+ rpc/rpc-lib/src/rpcsvc.c      |    6 ++++--
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/rpc/rpc-lib/src/rpcsvc-auth.c b/rpc/rpc-lib/src/rpcsvc-auth.c
+index 6b4c793..b7d6c22 100644
+--- a/rpc/rpc-lib/src/rpcsvc-auth.c
++++ b/rpc/rpc-lib/src/rpcsvc-auth.c
+@@ -221,9 +221,20 @@ rpcsvc_set_allow_insecure (rpcsvc_t *svc, dict_t *options)
+                         else
+                                 svc->allow_insecure = 0;
+                 }
++        } else {
++                /* By default set allow-insecure to true */
++                svc->allow_insecure = 1;
++
++                /* setting in options for the sake of functions that look
++                 * configuration params for allow insecure,  eg: gf_auth
++                 */
++                ret = dict_set_str (options, "rpc-auth-allow-insecure", "on");
++                if (ret < 0)
++                        gf_log ("rpc-auth", GF_LOG_DEBUG,
++                                        "dict_set failed for 'allow-insecure'");
+         }
+ 
+-        return 0;
++        return ret;
+ }
+ 
+ int
+diff --git a/rpc/rpc-lib/src/rpcsvc.c b/rpc/rpc-lib/src/rpcsvc.c
+index 2bae353..8307d2f 100644
+--- a/rpc/rpc-lib/src/rpcsvc.c
++++ b/rpc/rpc-lib/src/rpcsvc.c
+@@ -636,8 +636,10 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
+                         gf_log (GF_RPCSVC, GF_LOG_ERROR,
+                                 "Request received from non-"
+                                 "privileged port. Failing request");
+-                        rpcsvc_request_destroy (req);
+-                        return -1;
++                        req->rpc_status = MSG_DENIED;
++                        req->rpc_err = AUTH_ERROR;
++                        req->auth_err = RPCSVC_AUTH_REJECT;
++                        goto err_reply;
+         }
+ 
+         /* DRC */
+-- 
+1.7.1
+

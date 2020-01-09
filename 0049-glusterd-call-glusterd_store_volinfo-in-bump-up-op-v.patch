@@ -1,0 +1,59 @@
+From 465a16ea61f2bbaaed7ac081503eb3679bc6ceb1 Mon Sep 17 00:00:00 2001
+From: Atin Mukherjee <amukherj@redhat.com>
+Date: Mon, 14 Sep 2015 17:09:29 +0530
+Subject: [PATCH 49/67] glusterd: call glusterd_store_volinfo in bump up op-version
+
+After an upgrade, op-version is expected to be updated through gluster volume
+set. If the new version introduces any feature which changes volinfo structure
+without storing the default values of these new options would result into cksum
+issues.
+
+Backport of:
+>Change-Id: I57b4667f3403839811735bf66bef29e5200a9241
+>BUG: 1262805
+>Signed-off-by: Atin Mukherjee <amukherj@redhat.com>
+>Reviewed-on: http://review.gluster.org/12171
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Krishnan Parthasarathi <kparthas@redhat.com>
+>Reviewed-by: Gaurav Kumar Garg <ggarg@redhat.com>
+>Signed-off-by: anand <anekkunt@redhat.com>
+
+Change-Id: Id68f1c15224a6e483b72490e93b956d8fa3dc3ed
+BUG: 1248895
+Signed-off-by: anand <anekkunt@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60332
+Reviewed-by: Gaurav Garg <ggarg@redhat.com>
+Reviewed-by: Krishnan Parthasarathi <kparthas@redhat.com>
+Tested-by: Krishnan Parthasarathi <kparthas@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index 7ffffa2..cd562fa 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -2207,6 +2207,7 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+         char            *next_version   = NULL;
+         gf_boolean_t    quorum_action   = _gf_false;
+         uint32_t        op_version      = 0;
++        glusterd_volinfo_t  *volinfo    = NULL;
+ 
+         conf = this->private;
+         ret = dict_get_str (dict, "key1", &key);
+@@ -2259,6 +2260,12 @@ glusterd_op_set_all_volume_options (xlator_t *this, dict_t *dict,
+                                         "Failed to store op-version.");
+                         }
+                 }
++                cds_list_for_each_entry (volinfo, &conf->volumes, vol_list) {
++                        ret = glusterd_store_volinfo
++                                (volinfo, GLUSTERD_VOLINFO_VER_AC_INCREMENT);
++                        if (ret)
++                                goto out;
++                }
+                 /* No need to save cluster.op-version in conf->opts
+                  */
+                 goto out;
+-- 
+1.7.1
+

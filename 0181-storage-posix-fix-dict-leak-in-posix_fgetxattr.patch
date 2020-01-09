@@ -1,0 +1,42 @@
+From 21ca615788802c81ae1aeb740821cd0b74aa2017 Mon Sep 17 00:00:00 2001
+From: Susant Palai <spalai@redhat.com>
+Date: Wed, 9 Dec 2015 03:53:45 -0500
+Subject: [PATCH 181/191] storage/posix: fix dict leak in posix_fgetxattr
+
+BUG: 1275751
+Change-Id: I4a06eca59beffac92b7eb2004db3de8bde8af92e
+Reviewed-on: http://review.gluster.org/12916
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Signed-off-by: Susant Palai <spalai@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63473
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/storage/posix/src/posix.c |    3 +--
+ 1 files changed, 1 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 3b3d6b4..6139414 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -4283,7 +4283,7 @@ posix_fgetxattr (call_frame_t *frame, xlator_t *this,
+         _fd = pfd->fd;
+ 
+         /* Get the total size */
+-        dict = get_new_dict ();
++        dict = dict_new ();
+         if (!dict) {
+                 op_ret = -1;
+                 op_errno = ENOMEM;
+@@ -4467,7 +4467,6 @@ done:
+         if (dict) {
+                 dict_del (dict, GFID_XATTR_KEY);
+                 dict_del (dict, GF_XATTR_VOL_ID_KEY);
+-                dict_ref (dict);
+         }
+ 
+ out:
+-- 
+1.7.1
+

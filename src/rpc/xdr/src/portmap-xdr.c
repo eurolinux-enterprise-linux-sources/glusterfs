@@ -14,8 +14,15 @@
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
+#if !defined(__clang__)
+#if !defined(__NetBSD__)
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+#else
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #endif
 #endif
 
@@ -24,7 +31,7 @@
  * It was generated using rpcgen.
  */
 
-#include "portmap-xdr.h"
+#include "../../../rpc/xdr/src/portmap-xdr.h"
 
 bool_t
 xdr_pmap_port_by_brick_req (XDR *xdrs, pmap_port_by_brick_req *objp)

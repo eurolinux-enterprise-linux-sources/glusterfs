@@ -1,0 +1,323 @@
+From 9e637f0f7464de2b9c3d6019b1ff88bdea416c8c Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Tue, 8 Sep 2015 16:23:36 +0530
+Subject: [PATCH 79/98] cluster/ec: Implement gfid-hash read-policy
+
+Add a policy in ec to performs reads from same bricks as long as they
+are good. Based on the gfid of the file/directory it determines the
+bricks to be considered for reading.
+
+ >Change-Id: Ic97b5c54c086a28b5e07a330a4fd448551b49376
+ >BUG: 1261260
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/12133
+ >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+ >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Xavier Hernandez <xhernandez@datalab.es>
+
+BUG: 1265074
+Change-Id: Ibf0d21d7210125fa7aaa12b3f98bcdf7cd89ef02
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60418
+---
+ tests/basic/ec/ec-read-policy.t                 |   53 +++++++++++++++++++++++
+ xlators/cluster/ec/src/ec-common.c              |   37 ++++++++++++----
+ xlators/cluster/ec/src/ec.c                     |   39 ++++++++++++++++-
+ xlators/cluster/ec/src/ec.h                     |    7 +++
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |    8 +++
+ 5 files changed, 134 insertions(+), 10 deletions(-)
+ create mode 100644 tests/basic/ec/ec-read-policy.t
+
+diff --git a/tests/basic/ec/ec-read-policy.t b/tests/basic/ec/ec-read-policy.t
+new file mode 100644
+index 0000000..8915080
+--- /dev/null
++++ b/tests/basic/ec/ec-read-policy.t
+@@ -0,0 +1,53 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup
++
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume create $V0 disperse 6 redundancy 2 $H0:$B0/${V0}{0..5}
++TEST $CLI volume set $V0 performance.quick-read off
++TEST $CLI volume set $V0 performance.io-cache off
++TEST $CLI volume set $V0 performance.write-behind off
++TEST $CLI volume set $V0 performance.stat-prefetch off
++TEST $CLI volume set $V0 performance.read-ahead off
++TEST $CLI volume heal $V0 disable
++TEST $CLI volume start $V0
++
++#Disable all caching
++TEST glusterfs --direct-io-mode=yes --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id $V0 $M0
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "6" ec_child_up_count $V0 0
++#TEST volume operations work fine
++EXPECT "round-robin" mount_get_option_value $M0 $V0-disperse-0 read-policy
++TEST $CLI volume set $V0 disperse.read-policy gfid-hash
++EXPECT_WITHIN $CONFIG_UPDATE_TIMEOUT "gfid-hash" mount_get_option_value $M0 $V0-disperse-0 read-policy
++TEST $CLI volume reset $V0 disperse.read-policy
++EXPECT_WITHIN $CONFIG_UPDATE_TIMEOUT "round-robin" mount_get_option_value $M0 $V0-disperse-0 read-policy
++
++#TEST if the option gives the intended behavior. The way we perform this test
++#is by performing reads from the mount and write to /dev/null. If the
++#read-policy is round-robin, then all bricks should have read-fop where as
++#with gfid-hash number of bricks with reads should be equal to (num-bricks - redundancy)
++#count
++
++TEST $CLI volume profile $V0 start
++TEST dd if=/dev/zero of=$M0/1 bs=1M count=4
++#Perform reads now from file on the mount, this only tests dispatch_min
++TEST dd if=$M0/1 of=/dev/null bs=1M count=4
++#TEST that reads are executed on all bricks
++rr_reads=$($CLI volume profile $V0 info cumulative| grep READ | wc -l)
++EXPECT "^6$" echo $rr_reads
++TEST $CLI volume profile $V0 info clear
++
++TEST $CLI volume set $V0 disperse.read-policy gfid-hash
++EXPECT_WITHIN $CONFIG_UPDATE_TIMEOUT "gfid-hash" mount_get_option_value $M0 $V0-disperse-0 read-policy
++
++#Perform reads now from file on the mount, this only tests dispatch_min
++TEST dd if=$M0/1 of=/dev/null bs=1M count=4
++#TEST that reads are executed on all bricks
++gh_reads=$($CLI volume profile $V0 info cumulative| grep READ |  wc -l)
++EXPECT "^4$" echo $gh_reads
++
++cleanup;
+diff --git a/xlators/cluster/ec/src/ec-common.c b/xlators/cluster/ec/src/ec-common.c
+index c5c37dd..152611f 100644
+--- a/xlators/cluster/ec/src/ec-common.c
++++ b/xlators/cluster/ec/src/ec-common.c
+@@ -9,6 +9,7 @@
+ */
+ 
+ #include "byte-order.h"
++#include "hashfn.h"
+ 
+ #include "ec-mem-types.h"
+ #include "ec-data.h"
+@@ -20,6 +21,25 @@
+ #include "ec.h"
+ #include "ec-messages.h"
+ 
++uint32_t
++ec_select_first_by_read_policy (ec_t *ec, ec_fop_data_t *fop)
++{
++        if (ec->read_policy == EC_ROUND_ROBIN) {
++                return ec->idx;
++        } else if (ec->read_policy == EC_GFID_HASH) {
++                if (fop->use_fd) {
++                        return SuperFastHash((char *)fop->fd->inode->gfid,
++                                   sizeof(fop->fd->inode->gfid)) % ec->nodes;
++                } else {
++                        if (gf_uuid_is_null (fop->loc[0].gfid))
++                                loc_gfid (&fop->loc[0], fop->loc[0].gfid);
++                        return SuperFastHash((char *)fop->loc[0].gfid,
++                                   sizeof(fop->loc[0].gfid)) % ec->nodes;
++                }
++        }
++        return 0;
++}
++
+ int32_t ec_child_valid(ec_t * ec, ec_fop_data_t * fop, int32_t idx)
+ {
+     return (idx < ec->nodes) && (((fop->remaining >> idx) & 1) == 1);
+@@ -415,12 +435,13 @@ int32_t ec_child_select(ec_fop_data_t * fop)
+             fop->minimum = 1;
+     }
+ 
+-    first = ec->idx;
+-    if (++first >= ec->nodes)
+-    {
+-        first = 0;
++    if (ec->read_policy == EC_ROUND_ROBIN) {
++            first = ec->idx;
++            if (++first >= ec->nodes) {
++                first = 0;
++            }
++            ec->idx = first;
+     }
+-    ec->idx = first;
+ 
+     /*Unconditionally wind on healing subvolumes*/
+     fop->mask |= fop->healing;
+@@ -518,14 +539,12 @@ void ec_dispatch_start(ec_fop_data_t * fop)
+ 
+ void ec_dispatch_one(ec_fop_data_t * fop)
+ {
+-    ec_t * ec = fop->xl->private;
+-
+     ec_dispatch_start(fop);
+ 
+     if (ec_child_select(fop))
+     {
+         fop->expected = 1;
+-        fop->first = ec->idx;
++        fop->first = ec_select_first_by_read_policy (fop->xl->private, fop);
+ 
+         ec_dispatch_next(fop, fop->first);
+     }
+@@ -589,7 +608,7 @@ void ec_dispatch_min(ec_fop_data_t * fop)
+     if (ec_child_select(fop))
+     {
+         fop->expected = count = ec->fragments;
+-        fop->first = ec->idx;
++        fop->first = ec_select_first_by_read_policy (fop->xl->private, fop);
+         idx = fop->first - 1;
+         mask = 0;
+         while (count-- > 0)
+diff --git a/xlators/cluster/ec/src/ec.c b/xlators/cluster/ec/src/ec.c
+index 7abd5cf..f139482 100644
+--- a/xlators/cluster/ec/src/ec.c
++++ b/xlators/cluster/ec/src/ec.c
+@@ -21,6 +21,11 @@
+ #include "ec-messages.h"
+ #include "ec-heald.h"
+ 
++static char *ec_read_policies[EC_READ_POLICY_MAX + 1] = {
++        [EC_ROUND_ROBIN] = "round-robin",
++        [EC_GFID_HASH] = "gfid-hash",
++        [EC_READ_POLICY_MAX] = NULL
++};
+ #define EC_MAX_FRAGMENTS EC_METHOD_MAX_FRAGMENTS
+ /* The maximum number of nodes is derived from the maximum allowed fragments
+  * using the rule that redundancy cannot be equal or greater than the number
+@@ -231,10 +236,24 @@ ec_configure_background_heal_opts (ec_t *ec, int background_heals,
+         ec->background_heals = background_heals;
+ }
+ 
++int
++ec_assign_read_policy (ec_t *ec, char *read_policy)
++{
++        int read_policy_idx = -1;
++
++        read_policy_idx = gf_get_index_by_elem (ec_read_policies, read_policy);
++        if (read_policy_idx < 0 || read_policy_idx >= EC_READ_POLICY_MAX)
++                return -1;
++
++        ec->read_policy = read_policy_idx;
++        return 0;
++}
++
+ int32_t
+ reconfigure (xlator_t *this, dict_t *options)
+ {
+         ec_t     *ec              = this->private;
++        char     *read_policy     = NULL;
+         uint32_t heal_wait_qlen   = 0;
+         uint32_t background_heals = 0;
+ 
+@@ -248,6 +267,10 @@ reconfigure (xlator_t *this, dict_t *options)
+                           uint32, failed);
+         ec_configure_background_heal_opts (ec, background_heals,
+                                            heal_wait_qlen);
++        GF_OPTION_RECONF ("read-policy", read_policy, options, str, failed);
++        if (ec_assign_read_policy (ec, read_policy))
++                goto failed;
++
+         return 0;
+ failed:
+         return -1;
+@@ -512,7 +535,8 @@ notify (xlator_t *this, int32_t event, void *data, ...)
+ int32_t
+ init (xlator_t *this)
+ {
+-    ec_t *ec = NULL;
++    ec_t *ec          = NULL;
++    char *read_policy = NULL;
+ 
+     if (this->parents == NULL)
+     {
+@@ -574,6 +598,9 @@ init (xlator_t *this)
+     GF_OPTION_INIT ("heal-wait-qlength", ec->heal_wait_qlen, uint32, failed);
+     ec_configure_background_heal_opts (ec, ec->background_heals,
+                                        ec->heal_wait_qlen);
++    GF_OPTION_INIT ("read-policy", read_policy, str, failed);
++    if (ec_assign_read_policy (ec, read_policy))
++            goto failed;
+ 
+     if (ec->shd.iamshd)
+             ec_selfheal_daemon_init (this);
+@@ -1189,6 +1216,7 @@ int32_t ec_dump_private(xlator_t *this)
+     gf_proc_dump_write("heal-wait-qlength", "%d", ec->heal_wait_qlen);
+     gf_proc_dump_write("healers", "%d", ec->healers);
+     gf_proc_dump_write("heal-waiters", "%d", ec->heal_waiters);
++    gf_proc_dump_write("read-policy", "%s", ec_read_policies[ec->read_policy]);
+ 
+     return 0;
+ }
+@@ -1288,5 +1316,14 @@ struct volume_options options[] =
+       .description = "This option can be used to control number of heals"
+                      " that can wait",
+     },
++    { .key = {"read-policy" },
++      .type = GF_OPTION_TYPE_STR,
++      .value = {"round-robin", "gfid-hash"},
++      .default_value = "round-robin",
++      .description = "inode-read fops happen only on 'k' number of bricks in"
++              " n=k+m disperse subvolume. 'round-robin' selects the read"
++              " subvolume using round-robin algo. 'gfid-hash' selects read"
++              " subvolume based on hash of the gfid of that file/directory.",
++    },
+     { }
+ };
+diff --git a/xlators/cluster/ec/src/ec.h b/xlators/cluster/ec/src/ec.h
+index f335fd5..4ee7983 100644
+--- a/xlators/cluster/ec/src/ec.h
++++ b/xlators/cluster/ec/src/ec.h
+@@ -25,6 +25,12 @@
+ 
+ #define EC_VERSION_SIZE 2
+ 
++typedef enum {
++        EC_ROUND_ROBIN,
++        EC_GFID_HASH,
++        EC_READ_POLICY_MAX
++} ec_read_policy_t;
++
+ struct _ec
+ {
+     xlator_t *        xl;
+@@ -58,6 +64,7 @@ struct _ec
+     ec_self_heald_t   shd;
+     char              vol_uuid[UUID_SIZE + 1];
+     dict_t           *leaf_to_subvolid;
++    ec_read_policy_t  read_policy;
+ };
+ 
+ void ec_pending_fops_completed(ec_t *ec);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index b2405a3..25d9f3e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -2188,16 +2188,24 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = "disperse.background-heals",
+           .voltype     = "cluster/disperse",
+           .op_version  = GD_OP_VERSION_3_7_3,
++          .flags       = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = "disperse.heal-wait-qlength",
+           .voltype     = "cluster/disperse",
+           .op_version  = GD_OP_VERSION_3_7_3,
++          .flags       = OPT_FLAG_CLIENT_OPT
+         },
+         {
+           .key         = "dht.force-readdirp",
+           .voltype     = "cluster/distribute",
+           .option      = "use-readdirp",
+           .op_version  = GD_OP_VERSION_3_7_5,
++          .flags       = OPT_FLAG_CLIENT_OPT
++        },
++        { .key         = "disperse.read-policy",
++          .voltype     = "cluster/disperse",
++          .op_version  = GD_OP_VERSION_3_7_6,
++          .flags       = OPT_FLAG_CLIENT_OPT
+         },
+         { .key         = NULL
+         }
+-- 
+1.7.1
+

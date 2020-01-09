@@ -1,0 +1,63 @@
+From b11a1504f86fd66e07a2ff4632213fc8e709a593 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Wed, 7 Oct 2015 17:43:33 +0530
+Subject: [PATCH 78/98] cluster/afr: Handle stack reset failures
+
+        Backport of http://review.gluster.com/12309
+
+When all the bricks go down in the middle of the self-heal, in AFR_STACK_RESET
+afr_local_init will fail because all the bricks are down. So local will remain
+NULL for the frame. This leads to crashes as this failure is not handled in
+both entry and data self-heals.
+
+ >Change-Id: I71a02f161f2c4dbfdc8bb7f2a6f32807191ed253
+ >BUG: 1269501
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/12310
+ >Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+ >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+ >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+
+BUG: 1276234
+Change-Id: I5154fb125a07ec9751be424e547f279e946649e1
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60423
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+---
+ xlators/cluster/afr/src/afr-self-heal-data.c  |    4 ++++
+ xlators/cluster/afr/src/afr-self-heal-entry.c |    4 ++++
+ 2 files changed, 8 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-self-heal-data.c b/xlators/cluster/afr/src/afr-self-heal-data.c
+index 401a6fa..6a3d6e1 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-data.c
++++ b/xlators/cluster/afr/src/afr-self-heal-data.c
+@@ -394,6 +394,10 @@ afr_selfheal_data_do (call_frame_t *frame, xlator_t *this, fd_t *fd,
+ 			goto out;
+ 
+ 		AFR_STACK_RESET (iter_frame);
++		if (iter_frame->local == NULL) {
++		        ret = -ENOTCONN;
++		        goto out;
++                }
+ 	}
+ 
+ 	afr_selfheal_data_restore_time (frame, this, fd->inode, source,
+diff --git a/xlators/cluster/afr/src/afr-self-heal-entry.c b/xlators/cluster/afr/src/afr-self-heal-entry.c
+index e06e43e..43c038b 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-entry.c
++++ b/xlators/cluster/afr/src/afr-self-heal-entry.c
+@@ -550,6 +550,10 @@ afr_selfheal_entry_do_subvol (call_frame_t *frame, xlator_t *this,
+ 			ret = afr_selfheal_entry_dirent (iter_frame, this, fd,
+                                                          entry->d_name);
+ 			AFR_STACK_RESET (iter_frame);
++			if (iter_frame->local == NULL) {
++                                ret = -ENOTCONN;
++                                break;
++                        }
+ 
+                         if (ret == -1) {
+                                 /* gfid or type mismatch. */
+-- 
+1.7.1
+

@@ -1,0 +1,115 @@
+From c7388738ddd5e0cec3ad18b7f6619ba5201baea1 Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Thu, 7 Jan 2016 12:11:49 +0530
+Subject: [PATCH 230/237] performance/write-behind: maintain correct transit size in
+ case of short writes.
+
+1. Imagine a write when cache is filled with failed syncs.
+2. This write won't be unwound since cache size has exceeded
+configured limit.
+3. With trickling-writes on by default, the last write request wont be
+considered for winding when there is non zero in-transit size.
+4. There was a bug in accounting of in-transit size when winds
+resulted in short writes. Due to this bug, in-transit size used to be
+non-zero even when there are no syncs in progress.
+5. Due to 3 and 4, current write request won't be wound till there is
+another write or fsync or flush from application. But application
+can't do any other fop till current write request is unwound. This
+resulted in deadlock and hence application would be hung in 'D'
+state.
+
+This patch fixes bug in accounting of in-transit size during short
+writes.
+
+Change-Id: I10896e999bbdaa1e7b2643b724046830bb463cb2
+BUG: 1219794
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/65019
+---
+ .../performance/write-behind/src/write-behind.c    |   25 +++++++------------
+ 1 files changed, 9 insertions(+), 16 deletions(-)
+
+diff --git a/xlators/performance/write-behind/src/write-behind.c b/xlators/performance/write-behind/src/write-behind.c
+index 94f8285..b5cc417 100644
+--- a/xlators/performance/write-behind/src/write-behind.c
++++ b/xlators/performance/write-behind/src/write-behind.c
+@@ -818,9 +818,8 @@ wb_fulfill_err (wb_request_t *head, int op_errno)
+ 	UNLOCK (&wb_inode->lock);
+ }
+ 
+-inline void
+-__wb_modify_write_request (wb_request_t *req, int synced_size,
+-                           int head_total_size)
++void
++__wb_modify_write_request (wb_request_t *req, int synced_size)
+ {
+         struct iovec *vector = NULL;
+         int           count  = 0;
+@@ -830,7 +829,6 @@ __wb_modify_write_request (wb_request_t *req, int synced_size,
+ 
+         req->write_size -= synced_size;
+         req->stub->args.offset += synced_size;
+-        req->total_size = head_total_size;
+ 
+         vector = req->stub->args.vector;
+         count = req->stub->args.count;
+@@ -843,7 +841,7 @@ out:
+ }
+ 
+ int
+-__wb_fulfill_short_write (wb_request_t *req, int size, int total_size)
++__wb_fulfill_short_write (wb_request_t *req, int size)
+ {
+         int accounted_size = 0;
+ 
+@@ -855,7 +853,7 @@ __wb_fulfill_short_write (wb_request_t *req, int size, int total_size)
+                 __wb_fulfill_request (req);
+         } else {
+                 accounted_size = size;
+-                __wb_modify_write_request (req, size, total_size);
++                __wb_modify_write_request (req, size);
+         }
+ 
+ out:
+@@ -865,24 +863,20 @@ out:
+ void
+ wb_fulfill_short_write (wb_request_t *head, int size)
+ {
+-        wb_inode_t   *wb_inode   = NULL;
+-        wb_request_t *req        = NULL, *tmp = NULL;
+-        int           total_size = 0, accounted_size = 0;
++        wb_inode_t   *wb_inode       = NULL;
++        wb_request_t *req            = NULL, *tmp = NULL;
++        int           accounted_size = 0;
+ 
+         if (!head)
+                 goto out;
+ 
+         wb_inode = head->wb_inode;
+ 
+-        total_size = head->total_size - size;
+-        head->total_size = size;
+-
+         req = head;
+ 
+         LOCK (&wb_inode->lock);
+         {
+-                accounted_size = __wb_fulfill_short_write (head, size,
+-                                                           total_size);
++                accounted_size = __wb_fulfill_short_write (head, size);
+ 
+                 size -= accounted_size;
+ 
+@@ -890,8 +884,7 @@ wb_fulfill_short_write (wb_request_t *head, int size)
+                         goto done;
+ 
+                 list_for_each_entry_safe (req, tmp, &head->winds, winds) {
+-                        accounted_size = __wb_fulfill_short_write (req, size,
+-                                                                   total_size);
++                        accounted_size = __wb_fulfill_short_write (req, size);
+                         size -= accounted_size;
+ 
+                         if (size == 0)
+-- 
+1.7.1
+

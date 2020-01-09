@@ -1,0 +1,38 @@
+From 5b341a4c9a1dcf79bd5bc531f24d1c79545f0c87 Mon Sep 17 00:00:00 2001
+From: Manikandan Selvaganesh <mselvaga@redhat.com>
+Date: Mon, 12 Oct 2015 15:03:28 +0530
+Subject: [PATCH 18/23] cli : freeing the allocated memory
+
+> Change-Id: Ibcbad94c091a9c24fe5aff2d7e8bcd9ac88da7bf
+> BUG: 1248521
+> Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+> Reviewed-on: http://review.gluster.org/12337
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Reviewed-by: Vijaikumar Mallikarjuna <vmallika@redhat.com>
+> Reviewed-by: Kaushal M <kaushal@redhat.com>
+
+Change-Id: Ibcbad94c091a9c24fe5aff2d7e8bcd9ac88da7bf
+BUG: 1271184
+Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59379
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-rpc-ops.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 81ba6f8..d2372ef 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -2967,6 +2967,7 @@ out:
+         GF_FREE (hl_str);
+         GF_FREE (used_str);
+         GF_FREE (avail_str);
++        GF_FREE (sl_val);
+ 
+         return ret;
+ }
+-- 
+1.7.1
+

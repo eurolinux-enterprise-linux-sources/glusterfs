@@ -52,11 +52,12 @@ CONFIG_CLEAN_VPATH_FILES =
 am__installdirs = "$(DESTDIR)$(sbindir)"
 PROGRAMS = $(sbin_PROGRAMS)
 am_gluster_OBJECTS = cli.$(OBJEXT) registry.$(OBJEXT) input.$(OBJEXT) \
-	cli-cmd.$(OBJEXT) cli-rl.$(OBJEXT) cli-cmd-volume.$(OBJEXT) \
-	cli-cmd-peer.$(OBJEXT) cli-rpc-ops.$(OBJEXT) \
-	cli-cmd-parser.$(OBJEXT) cli-cmd-system.$(OBJEXT) \
-	cli-cmd-misc.$(OBJEXT) cli-xml-output.$(OBJEXT) \
-	cli-quotad-client.$(OBJEXT) cli-cmd-snapshot.$(OBJEXT)
+	cli-cmd.$(OBJEXT) cli-rl.$(OBJEXT) cli-cmd-global.$(OBJEXT) \
+	cli-cmd-volume.$(OBJEXT) cli-cmd-peer.$(OBJEXT) \
+	cli-rpc-ops.$(OBJEXT) cli-cmd-parser.$(OBJEXT) \
+	cli-cmd-system.$(OBJEXT) cli-cmd-misc.$(OBJEXT) \
+	cli-xml-output.$(OBJEXT) cli-quotad-client.$(OBJEXT) \
+	cli-cmd-snapshot.$(OBJEXT)
 gluster_OBJECTS = $(am_gluster_OBJECTS)
 am__DEPENDENCIES_1 =
 gluster_DEPENDENCIES =  \
@@ -64,7 +65,7 @@ gluster_DEPENDENCIES =  \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(top_builddir)/rpc/xdr/src/libgfxdr.la \
 	$(top_builddir)/rpc/rpc-lib/src/libgfrpc.la \
-	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
+	$(am__DEPENDENCIES_1)
 AM_V_lt = $(am__v_lt_$(V))
 am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
 am__v_lt_0 = --silent
@@ -104,6 +105,7 @@ ETAGS = etags
 CTAGS = ctags
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 ACLOCAL = @ACLOCAL@
+ACL_LIBS = @ACL_LIBS@
 AMTAR = @AMTAR@
 AM_DEFAULT_VERBOSITY = @AM_DEFAULT_VERBOSITY@
 AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
@@ -118,6 +120,7 @@ AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
 BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
 BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
+BUILD_PYTHON_SITE_PACKAGES = @BUILD_PYTHON_SITE_PACKAGES@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -138,12 +141,16 @@ EXEEXT = @EXEEXT@
 FGREP = @FGREP@
 FUSERMOUNT_SUBDIR = @FUSERMOUNT_SUBDIR@
 FUSE_CLIENT_SUBDIR = @FUSE_CLIENT_SUBDIR@
+GEOREP_EXTRAS_SUBDIR = @GEOREP_EXTRAS_SUBDIR@
+GFAPI_EXTRA_LDFLAGS = @GFAPI_EXTRA_LDFLAGS@
+GFAPI_LIBS = @GFAPI_LIBS@
+GFAPI_LT_VERSION = @GFAPI_LT_VERSION@
+GFAPI_VERSION = @GFAPI_VERSION@
 GF_CFLAGS = @GF_CFLAGS@
 GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
@@ -152,6 +159,10 @@ GLIB_LIBS = @GLIB_LIBS@
 GLUPY_SUBDIR = @GLUPY_SUBDIR@
 GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
 GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
+GLUSTERD_VOLFILE = @GLUSTERD_VOLFILE@
+GLUSTERD_WORKDIR = @GLUSTERD_WORKDIR@
+GLUSTERFSD_MISCDIR = @GLUSTERFSD_MISCDIR@
+GLUSTERFS_LIBEXECDIR = @GLUSTERFS_LIBEXECDIR@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -170,15 +181,20 @@ LEX = @LEX@
 LEXLIB = @LEXLIB@
 LEX_OUTPUT_ROOT = @LEX_OUTPUT_ROOT@
 LIBAIO = @LIBAIO@
+LIBGFCHANGELOG_LT_VERSION = @LIBGFCHANGELOG_LT_VERSION@
+LIBGFCHANGELOG_VERSION = @LIBGFCHANGELOG_VERSION@
+LIBGFDB_VERSION = @LIBGFDB_VERSION@
+LIBGFRPC_LT_VERSION = @LIBGFRPC_LT_VERSION@
+LIBGFXDR_LT_VERSION = @LIBGFXDR_LT_VERSION@
+LIBGLUSTERFS_LT_VERSION = @LIBGLUSTERFS_LT_VERSION@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
-LIBZ_CFLAGS = @LIBZ_CFLAGS@
-LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+MATH_LIB = @MATH_LIB@
 MKDIR_P = @MKDIR_P@
 NM = @NM@
 NMEDIT = @NMEDIT@
@@ -195,12 +211,15 @@ PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKGCONFIG_UUID = @PKGCONFIG_UUID@
 PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
 PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
 PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
 PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
+PYTHON_CFLAGS = @PYTHON_CFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
+PYTHON_LIBS = @PYTHON_LIBS@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
 PYTHON_VERSION = @PYTHON_VERSION@
@@ -215,9 +234,22 @@ SIZEOF_INT = @SIZEOF_INT@
 SIZEOF_LONG = @SIZEOF_LONG@
 SIZEOF_LONG_LONG = @SIZEOF_LONG_LONG@
 SIZEOF_SHORT = @SIZEOF_SHORT@
+SQLITE_CFLAGS = @SQLITE_CFLAGS@
+SQLITE_LIBS = @SQLITE_LIBS@
 STRIP = @STRIP@
 SYNCDAEMON_COMPILE = @SYNCDAEMON_COMPILE@
 SYNCDAEMON_SUBDIR = @SYNCDAEMON_SUBDIR@
+UMOUNTD_SUBDIR = @UMOUNTD_SUBDIR@
+UNITTEST_CFLAGS = @UNITTEST_CFLAGS@
+UNITTEST_LDFLAGS = @UNITTEST_LDFLAGS@
+UNITTEST_LIBS = @UNITTEST_LIBS@
+URCU_CDS_CFLAGS = @URCU_CDS_CFLAGS@
+URCU_CDS_LIBS = @URCU_CDS_LIBS@
+URCU_CFLAGS = @URCU_CFLAGS@
+URCU_LIBS = @URCU_LIBS@
+USE_POSIX_ACLS = @USE_POSIX_ACLS@
+UUID_CFLAGS = @UUID_CFLAGS@
+UUID_LIBS = @UUID_LIBS@
 VERSION = @VERSION@
 XML2_CONFIG = @XML2_CONFIG@
 XML_CPPFLAGS = @XML_CPPFLAGS@
@@ -280,22 +312,24 @@ pyexecdir = @pyexecdir@
 pythondir = @pythondir@
 sbindir = @sbindir@
 sharedstatedir = @sharedstatedir@
+shrext_cmds = @shrext_cmds@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
 systemddir = @systemddir@
 target_alias = @target_alias@
+tmpfilesdir = @tmpfilesdir@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-gluster_SOURCES = cli.c registry.c input.c cli-cmd.c cli-rl.c \
+gluster_SOURCES = cli.c registry.c input.c cli-cmd.c cli-rl.c cli-cmd-global.c \
 	 cli-cmd-volume.c cli-cmd-peer.c cli-rpc-ops.c cli-cmd-parser.c\
 	 cli-cmd-system.c cli-cmd-misc.c cli-xml-output.c cli-quotad-client.c cli-cmd-snapshot.c
 
-gluster_LDADD = $(top_builddir)/libglusterfs/src/libglusterfs.la $(GF_LDADD)\
+gluster_LDADD = $(top_builddir)/libglusterfs/src/libglusterfs.la $(GF_LDADD) \
 		$(RLLIBS) $(top_builddir)/rpc/xdr/src/libgfxdr.la \
 		$(top_builddir)/rpc/rpc-lib/src/libgfrpc.la \
-		$(GF_GLUSTERFS_LIBS) $(XML_LIBS)
+		$(XML_LIBS)
 
 gluster_LDFLAGS = $(GF_LDFLAGS)
 noinst_HEADERS = cli.h cli-mem-types.h cli-cmd.h cli-quotad-client.h
@@ -397,6 +431,7 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cli-cmd-global.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cli-cmd-misc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cli-cmd-parser.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cli-cmd-peer.Po@am__quote@
@@ -650,7 +685,7 @@ $(top_builddir)/libglusterfs/src/libglusterfs.la:
 	$(MAKE) -C $(top_builddir)/libglusterfs/src/ all
 
 install-data-hook:
-	$(mkdir_p) $(DESTDIR)$(localstatedir)/run/gluster
+	$(MKDIR_P) $(DESTDIR)$(localstatedir)/run/gluster
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

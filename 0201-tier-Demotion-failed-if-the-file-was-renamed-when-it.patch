@@ -1,0 +1,89 @@
+From 523c7dfeb444afbb75dbb5447b858e7e3161c5ea Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Wed, 16 Dec 2015 17:16:36 +0530
+Subject: [PATCH 201/214] tier: Demotion failed if the file was renamed when it was in cold
+
+During migration if the file is present we just open the file
+in hashed subvol. Now if the linkfile present on hashed is just
+linkfile to another subvol, we actually open in hashed subvol.
+
+But subsequent operation will go to linkto subvol ie,
+to non-hashed subvol. This operation will get failed
+since we haven't opened d on non-hashed.
+
+Backport of>
+>Change-Id: I9753ad3a48f0384c25509612ba76e7e10645add3
+>BUG: 1292067
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12980
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Reviewed-by: Susant Palai <spalai@redhat.com>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+>(cherry picked from commit d2f48214d436be633efb1136ee951b0736935143)
+>Change-Id: I562ac4ba73e6b572bc1be91e55a029fa75262b33
+>BUG: 1293342
+
+Change-Id: Ia736e4894c62360a2a6820b5716a8af8c24b2225
+BUG: 1286218
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64283
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c |   37 +++++++++++++++++++++---------
+ 1 files changed, 26 insertions(+), 11 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index bbf008f..2cae9c4 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -534,18 +534,33 @@ __dht_rebalance_create_dst_file (xlator_t *to, xlator_t *from, loc_t *loc, struc
+         }
+ 
+         /* Create the destination with LINKFILE mode, and linkto xattr,
+-           if the linkfile already exists, it will just open the file */
+-        ret = syncop_create (to, loc, O_RDWR, DHT_LINKFILE_MODE, fd,
+-                             &new_stbuf, dict, NULL);
+-        if (ret < 0) {
+-                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                        DHT_MSG_MIGRATE_FILE_FAILED,
+-                        "failed to create %s on %s (%s)",
+-                        loc->path, to->name, strerror (-ret));
+-                ret = -1;
+-                goto out;
+-        }
++           if the linkfile already exists, just open the file */
++        if (!ret) {
++                /*
++                 * File already present, just open the file.
++                 */
++                ret = syncop_open (to, loc, O_RDWR, fd, NULL, NULL);
++                 if (ret < 0) {
++                        gf_msg (this->name, GF_LOG_ERROR, -ret,
++                                DHT_MSG_MIGRATE_FILE_FAILED,
++                                "failed to open %s on %s",
++                                loc->path, to->name);
++                        ret = -1;
++                        goto out;
++                 }
++        } else {
++                ret = syncop_create (to, loc, O_RDWR, DHT_LINKFILE_MODE, fd,
++                                     &new_stbuf, dict, NULL);
++                 if (ret < 0) {
++                        gf_msg (this->name, GF_LOG_ERROR, -ret,
++                                DHT_MSG_MIGRATE_FILE_FAILED,
++                                "failed to create %s on %s",
++                                loc->path, to->name);
++                        ret = -1;
++                        goto out;
++                }
+ 
++        }
+ 
+         fd_bind (fd);
+         if (dst_fd)
+-- 
+1.7.1
+

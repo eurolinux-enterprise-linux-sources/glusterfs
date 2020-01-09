@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 
 #ifndef _CONFIG_H
@@ -187,154 +188,6 @@ out:
         return ret;
 }
 
-gf_ai_compare_t
-cli_cmd_compare_addrinfo (struct addrinfo *first, struct addrinfo *next)
-{
-        int             ret = -1;
-        struct addrinfo *tmp1 = NULL;
-        struct addrinfo *tmp2 = NULL;
-        char            firstip[NI_MAXHOST] = {0.};
-        char            nextip[NI_MAXHOST] = {0,};
-
-        for (tmp1 = first; tmp1 != NULL; tmp1 = tmp1->ai_next) {
-                ret = getnameinfo (tmp1->ai_addr, tmp1->ai_addrlen, firstip,
-                                   NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-                if (ret)
-                        return GF_AI_COMPARE_ERROR;
-                for (tmp2 = next; tmp2 != NULL; tmp2 = tmp2->ai_next) {
-                        ret = getnameinfo (tmp2->ai_addr, tmp2->ai_addrlen, nextip,
-                                           NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-                        if (ret)
-                                return GF_AI_COMPARE_ERROR;
-                        if (!strcmp (firstip, nextip)) {
-                                return GF_AI_COMPARE_MATCH;
-                        }
-                }
-        }
-        return GF_AI_COMPARE_NO_MATCH;
-}
-
-/* Check for non optimal brick order for replicate :
- * Checks if bricks belonging to a replicate volume
- * are present on the same server
- */
-int32_t
-cli_cmd_check_brick_order (struct cli_state *state, const char *bricks,
-                           int brick_count, int sub_count)
-{
-        int             ret = -1;
-        int             i = 0;
-        int             j = 0;
-        int             k = 0;
-        addrinfo_list_t *ai_list = NULL;
-        addrinfo_list_t *ai_list_tmp1 = NULL;
-        addrinfo_list_t *ai_list_tmp2 = NULL;
-        char            *brick = NULL;
-        char            *brick_list = NULL;
-        char            *brick_list_dup = NULL;
-        char            *tmpptr = NULL;
-        struct addrinfo *ai_info = NULL;
-        gf_answer_t     answer = GF_ANSWER_NO;
-        const char      *failed_question = NULL;
-        const char      *found_question = NULL;
-        failed_question = "Failed to perform brick order check. "
-                          "Do you want to continue creating the volume? ";
-        found_question =  "Multiple bricks of a replicate volume are present"
-                          " on the same server. This setup is not optimal.\n"
-                          "Do you still want to continue creating the volume? ";
-
-        GF_ASSERT (bricks);
-        GF_ASSERT (brick_count > 0);
-        GF_ASSERT (sub_count > 0);
-
-        ai_list = malloc (sizeof (addrinfo_list_t));
-        ai_list->info = NULL;
-        INIT_LIST_HEAD (&ai_list->list);
-        brick_list = gf_strdup (bricks);
-        if (brick_list == NULL) {
-                gf_log ("cli", GF_LOG_DEBUG, "failed to allocate memory");
-                goto check_failed;
-        }
-        brick_list_dup = brick_list;
-        /* Resolve hostnames and get addrinfo */
-        while (i < brick_count) {
-                ++i;
-                brick = strtok_r (brick_list, " \n", &tmpptr);
-                brick_list = tmpptr;
-                if (brick == NULL)
-                        goto check_failed;
-                brick = strtok_r (brick, ":", &tmpptr);
-                if (brick == NULL)
-                        goto check_failed;
-                ret = getaddrinfo (brick, NULL, NULL, &ai_info);
-                if (ret)
-                        goto check_failed;
-                ai_list_tmp1 = malloc (sizeof (addrinfo_list_t));
-                if (ai_list_tmp1 == NULL)
-                        goto check_failed;
-                ai_list_tmp1->info = ai_info;
-                list_add_tail (&ai_list_tmp1->list, &ai_list->list);
-                ai_list_tmp1 = NULL;
-        }
-
-        i = 0;
-        ai_list_tmp1 = list_entry (ai_list->list.next, addrinfo_list_t, list);
-
-        /* Check for bad brick order */
-        while (i < brick_count) {
-                ++i;
-                ai_info = ai_list_tmp1->info;
-                ai_list_tmp1 = list_entry (ai_list_tmp1->list.next,
-                                           addrinfo_list_t, list);
-                if ( 0 == i % sub_count) {
-                        j = 0;
-                        continue;
-                }
-                ai_list_tmp2 = ai_list_tmp1;
-                k = j;
-                while (k < sub_count - 1) {
-                        ++k;
-                        ret = cli_cmd_compare_addrinfo (ai_info,
-                                                        ai_list_tmp2->info);
-                        if (GF_AI_COMPARE_ERROR == ret)
-                                goto check_failed;
-                        if (GF_AI_COMPARE_MATCH == ret)
-                                goto found_bad_brick_order;
-                        ai_list_tmp2 = list_entry (ai_list_tmp2->list.next,
-                                                   addrinfo_list_t, list);
-                }
-                ++j;
-        }
-        gf_log ("cli", GF_LOG_INFO, "Brick order okay");
-        ret = 0;
-        goto out;
-
-check_failed:
-        gf_log ("cli", GF_LOG_INFO, "Failed bad brick order check");
-        answer = cli_cmd_get_confirmation(state, failed_question);
-        if (GF_ANSWER_YES == answer)
-                ret = 0;
-        goto out;
-
-found_bad_brick_order:
-        gf_log ("cli", GF_LOG_INFO, "Bad brick order found");
-        answer = cli_cmd_get_confirmation (state, found_question);
-        if (GF_ANSWER_YES == answer)
-                ret = 0;
-out:
-        ai_list_tmp2 = NULL;
-        i = 0;
-        GF_FREE (brick_list_dup);
-        list_for_each_entry (ai_list_tmp1, &ai_list->list, list) {
-                if (ai_list_tmp1->info)
-                        freeaddrinfo (ai_list_tmp1->info);
-                free (ai_list_tmp2);
-                ai_list_tmp2 = ai_list_tmp1;
-        }
-        free (ai_list_tmp2);
-        return ret;
-}
-
 int
 cli_cmd_volume_create_cbk (struct cli_state *state, struct cli_cmd_word *word,
                            const char **words, int wordcount)
@@ -358,45 +211,13 @@ cli_cmd_volume_create_cbk (struct cli_state *state, struct cli_cmd_word *word,
         if (!frame)
                 goto out;
 
-        ret = cli_cmd_volume_create_parse (words, wordcount, &options);
+        ret = cli_cmd_volume_create_parse (state, words, wordcount, &options);
 
         if (ret) {
                 cli_usage_out (word->pattern);
                 parse_error = 1;
                 goto out;
         }
-        /*Check brick order if type is replicate*/
-        ret = dict_get_int32 (options, "type", &type);
-        if (ret) {
-                gf_log ("cli", GF_LOG_ERROR, "Could not get brick type");
-                goto out;
-        }
-        if ((type == GF_CLUSTER_TYPE_REPLICATE) ||
-            (type == GF_CLUSTER_TYPE_STRIPE_REPLICATE)) {
-                if ((ret = dict_get_str (options, "bricks", &brick_list)) != 0) {
-                        gf_log ("cli", GF_LOG_ERROR, "Replica bricks check : "
-                                                     "Could not retrieve bricks list");
-                        goto out;
-                }
-                if ((ret = dict_get_int32 (options, "count", &brick_count)) != 0) {
-                        gf_log ("cli", GF_LOG_ERROR, "Replica bricks check : "
-                                                     "Could not retrieve brick count");
-                        goto out;
-                }
-                if ((ret = dict_get_int32 (options, "replica-count", &sub_count)) != 0) {
-                        gf_log ("cli", GF_LOG_ERROR, "Replica bricks check : "
-                                                    "Could not retrieve replica count");
-                        goto out;
-                }
-                gf_log ("cli", GF_LOG_INFO, "Replicate cluster type found."
-                                            " Checking brick order.");
-                ret = cli_cmd_check_brick_order (state, brick_list, brick_count, sub_count);
-                if (ret) {
-                        gf_log("cli", GF_LOG_INFO, "Not creating volume because of bad brick order");
-                        goto out;
-                }
-        }
-
 
         ret = dict_get_str (options, "transport", &trans_type);
         if (ret) {
@@ -465,19 +286,25 @@ cli_cmd_volume_delete_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 goto out;
         }
 
-        answer = cli_cmd_get_confirmation (state, question);
-
-        if (GF_ANSWER_NO == answer) {
-                ret = 0;
-                goto out;
-        }
-
         volname = (char *)words[2];
 
         ret = dict_set_str (dict, "volname", volname);
-
         if (ret) {
                 gf_log (THIS->name, GF_LOG_WARNING, "dict set failed");
+                goto out;
+        }
+
+        if (!strcmp (volname, GLUSTER_SHARED_STORAGE)) {
+                question = "Deleting the shared storage volume"
+                           "(gluster_shared_storage), will affect features "
+                           "like snapshot scheduler, geo-replication "
+                           "and NFS-Ganesha. Do you still want to "
+                           "continue?";
+        }
+
+        answer = cli_cmd_get_confirmation (state, question);
+        if (GF_ANSWER_NO == answer) {
+                ret = 0;
                 goto out;
         }
 
@@ -551,12 +378,6 @@ cli_cmd_volume_start_cbk (struct cli_state *state, struct cli_cmd_word *word,
                  gf_log (THIS->name, GF_LOG_ERROR,
                          "dict set failed");
                  goto out;
-        }
-
-        if (ret < 0) {
-                gf_log (THIS->name, GF_LOG_ERROR,
-                        "failed to serialize dict");
-                goto out;
         }
 
         proc = &cli_rpc_prog->proctable[GLUSTER_CLI_START_VOLUME];
@@ -658,6 +479,14 @@ cli_cmd_volume_stop_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 goto out;
         }
 
+        if (!strcmp (volname, GLUSTER_SHARED_STORAGE)) {
+                question = "Stopping the shared storage volume"
+                           "(gluster_shared_storage), will affect features "
+                           "like snapshot scheduler, geo-replication "
+                           "and NFS-Ganesha. Do you still want to "
+                           "continue?";
+        }
+
         if (wordcount == 4) {
                 if (!strcmp("force", words[3])) {
                         flags |= GF_CLI_FLAG_OP_FORCE;
@@ -668,6 +497,7 @@ cli_cmd_volume_stop_cbk (struct cli_state *state, struct cli_cmd_word *word,
                         goto out;
                 }
         }
+
         ret = dict_set_int32 (dict, "flags", flags);
         if (ret) {
                 gf_log (THIS->name, GF_LOG_ERROR,
@@ -904,7 +734,7 @@ cli_cmd_volume_set_cbk (struct cli_state *state, struct cli_cmd_word *word,
         int                     sent = 0;
         int                     parse_error = 0;
 
-	int                     ret = -1;
+        int                     ret = -1;
         rpc_clnt_procedure_t    *proc = NULL;
         call_frame_t            *frame = NULL;
         dict_t                  *options = NULL;
@@ -917,7 +747,8 @@ cli_cmd_volume_set_cbk (struct cli_state *state, struct cli_cmd_word *word,
         if (!frame)
                 goto out;
 
-        ret = cli_cmd_volume_set_parse (words, wordcount, &options, &op_errstr);
+        ret = cli_cmd_volume_set_parse (state, words, wordcount,
+                                        &options, &op_errstr);
         if (ret) {
                 if (op_errstr) {
                     cli_err ("%s", op_errstr);
@@ -972,7 +803,7 @@ cli_cmd_volume_add_brick_cbk (struct cli_state *state,
         if (!frame)
                 goto out;
 
-        ret = cli_cmd_volume_add_brick_parse (words, wordcount, &options);
+        ret = cli_cmd_volume_add_brick_parse (words, wordcount, &options, 0);
         if (ret) {
                 cli_usage_out (word->pattern);
                 parse_error = 1;
@@ -1015,6 +846,274 @@ out:
         }
 
         CLI_STACK_DESTROY (frame);
+
+        return ret;
+}
+
+int
+cli_tier_validate_replica_type (dict_t *dict, int type)
+{
+
+        int             brick_count             = -1;
+        int             replica_count           = 1;
+        int             ret                     = -1;
+
+        ret = dict_get_int32 (dict, "count", &brick_count);
+        if (ret) {
+                gf_log ("cli", GF_LOG_ERROR, "Failed to get brick count");
+                goto out;
+        }
+
+        ret = dict_get_int32 (dict, "replica-count", &replica_count);
+        if (ret) {
+                gf_log ("cli", GF_LOG_DEBUG, "Failed to get replica count. "
+                        "Defaulting to one");
+                replica_count = 1;
+        }
+
+        /*
+         * Change the calculation of sub_count once attach-tier support
+         * disperse volume.
+         * sub_count = disperse_count for disperse volume
+         * */
+
+
+        if (brick_count % replica_count) {
+             if (type == GF_CLUSTER_TYPE_REPLICATE)
+                     cli_err ("number of bricks is not a multiple of "
+                              "replica count");
+             else if (type == GF_CLUSTER_TYPE_DISPERSE)
+                     cli_err ("number of bricks is not a multiple of "
+                              "disperse count");
+             else
+                     cli_err ("number of bricks given doesn't match "
+                              "required count");
+
+             ret = -1;
+             goto out;
+     }
+        ret = 0;
+out:
+        return ret;
+}
+
+int
+do_cli_cmd_volume_attach_tier (struct cli_state *state,
+                                struct cli_cmd_word *word, const char **words,
+                                int wordcount)
+{
+        int                     ret = -1;
+        rpc_clnt_procedure_t    *proc = NULL;
+        call_frame_t            *frame = NULL;
+        dict_t                  *options = NULL;
+        int                     sent = 0;
+        int                     parse_error = 0;
+        cli_local_t             *local = NULL;
+        int                     type = 0;
+        char                    *question = "Attach tier is recommended only "
+                                            "for testing purposes in this "
+                                            "release. Do you want to continue?";
+        gf_answer_t             answer = GF_ANSWER_NO;
+
+        frame = create_frame (THIS, THIS->ctx->pool);
+        if (!frame)
+                goto out;
+
+        answer = cli_cmd_get_confirmation (state, question);
+        if (GF_ANSWER_NO == answer) {
+                ret = 0;
+                goto out;
+        }
+
+        ret = cli_cmd_volume_add_brick_parse (words, wordcount, &options, &type);
+        if (ret) {
+                cli_usage_out (word->pattern);
+                parse_error = 1;
+                goto out;
+        }
+
+        /*
+         * Merge this check when attach-tier has it's own cli parse function.
+         */
+        ret = cli_tier_validate_replica_type (options, type);
+        if (ret) {
+                cli_usage_out (word->pattern);
+                parse_error = 1;
+                goto out;
+        }
+
+        if (state->mode & GLUSTER_MODE_WIGNORE) {
+                ret = dict_set_int32 (options, "force", _gf_true);
+                if (ret) {
+                        gf_log ("cli", GF_LOG_ERROR, "Failed to set force "
+                                "option");
+                        goto out;
+                }
+        }
+
+        ret = dict_set_int32 (options, "attach-tier", 1);
+        if (ret)
+                goto out;
+
+        ret = dict_set_int32 (options, "hot-type", type);
+        if (ret)
+                goto out;
+
+        proc = &cli_rpc_prog->proctable[GLUSTER_CLI_ATTACH_TIER];
+
+        CLI_LOCAL_INIT (local, words, frame, options);
+
+        if (proc->fn) {
+                ret = proc->fn (frame, THIS, options);
+        }
+
+out:
+        if (ret) {
+                cli_cmd_sent_status_get (&sent);
+                if ((sent == 0) && (parse_error == 0))
+                        cli_out ("attach-tier failed");
+        }
+
+        CLI_STACK_DESTROY (frame);
+
+        return ret;
+}
+
+int
+do_cli_cmd_volume_detach_tier (struct cli_state *state,
+                              struct cli_cmd_word *word, const char **words,
+                              int wordcount)
+{
+        int                     ret = -1;
+        rpc_clnt_procedure_t    *proc = NULL;
+        call_frame_t            *frame = NULL;
+        dict_t                  *options = NULL;
+        int                     sent = 0;
+        int                     parse_error = 0;
+        gf_answer_t             answer = GF_ANSWER_NO;
+        cli_local_t             *local = NULL;
+        int                     need_question = 0;
+
+        const char *question = "Removing tier can result in data loss. "
+                               "Do you want to Continue?";
+
+        frame = create_frame (THIS, THIS->ctx->pool);
+        if (!frame)
+                goto out;
+
+        ret = cli_cmd_volume_detach_tier_parse(words, wordcount, &options);
+        if (ret) {
+                cli_usage_out (word->pattern);
+                parse_error = 1;
+                goto out;
+        }
+
+        ret = dict_set_int32 (options, "force", 1);
+        if (ret)
+                goto out;
+
+        ret = dict_set_int32 (options, "count", 0);
+        if (ret)
+                goto out;
+
+        if (!(state->mode & GLUSTER_MODE_SCRIPT) && need_question) {
+                /* we need to ask question only in case of 'commit or force' */
+                answer = cli_cmd_get_confirmation (state, question);
+                if (GF_ANSWER_NO == answer) {
+                        ret = 0;
+                        goto out;
+                }
+        }
+
+        proc = &cli_rpc_prog->proctable[GLUSTER_CLI_DETACH_TIER];
+
+        CLI_LOCAL_INIT (local, words, frame, options);
+
+        if (proc->fn) {
+                ret = proc->fn (frame, THIS, options);
+        }
+
+out:
+        if (ret) {
+                cli_cmd_sent_status_get (&sent);
+                if ((sent == 0) && (parse_error == 0))
+                        cli_out ("Volume detach-tier failed");
+        }
+
+        CLI_STACK_DESTROY (frame);
+
+        return ret;
+}
+
+int
+cli_cmd_volume_tier_cbk (struct cli_state *state,
+                         struct cli_cmd_word *word, const char **words,
+                         int wordcount)
+{
+        int                      ret     = -1;
+        call_frame_t            *frame   = NULL;
+        dict_t                  *options = NULL;
+        char                    *volname = NULL;
+        rpc_clnt_procedure_t    *proc    = NULL;
+        cli_local_t             *local   = NULL;
+        int                      i       = 0;
+
+        if (wordcount < 4) {
+                cli_usage_out (word->pattern);
+                if (wordcount == 3 && !strcmp(words[2], "help"))
+                        ret = 0;
+                goto out;
+        }
+
+        if (!strcmp(words[1], "detach-tier")) {
+                ret = do_cli_cmd_volume_detach_tier (state, word,
+                                                     words, wordcount);
+                goto out;
+        } else if (!strcmp(words[3], "detach")) {
+                for (i = 3; i < wordcount; i++)
+                        words[i] = words[i+1];
+
+                ret = do_cli_cmd_volume_detach_tier (state, word,
+                                                     words, wordcount-1);
+                goto out;
+
+        } else if (!strcmp(words[1], "attach-tier")) {
+                ret = do_cli_cmd_volume_attach_tier (state, word,
+                                                     words, wordcount);
+                goto out;
+        } else if (!strcmp(words[3], "attach")) {
+                for (i = 3; i < wordcount; i++)
+                        words[i] = words[i+1];
+
+                ret = do_cli_cmd_volume_attach_tier (state, word,
+                                                     words, wordcount-1);
+                goto out;
+        }
+
+        ret = cli_cmd_volume_tier_parse (words, wordcount, &options);
+        if (ret) {
+                cli_usage_out (word->pattern);
+                goto out;
+        }
+
+        proc = &cli_rpc_prog->proctable[GLUSTER_CLI_TIER];
+
+        frame = create_frame (THIS, THIS->ctx->pool);
+        if (!frame)
+                goto out;
+
+        CLI_LOCAL_INIT (local, words, frame, options);
+
+        if (proc->fn) {
+                ret = proc->fn (frame, THIS, options);
+        }
+
+out:
+        if (ret) {
+                cli_out ("Tier command failed");
+        }
+        if (options)
+                dict_unref (options);
 
         return ret;
 }
@@ -1079,38 +1178,28 @@ cli_stage_quota_op (char *volname, int op_code)
         int ret = -1;
 
         switch (op_code) {
-                case GF_QUOTA_OPTION_TYPE_ENABLE:
-                case GF_QUOTA_OPTION_TYPE_LIMIT_USAGE:
-                case GF_QUOTA_OPTION_TYPE_REMOVE:
-                case GF_QUOTA_OPTION_TYPE_LIST:
-                        ret = gf_cli_create_auxiliary_mount (volname);
-                        if (ret) {
-                                cli_err ("quota: Could not start quota "
-                                         "auxiliary mount");
-                                goto out;
-                        }
-                        ret = 0;
-                        break;
+        case GF_QUOTA_OPTION_TYPE_ENABLE:
+        case GF_QUOTA_OPTION_TYPE_LIMIT_USAGE:
+        case GF_QUOTA_OPTION_TYPE_LIMIT_OBJECTS:
+        case GF_QUOTA_OPTION_TYPE_REMOVE:
+        case GF_QUOTA_OPTION_TYPE_REMOVE_OBJECTS:
+        case GF_QUOTA_OPTION_TYPE_LIST:
+                ret = gf_cli_create_auxiliary_mount (volname);
+                if (ret) {
+                        cli_err ("quota: Could not start quota "
+                                 "auxiliary mount");
+                        goto out;
+                }
+                ret = 0;
+                break;
 
-                default:
-                        ret = 0;
-                        break;
+        default:
+                ret = 0;
+                break;
         }
 
 out:
         return ret;
-}
-
-static void
-print_quota_list_header (void)
-{
-        //Header
-        cli_out ("                  Path                   Hard-limit "
-                 "Soft-limit   Used  Available  Soft-limit exceeded?"
-                 " Hard-limit exceeded?");
-        cli_out ("-----------------------------------------------------"
-                 "-----------------------------------------------------"
-                 "-----------------");
 }
 
 int
@@ -1160,49 +1249,56 @@ out:
         return ret;
 }
 
-#define QUOTA_CONF_HEADER                                                \
-        "GlusterFS Quota conf | version: v%d.%d\n"
-int
-cli_cmd_quota_conf_skip_header (int fd)
-{
-        char buf[PATH_MAX] = {0,};
-
-        snprintf (buf, sizeof(buf)-1, QUOTA_CONF_HEADER, 1, 1);
-        return gf_skip_header_section (fd, strlen (buf));
-}
-
 /* Checks if at least one limit has been set on the volume
  *
  * Returns true if at least one limit is set. Returns false otherwise.
  */
 gf_boolean_t
-_limits_set_on_volume (char *volname) {
-        gf_boolean_t    limits_set = _gf_false;
-        int             ret = -1;
+_limits_set_on_volume (char *volname, int type) {
+        gf_boolean_t    limits_set                = _gf_false;
+        int             ret                       = -1;
         char            quota_conf_file[PATH_MAX] = {0,};
-        int             fd = -1;
-        char            buf[16] = {0,};
+        int             fd                        = -1;
+        char            buf[16]                   = {0,};
+        float           version                   = 0.0f;
+        char            gfid_type_stored          = 0;
+        char            gfid_type                 = 0;
 
         /* TODO: fix hardcoding; Need to perform an RPC call to glusterd
          * to fetch working directory
          */
-        sprintf (quota_conf_file, "/var/lib/glusterd/vols/%s/quota.conf",
+        sprintf (quota_conf_file, "%s/vols/%s/quota.conf",
+                 GLUSTERD_DEFAULT_WORKDIR,
                  volname);
         fd = open (quota_conf_file, O_RDONLY);
         if (fd == -1)
                 goto out;
 
-        ret = cli_cmd_quota_conf_skip_header (fd);
+        ret = quota_conf_read_version (fd, &version);
         if (ret)
                 goto out;
 
-        /* Try to read atleast one gfid */
-        ret = read (fd, (void *)buf, 16);
-        if (ret == 16)
-                limits_set = _gf_true;
+        if (type == GF_QUOTA_OPTION_TYPE_LIST)
+                gfid_type = GF_QUOTA_CONF_TYPE_USAGE;
+        else
+                gfid_type = GF_QUOTA_CONF_TYPE_OBJECTS;
+
+        /* Try to read atleast one gfid  of type 'gfid_type' */
+        while (1) {
+                ret = quota_conf_read_gfid (fd, buf, &gfid_type_stored,
+                                            version);
+                if (ret <= 0)
+                        break;
+
+                if (gfid_type_stored == gfid_type) {
+                        limits_set = _gf_true;
+                        break;
+                }
+        }
 out:
         if (fd != -1)
                 close (fd);
+
         return limits_set;
 }
 
@@ -1260,6 +1356,9 @@ cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
         char                     quota_conf_file[PATH_MAX] = {0};
         gf_boolean_t             xml_err_flag   = _gf_false;
         char                     err_str[NAME_MAX] = {0,};
+        int32_t                  type       = 0;
+        char                     gfid_type  = 0;
+        float                    version    = 0.0f;
 
         xdata = dict_new ();
         if (!xdata) {
@@ -1273,6 +1372,18 @@ cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
                 goto out;
         }
 
+        ret = dict_get_int32 (options, "type", &type);
+        if (ret) {
+                gf_log ("cli", GF_LOG_ERROR, "Failed to get quota option type");
+                goto out;
+        }
+
+        ret = dict_set_int32 (xdata, "type", type);
+        if (ret) {
+                gf_log ("cli", GF_LOG_ERROR, "Failed to set type in xdata");
+                goto out;
+        }
+
         ret = cli_get_soft_limit (options, words, xdata);
         if (ret) {
                 gf_log ("cli", GF_LOG_ERROR, "Failed to fetch default "
@@ -1283,9 +1394,11 @@ cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
         /* Check if at least one limit is set on volume. No need to check for
          * quota enabled as cli_get_soft_limit() handles that
          */
-        if (!_limits_set_on_volume (volname)) {
-                snprintf (err_str, sizeof (err_str), "No quota configured on "
-                          "volume %s", volname);
+        if (!_limits_set_on_volume (volname, type)) {
+                snprintf (err_str, sizeof (err_str), "No%s quota configured on"
+                          " volume %s",
+                          (type == GF_QUOTA_OPTION_TYPE_LIST) ? "" : " inode",
+                          volname);
                 if (global_state->mode & GLUSTER_MODE_XML) {
                         xml_err_flag = _gf_true;
                 } else {
@@ -1322,7 +1435,8 @@ cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
 
         //TODO: fix hardcoding; Need to perform an RPC call to glusterd
         //to fetch working directory
-        sprintf (quota_conf_file, "/var/lib/glusterd/vols/%s/quota.conf",
+        sprintf (quota_conf_file, "%s/vols/%s/quota.conf",
+                 GLUSTERD_DEFAULT_WORKDIR,
                  volname);
         fd = open (quota_conf_file, O_RDONLY);
         if (fd == -1) {
@@ -1333,24 +1447,12 @@ cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
                 goto out;
          }
 
-        ret = cli_cmd_quota_conf_skip_header (fd);
-        if (ret) {
+        ret = quota_conf_read_version (fd, &version);
+        if (ret)
                 goto out;
-        }
+
         CLI_LOCAL_INIT (local, words, frame, xdata);
         proc = &cli_quotad_clnt.proctable[GF_AGGREGATOR_GETLIMIT];
-
-        if (!(global_state->mode & GLUSTER_MODE_XML)) {
-                print_quota_list_header ();
-        } else {
-                ret = cli_xml_output_vol_quota_limit_list_begin
-                        (local, 0, 0, NULL);
-                if (ret) {
-                        gf_log ("cli", GF_LOG_ERROR, "Error in printing "
-                                "xml output");
-                        goto out;
-                }
-        }
 
         gfid_str = GF_CALLOC (1, gf_common_mt_char, 64);
         if (!gfid_str) {
@@ -1358,18 +1460,21 @@ cli_cmd_quota_handle_list_all (const char **words, dict_t *options)
                 goto out;
         }
         for (count = 0;; count++) {
-                ret = read (fd, (void*) buf, 16);
-                if (ret <= 0) {
-                        //Finished reading all entries in the conf file
+                ret = quota_conf_read_gfid (fd, buf, &gfid_type, version);
+                if (ret == 0) {
                         break;
-                }
-                if (ret < 16) {
-                        //This should never happen. We must have a multiple of
-                        //entry_sz bytes in our configuration file.
+                } else if (ret < 0) {
                         gf_log (THIS->name, GF_LOG_CRITICAL, "Quota "
                                 "configuration store may be corrupt.");
                         goto out;
                 }
+
+                if ((type == GF_QUOTA_OPTION_TYPE_LIST &&
+                     gfid_type == GF_QUOTA_CONF_TYPE_OBJECTS) ||
+                    (type == GF_QUOTA_OPTION_TYPE_LIST_OBJECTS &&
+                     gfid_type == GF_QUOTA_CONF_TYPE_USAGE))
+                        continue;
+
                 uuid_utoa_r (buf, gfid_str);
                 ret = dict_set_str (xdata, "gfid", gfid_str);
                 if (ret) {
@@ -1426,6 +1531,58 @@ out:
 }
 
 int
+cli_cmd_bitrot_cbk (struct cli_state *state, struct cli_cmd_word *word,
+                    const char **words, int wordcount)
+{
+
+        int                     ret        = -1;
+        int                     parse_err  = 0;
+        call_frame_t            *frame     = NULL;
+        dict_t                  *options   = NULL;
+        cli_local_t             *local     = NULL;
+        rpc_clnt_procedure_t    *proc      = NULL;
+        int                     sent       = 0;
+
+        ret = cli_cmd_bitrot_parse (words, wordcount, &options);
+        if (ret < 0) {
+                cli_usage_out (word->pattern);
+                parse_err = 1;
+                goto out;
+        }
+
+        frame = create_frame (THIS, THIS->ctx->pool);
+        if (!frame) {
+                ret = -1;
+                goto out;
+        }
+
+        proc = &cli_rpc_prog->proctable[GLUSTER_CLI_BITROT];
+        if (proc == NULL) {
+                ret = -1;
+                goto out;
+        }
+
+        CLI_LOCAL_INIT (local, words, frame, options);
+
+        if (proc->fn) {
+                ret = proc->fn (frame, THIS, options);
+        }
+
+out:
+        if (ret) {
+                cli_cmd_sent_status_get (&sent);
+                if ((sent == 0) && (parse_err == 0))
+                    cli_err ("Bit rot command failed. Please check the cli "
+                             "logs for more details");
+
+        }
+
+        CLI_STACK_DESTROY (frame);
+
+        return ret;
+}
+
+int
 cli_cmd_quota_cbk (struct cli_state *state, struct cli_cmd_word *word,
                    const char **words, int wordcount)
 {
@@ -1444,11 +1601,20 @@ cli_cmd_quota_cbk (struct cli_state *state, struct cli_cmd_word *word,
                                "configuration. Do you want to continue?";
 
         //parse **words into options dictionary
-        ret = cli_cmd_quota_parse (words, wordcount, &options);
-        if (ret < 0) {
-                cli_usage_out (word->pattern);
-                parse_err = 1;
-                goto out;
+        if (strcmp (words[1], "inode-quota") == 0) {
+                ret = cli_cmd_inode_quota_parse (words, wordcount, &options);
+                if (ret < 0) {
+                        cli_usage_out (word->pattern);
+                        parse_err = 1;
+                        goto out;
+                }
+        } else {
+                ret = cli_cmd_quota_parse (words, wordcount, &options);
+                if (ret < 0) {
+                        cli_usage_out (word->pattern);
+                        parse_err = 1;
+                        goto out;
+                }
         }
 
         ret = dict_get_int32 (options, "type", &type);
@@ -1465,6 +1631,7 @@ cli_cmd_quota_cbk (struct cli_state *state, struct cli_cmd_word *word,
                         goto out;
                 break;
         case GF_QUOTA_OPTION_TYPE_LIST:
+        case GF_QUOTA_OPTION_TYPE_LIST_OBJECTS:
                 if (wordcount != 4)
                         break;
                 ret = cli_cmd_quota_handle_list_all (words, options);
@@ -1492,10 +1659,6 @@ cli_cmd_quota_cbk (struct cli_state *state, struct cli_cmd_word *word,
 
         CLI_LOCAL_INIT (local, words, frame, options);
         proc = &cli_rpc_prog->proctable[GLUSTER_CLI_QUOTA];
-        if (proc == NULL) {
-                ret = -1;
-                goto out;
-        }
 
         if (proc->fn)
                 ret = proc->fn (frame, THIS, options);
@@ -1526,6 +1689,7 @@ cli_cmd_volume_remove_brick_cbk (struct cli_state *state,
         int                     parse_error = 0;
         int                     need_question = 0;
         cli_local_t             *local = NULL;
+        char                    *volname = NULL;
 
         const char *question = "Removing brick(s) can result in data loss. "
                                "Do you want to Continue?";
@@ -1540,6 +1704,22 @@ cli_cmd_volume_remove_brick_cbk (struct cli_state *state,
                 cli_usage_out (word->pattern);
                 parse_error = 1;
                 goto out;
+        }
+
+        ret = dict_get_str (options, "volname", &volname);
+        if (ret || !volname) {
+                gf_log ("cli", GF_LOG_ERROR, "Failed to fetch volname");
+                ret = -1;
+                goto out;
+        }
+
+        if (!strcmp (volname, GLUSTER_SHARED_STORAGE)) {
+                question = "Removing brick from the shared storage volume"
+                           "(gluster_shared_storage), will affect features "
+                           "like snapshot scheduler, geo-replication "
+                           "and NFS-Ganesha. Do you still want to "
+                           "continue?";
+                need_question = _gf_true;
         }
 
         if (!(state->mode & GLUSTER_MODE_SCRIPT) && need_question) {
@@ -1578,18 +1758,13 @@ cli_cmd_volume_replace_brick_cbk (struct cli_state *state,
                                   const char **words,
                                   int wordcount)
 {
-        int                     ret = -1;
-        rpc_clnt_procedure_t    *proc = NULL;
-        call_frame_t            *frame = NULL;
+        int                      ret          = -1;
+        rpc_clnt_procedure_t    *proc         = NULL;
+        call_frame_t            *frame        = NULL;
         dict_t                  *options = NULL;
-        int                     sent = 0;
-        int                     parse_error = 0;
+        int                      sent = 0;
+        int                      parse_error = 0;
         cli_local_t             *local = NULL;
-        int                     replace_op = 0;
-        char                    *q = "All replace-brick commands except "
-                                     "commit force are deprecated. "
-                                     "Do you want to continue?";
-        gf_answer_t             answer = GF_ANSWER_NO;
 
 #ifdef GF_SOLARIS_HOST_OS
         cli_out ("Command not supported on Solaris");
@@ -1607,24 +1782,6 @@ cli_cmd_volume_replace_brick_cbk (struct cli_state *state,
                 cli_usage_out (word->pattern);
                 parse_error = 1;
                 goto out;
-        }
-
-        ret = dict_get_int32 (options, "operation", &replace_op);
-        if (replace_op != GF_REPLACE_OP_COMMIT_FORCE) {
-                answer = cli_cmd_get_confirmation (state, q);
-                if (GF_ANSWER_NO == answer) {
-                        ret = 0;
-                        goto out;
-                }
-        }
-
-        if (state->mode & GLUSTER_MODE_WIGNORE) {
-                ret = dict_set_int32 (options, "force", _gf_true);
-                if (ret) {
-                        gf_log ("cli", GF_LOG_ERROR, "Failed to set force"
-                                "option");
-                        goto out;
-                }
         }
 
         CLI_LOCAL_INIT (local, words, frame, options);
@@ -1826,10 +1983,6 @@ cli_cmd_volume_gsync_set_cbk (struct cli_state *state, struct cli_cmd_word *word
         cli_local_t             *local   = NULL;
 
         proc = &cli_rpc_prog->proctable [GLUSTER_CLI_GSYNC_SET];
-        if (proc == NULL) {
-                ret = -1;
-                goto out;
-        }
 
         frame = create_frame (THIS, THIS->ctx->pool);
         if (frame == NULL) {
@@ -2101,6 +2254,64 @@ cli_print_brick_status (cli_volume_status_t *status)
         return 0;
 }
 
+#define NEEDS_GLFS_HEAL(op) ((op == GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE) || \
+                             (op == GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK) ||      \
+                             (op == GF_SHD_OP_INDEX_SUMMARY) ||               \
+                             (op == GF_SHD_OP_SPLIT_BRAIN_FILES))
+
+int
+cli_launch_glfs_heal (int heal_op, dict_t *options)
+{
+        char      buff[PATH_MAX] = {0};
+        runner_t  runner         = {0};
+        char      *filename      = NULL;
+        char      *hostname      = NULL;
+        char      *path          = NULL;
+        char      *volname       = NULL;
+        char      *out           = NULL;
+        int        ret           = 0;
+
+        runinit (&runner);
+        ret = dict_get_str (options, "volname", &volname);
+        runner_add_args (&runner, SBIN_DIR"/glfsheal", volname, NULL);
+        runner_redir (&runner, STDOUT_FILENO, RUN_PIPE);
+
+        switch (heal_op) {
+        case GF_SHD_OP_INDEX_SUMMARY:
+                break;
+        case GF_SHD_OP_SBRAIN_HEAL_FROM_BIGGER_FILE:
+                ret = dict_get_str (options, "file", &filename);
+                runner_add_args (&runner, "bigger-file", filename, NULL);
+                break;
+        case GF_SHD_OP_SBRAIN_HEAL_FROM_BRICK:
+                ret = dict_get_str (options, "heal-source-hostname",
+                                    &hostname);
+                ret = dict_get_str (options, "heal-source-brickpath",
+                                    &path);
+                runner_add_args (&runner, "source-brick", NULL);
+                runner_argprintf (&runner, "%s:%s", hostname, path);
+                if (dict_get_str (options, "file", &filename) == 0)
+                        runner_argprintf (&runner, filename);
+                break;
+        case GF_SHD_OP_SPLIT_BRAIN_FILES:
+                runner_add_args (&runner, "split-brain-info", NULL);
+                break;
+        default:
+                ret = -1;
+        }
+        ret = runner_start (&runner);
+        if (ret == -1)
+                goto out;
+        while ((out = fgets (buff, sizeof(buff),
+                             runner_chio (&runner, STDOUT_FILENO)))) {
+                printf ("%s", out);
+        }
+        ret = runner_end (&runner);
+        ret = WEXITSTATUS (ret);
+
+out:
+        return ret;
+}
 int
 cli_cmd_volume_heal_cbk (struct cli_state *state, struct cli_cmd_word *word,
                           const char **words, int wordcount)
@@ -2114,9 +2325,6 @@ cli_cmd_volume_heal_cbk (struct cli_state *state, struct cli_cmd_word *word,
         xlator_t                *this = NULL;
         cli_local_t             *local = NULL;
         int                     heal_op = 0;
-        runner_t                runner = {0};
-        char                    buff[PATH_MAX] = {0};
-        char                    *out = NULL;
 
         this = THIS;
         frame = create_frame (this, this->ctx->pool);
@@ -2138,22 +2346,12 @@ cli_cmd_volume_heal_cbk (struct cli_state *state, struct cli_cmd_word *word,
         ret = dict_get_int32 (options, "heal-op", &heal_op);
         if (ret < 0)
                 goto out;
-
-        if (heal_op == GF_AFR_OP_INDEX_SUMMARY) {
-                runinit (&runner);
-                runner_add_args (&runner, SBIN_DIR"/glfsheal", words[2], NULL);
-                runner_redir (&runner, STDOUT_FILENO, RUN_PIPE);
-                ret = runner_start (&runner);
+        if (NEEDS_GLFS_HEAL (heal_op)) {
+                ret = cli_launch_glfs_heal (heal_op, options);
                 if (ret == -1)
                         goto out;
-                while ((out = fgets(buff, sizeof(buff),
-                                   runner_chio (&runner, STDOUT_FILENO)))) {
-                        printf ("%s", out);
-                }
-
-                ret = runner_end (&runner);
-                ret = WEXITSTATUS (ret);
-        } else {
+        }
+        else {
                 proc = &cli_rpc_prog->proctable[GLUSTER_CLI_HEAL_VOLUME];
 
                 CLI_LOCAL_INIT (local, words, frame, options);
@@ -2167,7 +2365,7 @@ out:
         if (ret) {
                 cli_cmd_sent_status_get (&sent);
                 if ((sent == 0) && (parse_error == 0))
-                        cli_out ("Volume heal failed");
+                        cli_out ("Volume heal failed.");
         }
 
         CLI_STACK_DESTROY (frame);
@@ -2314,7 +2512,7 @@ cli_cmd_volume_clearlocks_cbk (struct cli_state *state,
 out:
         if (ret) {
                 cli_cmd_sent_status_get (&sent);
-                if ((sent == 0) && (parse_error = 0))
+                if ((sent == 0) && (parse_error == 0))
                         cli_out ("Volume clear-locks failed");
         }
 
@@ -2377,12 +2575,68 @@ out:
 
         return ret;
 }
+
+int
+cli_cmd_volume_getopt_cbk (struct cli_state *state, struct cli_cmd_word *word,
+                        const char **words, int wordcount)
+{
+        int                   ret       = -1;
+        rpc_clnt_procedure_t *proc      = NULL;
+        call_frame_t         *frame     = NULL;
+        dict_t               *options   = NULL;
+        int                   sent      = 0;
+        int                   parse_err = 0;
+        cli_local_t          *local     = NULL;
+
+        if (wordcount != 4) {
+                cli_usage_out (word->pattern);
+                parse_err = 1;
+                goto out;
+        }
+
+        frame = create_frame (THIS, THIS->ctx->pool);
+        if (!frame)
+                goto out;
+
+        options = dict_new ();
+        if (!options)
+                goto out;
+
+        ret = dict_set_str (options, "volname", (char *)words[2]);
+        if (ret)
+                goto out;
+
+        ret = dict_set_str (options, "key", (char *)words[3]);
+        if (ret)
+                goto out;
+
+        proc = &cli_rpc_prog->proctable[GLUSTER_CLI_GET_VOL_OPT];
+
+        CLI_LOCAL_INIT (local, words, frame, options);
+
+        if (proc->fn)
+                ret = proc->fn (frame, THIS, options);
+
+out:
+        if (ret) {
+                cli_cmd_sent_status_get (&sent);
+                if ((sent == 0) && (parse_err == 0))
+                        cli_err ("Volume get option failed");
+        }
+        CLI_STACK_DESTROY (frame);
+        if (options)
+                dict_unref (options);
+        return ret;
+}
+
 struct cli_cmd volume_cmds[] = {
         { "volume info [all|<VOLNAME>]",
           cli_cmd_volume_info_cbk,
           "list information of all volumes"},
 
-        { "volume create <NEW-VOLNAME> [stripe <COUNT>] [replica <COUNT>] "
+        { "volume create <NEW-VOLNAME> [stripe <COUNT>] "
+          "[replica <COUNT> [arbiter <COUNT>]] "
+          "[disperse [<COUNT>]] [disperse-data <COUNT>] [redundancy <COUNT>] "
           "[transport <tcp|rdma|tcp,rdma>] <NEW-BRICK>"
 #ifdef HAVE_BD_XLATOR
           "?<vg_name>"
@@ -2408,6 +2662,25 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_rename_cbk,
           "rename volume <VOLNAME> to <NEW-VOLNAME>"},*/
 
+        { "volume tier <VOLNAME> status\n"
+        "volume tier <VOLNAME> attach [<replica COUNT>] <NEW-BRICK>...\n"
+        "volume tier <VOLNAME> detach <start|stop|status|commit|[force]>\n",
+        cli_cmd_volume_tier_cbk,
+        "Tier translator specific operations."},
+
+        { "volume attach-tier <VOLNAME> [<replica COUNT>] <NEW-BRICK>...",
+        cli_cmd_volume_tier_cbk,
+          "NOTE: this is old syntax, will be depreciated in next release. "
+          "Please use gluster volume tier <vol> attach "
+          "[<replica COUNT>] <NEW-BRICK>..."},
+
+        { "volume detach-tier <VOLNAME> "
+          " <start|stop|status|commit|[force]>",
+        cli_cmd_volume_tier_cbk,
+          "NOTE: this is old syntax, will be depreciated in next release. "
+          "Please use gluster volume tier <vol> detach "
+          "{start|stop|commit} [force]"},
+
         { "volume add-brick <VOLNAME> [<stripe|replica> <COUNT>] <NEW-BRICK> ... [force]",
           cli_cmd_volume_add_brick_cbk,
           "add brick to volume <VOLNAME>"},
@@ -2421,7 +2694,8 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_defrag_cbk,
           "rebalance operations"},
 
-        { "volume replace-brick <VOLNAME> <BRICK> <NEW-BRICK> {start [force]|pause|abort|status|commit [force]}",
+        { "volume replace-brick <VOLNAME> <SOURCE-BRICK> <NEW-BRICK> "
+          "{commit force}",
           cli_cmd_volume_replace_brick_cbk,
           "replace-brick operations"},
 
@@ -2455,7 +2729,7 @@ struct cli_cmd volume_cmds[] = {
          "reset all the reconfigured options"},
 
 #if (SYNCDAEMON_COMPILE)
-        {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [push-pem] [force]"
+        {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [[no-verify]|[push-pem]] [force]"
          "|start [force]|stop [force]|pause [force]|resume [force]|config|status [detail]|delete} [options...]",
          cli_cmd_volume_gsync_set_cbk,
          "Geo-sync operations",
@@ -2466,9 +2740,16 @@ struct cli_cmd volume_cmds[] = {
            cli_cmd_volume_profile_cbk,
            "volume profile operations"},
 
-        { "volume quota <VOLNAME> {enable|disable|list [<path> ...]|remove <path>| default-soft-limit <percent>} |\n"
+        { "volume quota <VOLNAME> {enable|disable|list [<path> ...]| "
+          "list-objects [<path> ...] | remove <path>| remove-objects <path> | "
+          "default-soft-limit <percent>} |\n"
           "volume quota <VOLNAME> {limit-usage <path> <size> [<percent>]} |\n"
+          "volume quota <VOLNAME> {limit-objects <path> <number> [<percent>]} |\n"
           "volume quota <VOLNAME> {alert-time|soft-timeout|hard-timeout} {<time>}",
+          cli_cmd_quota_cbk,
+          "quota translator specific operations"},
+
+        { "volume inode-quota <VOLNAME> enable",
           cli_cmd_quota_cbk,
           "quota translator specific operations"},
 
@@ -2482,7 +2763,11 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_status_cbk,
           "display status of all or specified volume(s)/brick"},
 
-        { "volume heal <VOLNAME> [full | info [split-brain]]",
+        { "volume heal <VOLNAME> [enable | disable | full |"
+          "statistics [heal-count [replica <HOSTNAME:BRICKNAME>]] |"
+          "info [healed | heal-failed | split-brain] |"
+          "split-brain {bigger-file <FILE> |"
+                       "source-brick <HOSTNAME:BRICKNAME> [<FILE>]}]",
           cli_cmd_volume_heal_cbk,
           "self-heal commands on volume specified by <VOLNAME>"},
 
@@ -2502,8 +2787,21 @@ struct cli_cmd volume_cmds[] = {
         },
         {"volume barrier <VOLNAME> {enable|disable}",
          cli_cmd_volume_barrier_cbk,
-         "Barrier/unbarrier file operations on a volume"},
-
+         "Barrier/unbarrier file operations on a volume"
+        },
+        {"volume get <VOLNAME> <key|all>",
+         cli_cmd_volume_getopt_cbk,
+         "Get the value of the all options or given option for volume <VOLNAME>"
+        },
+        {"volume bitrot <VOLNAME> {enable|disable} |\n"
+         "volume bitrot <volname> scrub-throttle {lazy|normal|aggressive} |\n"
+         "volume bitrot <volname> scrub-frequency {hourly|daily|weekly|biweekly"
+         "|monthly} |\n"
+         "volume bitrot <volname> scrub {pause|resume}",
+         cli_cmd_bitrot_cbk,
+         "Bitrot translator specific operation. For more information about "
+         "bitrot command type  'man gluster'"
+        },
         { NULL, NULL, NULL }
 };
 

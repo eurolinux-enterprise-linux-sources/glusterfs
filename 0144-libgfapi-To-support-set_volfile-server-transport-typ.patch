@@ -1,0 +1,118 @@
+From 4340b6e0003ce98b92beb8c23119c469fbf45d0f Mon Sep 17 00:00:00 2001
+From: Mohamed Ashiq <mliyazud@redhat.com>
+Date: Fri, 20 Nov 2015 11:07:33 +0530
+Subject: [PATCH 144/162] libgfapi: To support set_volfile-server-transport type "unix"
+
+This patch helps libgfapi to get the volfile using Unix domain
+ socket. run the attachment file in the bug to test. The patch
+checks if the glfs_set_volfile_server transport is of type "unix",
+If It is then uses rpc_transport_unix_options_build to get the volfile.
+
+ >Change-Id: Ifd5d1e7c0d8cc9a906c3c3355b8977141e892a2f
+ >BUG: 1279739
+ >Signed-off-by: Mohamed Ashiq <mliyazud@redhat.com>
+ >Signed-off-by: Humble Devassy Chirammal <hchiramm@redhat.com>
+ >Reviewed-on: http://review.gluster.org/12563
+ >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+ >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+ >Reviewed-by: Niels de Vos <ndevos@redhat.com>
+ >Reviewed-by: Poornima G <pgurusid@redhat.com>
+ >Reviewed-by: Raghavendra Talur <rtalur@redhat.com>
+ >Reviewed-by: Shyamsundar Ranganathan <srangana@redhat.com>
+
+Change-Id: I2ba29c8c1927b22ea893588eb98ea46806aa7234
+BUG: 1283563
+Signed-off-by: Mohamed Ashiq Liyazudeen <mliyazud@redhat.com>
+Signed-off-by: Humble Chirammal <hchiramm@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61953
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Tested-by: Niels de Vos <ndevos@redhat.com>
+---
+ api/src/Makefile.am |   14 +++++++-------
+ api/src/glfs-mgmt.c |   16 +++++++++++++---
+ api/src/glfs.h      |    8 +++++---
+ 3 files changed, 25 insertions(+), 13 deletions(-)
+
+diff --git a/api/src/Makefile.am b/api/src/Makefile.am
+index 3c517e6..5317adf 100644
+--- a/api/src/Makefile.am
++++ b/api/src/Makefile.am
+@@ -12,10 +12,13 @@ libgfapi_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la \
+ 	$(top_builddir)/rpc/xdr/src/libgfxdr.la \
+ 	$(GF_LDADD)
+ 
+-libgfapi_la_CPPFLAGS = $(GF_CPPFLAGS) -D__USE_FILE_OFFSET64 \
+-	-I$(top_srcdir)/libglusterfs/src \
+-	-I$(top_srcdir)/rpc/rpc-lib/src \
+-	-I$(top_srcdir)/rpc/xdr/src
++AM_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src \
++        -I$(top_srcdir)/rpc/rpc-lib/src \
++        -I$(top_srcdir)/rpc/xdr/src \
++        -DDATADIR=\"$(localstatedir)\" \
++        -D__USE_FILE_OFFSET64
++
++AM_CFLAGS = -Wall $(GF_CFLAGS)
+ 
+ libgfapi_la_LDFLAGS = -version-info $(GFAPI_LT_VERSION) \
+ 	$(GFAPI_EXTRA_LDFLAGS) $(ACL_LIBS)
+@@ -35,6 +38,3 @@ api_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la \
+ 	$(top_builddir)/rpc/xdr/src/libgfxdr.la \
+ 	$(top_builddir)/api/src/libgfapi.la
+ 
+-AM_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src
+-
+-AM_CFLAGS = -Wall $(GF_CFLAGS)
+diff --git a/api/src/glfs-mgmt.c b/api/src/glfs-mgmt.c
+index 903b102..ba1f459 100644
+--- a/api/src/glfs-mgmt.c
++++ b/api/src/glfs-mgmt.c
+@@ -860,11 +860,21 @@ glfs_mgmt_init (struct glfs *fs)
+ 	if (cmd_args->volfile_server_port)
+ 		port = cmd_args->volfile_server_port;
+ 
+-	host = "localhost";
+-	if (cmd_args->volfile_server)
++	if (cmd_args->volfile_server) {
+ 		host = cmd_args->volfile_server;
++        } else if (cmd_args->volfile_server_transport &&
++                   !strcmp (cmd_args->volfile_server_transport, "unix")) {
++                host = DEFAULT_GLUSTERD_SOCKFILE;
++        } else {
++                host = "localhost";
++        }
++
++        if (!strcmp (cmd_args->volfile_server_transport, "unix")) {
++                ret = rpc_transport_unix_options_build (&options, host, 0);
++        } else {
++                ret = rpc_transport_inet_options_build (&options, host, port);
++        }
+ 
+-	ret = rpc_transport_inet_options_build (&options, host, port);
+ 	if (ret)
+ 		goto out;
+ 
+diff --git a/api/src/glfs.h b/api/src/glfs.h
+index b073d8d..d3bf1b4 100644
+--- a/api/src/glfs.h
++++ b/api/src/glfs.h
+@@ -164,12 +164,14 @@ int glfs_set_volfile (glfs_t *fs, const char *volfile) __THROW
+               management daemon. Specifying NULL will result in the usage
+               of the default (tcp) transport type. Permitted values
+               are those what you specify as transport-type in a volume
+-              specification file (e.g "tcp", "rdma" etc.)
++              specification file (e.g "tcp", "rdma", "unix" etc.)
+ 
+   @host:      String specifying the address where to find the management daemon.
++              Socket path, while using Unix domain socket as transport type.
+               This would either be
+-              - FQDN (e.g: "storage01.company.com") or
+-              - ASCII (e.g: "192.168.22.1")
++              - FQDN (e.g : "storage01.company.com") or
++              - ASCII (e.g : "192.168.22.1") or
++              - Socket path (e.g : "/var/run/glusterd.socket")
+ 
+   NOTE: This API is special, multiple calls to this function with different
+         volfile servers, port or transport-type would create a list of volfile
+-- 
+1.7.1
+

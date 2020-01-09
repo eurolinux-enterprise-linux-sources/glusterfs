@@ -214,6 +214,7 @@ struct rpc_transport {
         struct list_head           list;
         int                        bind_insecure;
         void                      *dl_handle; /* handle of dlopen() */
+        char                      *ssl_name;
 };
 
 struct rpc_transport_ops {
@@ -305,13 +306,12 @@ rpc_transport_pollin_destroy (rpc_transport_pollin_t *pollin);
 
 int
 rpc_transport_keepalive_options_set (dict_t *options, int32_t interval,
-                                     int32_t time);
+                                     int32_t time, int32_t timeout);
 
 int
 rpc_transport_unix_options_build (dict_t **options, char *filepath,
                                   int frame_timeout);
 
 int
-rpc_transport_inet_options_build (dict_t **options, const char *hostname,
-                                  int port);
+rpc_transport_inet_options_build (dict_t **options, const char *hostname, int port);
 #endif /* __RPC_TRANSPORT_H__ */

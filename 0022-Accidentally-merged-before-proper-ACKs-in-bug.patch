@@ -1,0 +1,79 @@
+From 96a163ac946b08fb16a8ffab954854e9ea6c54ff Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Wed, 14 Oct 2015 20:06:04 -0400
+Subject: [PATCH 22/23] Accidentally merged before proper ACKs in bug.
+
+Revert "cli/quota : rm -rf on /<mountpoint>/<dir> is not showing quota header"
+
+This reverts commit d66dc8cfd11106005dc9204612515b7a74541fc7.
+
+Change-Id: I15cd256eeeddcebcb4aa61ddf7c557bc7988b510
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59422
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-rpc-ops.c |   27 ++++-----------------------
+ 1 files changed, 4 insertions(+), 23 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 81ba6f8..b9fdb59 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -3237,7 +3237,8 @@ out:
+ }
+ 
+ int
+-print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict)
++print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
++                              int32_t list_count)
+ {
+         char             *path          = NULL;
+         char             *default_sl    = NULL;
+@@ -3248,7 +3249,6 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict)
+         quota_limits_t   limits         = {0, };
+         quota_limits_t  *size_limits    = NULL;
+         int32_t          type           = 0;
+-        int32_t          success_count  = 0;
+ 
+         GF_ASSERT (frame);
+ 
+@@ -3312,25 +3312,7 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict)
+                 goto out;
+         }
+ 
+-        LOCK (&local->lock);
+-        {
+-                ret = dict_get_int32 (gd_rsp_dict, "quota-list-success-count",
+-                                      &success_count);
+-                if (ret)
+-                        success_count = 0;
+-
+-                ret = dict_set_int32 (gd_rsp_dict,
+-                                      "quota-list-success-count",
+-                                      success_count + 1);
+-        }
+-        UNLOCK (&local->lock);
+-        if (ret) {
+-                gf_log ("cli", GF_LOG_ERROR, "Failed to set "
+-                        "quota-list-success-count in dict");
+-                goto out;
+-        }
+-
+-        if (success_count == 0) {
++        if (list_count == 0) {
+                 if (!(global_state->mode & GLUSTER_MODE_XML)) {
+                         print_quota_list_header (type);
+                 } else {
+@@ -3435,8 +3417,7 @@ cli_quotad_getlimit_cbk (struct rpc_req *req, struct iovec *iov,
+                                 "unserialize req-buffer to dictionary");
+                         goto out;
+                 }
+-
+-                print_quota_list_from_quotad (frame, dict);
++                print_quota_list_from_quotad (frame, dict, list_count);
+         }
+ 
+ out:
+-- 
+1.7.1
+

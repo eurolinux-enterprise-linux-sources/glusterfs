@@ -14,6 +14,7 @@
 # PARTICULAR PURPOSE.
 
 @SET_MAKE@
+
 VPATH = @srcdir@
 pkgdatadir = $(datadir)/@PACKAGE@
 pkgincludedir = $(includedir)/@PACKAGE@
@@ -45,6 +46,29 @@ mkinstalldirs = $(install_sh) -d
 CONFIG_HEADER = $(top_builddir)/config.h
 CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
+am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
+am__vpath_adj = case $$p in \
+    $(srcdir)/*) f=`echo "$$p" | sed "s|^$$srcdirstrip/||"`;; \
+    *) f=$$p;; \
+  esac;
+am__strip_dir = f=`echo $$p | sed -e 's|^.*/||'`;
+am__install_max = 40
+am__nobase_strip_setup = \
+  srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*|]/\\\\&/g'`
+am__nobase_strip = \
+  for p in $$list; do echo "$$p"; done | sed -e "s|$$srcdirstrip/||"
+am__nobase_list = $(am__nobase_strip_setup); \
+  for p in $$list; do echo "$$p $$p"; done | \
+  sed "s| $$srcdirstrip/| |;"' / .*\//!s/ .*/ ./; s,\( .*\)/[^/]*$$,\1,' | \
+  $(AWK) 'BEGIN { files["."] = "" } { files[$$2] = files[$$2] " " $$1; \
+    if (++n[$$2] == $(am__install_max)) \
+      { print $$2, files[$$2]; n[$$2] = 0; files[$$2] = "" } } \
+    END { for (dir in files) print dir, files[dir] }'
+am__base_list = \
+  sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
+  sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
+am__installdirs = "$(DESTDIR)$(scriptsdir)"
+SCRIPTS = $(scripts_SCRIPTS)
 AM_V_GEN = $(am__v_GEN_$(V))
 am__v_GEN_ = $(am__v_GEN_$(AM_DEFAULT_VERBOSITY))
 am__v_GEN_0 = @echo "  GEN   " $@;
@@ -95,6 +119,7 @@ am__relativize = \
   done; \
   reldir="$$dir2"
 ACLOCAL = @ACLOCAL@
+ACL_LIBS = @ACL_LIBS@
 AMTAR = @AMTAR@
 AM_DEFAULT_VERBOSITY = @AM_DEFAULT_VERBOSITY@
 AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
@@ -109,6 +134,7 @@ AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
 BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
 BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
+BUILD_PYTHON_SITE_PACKAGES = @BUILD_PYTHON_SITE_PACKAGES@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -129,12 +155,16 @@ EXEEXT = @EXEEXT@
 FGREP = @FGREP@
 FUSERMOUNT_SUBDIR = @FUSERMOUNT_SUBDIR@
 FUSE_CLIENT_SUBDIR = @FUSE_CLIENT_SUBDIR@
+GEOREP_EXTRAS_SUBDIR = @GEOREP_EXTRAS_SUBDIR@
+GFAPI_EXTRA_LDFLAGS = @GFAPI_EXTRA_LDFLAGS@
+GFAPI_LIBS = @GFAPI_LIBS@
+GFAPI_LT_VERSION = @GFAPI_LT_VERSION@
+GFAPI_VERSION = @GFAPI_VERSION@
 GF_CFLAGS = @GF_CFLAGS@
 GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
@@ -143,6 +173,10 @@ GLIB_LIBS = @GLIB_LIBS@
 GLUPY_SUBDIR = @GLUPY_SUBDIR@
 GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
 GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
+GLUSTERD_VOLFILE = @GLUSTERD_VOLFILE@
+GLUSTERD_WORKDIR = @GLUSTERD_WORKDIR@
+GLUSTERFSD_MISCDIR = @GLUSTERFSD_MISCDIR@
+GLUSTERFS_LIBEXECDIR = @GLUSTERFS_LIBEXECDIR@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -161,15 +195,20 @@ LEX = @LEX@
 LEXLIB = @LEXLIB@
 LEX_OUTPUT_ROOT = @LEX_OUTPUT_ROOT@
 LIBAIO = @LIBAIO@
+LIBGFCHANGELOG_LT_VERSION = @LIBGFCHANGELOG_LT_VERSION@
+LIBGFCHANGELOG_VERSION = @LIBGFCHANGELOG_VERSION@
+LIBGFDB_VERSION = @LIBGFDB_VERSION@
+LIBGFRPC_LT_VERSION = @LIBGFRPC_LT_VERSION@
+LIBGFXDR_LT_VERSION = @LIBGFXDR_LT_VERSION@
+LIBGLUSTERFS_LT_VERSION = @LIBGLUSTERFS_LT_VERSION@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
-LIBZ_CFLAGS = @LIBZ_CFLAGS@
-LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+MATH_LIB = @MATH_LIB@
 MKDIR_P = @MKDIR_P@
 NM = @NM@
 NMEDIT = @NMEDIT@
@@ -186,12 +225,15 @@ PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKGCONFIG_UUID = @PKGCONFIG_UUID@
 PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
 PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
 PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
 PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
+PYTHON_CFLAGS = @PYTHON_CFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
+PYTHON_LIBS = @PYTHON_LIBS@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
 PYTHON_VERSION = @PYTHON_VERSION@
@@ -206,9 +248,22 @@ SIZEOF_INT = @SIZEOF_INT@
 SIZEOF_LONG = @SIZEOF_LONG@
 SIZEOF_LONG_LONG = @SIZEOF_LONG_LONG@
 SIZEOF_SHORT = @SIZEOF_SHORT@
+SQLITE_CFLAGS = @SQLITE_CFLAGS@
+SQLITE_LIBS = @SQLITE_LIBS@
 STRIP = @STRIP@
 SYNCDAEMON_COMPILE = @SYNCDAEMON_COMPILE@
 SYNCDAEMON_SUBDIR = @SYNCDAEMON_SUBDIR@
+UMOUNTD_SUBDIR = @UMOUNTD_SUBDIR@
+UNITTEST_CFLAGS = @UNITTEST_CFLAGS@
+UNITTEST_LDFLAGS = @UNITTEST_LDFLAGS@
+UNITTEST_LIBS = @UNITTEST_LIBS@
+URCU_CDS_CFLAGS = @URCU_CDS_CFLAGS@
+URCU_CDS_LIBS = @URCU_CDS_LIBS@
+URCU_CFLAGS = @URCU_CFLAGS@
+URCU_LIBS = @URCU_LIBS@
+USE_POSIX_ACLS = @USE_POSIX_ACLS@
+UUID_CFLAGS = @UUID_CFLAGS@
+UUID_LIBS = @UUID_LIBS@
 VERSION = @VERSION@
 XML2_CONFIG = @XML2_CONFIG@
 XML_CPPFLAGS = @XML_CPPFLAGS@
@@ -271,16 +326,20 @@ pyexecdir = @pyexecdir@
 pythondir = @pythondir@
 sbindir = @sbindir@
 sharedstatedir = @sharedstatedir@
+shrext_cmds = @shrext_cmds@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
 systemddir = @systemddir@
 target_alias = @target_alias@
+tmpfilesdir = @tmpfilesdir@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 EXTRA_DIST = S40ufo-stop.py S56glusterd-geo-rep-create-post.sh
 SUBDIRS = add-brick set start stop reset
+scriptsdir = $(GLUSTERD_WORKDIR)/hooks/1/gsync-create/post/
+@USE_GEOREP_TRUE@scripts_SCRIPTS = S56glusterd-geo-rep-create-post.sh
 all: all-recursive
 
 .SUFFIXES:
@@ -314,6 +373,40 @@ $(top_srcdir)/configure:  $(am__configure_deps)
 $(ACLOCAL_M4):  $(am__aclocal_m4_deps)
 	cd $(top_builddir) && $(MAKE) $(AM_MAKEFLAGS) am--refresh
 $(am__aclocal_m4_deps):
+install-scriptsSCRIPTS: $(scripts_SCRIPTS)
+	@$(NORMAL_INSTALL)
+	test -z "$(scriptsdir)" || $(MKDIR_P) "$(DESTDIR)$(scriptsdir)"
+	@list='$(scripts_SCRIPTS)'; test -n "$(scriptsdir)" || list=; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  if test -f "$$d$$p"; then echo "$$d$$p"; echo "$$p"; else :; fi; \
+	done | \
+	sed -e 'p;s,.*/,,;n' \
+	    -e 'h;s|.*|.|' \
+	    -e 'p;x;s,.*/,,;$(transform)' | sed 'N;N;N;s,\n, ,g' | \
+	$(AWK) 'BEGIN { files["."] = ""; dirs["."] = 1; } \
+	  { d=$$3; if (dirs[d] != 1) { print "d", d; dirs[d] = 1 } \
+	    if ($$2 == $$4) { files[d] = files[d] " " $$1; \
+	      if (++n[d] == $(am__install_max)) { \
+		print "f", d, files[d]; n[d] = 0; files[d] = "" } } \
+	    else { print "f", d "/" $$4, $$1 } } \
+	  END { for (d in files) print "f", d, files[d] }' | \
+	while read type dir files; do \
+	     if test "$$dir" = .; then dir=; else dir=/$$dir; fi; \
+	     test -z "$$files" || { \
+	       echo " $(INSTALL_SCRIPT) $$files '$(DESTDIR)$(scriptsdir)$$dir'"; \
+	       $(INSTALL_SCRIPT) $$files "$(DESTDIR)$(scriptsdir)$$dir" || exit $$?; \
+	     } \
+	; done
+
+uninstall-scriptsSCRIPTS:
+	@$(NORMAL_UNINSTALL)
+	@list='$(scripts_SCRIPTS)'; test -n "$(scriptsdir)" || exit 0; \
+	files=`for p in $$list; do echo "$$p"; done | \
+	       sed -e 's,.*/,,;$(transform)'`; \
+	test -n "$$list" || exit 0; \
+	echo " ( cd '$(DESTDIR)$(scriptsdir)' && rm -f" $$files ")"; \
+	cd "$(DESTDIR)$(scriptsdir)" && rm -f $$files
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -516,9 +609,12 @@ distdir: $(DISTFILES)
 	done
 check-am: all-am
 check: check-recursive
-all-am: Makefile
+all-am: Makefile $(SCRIPTS)
 installdirs: installdirs-recursive
 installdirs-am:
+	for dir in "$(DESTDIR)$(scriptsdir)"; do \
+	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
+	done
 install: install-recursive
 install-exec: install-exec-recursive
 install-data: install-data-recursive
@@ -564,7 +660,7 @@ info: info-recursive
 
 info-am:
 
-install-data-am:
+install-data-am: install-scriptsSCRIPTS
 
 install-dvi: install-dvi-recursive
 
@@ -608,7 +704,7 @@ ps: ps-recursive
 
 ps-am:
 
-uninstall-am:
+uninstall-am: uninstall-scriptsSCRIPTS
 
 .MAKE: $(RECURSIVE_CLEAN_TARGETS) $(RECURSIVE_TARGETS) ctags-recursive \
 	install-am install-strip tags-recursive
@@ -621,11 +717,12 @@ uninstall-am:
 	install-data-am install-dvi install-dvi-am install-exec \
 	install-exec-am install-html install-html-am install-info \
 	install-info-am install-man install-pdf install-pdf-am \
-	install-ps install-ps-am install-strip installcheck \
-	installcheck-am installdirs installdirs-am maintainer-clean \
-	maintainer-clean-generic mostlyclean mostlyclean-generic \
-	mostlyclean-libtool pdf pdf-am ps ps-am tags tags-recursive \
-	uninstall uninstall-am
+	install-ps install-ps-am install-scriptsSCRIPTS install-strip \
+	installcheck installcheck-am installdirs installdirs-am \
+	maintainer-clean maintainer-clean-generic mostlyclean \
+	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
+	tags tags-recursive uninstall uninstall-am \
+	uninstall-scriptsSCRIPTS
 
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.

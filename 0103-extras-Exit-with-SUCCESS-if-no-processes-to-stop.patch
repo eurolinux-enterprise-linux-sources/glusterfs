@@ -1,0 +1,68 @@
+From f9dee38c035c257e7d0a037eb7d5c8158c03d6fd Mon Sep 17 00:00:00 2001
+From: Shubhendu Tripathi <shtripat@redhat.com>
+Date: Wed, 22 Jul 2015 16:55:06 +0530
+Subject: [PATCH 103/131] extras: Exit with SUCCESS if no processes to stop
+
+This script might be executed even when there are no
+valid processes running to be stopped. In this scenario,
+the script should return with SUCCESS
+
+Change-Id: Ia293214a4b5052bc4bef9769f197f7b05c55ffe9
+BUG: 1277562
+Signed-off-by: Shubhendu Tripathi <shtripat@redhat.com>
+Reviewed-on: http://review.gluster.org/11739
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Reviewed-on: http://review.gluster.org/12564
+Tested-by: Ramesh N <rnachimu@redhat.com>
+Reviewed-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61543
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Tested-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+---
+ extras/stop-all-gluster-processes.sh |   14 ++++++++++++--
+ 1 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/extras/stop-all-gluster-processes.sh b/extras/stop-all-gluster-processes.sh
+index 087afa4..25dc0ba 100755
+--- a/extras/stop-all-gluster-processes.sh
++++ b/extras/stop-all-gluster-processes.sh
+@@ -2,6 +2,8 @@
+ 
+ function main()
+ {
++    errors=0;
++
+     for pidfile in $(find /var/lib/glusterd/ -iname '*pid');
+     do
+         pid=$(cat ${pidfile});
+@@ -13,7 +15,10 @@ function main()
+     # processes are not having a pid file, so get it through 'ps' and
+     # handle these processes
+     gsyncpid=`ps aux | grep gluster | grep gsync | awk '{print $2}'`;
+-    test -n "$gsyncpid" && kill -TERM $gsyncpid;
++    if [ -n "$gsyncpid" ]
++    then
++        kill -TERM $gsyncpid || errors=$(($errors + 1));
++    fi
+ 
+     sleep 5;
+ 
+@@ -27,7 +32,12 @@ function main()
+ 
+     # handle 'KILL' of geo-replication
+     gsyncpid=`ps aux | grep gluster | grep gsync | awk '{print $2}'`;
+-    test -n "$gsyncpid" && kill -KILL $gsyncpid;
++    if [ -n "$gsyncpid" ]
++    then
++        kill -KILL $gsyncpid || errors=$(($errors + 1));
++    fi
++
++    exit $errors;
+ }
+ 
+ main "$@";
+-- 
+1.7.1
+

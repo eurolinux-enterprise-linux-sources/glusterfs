@@ -138,7 +138,7 @@ check:
                 goto out;
         }
 
-        op_ret = uuid_parse (tmp_data->data, dict_uuid);
+        op_ret = gf_uuid_parse (tmp_data->data, dict_uuid);
         if (op_ret < 0) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "wrong volume-id (%s) set in volume file",
@@ -171,7 +171,7 @@ check:
                 goto out;
         }
 
-        op_ret = uuid_parse (strl->str + strlen (GF_XATTR_VOL_ID_KEY) + 1,
+        op_ret = gf_uuid_parse (strl->str + strlen (GF_XATTR_VOL_ID_KEY) + 1,
                              vg_uuid);
         if (op_ret < 0) {
                         gf_log (this->name, GF_LOG_ERROR,
@@ -179,7 +179,7 @@ check:
                         op_ret = -1;
                         goto out;
         }
-        if (uuid_compare (dict_uuid, vg_uuid)) {
+        if (gf_uuid_compare (dict_uuid, vg_uuid)) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "mismatching volume-id (%s) received. "
                         "already is a part of volume %s ",
@@ -272,7 +272,8 @@ __bd_fd_ctx_get (xlator_t *this, fd_t *fd, bd_fd_t **bdfd_p)
 out:
         GF_FREE (devpath);
         if (ret) {
-                close (_fd);
+                if (_fd >= 0)
+                        close (_fd);
                 GF_FREE (bdfd);
         }
         return ret;
@@ -444,7 +445,7 @@ bd_create (uuid_t uuid, uint64_t size, char *type, bd_priv_t *priv)
 }
 
 int32_t
-bd_resize (bd_priv_t *priv, uuid_t uuid, off_t size)
+bd_resize (bd_priv_t *priv, uuid_t uuid, size_t size)
 {
         uint64_t        new_size  = 0;
         runner_t        runner    = {0, };
@@ -481,8 +482,9 @@ bd_resize (bd_priv_t *priv, uuid_t uuid, off_t size)
         new_size = lvm_lv_get_size (lv);
 
         if (new_size != size) {
-                gf_log (THIS->name, GF_LOG_WARNING, "resized LV size %ld does "
-                        "not match requested size %ld", new_size, size);
+                gf_log (THIS->name, GF_LOG_WARNING,
+                        "resized LV size %" PRIu64 " does "
+                        "not match requested size %zd", new_size, size);
                 ret = EIO;
         }
 
@@ -515,7 +517,7 @@ bd_get_default_extent (bd_priv_t *priv)
  * Adjusts the user specified size to VG specific extent size
  */
 uint64_t
-bd_adjust_size (bd_priv_t *priv, uint64_t size)
+bd_adjust_size (bd_priv_t *priv, size_t size)
 {
         uint64_t extent = 0;
         uint64_t nr_ex  = 0;
@@ -904,7 +906,7 @@ bd_do_ioctl_zerofill (bd_priv_t *priv, bd_attr_t *bdatt, int fd, char *vg,
         uuid_utoa_r (bdatt->iatt.ia_gfid, uuid);
         sprintf (lvname, "/dev/%s/%s", vg, uuid);
 
-        readlink (lvname, dmname, sizeof (dmname));
+        readlink (lvname, dmname, sizeof (dmname) - 1);
 
         p = strrchr (dmname, '/');
         if (p)
@@ -966,7 +968,7 @@ skip:
 
 int
 bd_do_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd,
-               off_t offset, off_t len, struct iatt *prebuf,
+               off_t offset, size_t len, struct iatt *prebuf,
                struct iatt *postbuf)
 {
         int          ret   = -1;
@@ -996,7 +998,7 @@ bd_do_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd,
 #endif
         if (ret) {
                 gf_log(this->name, GF_LOG_ERROR,
-                       "zerofill failed on fd %d length %ld %s",
+                       "zerofill failed on fd %d length %zu %s",
                        bd_fd->fd, len, strerror (ret));
                 goto out;
         }

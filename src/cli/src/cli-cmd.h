@@ -20,6 +20,8 @@
 #include "cli.h"
 #include "list.h"
 
+#define GLUSTER_SHARED_STORAGE      "gluster_shared_storage"
+
 #define CLI_LOCAL_INIT(local, words, frame, dictionary) \
         do {                                                 \
                 local = cli_local_get ();                    \
@@ -74,17 +76,6 @@ typedef struct cli_profile_info_ {
         double percentage_avg_latency;
 } cli_profile_info_t;
 
-typedef struct addrinfo_list {
-        struct list_head list;
-        struct addrinfo *info;
-} addrinfo_list_t;
-
-typedef enum {
-        GF_AI_COMPARE_NO_MATCH     = 0,
-        GF_AI_COMPARE_MATCH        = 1,
-        GF_AI_COMPARE_ERROR        = 2
-} gf_ai_compare_t;
-
 typedef struct cli_cmd_volume_get_ctx_ cli_cmd_volume_get_ctx_t;
 
 int cli_cmd_volume_register (struct cli_state *state);
@@ -94,6 +85,8 @@ int cli_cmd_probe_register (struct cli_state *state);
 int cli_cmd_system_register (struct cli_state *state);
 
 int cli_cmd_snapshot_register (struct cli_state *state);
+
+int cli_cmd_global_register (struct cli_state *state);
 
 int cli_cmd_misc_register (struct cli_state *state);
 
@@ -122,7 +115,7 @@ cli_cmd_get_confirmation (struct cli_state *state, const char *question);
 int cli_cmd_sent_status_get (int *status);
 
 gf_boolean_t
-_limits_set_on_volume (char *volname);
+_limits_set_on_volume (char *volname, int type);
 
 gf_boolean_t
 _quota_aux_mount_online (char *volname);

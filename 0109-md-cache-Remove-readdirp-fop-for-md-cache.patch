@@ -1,0 +1,56 @@
+From d6b986cb51394ed6ea9afb5d0f103bcd095858be Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Wed, 12 Aug 2015 14:56:27 +0530
+Subject: [PATCH 109/131] md-cache: Remove readdirp fop for md-cache
+
+readdirp call will return inode for each entry and
+will share this nodeid with kernal, also md-cache
+will cache this gfid and base name. So when a lookup
+operation is perfromed on such an inode, md-cache
+will wind the call, that prevents populating inode
+ctx for other lower layer xlators.
+
+back port of >
+>Change-Id: I43c768703a3cc66d05b1c32909d1a2781001cb49
+>BUG: 1236032
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/11894
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+
+Change-Id: I61f28b5d6531f66c71c54b0628d8c9d03693a076
+BUG: 1271732
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61105
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/performance/md-cache/src/md-cache.c |    5 ++++-
+ 1 files changed, 4 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/performance/md-cache/src/md-cache.c b/xlators/performance/md-cache/src/md-cache.c
+index c3b4dfe..d07e768 100644
+--- a/xlators/performance/md-cache/src/md-cache.c
++++ b/xlators/performance/md-cache/src/md-cache.c
+@@ -1977,7 +1977,8 @@ int
+ mdc_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 		  int op_ret, int op_errno, gf_dirent_t *entries, dict_t *xdata)
+ {
+-        gf_dirent_t *entry      = NULL;
++        gf_dirent_t     *entry      = NULL;
++        struct md_cache *mdc        = NULL;
+ 
+ 	if (op_ret <= 0)
+ 		goto unwind;
+@@ -1985,6 +1986,8 @@ mdc_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         list_for_each_entry (entry, &entries->list, list) {
+                 if (!entry->inode)
+ 			continue;
++                if (mdc_inode_ctx_get (this, entry->inode, &mdc) != 0)
++                        continue;
+                 mdc_inode_iatt_set (this, entry->inode, &entry->d_stat);
+                 mdc_inode_xatt_set (this, entry->inode, entry->dict);
+         }
+-- 
+1.7.1
+

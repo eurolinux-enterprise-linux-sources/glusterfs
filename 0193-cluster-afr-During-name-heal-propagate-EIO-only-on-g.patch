@@ -1,0 +1,63 @@
+From 58cb47ee584f9828d6a070dadff7bfd879c27d7f Mon Sep 17 00:00:00 2001
+From: Krutika Dhananjay <kdhananj@redhat.com>
+Date: Tue, 15 Dec 2015 18:48:20 +0530
+Subject: [PATCH 193/214] cluster/afr: During name heal, propagate EIO only on gfid or type mismatch
+
+        Backport of: http://review.gluster.org/#/c/12979/
+
+When the disk associated with a brick returns EIO during lookup, chances are
+that name heal would return an EIO because one of the syncop_XXX() operations
+as part of it returned an EIO. This is inherently treated by afr_lookup_selfheal_wrap()
+as a split-brain and the lookup is aborted prematurely with EIO even if it
+succeeded on the other replica(s).
+
+Change-Id: Ia01d60f582666ce80ba48f1220a105e944a7b845
+BUG: 1291560
+Signed-off-by: Krutika Dhananjay <kdhananj@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64082
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/cluster/afr/src/afr-self-heal-name.c |   18 +++++++++++++-----
+ 1 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-self-heal-name.c b/xlators/cluster/afr/src/afr-self-heal-name.c
+index ab798e7..e32b81c 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-name.c
++++ b/xlators/cluster/afr/src/afr-self-heal-name.c
+@@ -421,9 +421,13 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
+         source_is_empty = afr_selfheal_name_source_empty_check (this, replies,
+                                                                 sources,
+                                                                 source);
+-	if (source_is_empty)
+-		return __afr_selfheal_name_expunge (this, parent, pargfid,
++	if (source_is_empty) {
++		ret = __afr_selfheal_name_expunge (this, parent, pargfid,
+ 						    bname, inode, replies);
++                if (ret == -EIO)
++                        ret = -1;
++                return ret;
++        }
+ 
+         ret = afr_selfheal_name_type_mismatch_check (this, replies, source,
+                                                      sources, pargfid, bname);
+@@ -457,9 +461,13 @@ __afr_selfheal_name_do (call_frame_t *frame, xlator_t *this, inode_t *parent,
+                         return -1;
+         }
+ 
+-	return __afr_selfheal_name_impunge (frame, this, parent, pargfid,
+-                                            bname, inode,
+-                                            replies, gfid_idx);
++	ret = __afr_selfheal_name_impunge (frame, this, parent, pargfid,
++                                           bname, inode,
++                                           replies, gfid_idx);
++        if (ret == -EIO)
++                ret = -1;
++
++        return ret;
+ }
+ 
+ 
+-- 
+1.7.1
+

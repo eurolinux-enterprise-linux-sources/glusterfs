@@ -1,0 +1,245 @@
+From 8eeb72d4c278de00044b2ce07a68129dbf813df0 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Tue, 17 Nov 2015 17:01:47 +0530
+Subject: [PATCH 117/131] cluster/ec: Mark self-heal fops as internal
+
+ >Change-Id: I8ae7af266d3e00460f0cfdc9389a926e5f2fee36
+ >BUG: 1282761
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/12598
+ >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+ >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+ >Reviewed-by: Xavier Hernandez <xhernandez@datalab.es>
+
+BUG: 1278279
+Change-Id: Ic20d4ee031265305db1a6ed2cf591ce94b7d0749
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61927
+---
+ libglusterfs/src/common-utils.h                    |    2 +-
+ xlators/cluster/afr/src/afr-common.c               |    6 +++---
+ xlators/cluster/afr/src/afr-inode-write.c          |    2 +-
+ xlators/cluster/afr/src/afr-self-heal-common.c     |    2 +-
+ xlators/cluster/afr/src/afr-self-heald.c           |    6 +++---
+ xlators/cluster/ec/src/ec-heal.c                   |    4 +++-
+ xlators/cluster/ec/src/ec-heald.c                  |    4 ++--
+ xlators/features/changelog/src/changelog-helpers.h |    2 +-
+ .../features/changetimerecorder/src/ctr-helper.h   |    2 +-
+ xlators/features/marker/src/marker.c               |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-replace-brick.c |    2 +-
+ xlators/protocol/server/src/server-helpers.c       |    2 +-
+ 12 files changed, 19 insertions(+), 17 deletions(-)
+
+diff --git a/libglusterfs/src/common-utils.h b/libglusterfs/src/common-utils.h
+index f3bd924..0ae17c8 100644
+--- a/libglusterfs/src/common-utils.h
++++ b/libglusterfs/src/common-utils.h
+@@ -121,7 +121,7 @@ enum _gf_client_pid
+         GF_CLIENT_PID_DEFRAG            = -3,
+         GF_CLIENT_PID_NO_ROOT_SQUASH    = -4,
+         GF_CLIENT_PID_QUOTA_MOUNT       = -5,
+-        GF_CLIENT_PID_AFR_SELF_HEALD    = -6,
++        GF_CLIENT_PID_SELF_HEALD        = -6,
+         GF_CLIENT_PID_GLFS_HEAL         = -7,
+         GF_CLIENT_PID_BITD              = -8,
+         GF_CLIENT_PID_SCRUB             = -9,
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 2ac0f07..ff2a421 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -829,7 +829,7 @@ afr_inode_refresh_done (call_frame_t *frame, xlator_t *this)
+ 	if (ret && afr_selfheal_enabled (this)) {
+ 		heal = copy_frame (frame);
+ 		if (heal)
+-			heal->root->pid = GF_CLIENT_PID_AFR_SELF_HEALD;
++			heal->root->pid = GF_CLIENT_PID_SELF_HEALD;
+ 		ret = synctask_new (this->ctx->env, afr_refresh_selfheal_wrap,
+ 				    afr_refresh_selfheal_done, heal, frame);
+ 		if (ret)
+@@ -1917,7 +1917,7 @@ afr_lookup_metadata_heal_check (call_frame_t *frame, xlator_t *this)
+ 
+         heal = copy_frame (frame);
+         if (heal)
+-                heal->root->pid = GF_CLIENT_PID_AFR_SELF_HEALD;
++                heal->root->pid = GF_CLIENT_PID_SELF_HEALD;
+         ret = synctask_new (this->ctx->env, afr_lookup_sh_metadata_wrap,
+                             afr_refresh_selfheal_done, heal, frame);
+         if(ret)
+@@ -2005,7 +2005,7 @@ afr_lookup_entry_heal (call_frame_t *frame, xlator_t *this)
+ 	if (need_heal) {
+ 		heal = copy_frame (frame);
+ 		if (heal)
+-			heal->root->pid = GF_CLIENT_PID_AFR_SELF_HEALD;
++			heal->root->pid = GF_CLIENT_PID_SELF_HEALD;
+ 		ret = synctask_new (this->ctx->env, afr_lookup_selfheal_wrap,
+ 				    afr_refresh_selfheal_done, heal, frame);
+ 		if (ret)
+diff --git a/xlators/cluster/afr/src/afr-inode-write.c b/xlators/cluster/afr/src/afr-inode-write.c
+index d800a34..88f885d 100644
+--- a/xlators/cluster/afr/src/afr-inode-write.c
++++ b/xlators/cluster/afr/src/afr-inode-write.c
+@@ -1424,7 +1424,7 @@ afr_handle_replace_brick (xlator_t *this, call_frame_t *frame, loc_t *loc,
+         ret =  dict_get_str (dict, GF_AFR_REPLACE_BRICK, &replace_brick);
+ 
+         if (!ret) {
+-                if (frame->root->pid != GF_CLIENT_PID_AFR_SELF_HEALD) {
++                if (frame->root->pid != GF_CLIENT_PID_SELF_HEALD) {
+                         gf_log (this->name, GF_LOG_ERROR, "'%s' is an internal"
+                                 " extended attribute : %s.",
+                                 GF_AFR_REPLACE_BRICK, strerror (EPERM));
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index c9010df..a746047 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -1242,7 +1242,7 @@ afr_frame_create (xlator_t *this)
+ 	call_frame_t *frame    = NULL;
+ 	afr_local_t  *local    = NULL;
+ 	int           op_errno = 0;
+-	pid_t         pid      = GF_CLIENT_PID_AFR_SELF_HEALD;
++	pid_t         pid      = GF_CLIENT_PID_SELF_HEALD;
+ 
+ 	frame = create_frame (this, this->ctx->pool);
+ 	if (!frame)
+diff --git a/xlators/cluster/afr/src/afr-self-heald.c b/xlators/cluster/afr/src/afr-self-heald.c
+index 7bc39a1..8cbdc73 100644
+--- a/xlators/cluster/afr/src/afr-self-heald.c
++++ b/xlators/cluster/afr/src/afr-self-heald.c
+@@ -447,7 +447,7 @@ afr_shd_index_sweep (struct subvol_healer *healer)
+ 		return -errno;
+ 	}
+ 
+-        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_AFR_SELF_HEALD,
++        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+                                healer, afr_shd_index_heal);
+ 
+         inode_forget (loc.inode, 1);
+@@ -488,7 +488,7 @@ afr_shd_full_sweep (struct subvol_healer *healer, inode_t *inode)
+         priv = healer->this->private;
+         loc.inode = inode;
+         return syncop_ftw (priv->children[healer->subvol], &loc,
+-                           GF_CLIENT_PID_AFR_SELF_HEALD, healer,
++                           GF_CLIENT_PID_SELF_HEALD, healer,
+                            afr_shd_full_heal);
+ }
+ 
+@@ -905,7 +905,7 @@ afr_shd_gather_index_entries (xlator_t *this, int child, dict_t *output)
+                 return -errno;
+         }
+ 
+-        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_AFR_SELF_HEALD,
++        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+                                output, afr_shd_gather_entry);
+         inode_forget (loc.inode, 1);
+         loc_wipe (&loc);
+diff --git a/xlators/cluster/ec/src/ec-heal.c b/xlators/cluster/ec/src/ec-heal.c
+index 10dc9f1..d80cdab 100644
+--- a/xlators/cluster/ec/src/ec-heal.c
++++ b/xlators/cluster/ec/src/ec-heal.c
+@@ -1369,7 +1369,7 @@ ec_heal_names (call_frame_t *frame, ec_t *ec, inode_t *inode,
+                 if (!participants[i])
+                         continue;
+                 syncop_dir_scan (ec->xl_list[i], &loc,
+-                                GF_CLIENT_PID_AFR_SELF_HEALD, &name_data,
++                                GF_CLIENT_PID_SELF_HEALD, &name_data,
+                                 ec_name_heal_handler);
+                 for (j = 0; j < ec->nodes; j++)
+                         if (name_data.failed_on[j])
+@@ -2325,6 +2325,8 @@ ec_heal_do (xlator_t *this, void *data, loc_t *loc, int32_t partial)
+         /*Do heal as root*/
+         frame->root->uid = 0;
+         frame->root->gid = 0;
++        /*Mark the fops as internal*/
++        frame->root->pid = GF_CLIENT_PID_SELF_HEALD;
+         participants = alloca0(ec->nodes);
+         ec_mask_to_char_array (ec->xl_up, participants, ec->nodes);
+         if (loc->name && strlen (loc->name)) {
+diff --git a/xlators/cluster/ec/src/ec-heald.c b/xlators/cluster/ec/src/ec-heald.c
+index 20724c7..95cff00 100644
+--- a/xlators/cluster/ec/src/ec-heald.c
++++ b/xlators/cluster/ec/src/ec-heald.c
+@@ -294,7 +294,7 @@ ec_shd_index_sweep (struct subvol_healer *healer)
+                 goto out;
+         }
+ 
+-        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_AFR_SELF_HEALD,
++        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+                                healer, ec_shd_index_heal);
+ out:
+         if (loc.inode)
+@@ -352,7 +352,7 @@ ec_shd_full_sweep (struct subvol_healer *healer, inode_t *inode)
+         ec = healer->this->private;
+         loc.inode = inode;
+         return syncop_ftw (ec->xl_list[healer->subvol], &loc,
+-                           GF_CLIENT_PID_AFR_SELF_HEALD, healer,
++                           GF_CLIENT_PID_SELF_HEALD, healer,
+                            ec_shd_full_heal);
+ }
+ 
+diff --git a/xlators/features/changelog/src/changelog-helpers.h b/xlators/features/changelog/src/changelog-helpers.h
+index d88dbaa..b4f0ed0 100644
+--- a/xlators/features/changelog/src/changelog-helpers.h
++++ b/xlators/features/changelog/src/changelog-helpers.h
+@@ -625,7 +625,7 @@ resolve_pargfid_to_path (xlator_t *this, uuid_t gfid, char **path, char *bname);
+  * ignore internal fops for all clients except AFR self-heal daemon
+  */
+ #define CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO(frame, dict, label) do {    \
+-                if ((frame->root->pid != GF_CLIENT_PID_AFR_SELF_HEALD)  \
++                if ((frame->root->pid != GF_CLIENT_PID_SELF_HEALD)      \
+                     && dict                                             \
+                     && dict_get (dict, GLUSTERFS_INTERNAL_FOP_KEY))     \
+                         goto label;                                     \
+diff --git a/xlators/features/changetimerecorder/src/ctr-helper.h b/xlators/features/changetimerecorder/src/ctr-helper.h
+index 7e51be0..f6a3f3e 100644
+--- a/xlators/features/changetimerecorder/src/ctr-helper.h
++++ b/xlators/features/changetimerecorder/src/ctr-helper.h
+@@ -283,7 +283,7 @@ do {\
+  * If its a AFR SELF HEAL
+  * */
+  #define AFR_SELF_HEAL_FOP(frame)\
+-        (frame->root->pid == GF_CLIENT_PID_AFR_SELF_HEALD)
++        (frame->root->pid == GF_CLIENT_PID_SELF_HEALD)
+ 
+ /*
+  * if a rebalancer fop goto
+diff --git a/xlators/features/marker/src/marker.c b/xlators/features/marker/src/marker.c
+index 1fd7a45..5e491f6 100644
+--- a/xlators/features/marker/src/marker.c
++++ b/xlators/features/marker/src/marker.c
+@@ -993,7 +993,7 @@ marker_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         marker_conf_t      *priv    = NULL;
+         marker_local_t     *local   = NULL;
+         uint32_t            nlink   = -1;
+-        int32_t             ret     = 0;
++        GF_UNUSED int32_t   ret     = 0;
+ 
+         if (op_ret == -1) {
+                 gf_log (this->name, GF_LOG_TRACE,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+index fa86ca0..d0a1126 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
++++ b/xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+@@ -79,7 +79,7 @@ glusterd_handle_replicate_replace_brick (glusterd_volinfo_t *volinfo,
+                   DEFAULT_LOG_FILE_DIRECTORY"/%s-replace-brick-mount.log",
+                   volinfo->volname);
+ 
+-        ret = gf_asprintf (&pid, "%d", GF_CLIENT_PID_AFR_SELF_HEALD);
++        ret = gf_asprintf (&pid, "%d", GF_CLIENT_PID_SELF_HEALD);
+         if (ret < 0)
+                 goto out;
+ 
+diff --git a/xlators/protocol/server/src/server-helpers.c b/xlators/protocol/server/src/server-helpers.c
+index 24d617f..48df41c 100644
+--- a/xlators/protocol/server/src/server-helpers.c
++++ b/xlators/protocol/server/src/server-helpers.c
+@@ -475,7 +475,7 @@ get_frame_from_request (rpcsvc_request_t *req)
+                             req->pid != GF_CLIENT_PID_NO_ROOT_SQUASH &&
+                             req->pid != GF_CLIENT_PID_GSYNCD &&
+                             req->pid != GF_CLIENT_PID_DEFRAG &&
+-                            req->pid != GF_CLIENT_PID_AFR_SELF_HEALD &&
++                            req->pid != GF_CLIENT_PID_SELF_HEALD &&
+                             req->pid != GF_CLIENT_PID_QUOTA_MOUNT)
+                                 RPC_AUTH_ROOT_SQUASH (req);
+ 
+-- 
+1.7.1
+

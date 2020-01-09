@@ -1,21 +1,27 @@
 EXTRA_DIST = autogen.sh \
 	COPYING-GPLV2 COPYING-LGPLV3 \
-	INSTALL README AUTHORS THANKS NEWS \
-	glusterfs.spec glusterfs-api.pc.in libgfchangelog.pc.in \
-	error-codes.json gf-error-codes.h.template \
-	gen-headers.py run-tests.sh \
+	INSTALL README.md AUTHORS THANKS NEWS \
+	glusterfs.spec glusterfs-api.pc.in libgfchangelog.pc.in libgfdb.pc.in \
+	run-tests.sh \
 	build-aux/pkg-version \
 	build-aux/xdrgen \
         contrib/argp-standalone \
+        contrib/umountd \
+        contrib/uuid \
 	$(shell find $(top_srcdir)/tests -type f -print)
 
 SUBDIRS = $(ARGP_STANDALONE_DIR) libglusterfs rpc api xlators glusterfsd \
-        $(FUSERMOUNT_SUBDIR) doc extras cli heal @SYNCDAEMON_SUBDIR@
+	$(FUSERMOUNT_SUBDIR) doc extras cli heal @SYNCDAEMON_SUBDIR@ \
+	@UMOUNTD_SUBDIR@ tools
 
 pkgconfigdir = @pkgconfigdir@
 pkgconfig_DATA = glusterfs-api.pc libgfchangelog.pc
+if USE_GFDB
+pkgconfig_DATA += libgfdb.pc
+endif
 
 CLEANFILES =
+CONFIG_CLEAN_FILES = $(CONTRIB_BUILDDIR)/uuid/uuid_types.h
 
 gitclean: distclean
 	find . -name Makefile.in -exec rm -f {} \;
@@ -27,11 +33,18 @@ gitclean: distclean
 	-rm -f $(CONTRIBDIR)/argp-standalone/aclocal.m4
 	-rm -f $(CONTRIBDIR)/argp-standalone/config.h.in
 	-rm -f $(CONTRIBDIR)/argp-standalone/configure
+	-rm -f $(CONTRIBDIR)/argp-standalone/config.status
+	-rm -f $(CONTRIBDIR)/argp-standalone/config.log
 	-rm -f $(CONTRIBDIR)/argp-standalone/depcomp
+	-rm -fr $(CONTRIBDIR)/argp-standalone/.deps
 	-rm -f $(CONTRIBDIR)/argp-standalone/install-sh
 	-rm -f $(CONTRIBDIR)/argp-standalone/missing
 
 dist-hook: gen-VERSION gen-ChangeLog
+	-rm -fr $(distdir)/contrib/argp-standalone/autom4te.cache
+	-rm -fr $(distdir)/contrib/argp-standalone/.deps
+	-rm -fr $(distdir)/contrib/umountd/.deps
+
 .PHONY: gen-VERSION gen-ChangeLog
 
 gen-ChangeLog:

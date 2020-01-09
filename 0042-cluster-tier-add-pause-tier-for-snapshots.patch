@@ -1,0 +1,846 @@
+From 64215b87c6964d70ce2db472963b3f7960fe2e0f Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Mon, 5 Oct 2015 19:52:02 +0000
+Subject: [PATCH 42/67] cluster/tier: add pause tier for snapshots
+
+This is a backport of 12304
+
+Snaps of tiered volumes cannot handle files undergoing migration.
+We implement a helper mechanism to "pause" migration. Any files
+undergoing migration are aborted. Clean up is done to remove
+sticky bits and data at the destination. Migration is restarted
+after snap completes.
+
+For testing an internal switch is added. It is not exposed externally.
+
+gluster volume set vol1 tier-pause [true|false]
+
+> Change-Id: Ia85bbf89ac142e9b7e73fcbef98bb9da86097799
+> BUG: 1267950
+> Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+> Reviewed-on: http://review.gluster.org/12304
+> Reviewed-by: N Balachandran <nbalacha@redhat.com>
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: I1e22770319011fde1a048f6df5ec0cfb01508b4f
+BUG: 1274334
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59973
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ rpc/xdr/src/cli1-xdr.x                          |    4 +-
+ tests/basic/tier/fops-during-migration-pause.t  |   87 ++++++++++++
+ xlators/cluster/dht/src/dht-common.c            |    6 +-
+ xlators/cluster/dht/src/dht-common.h            |   11 ++-
+ xlators/cluster/dht/src/dht-messages.h          |   19 +++-
+ xlators/cluster/dht/src/dht-rebalance.c         |  125 +++++++++++++++++-
+ xlators/cluster/dht/src/dht-shared.c            |    5 +
+ xlators/cluster/dht/src/tier.c                  |   68 +++++++++-
+ xlators/mgmt/glusterd/src/glusterd-messages.h   |   22 +++-
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c   |  167 ++++++++++++++++++++++-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |   16 ++
+ 11 files changed, 518 insertions(+), 12 deletions(-)
+ create mode 100755 tests/basic/tier/fops-during-migration-pause.t
+
+diff --git a/rpc/xdr/src/cli1-xdr.x b/rpc/xdr/src/cli1-xdr.x
+index 73863ae..56f34bc 100644
+--- a/rpc/xdr/src/cli1-xdr.x
++++ b/rpc/xdr/src/cli1-xdr.x
+@@ -7,7 +7,9 @@
+         GF_DEFRAG_CMD_START_TIER,
+         GF_DEFRAG_CMD_STATUS_TIER,
+         GF_DEFRAG_CMD_START_DETACH_TIER,
+-        GF_DEFRAG_CMD_STOP_DETACH_TIER
++        GF_DEFRAG_CMD_STOP_DETACH_TIER,
++        GF_DEFRAG_CMD_PAUSE_TIER,
++        GF_DEFRAG_CMD_RESUME_TIER
+ };
+ 
+  enum gf_defrag_status_t {
+diff --git a/tests/basic/tier/fops-during-migration-pause.t b/tests/basic/tier/fops-during-migration-pause.t
+new file mode 100755
+index 0000000..702465f
+--- /dev/null
++++ b/tests/basic/tier/fops-during-migration-pause.t
+@@ -0,0 +1,87 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++
++NUM_BRICKS=3
++DEMOTE_FREQ=5
++PROMOTE_FREQ=5
++
++TEST_STR="Testing write and truncate fops on tier migration"
++
++function is_sticky_set () {
++        echo $1
++        if [ -k $1 ];
++        then
++                echo "yes"
++        else
++                echo "no"
++        fi
++}
++
++
++# Creates a tiered volume with pure distribute hot and cold tiers
++# Both hot and cold tiers will have an equal number of bricks.
++
++function create_dist_tier_vol () {
++        mkdir $B0/cold
++        mkdir $B0/hot
++        TEST $CLI volume create $V0 $H0:$B0/cold/${V0}{0..$1}
++        TEST $CLI volume set $V0 performance.quick-read off
++        TEST $CLI volume set $V0 performance.io-cache off
++        TEST $CLI volume set $V0 features.ctr-enabled on
++        TEST $CLI volume start $V0
++        TEST $CLI volume attach-tier $V0 $H0:$B0/hot/${V0}{0..$1}
++        TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.read-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.write-freq-threshold 0
++}
++
++
++cleanup;
++
++#Basic checks
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume info
++
++
++#Create and start a tiered volume
++create_dist_tier_vol $NUM_BRICKS
++
++# Mount FUSE
++TEST glusterfs -s $H0 --volfile-id $V0 $M0
++
++TEST mkdir $M0/dir1
++
++# Create a large file (200MB), so that rebalance takes time
++# The file will be created on the hot tier
++
++dd if=/dev/zero of=$M0/dir1/FILE1 bs=64k count=5120
++
++# Get the path of the file on the hot tier
++HPATH=`find $B0/hot/ -name  FILE1`
++echo "File path on hot tier: "$HPATH
++
++
++# Wait for the tier process to demote the file
++EXPECT_WITHIN $REBALANCE_TIMEOUT "yes" is_sticky_set $HPATH
++
++TEST $CLI volume set $V0 cluster.tier-pause on
++
++# Wait for the tier process to finish migrating the file
++EXPECT_WITHIN $REBALANCE_TIMEOUT "no" is_sticky_set $HPATH
++
++# Get the path of the file on the cold tier
++CPATH=`find $B0/cold/ -name  FILE1`
++
++# make sure destination is empty
++TEST ! test -s $CPATH
++
++# make sure source exists and not empty
++TEST test -s $HPATH
++
++cleanup;
++
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index 5e9d5c3..e9985ad 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -7663,10 +7663,14 @@ dht_notify (xlator_t *this, int event, void *data, ...)
+                                  cmd == GF_DEFRAG_CMD_STOP_DETACH_TIER)
+                                 gf_defrag_stop (defrag,
+                                                 GF_DEFRAG_STATUS_STOPPED, output);
++                        else if (cmd == GF_DEFRAG_CMD_PAUSE_TIER)
++                                ret = gf_defrag_pause_tier (this, defrag);
++                        else if (cmd == GF_DEFRAG_CMD_RESUME_TIER)
++                                ret = gf_defrag_resume_tier (this, defrag);
+                 }
+ unlock:
+                 UNLOCK (&defrag->lock);
+-                return 0;
++                return ret;
+                 break;
+         }
+ 
+diff --git a/xlators/cluster/dht/src/dht-common.h b/xlators/cluster/dht/src/dht-common.h
+index 26cf27a..6cc2959 100644
+--- a/xlators/cluster/dht/src/dht-common.h
++++ b/xlators/cluster/dht/src/dht-common.h
+@@ -298,7 +298,8 @@ enum gf_defrag_type {
+         GF_DEFRAG_CMD_STATUS_TIER = 1 + 6,
+ 	GF_DEFRAG_CMD_START_DETACH_TIER = 1 + 7,
+ 	GF_DEFRAG_CMD_STOP_DETACH_TIER = 1 + 8,
+-
++	GF_DEFRAG_CMD_PAUSE_TIER = 1 + 9,
++	GF_DEFRAG_CMD_RESUME_TIER = 1 + 10,
+ };
+ typedef enum gf_defrag_type gf_defrag_type;
+ 
+@@ -358,6 +359,8 @@ typedef struct gf_tier_conf {
+         int                          tier_demote_frequency;
+         uint64_t                     st_last_promoted_size;
+         uint64_t                     st_last_demoted_size;
++        int                          request_pause;
++        gf_boolean_t                 paused;
+ } gf_tier_conf_t;
+ 
+ struct gf_defrag_info_ {
+@@ -987,6 +990,12 @@ int
+ gf_defrag_status_get (gf_defrag_info_t *defrag, dict_t *dict);
+ 
+ int
++gf_defrag_pause_tier (xlator_t *this, gf_defrag_info_t *defrag);
++
++int
++gf_defrag_resume_tier (xlator_t *this, gf_defrag_info_t *defrag);
++
++int
+ gf_defrag_start_detach_tier (gf_defrag_info_t *defrag);
+ 
+ int
+diff --git a/xlators/cluster/dht/src/dht-messages.h b/xlators/cluster/dht/src/dht-messages.h
+index c491600..de5062e 100644
+--- a/xlators/cluster/dht/src/dht-messages.h
++++ b/xlators/cluster/dht/src/dht-messages.h
+@@ -45,7 +45,7 @@
+  */
+ 
+ #define GLFS_DHT_BASE                   GLFS_MSGID_COMP_DHT
+-#define GLFS_DHT_NUM_MESSAGES           107
++#define GLFS_DHT_NUM_MESSAGES           109
+ #define GLFS_MSGID_END          (GLFS_DHT_BASE + GLFS_DHT_NUM_MESSAGES + 1)
+ 
+ /* Messages with message IDs */
+@@ -1007,5 +1007,22 @@
+ 
+ #define DHT_MSG_LOG_IPC_TIER_ERROR      (GLFS_DHT_BASE + 107)
+ 
++/*
++ * @messageid 109108
++ * @diagnosis
++ * @recommendedaction None
++ */
++
++#define DHT_MSG_TIER_PAUSED             (GLFS_DHT_BASE + 108)
++
++/*
++ * @messageid 109108
++ * @diagnosis
++ * @recommendedaction None
++ */
++
++#define DHT_MSG_TIER_RESUME             (GLFS_DHT_BASE + 109)
++
++
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+ #endif /* _DHT_MESSAGES_H_ */
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 51b33ee..bcb03fd 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -731,7 +731,7 @@ out:
+ 
+ static inline int
+ __dht_rebalance_migrate_data (xlator_t *from, xlator_t *to, fd_t *src, fd_t *dst,
+-                             uint64_t ia_size, int hole_exists)
++                              uint64_t ia_size, int hole_exists)
+ {
+         int            ret    = 0;
+         int            count  = 0;
+@@ -783,6 +783,68 @@ __dht_rebalance_migrate_data (xlator_t *from, xlator_t *to, fd_t *src, fd_t *dst
+         return ret;
+ }
+ 
++static int
++__tier_migrate_data (gf_defrag_info_t *defrag, xlator_t *from, xlator_t *to, fd_t *src, fd_t *dst,
++                     uint64_t ia_size, int hole_exists)
++{
++        int            ret    = 0;
++        int            count  = 0;
++        off_t          offset = 0;
++        struct iovec  *vector = NULL;
++        struct iobref *iobref = NULL;
++        uint64_t       total  = 0;
++        size_t         read_size = 0;
++
++        /* if file size is '0', no need to enter this loop */
++        while (total < ia_size) {
++
++                read_size = (((ia_size - total) > DHT_REBALANCE_BLKSIZE) ?
++                             DHT_REBALANCE_BLKSIZE : (ia_size - total));
++
++                ret = syncop_readv (from, src, read_size,
++                                    offset, 0, &vector, &count, &iobref, NULL,
++                                    NULL);
++                if (!ret || (ret < 0)) {
++                        break;
++                }
++
++                if (hole_exists)
++                        ret = dht_write_with_holes (to, dst, vector, count,
++                                                    ret, offset, iobref);
++                else
++                        ret = syncop_writev (to, dst, vector, count,
++                                             offset, iobref, 0, NULL, NULL);
++                if (defrag->tier_conf.request_pause) {
++                        gf_msg ("tier", GF_LOG_INFO, 0,
++                                DHT_MSG_TIER_PAUSED,
++                                "Migrate file paused");
++                        ret = -1;
++                }
++
++                if (ret < 0) {
++                        break;
++                }
++                offset += ret;
++                total += ret;
++
++                GF_FREE (vector);
++                if (iobref)
++                        iobref_unref (iobref);
++                iobref = NULL;
++                vector = NULL;
++        }
++        if (iobref)
++                iobref_unref (iobref);
++        GF_FREE (vector);
++
++        if (ret >= 0)
++                ret = 0;
++        else
++                ret = -1;
++
++        return ret;
++}
++
+ 
+ static inline int
+ __dht_rebalance_open_src_file (xlator_t *from, xlator_t *to, loc_t *loc,
+@@ -1255,8 +1317,14 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+ 
+ 
+         /* All I/O happens in this function */
+-        ret = __dht_rebalance_migrate_data (from, to, src_fd, dst_fd,
+-					    stbuf.ia_size, file_has_holes);
++        if (defrag->cmd == GF_DEFRAG_CMD_START_TIER) {
++                ret = __tier_migrate_data (defrag, from, to, src_fd, dst_fd,
++                                                    stbuf.ia_size, file_has_holes);
++        } else {
++                ret = __dht_rebalance_migrate_data (from, to, src_fd, dst_fd,
++                                                    stbuf.ia_size, file_has_holes);
++        }
++
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                         DHT_MSG_MIGRATE_FILE_FAILED,
+@@ -3420,6 +3488,57 @@ out:
+ }
+ 
+ int
++gf_defrag_pause_tier (xlator_t *this, gf_defrag_info_t *defrag)
++{
++        int          poll           = 0;
++        int          ret            = 0;
++        int          usec_sleep     = 100000;  /* 1/10th of a sec */
++        int          poll_max       = 15;      /* 15 times = wait at most 3/2 sec */
++
++        if (defrag->defrag_status != GF_DEFRAG_STATUS_STARTED)
++                goto out;
++
++        /*
++         * Set flag requesting to pause tiering. Wait a finite time for
++         * tiering to actually stop as indicated by the "paused" boolean,
++         * before returning success or failure.
++         */
++        defrag->tier_conf.request_pause = 1;
++
++        for (poll = 0; poll < poll_max; poll++) {
++                if ((defrag->tier_conf.paused == _gf_true) ||
++                    (defrag->defrag_status != GF_DEFRAG_STATUS_STARTED)) {
++                        goto out;
++                }
++
++                usleep (usec_sleep);
++        }
++
++        ret = -1;
++
++out:
++
++        gf_msg (this->name, GF_LOG_DEBUG, 0,
++                DHT_MSG_TIER_PAUSED,
++                "Pause tiering ret=%d", ret);
++
++        return ret;
++}
++
++int
++gf_defrag_resume_tier (xlator_t *this, gf_defrag_info_t *defrag)
++{
++        gf_msg (this->name, GF_LOG_DEBUG, 0,
++                DHT_MSG_TIER_RESUME,
++                "Resume tiering");
++
++        defrag->tier_conf.request_pause = 0;
++        defrag->tier_conf.paused = _gf_false;
++
++        return 0;
++}
++
++int
+ gf_defrag_start_detach_tier (gf_defrag_info_t *defrag)
+ {
+         defrag->cmd = GF_DEFRAG_CMD_START_DETACH_TIER;
+diff --git a/xlators/cluster/dht/src/dht-shared.c b/xlators/cluster/dht/src/dht-shared.c
+index dc5211a..75957d5 100644
+--- a/xlators/cluster/dht/src/dht-shared.c
++++ b/xlators/cluster/dht/src/dht-shared.c
+@@ -968,6 +968,11 @@ struct volume_options options[] = {
+         },
+ 
+         /* tier options */
++        { .key  = {"tier-pause"},
++          .type = GF_OPTION_TYPE_BOOL,
++          .default_value = "off",
++        },
++
+         { .key  = {"tier-promote-frequency"},
+           .type = GF_OPTION_TYPE_INT,
+           .default_value = "120",
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index f0e7474..cba6b64 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -311,6 +311,13 @@ tier_migrate_using_query_file (void *_args)
+                 per_file_status      = 0;
+                 per_link_status      = 0;
+ 
++                if (defrag->tier_conf.request_pause) {
++                        gf_msg (this->name, GF_LOG_INFO, 0,
++                                DHT_MSG_LOG_TIER_STATUS,
++                                "Tiering paused. Exiting tier_migrate_using_query_file");
++                        break;
++                }
++
+                 memset (gfid_str, 0, UUID_CANONICAL_FORM_LEN+1);
+                 memset (query_record->_link_info_str, 0, DB_QUERY_RECORD_SIZE);
+ 
+@@ -372,6 +379,14 @@ tier_migrate_using_query_file (void *_args)
+                 /* Per link of file */
+                 while (token_str != NULL) {
+ 
++                        if (defrag->tier_conf.request_pause) {
++                                gf_msg (this->name, GF_LOG_INFO, 0,
++                                        DHT_MSG_LOG_TIER_STATUS,
++                                        "Tiering paused. "
++                                        "Exiting tier_migrate_using_query_file");
++                                goto abort;
++                        }
++
+                         link_str = gf_strdup (token_str);
+ 
+                         if (!link_info) {
+@@ -490,6 +505,14 @@ tier_migrate_using_query_file (void *_args)
+ 
+                         gf_uuid_copy (loc.gfid, loc.inode->gfid);
+ 
++                        if (defrag->tier_conf.request_pause) {
++                                gf_msg (this->name, GF_LOG_INFO, 0,
++                                        DHT_MSG_LOG_TIER_STATUS,
++                                        "Tiering paused. "
++                                        "Exiting tier_migrate_using_query_file");
++                                goto abort;
++                        }
++
+                         ret = syncop_setxattr (this, &loc, migrate_data, 0,
+                                                NULL, NULL);
+                         if (ret) {
+@@ -1351,6 +1374,11 @@ tier_start (xlator_t *this, gf_defrag_info_t *defrag)
+                         goto out;
+                 }
+ 
++                if (defrag->tier_conf.request_pause)
++                        defrag->tier_conf.paused = _gf_true;
++                else
++                        defrag->tier_conf.paused = _gf_false;
++
+                 sleep(1);
+ 
+                 if (defrag->defrag_status != GF_DEFRAG_STATUS_STARTED) {
+@@ -1373,6 +1401,11 @@ tier_start (xlator_t *this, gf_defrag_info_t *defrag)
+                         goto out;
+                 }
+ 
++                if ((defrag->tier_conf.paused) ||
++                    (defrag->tier_conf.request_pause))
++                        continue;
++
++
+                 /* To have proper synchronization amongst all
+                  * brick holding nodes, so that promotion and demotions
+                  * start atomicly w.r.t promotion/demotion frequency
+@@ -1663,6 +1696,7 @@ tier_init (xlator_t *this)
+         gf_defrag_info_t *defrag         = NULL;
+         char             *voldir         = NULL;
+         char             *mode           = NULL;
++        char             *paused         = NULL;
+ 
+         ret = dht_init (this);
+         if (ret) {
+@@ -1781,7 +1815,15 @@ tier_init (xlator_t *this)
+                 defrag->tier_conf.mode = ret;
+         }
+ 
+-        ret = gf_asprintf (&voldir, "%s/%s",
++        defrag->tier_conf.request_pause = 0;
++
++        ret = dict_get_str (this->options,
++                              "tier-pause", &paused);
++
++        if (paused && strcmp (paused, "on") == 0)
++                defrag->tier_conf.request_pause = 1;
++
++        ret = gf_asprintf(&voldir, "%s/%s",
+                           DEFAULT_VAR_RUN_DIRECTORY,
+                           this->name);
+         if (ret < 0)
+@@ -1849,6 +1891,9 @@ tier_reconfigure (xlator_t *this, dict_t *options)
+         gf_defrag_info_t *defrag         = NULL;
+         char             *mode           = NULL;
+         int               migrate_mb     = 0;
++        gf_boolean_t      req_pause      = _gf_false;
++        int               ret            = 0;
++
+         conf = this->private;
+ 
+         if (conf->defrag) {
+@@ -1890,6 +1935,27 @@ tier_reconfigure (xlator_t *this, dict_t *options)
+                 GF_OPTION_RECONF ("tier-max-files",
+                                   defrag->tier_conf.max_migrate_files, options,
+                                   int32, out);
++
++                GF_OPTION_RECONF ("tier-pause",
++                                  req_pause, options,
++                                  bool, out);
++
++                if (req_pause == _gf_true) {
++                        ret = gf_defrag_pause_tier (this, defrag);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        DHT_MSG_LOG_TIER_ERROR,
++                                        "pause tier failed on reconfigure");
++                        }
++                } else {
++                        ret = gf_defrag_resume_tier (this, defrag);
++                        if (ret) {
++                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                        DHT_MSG_LOG_TIER_ERROR,
++                                        "resume tier failed on reconfigure");
++                        }
++                }
++
+         }
+ 
+ out:
+diff --git a/xlators/mgmt/glusterd/src/glusterd-messages.h b/xlators/mgmt/glusterd/src/glusterd-messages.h
+index e214ccf..8dcbcdb 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-messages.h
++++ b/xlators/mgmt/glusterd/src/glusterd-messages.h
+@@ -45,7 +45,9 @@
+  */
+ 
+ #define GLUSTERD_COMP_BASE      GLFS_MSGID_GLUSTERD
+-#define GLFS_NUM_MESSAGES       571
++
++#define GLFS_NUM_MESSAGES       573
++
+ #define GLFS_MSGID_END          (GLUSTERD_COMP_BASE + GLFS_NUM_MESSAGES + 1)
+ /* Messaged with message IDs */
+ #define glfs_msg_start_x GLFS_COMP_BASE, "Invalid: Start of messages"
+@@ -4616,8 +4618,26 @@
+  * @recommendedaction
+  *
+  */
++
+ #define GD_MSG_SHARED_STORAGE_DOES_NOT_EXIST        (GLUSTERD_COMP_BASE + 571)
+ 
++/*!
++ * @messageid
++ * @diagnosis
++ * @recommendedaction
++ *
++ */
++
++#define GD_MSG_SNAP_PAUSE_TIER_FAIL                 (GLUSTERD_COMP_BASE + 572)
++
++/*!
++ * @messageid
++ * @diagnosis
++ * @recommendedaction
++ *
++ */
++#define GD_MSG_SNAP_RESUME_TIER_FAIL                (GLUSTERD_COMP_BASE + 573)
++
+ /*------------*/
+ #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
+ #endif /* !_GLUSTERD_MESSAGES_H_ */
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index a957377..19c1f43 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -1953,6 +1953,142 @@ out:
+ }
+ 
+ int
++glusterd_snapshot_pause_tier (xlator_t *this, glusterd_volinfo_t *volinfo)
++{
++        int                     ret             = -1;
++        dict_t                 *dict            = NULL;
++        char                   *op_errstr       = NULL;
++
++        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
++        GF_VALIDATE_OR_GOTO (this->name, volinfo, out);
++
++        if (volinfo->type != GF_CLUSTER_TYPE_TIER) {
++                ret = 0;
++                goto out;
++        }
++
++        dict = dict_new ();
++        if (!dict) {
++                goto out;
++        }
++
++        ret = dict_set_int32 (dict, "rebalance-command",
++                              GF_DEFRAG_CMD_PAUSE_TIER);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_DICT_SET_FAILED,
++                        "Failed to set rebalance-command");
++                goto out;
++        }
++
++        ret = dict_set_str (dict, "volname", volinfo->volname);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_DICT_SET_FAILED,
++                        "Failed to set volname");
++                goto out;
++        }
++
++        ret = gd_brick_op_phase (GD_OP_DEFRAG_BRICK_VOLUME, NULL,
++                                 dict, &op_errstr);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_SNAP_PAUSE_TIER_FAIL,
++                        "Failed to pause tier. Errstr=%s",
++                        op_errstr);
++                goto out;
++        }
++
++out:
++        if (dict)
++                dict_unref (dict);
++
++        return ret;
++}
++
++
++int
++glusterd_snapshot_resume_tier (xlator_t *this, dict_t *snap_dict)
++{
++        int                     ret             = -1;
++        dict_t                 *dict            = NULL;
++        int64_t                 volcount        = 0;
++        char                    key[PATH_MAX]   = "";
++        char                   *volname         = NULL;
++        int                     i               = 0;
++        char                   *op_errstr       = NULL;
++        glusterd_volinfo_t     *volinfo         = NULL;
++
++        GF_VALIDATE_OR_GOTO ("glusterd", this, out);
++        GF_VALIDATE_OR_GOTO (this->name, snap_dict, out);
++
++        ret = dict_get_int64 (snap_dict, "volcount", &volcount);
++        if (ret) {
++                goto out;
++        }
++        if (volcount <= 0) {
++                ret = -1;
++                goto out;
++        }
++
++        dict = dict_new ();
++        if (!dict)
++                goto out;
++
++        for (i = 1; i <= volcount; i++) {
++                snprintf (key, sizeof (key), "volname%d", i);
++                ret = dict_get_str (snap_dict, key, &volname);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DICT_SET_FAILED,
++                                "Failed to get key %s", volname);
++                        goto out;
++                }
++
++                ret = glusterd_volinfo_find (volname, &volinfo);
++                if (ret)
++                        goto out;
++
++                if (volinfo->type != GF_CLUSTER_TYPE_TIER)
++                        continue;
++
++                ret = dict_set_int32 (dict, "rebalance-command",
++                                      GF_DEFRAG_CMD_RESUME_TIER);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DICT_SET_FAILED,
++                        "Failed to set rebalance-command");
++
++                        goto out;
++                }
++
++                ret = dict_set_str (dict, "volname", volname);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DICT_SET_FAILED,
++                                "Failed to set volname");
++                        goto out;
++                }
++
++                ret = gd_brick_op_phase (GD_OP_DEFRAG_BRICK_VOLUME, NULL,
++                                         dict, &op_errstr);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_SNAP_RESUME_TIER_FAIL,
++                                "Failed to resume tier");
++                        goto out;
++                }
++        }
++
++out:
++        if (dict)
++                dict_unref (dict);
++
++        return ret;
++}
++
++
++int
+ glusterd_snap_create_clone_common_prevalidate (dict_t *rsp_dict, int flags,
+                                                char *snapname, char *err_str,
+                                                char *snap_volname,
+@@ -2254,7 +2390,12 @@ glusterd_snapshot_clone_prevalidate (dict_t *dict, char **op_errstr,
+                 goto out;
+         }
+ 
+-        ret = 0;
++        ret = glusterd_snapshot_pause_tier (this, snap_vol);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_SNAP_PAUSE_TIER_FAIL,
++                        "Failed to pause tier in clone prevalidate.");
++        }
+ out:
+ 
+         if (ret && err_str[0] != '\0') {
+@@ -2444,6 +2585,14 @@ glusterd_snapshot_create_prevalidate (dict_t *dict, char **op_errstr,
+                         goto out;
+                 }
+ 
++                ret = glusterd_snapshot_pause_tier (this, volinfo);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_SNAP_PAUSE_TIER_FAIL,
++                                "Failed to pause tier in snap prevalidate.");
++                        goto out;
++                }
++
+         }
+ 
+         ret = dict_set_int64 (rsp_dict, "volcount", volcount);
+@@ -2454,6 +2603,7 @@ glusterd_snapshot_create_prevalidate (dict_t *dict, char **op_errstr,
+         }
+ 
+         ret = 0;
++
+ out:
+         if (ret && err_str[0] != '\0') {
+                 gf_msg (this->name, loglevel, 0,
+@@ -7818,7 +7968,12 @@ glusterd_snapshot_clone_postvalidate (dict_t *dict, int32_t op_ret,
+         }
+         snap_vol->snapshot = NULL;
+ 
+-        ret = 0;
++        ret = glusterd_snapshot_resume_tier (this, dict);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_SNAP_RESUME_TIER_FAIL,
++                        "Failed to resume tier in clone postvalidate.");
++        }
+ 
+ out:
+         return ret;
+@@ -7913,7 +8068,13 @@ glusterd_snapshot_create_postvalidate (dict_t *dict, int32_t op_ret,
+                 //ignore the errors of autodelete
+                 ret = glusterd_handle_snap_limit (dict, rsp_dict);
+         }
+-        ret = 0;
++
++        ret = glusterd_snapshot_resume_tier (this, dict);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_SNAP_RESUME_TIER_FAIL,
++                        "Failed to resume tier in snapshot postvalidate.");
++        }
+ 
+ out:
+         return ret;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index e16fa0f..7ab8734 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -52,6 +52,15 @@ validate_tier (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
+                 goto out;
+         }
+ 
++        else if (strstr (key, "tier-pause")) {
++                if (strcmp(value, "off") &&
++                    strcmp(value, "on")) {
++                        ret = -1;
++                        goto out;
++                }
++                goto out;
++        }
++
+         /*
+          * Rest of the volume set options for tier are expecting a positive
+          * Integer. Change the function accordingly if this constraint is
+@@ -1964,6 +1973,13 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+                          "file that has read hits less than this value will be "
+                          "considered as COLD and will be demoted."
+         },
++        { .key         = "cluster.tier-pause",
++          .voltype     = "cluster/tier",
++          .option      = "tier-pause",
++          .op_version  = GD_OP_VERSION_3_7_6,
++          .flags       = OPT_FLAG_CLIENT_OPT,
++          .validate_fn = validate_tier,
++        },
+         { .key         = "cluster.tier-promote-frequency",
+           .voltype     = "cluster/tier",
+           .value       = "120",
+-- 
+1.7.1
+

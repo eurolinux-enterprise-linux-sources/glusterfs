@@ -267,7 +267,8 @@ rpc_transport_load (glusterfs_ctx_t *ctx, dict_t *options, char *trans_name)
                 else
                         trans->bind_insecure = 0;
         } else {
-                trans->bind_insecure = 0;
+                /* By default allow bind insecure */
+                trans->bind_insecure = 1;
         }
 
 	ret = dict_get_str (options, "transport-type", &type);
@@ -474,6 +475,10 @@ rpc_transport_destroy (rpc_transport_t *this)
         if (this->dl_handle)
                 dlclose (this->dl_handle);
 
+        if (this->ssl_name) {
+                GF_FREE(this->ssl_name);
+        }
+
 	GF_FREE (this);
 fail:
 	return ret;
@@ -568,7 +573,7 @@ out:
 //why call it if you dont set it.
 int
 rpc_transport_keepalive_options_set (dict_t *options, int32_t interval,
-                                     int32_t time)
+                                     int32_t time, int32_t timeout)
 {
         int                     ret = -1;
 
@@ -582,6 +587,11 @@ rpc_transport_keepalive_options_set (dict_t *options, int32_t interval,
 
         ret = dict_set_int32 (options,
                 "transport.socket.keepalive-time", time);
+        if (ret)
+                goto out;
+
+        ret = dict_set_int32 (options,
+                "transport.tcp-user-timeout", timeout);
         if (ret)
                 goto out;
 out:

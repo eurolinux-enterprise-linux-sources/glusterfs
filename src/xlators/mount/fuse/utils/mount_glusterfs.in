@@ -1,5 +1,6 @@
 #!/bin/sh
 # (C) 2014 Red Hat Inc. <http://www.redhat.com>
+# (C) 2015 ungleich GmbH <http://www.ungleich.ch>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License as
@@ -19,7 +20,7 @@
 
 warn ()
 {
-   echo "$@" >/dev/stderr
+   echo "$@" >&2
 }
 
 _init ()
@@ -301,7 +302,7 @@ start_glusterfs ()
 
 print_usage ()
 {
-cat << EOF >/dev/stderr
+cat << EOF >&2
 Usage: $0 <volumeserver>:<volumeid/volumeport> -o<options> <mountpoint>
 Options:
 man 8 $0
@@ -380,17 +381,17 @@ with_options()
             use_readdirp=$value
             ;;
         "no-root-squash")
-            if [ $value == "yes" ] ||
-                [ $value == "on" ] ||
-                [ $value == "enable" ] ||
-                [ $value == "true" ] ; then
+            if [ $value = "yes" ] ||
+                [ $value = "on" ] ||
+                [ $value = "enable" ] ||
+                [ $value = "true" ] ; then
                 no_root_squash=1;
             fi ;;
         "root-squash")
-            if [ $value == "no" ] ||
-                [ $value == "off" ] ||
-                [ $value == "disable" ] ||
-                [ $value == "false" ] ; then
+            if [ $value = "no" ] ||
+                [ $value = "off" ] ||
+                [ $value = "disable" ] ||
+                [ $value = "false" ] ; then
                 no_root_squash=1;
             fi ;;
         *)
@@ -449,7 +450,7 @@ without_options()
 parse_options()
 {
     local optarg=${1}
-    for pair in $(echo ${optarg//,/ }); do
+    for pair in $(echo $optarg | sed 's/,/ /g'); do
         key=$(echo "$pair" | cut -f1 -d'=');
         value=$(echo "$pair" | cut -f2- -d'=');
         if [ "$key" = "$value" ]; then
@@ -463,7 +464,8 @@ parse_options()
 main ()
 {
     ## `mount` on OSX specifies options as first argument
-    if [[ $1 =~ "-o" ]]; then
+    echo $1|grep -q -- "-o"
+    if [ $? -eq 0 ];  then
         volfile_loc=$3
         mount_point=$4
     else
@@ -501,7 +503,7 @@ main ()
     }
 
     [ -z "$volume_id" -o -z "$server_ip" ] && {
-        cat <<EOF >/dev/stderr
+        cat <<EOF >&2
 ERROR: Server name/volume name unspecified cannot proceed further..
 Please specify correct format
 Usage:
@@ -512,7 +514,7 @@ EOF
 
     grep_ret=$(echo ${mount_point} | grep '^\-o');
     [ "x" != "x${grep_ret}" ] && {
-        cat <<EOF >/dev/stderr
+        cat <<EOF >&2
 ERROR: -o options cannot be specified in either first two arguments..
 Please specify correct style
 Usage:
@@ -524,7 +526,7 @@ EOF
     # No need to do a ! -d test, it is taken care while initializing the
     # variable mount_point
     [ -z "$mount_point" -o ! -d "$mount_point" ] && {
-        cat <<EOF >/dev/stderr
+        cat <<EOF >&2
 ERROR: Mount point does not exist
 Please specify a mount point
 Usage:

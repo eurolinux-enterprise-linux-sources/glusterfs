@@ -27,6 +27,7 @@
 #include "compat.h"
 #include "list.h"
 #include "latency.h"
+#include "compat-uuid.h"
 
 #define FIRST_CHILD(xl) (xl->children->xlator)
 #define SECOND_CHILD(xl) (xl->children->next->xlator)
@@ -443,6 +444,10 @@ typedef int32_t (*fop_zerofill_cbk_t) (call_frame_t *frame,
                                       struct iatt *preop_stbuf,
                                       struct iatt *postop_stbuf, dict_t *xdata);
 
+typedef int32_t (*fop_ipc_cbk_t) (call_frame_t *frame, void *cookie,
+                                 xlator_t *this, int32_t op_ret,
+                                 int32_t op_errno, dict_t *xdata);
+
 typedef int32_t (*fop_lookup_t) (call_frame_t *frame,
                                  xlator_t *this,
                                  loc_t *loc,
@@ -674,12 +679,16 @@ typedef int32_t (*fop_discard_t) (call_frame_t *frame,
 				  off_t offset,
 				  size_t len,
                                   dict_t *xdata);
+
 typedef int32_t (*fop_zerofill_t) (call_frame_t *frame,
                                   xlator_t *this,
                                   fd_t *fd,
                                   off_t offset,
                                   off_t len,
                                   dict_t *xdata);
+
+typedef int32_t (*fop_ipc_t) (call_frame_t *frame, xlator_t *this, int32_t op,
+                              dict_t *xdata);
 
 struct xlator_fops {
         fop_lookup_t         lookup;
@@ -727,6 +736,7 @@ struct xlator_fops {
 	fop_fallocate_t	     fallocate;
 	fop_discard_t	     discard;
         fop_zerofill_t       zerofill;
+        fop_ipc_t            ipc;
 
         /* these entries are used for a typechecking hack in STACK_WIND _only_ */
         fop_lookup_cbk_t         lookup_cbk;
@@ -774,6 +784,7 @@ struct xlator_fops {
 	fop_fallocate_cbk_t	 fallocate_cbk;
 	fop_discard_cbk_t	 discard_cbk;
         fop_zerofill_cbk_t       zerofill_cbk;
+        fop_ipc_cbk_t            ipc_cbk;
 };
 
 typedef int32_t (*cbk_forget_t) (xlator_t *this,
@@ -786,6 +797,9 @@ typedef int32_t (*cbk_invalidate_t)(xlator_t *this, inode_t *inode);
 
 typedef int32_t (*cbk_client_t)(xlator_t *this, client_t *client);
 
+typedef void (*cbk_ictxmerge_t) (xlator_t *this, fd_t *fd,
+                                 inode_t *inode, inode_t *linked_inode);
+
 struct xlator_cbks {
         cbk_forget_t             forget;
         cbk_release_t            release;
@@ -793,6 +807,7 @@ struct xlator_cbks {
 	cbk_invalidate_t         invalidate;
         cbk_client_t             client_destroy;
         cbk_client_t             client_disconnect;
+        cbk_ictxmerge_t          ictxmerge;
 };
 
 typedef int32_t (*dumpop_priv_t) (xlator_t *this);
@@ -874,7 +889,7 @@ struct _xlator {
         inode_table_t      *itable;
         char                init_succeeded;
         void               *private;
-        struct mem_acct     mem_acct;
+        struct mem_acct    *mem_acct;
         uint64_t            winds;
         char                switched;
 
@@ -936,6 +951,9 @@ void xlator_foreach_depth_first (xlator_t *this,
 
 xlator_t *xlator_search_by_name (xlator_t *any, const char *name);
 
+void
+xlator_set_inode_lru_limit (xlator_t *this, void *data);
+
 void inode_destroy_notify (inode_t *inode, const char *xlname);
 
 int loc_copy (loc_t *dst, loc_t *src);
@@ -947,6 +965,7 @@ int loc_path (loc_t *loc, const char *bname);
 void loc_gfid (loc_t *loc, uuid_t gfid);
 char* loc_gfid_utoa (loc_t *loc);
 gf_boolean_t loc_is_root (loc_t *loc);
+int32_t loc_build_child (loc_t *child, loc_t *parent, char *name);
 int xlator_mem_acct_init (xlator_t *xl, int num_types);
 int is_gf_log_command (xlator_t *trans, const char *name, char *value);
 int glusterd_check_log_level (const char *value);
@@ -961,4 +980,17 @@ is_graph_topology_equal (glusterfs_graph_t *graph1, glusterfs_graph_t *graph2);
 int
 glusterfs_volfile_reconfigure (int oldvollen, FILE *newvolfile_fp,
                                glusterfs_ctx_t *ctx, const char *oldvolfile);
+
+int
+loc_touchup (loc_t *loc, const char *name);
+
+int
+glusterfs_leaf_position(xlator_t *tgt);
+
+int
+glusterfs_reachable_leaves(xlator_t *base, dict_t *leaves);
+
+int
+xlator_subvolume_count (xlator_t *this);
+
 #endif /* _XLATOR_H */

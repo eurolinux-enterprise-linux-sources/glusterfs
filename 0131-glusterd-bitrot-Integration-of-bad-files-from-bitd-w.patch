@@ -1,0 +1,335 @@
+From a4b1d6ce20a9459c79eb58561938fdbf998d3d63 Mon Sep 17 00:00:00 2001
+From: Gaurav Kumar Garg <garg.gaurav52@gmail.com>
+Date: Mon, 23 Nov 2015 17:00:07 +0530
+Subject: [PATCH 131/131] glusterd/bitrot : Integration of bad files from bitd with scrub status command
+
+This patch is backport of: http://review.gluster.org/#/c/12720/
+
+Currently scrub status command is not displaying list of all the bad files. All
+the bad files are avaliable in the bitd daemon.
+
+With this patch it will dispaly list of all the bad file's in the scrub
+status command.
+
+    >> Change-Id: If09babafaf5d7cf158fa79119abbf5b986027748
+    >> BUG: 1207627
+    >> Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+
+Change-Id: I6cf7dd02aa196f618bc70d22f526fcd3a6c28855
+BUG: 1224226
+Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62122
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ cli/src/cli-cmd-parser.c                          |   23 ++---------
+ cli/src/cli-rpc-ops.c                             |   13 ++++++
+ tests/bitrot/bug-1207627-bitrot-scrub-status.t    |   43 +++++++++++++++++++++
+ tests/volume.rc                                   |    7 +++
+ xlators/features/bit-rot/src/bitd/bit-rot-scrub.h |    2 +
+ xlators/features/bit-rot/src/bitd/bit-rot.c       |   29 +++++++++-----
+ xlators/mgmt/glusterd/src/glusterd-utils.c        |   41 +++++++++++++++++++-
+ 7 files changed, 129 insertions(+), 29 deletions(-)
+ create mode 100644 tests/bitrot/bug-1207627-bitrot-scrub-status.t
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index cc0a9ab..1d5e8b8 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -5158,23 +5158,6 @@ cli_cmd_bitrot_parse (const char **words, int wordcount, dict_t **options)
+                 }
+         }
+ 
+-        if ((strcmp (words[3], "scrub") == 0) &&
+-            (strcmp (words[4], "status") == 0)) {
+-                if (wordcount == 5) {
+-                        type = GF_BITROT_CMD_SCRUB_STATUS;
+-                        ret =  dict_set_str (dict, "scrub-value",
+-                                             (char *) words[4]);
+-                        if (ret) {
+-                                cli_out ("Failed to set dict for scrub status");
+-                                goto out;
+-                        }
+-                        goto set_type;
+-                } else {
+-                        ret = -1;
+-                        goto out;
+-                }
+-        }
+-
+         if (!strcmp (w, "scrub-throttle")) {
+                 if (!words[4]) {
+                         cli_err ("Missing scrub-throttle value for bitrot "
+@@ -5241,7 +5224,11 @@ cli_cmd_bitrot_parse (const char **words, int wordcount, dict_t **options)
+                                 ret = -1;
+                                 goto out;
+                         } else {
+-                                type = GF_BITROT_OPTION_TYPE_SCRUB;
++                                if (strcmp (words[4], "status") == 0) {
++                                        type = GF_BITROT_CMD_SCRUB_STATUS;
++                                } else {
++                                        type = GF_BITROT_OPTION_TYPE_SCRUB;
++                                }
+                                 ret =  dict_set_str (dict, "scrub-value",
+                                                     (char *) words[4]);
+                                 if (ret) {
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 6b34eb9..f895375 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -10632,6 +10632,7 @@ int
+ gf_cli_print_bitrot_scrub_status (dict_t *dict)
+ {
+         int            i                = 1;
++        int            j                = 0;
+         int            ret              = -1;
+         int            count            = 0;
+         char           key[256]         = {0,};
+@@ -10640,6 +10641,7 @@ gf_cli_print_bitrot_scrub_status (dict_t *dict)
+         char           *scrub_freq      = NULL;
+         char           *state_scrub     = NULL;
+         char           *scrub_impact    = NULL;
++        char           *bad_file_str    = NULL;
+         char           *scrub_log_file  = NULL;
+         char           *bitrot_log_file = NULL;
+         uint64_t       scrub_files      = 0;
+@@ -10765,6 +10767,17 @@ gf_cli_print_bitrot_scrub_status (dict_t *dict)
+ 
+                 cli_out ("%s: %"PRIu64 "\n", "Error count", error_count);
+ 
++                if (error_count)
++                        cli_out ("%s:\n", "Corrupted object's");
++                /* Printing list of bad file's (Corrupted object's)*/
++                for (j = 0; j < error_count; j++) {
++                        memset (key, 0, 256);
++                        snprintf (key, 256, "quarantine-%d-%d", j, i);
++                        ret = dict_get_str (dict, key, &bad_file_str);
++                        if (!ret) {
++                                cli_out ("%s\n", bad_file_str);
++                        }
++                }
+         }
+         cli_out ("%s\n", "=========================================="
+                  "===============");
+diff --git a/tests/bitrot/bug-1207627-bitrot-scrub-status.t b/tests/bitrot/bug-1207627-bitrot-scrub-status.t
+new file mode 100644
+index 0000000..0bbcb38
+--- /dev/null
++++ b/tests/bitrot/bug-1207627-bitrot-scrub-status.t
+@@ -0,0 +1,43 @@
++#!/bin/bash
++
++## Test case for bitrot scrub status BZ:1207627
++
++. $(dirname $0)/../include.rc
++. $(dirname $0)/../volume.rc
++
++cleanup;
++
++## Start glusterd
++TEST glusterd;
++TEST pidof glusterd;
++
++## Lets create and start the volume
++TEST $CLI volume create $V0 $H0:$B0/${V0}{1..2}
++TEST $CLI volume start $V0
++
++## Enable bitrot for volume $V0
++TEST $CLI volume bitrot $V0 enable
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" get_bitd_count
++
++## Setting scrubber frequency daily
++TEST $CLI volume bitrot $V0 scrub-frequency hourly
++
++## Setting scrubber throttle value lazy
++TEST $CLI volume bitrot $V0 scrub-throttle lazy
++
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 'Active' scrub_status $V0 'State of scrub'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 'lazy'   scrub_status $V0 'Scrub impact'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT 'hourly' scrub_status $V0 'Scrub frequency'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT '/var/log/glusterfs/bitd.log' scrub_status $V0 'Bitrot error log location'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT '/var/log/glusterfs/scrub.log' scrub_status $V0 'Scrubber error log location'
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT '0' scrub_status $V0 'Number of Scrubbed files'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT '0' scrub_status $V0 'Number of Unsigned files'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT '0' scrub_status $V0 'Last completed scrub time'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT '0' scrub_status $V0 'Duration of last scrub'
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT '0' scrub_status $V0 'Error count'
++
++
++cleanup;
+diff --git a/tests/volume.rc b/tests/volume.rc
+index e647dc3..1503705 100644
+--- a/tests/volume.rc
++++ b/tests/volume.rc
+@@ -624,3 +624,10 @@ function quota_hl_exceeded()
+ }
+ 
+ 
++function scrub_status()
++{
++        local vol=$1;
++        local field=$2;
++
++        $CLI volume bitrot $vol scrub status | grep "^$field: " | sed 's/.*: //';
++}
+diff --git a/xlators/features/bit-rot/src/bitd/bit-rot-scrub.h b/xlators/features/bit-rot/src/bitd/bit-rot-scrub.h
+index 427153c..e730582 100644
+--- a/xlators/features/bit-rot/src/bitd/bit-rot-scrub.h
++++ b/xlators/features/bit-rot/src/bitd/bit-rot-scrub.h
+@@ -25,4 +25,6 @@ int32_t br_scrubber_handle_options (xlator_t *, br_private_t *, dict_t *);
+ 
+ int32_t br_scrubber_init (xlator_t *, br_private_t *);
+ 
++int32_t br_collect_bad_objects_from_children (xlator_t *this, dict_t *dict);
++
+ #endif /* __BIT_ROT_SCRUB_H__ */
+diff --git a/xlators/features/bit-rot/src/bitd/bit-rot.c b/xlators/features/bit-rot/src/bitd/bit-rot.c
+index c5a8a75..a88fa57 100644
+--- a/xlators/features/bit-rot/src/bitd/bit-rot.c
++++ b/xlators/features/bit-rot/src/bitd/bit-rot.c
+@@ -1562,6 +1562,21 @@ _br_qchild_event (xlator_t *this, br_child_t *child, br_child_handler *call)
+ }
+ 
+ int
++br_scrubber_status_get (xlator_t *this, dict_t **dict)
++{
++
++        int               ret    = -1;
++
++        ret = br_get_bad_objects_list (this, dict);
++        if (ret) {
++                gf_msg_debug (this->name, 0, "Failed to collect corrupt "
++                              "files");
++        }
++
++        return ret;
++}
++
++int
+ notify (xlator_t *this, int32_t event, void *data, ...)
+ {
+         int           idx    = -1;
+@@ -1638,19 +1653,13 @@ notify (xlator_t *this, int32_t event, void *data, ...)
+                 break;
+ 
+         case GF_EVENT_SCRUB_STATUS:
+-                gf_log (this->name, GF_LOG_INFO, "BitRot scrub status "
+-                        "called");
++                gf_msg_debug (this->name, GF_LOG_INFO, "BitRot scrub status "
++                              "called");
+                 va_start (ap, data);
+                 output = va_arg (ap, dict_t *);
+ 
+-                /* As of now hardcoding last-scrub-time value. At the time of
+-                 * Final patch submission this option value along with other
+-                 * few option value will be calculate based on real time */
+-                ret = dict_set_uint64 (output, "last-scrub-time", 12);
+-                if (ret) {
+-                        gf_log (this->name, GF_LOG_DEBUG, "Failed to set last "
+-                                "scrub time value");
+-                }
++                ret = br_scrubber_status_get (this, &output);
++                gf_msg_debug (this->name, 0, "returning %d", ret);
+                 break;
+         default:
+                 default_notify (this, event, data);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 93f21b3..61c4a51 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -8223,6 +8223,7 @@ int
+ glusterd_volume_bitrot_scrub_use_rsp_dict (dict_t *aggr, dict_t *rsp_dict)
+ {
+         int                      ret                = -1;
++        int                      j                  = 0;
+         uint64_t                 value              = 0;
+         int32_t                  count              = 0;
+         char                     key[256]           = {0,};
+@@ -8239,6 +8240,7 @@ glusterd_volume_bitrot_scrub_use_rsp_dict (dict_t *aggr, dict_t *rsp_dict)
+         char                    *scrub_freq         = NULL;
+         char                    *scrub_state        = NULL;
+         char                    *scrub_impact       = NULL;
++        char                    *bad_gfid_str       = NULL;
+         xlator_t                *this               = NULL;
+         glusterd_conf_t         *priv               = NULL;
+         glusterd_volinfo_t      *volinfo            = NULL;
+@@ -8356,6 +8358,24 @@ glusterd_volume_bitrot_scrub_use_rsp_dict (dict_t *aggr, dict_t *rsp_dict)
+                         gf_msg_debug (this->name, 0, "Failed to set error "
+                                       "count value");
+                 }
++
++                /* Storing all the bad files in the dictionary */
++                for (j = 0; j < value; j++) {
++                        memset (key, 0, 256);
++                        snprintf (key, 256, "quarantine-%d-%d", j, src_count);
++                        ret = dict_get_str (rsp_dict, key, &bad_gfid_str);
++                        if (!ret) {
++                                memset (key, 0, 256);
++                                snprintf (key, 256, "quarantine-%d-%d", j,
++                                          src_count+dst_count);
++                                ret = dict_set_dynstr_with_alloc (aggr, key,
++                                                                  bad_gfid_str);
++                                if (ret) {
++                                        gf_msg_debug (this->name, 0, "Failed to"
++                                                      "bad file gfid ");
++                                }
++                        }
++                }
+         }
+ 
+         ret = dict_get_str (rsp_dict, "bitrot_log_file", &bitd_log);
+@@ -8425,6 +8445,7 @@ glusterd_bitrot_volume_node_rsp (dict_t *aggr, dict_t *rsp_dict)
+         char                     buf[1024]          = {0,};
+         uint64_t                 error_count        = 0;
+         int32_t                  i                  = 0;
++        int32_t                  j                  = 0;
+         uint64_t                 scrubbed_files     = 0;
+         uint64_t                 unsigned_files     = 0;
+         uint64_t                 scrub_duration     = 0;
+@@ -8434,6 +8455,7 @@ glusterd_bitrot_volume_node_rsp (dict_t *aggr, dict_t *rsp_dict)
+         char                    *scrub_freq         = NULL;
+         char                    *scrub_state        = NULL;
+         char                    *scrub_impact       = NULL;
++        char                    *bad_gfid_str       = NULL;
+         xlator_t                *this               = NULL;
+         glusterd_conf_t         *priv               = NULL;
+         glusterd_volinfo_t      *volinfo            = NULL;
+@@ -8590,7 +8612,7 @@ glusterd_bitrot_volume_node_rsp (dict_t *aggr, dict_t *rsp_dict)
+                 }
+         }
+ 
+-        ret = dict_get_uint64 (rsp_dict, "error-count", &value);
++        ret = dict_get_uint64 (rsp_dict, "total-count", &value);
+         if (!ret) {
+                 memset (key, 0, 256);
+                 snprintf (key, 256, "error-count-%d", i);
+@@ -8599,6 +8621,23 @@ glusterd_bitrot_volume_node_rsp (dict_t *aggr, dict_t *rsp_dict)
+                         gf_msg_debug (this->name, 0, "Failed to set error "
+                                       "count value");
+                 }
++
++                /* Storing all the bad files in the dictionary */
++                for (j = 0; j < value; j++) {
++                        memset (key, 0, 256);
++                        snprintf (key, 256, "quarantine-%d", j);
++                        ret = dict_get_str (rsp_dict, key, &bad_gfid_str);
++                        if (!ret) {
++                                memset (key, 0, 256);
++                                snprintf (key, 256, "quarantine-%d-%d", j, i);
++                                ret = dict_set_dynstr_with_alloc (aggr, key,
++                                                                  bad_gfid_str);
++                                if (ret) {
++                                        gf_msg_debug (this->name, 0, "Failed to"
++                                                      "bad file gfid ");
++                                }
++                        }
++                }
+         }
+ 
+         ret = 0;
+-- 
+1.7.1
+

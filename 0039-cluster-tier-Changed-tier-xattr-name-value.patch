@@ -1,0 +1,90 @@
+From 7f19a24e92641bea53b1818ae241c067c0288166 Mon Sep 17 00:00:00 2001
+From: Nithya Balachandran <nbalacha@redhat.com>
+Date: Tue, 20 Oct 2015 13:08:14 +0530
+Subject: [PATCH 39/67] cluster/tier: Changed tier xattr-name value
+
+Each tier layer (for future stacking implementations)
+must have a unique xattr name. We are currently using
+the name of the tier subvolume excluding the volume name.
+
+Upstream patch : http://review.gluster.org/#/c/12350/
+
+Change-Id: I36bb928b1a654fe1420b2782f4502439265283c8
+BUG: 1273249
+Signed-off-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59698
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-rebalance.c |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-volgen.c    |   26 ++++++++++++-----------
+ 2 files changed, 15 insertions(+), 13 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rebalance.c b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+index 69f120e..b41f73d 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rebalance.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+@@ -292,7 +292,7 @@ glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
+         if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+                 runner_add_arg (&runner, "--xlator-option");
+                 runner_argprintf (&runner,
+-                                  "*tier-dht.xattr-name=trusted.tier-gfid");
++                                  "*tier-dht.xattr-name=trusted.tier.tier-dht");
+         }
+ 
+         runner_add_arg (&runner, "--xlator-option");
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index bf55d52..a497129 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -3528,18 +3528,18 @@ volume_volgen_graph_build_clusters_tier (volgen_graph_t *graph,
+                                          glusterd_volinfo_t *volinfo,
+                                          gf_boolean_t is_quotad)
+ {
+-        int                ret = -1;
+-        xlator_t          *root;
++        int                ret                     = -1;
++        xlator_t          *root                    = NULL;
+         xlator_t          *xl, *hxl, *cxl;
+-        glusterd_brickinfo_t    *brick              = NULL;
+-        char              *rule;
+-        int                st_brick_count = 0;
+-        int                st_replica_count = 0;
+-        int                st_disperse_count = 0;
+-        int                st_dist_leaf_count = 0;
+-        int                st_type = 0;
+-        int                dist_count = 0;
+-        int                start_count = 0;
++        glusterd_brickinfo_t    *brick             = NULL;
++        char              *rule                    = NULL;
++        int                st_brick_count          = 0;
++        int                st_replica_count        = 0;
++        int                st_disperse_count       = 0;
++        int                st_dist_leaf_count      = 0;
++        int                st_type                 = 0;
++        int                dist_count              = 0;
++        int                start_count             = 0;
+         char              *decommissioned_children = NULL;
+ 
+         st_brick_count     = volinfo->brick_count;
+@@ -3619,7 +3619,8 @@ volume_volgen_graph_build_clusters_tier (volgen_graph_t *graph,
+         if (ret)
+                 goto out;
+ 
+-        ret = xlator_set_option(xl, "xattr-name", "trusted.tier-gfid");
++        /*Each dht/tier layer must have a different xattr name*/
++        ret = xlator_set_option(xl, "xattr-name", "trusted.tier.tier-dht");
+         if (ret)
+                 goto out;
+ 
+@@ -3647,6 +3648,7 @@ volume_volgen_graph_build_clusters_tier (volgen_graph_t *graph,
+         volinfo->dist_leaf_count = st_dist_leaf_count;
+         volinfo->tier_info.cur_tier_hot = 0;
+ 
++        GF_FREE (rule);
+         return ret;
+ }
+ 
+-- 
+1.7.1
+

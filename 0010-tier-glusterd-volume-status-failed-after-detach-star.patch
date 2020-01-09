@@ -1,0 +1,71 @@
+From f3ce504449c5f71a9d3dbea915c36ceb32c5dfca Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Thu, 10 Sep 2015 11:52:27 +0530
+Subject: [PATCH 10/23] tier/glusterd: volume status failed after detach start
+
+After triggering detach start on a tiered volume fails.
+This because of brick count was wrongly setting in rebal
+dictionary.
+
+Back port of>
+>Change-Id: I6a472bf2653a07522416699420161f2fb1746aef
+>BUG: 1261757
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12146
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+>(cherry picked from commit 51632e1eec3ff88d19867dc8d266068dd7db432a)
+
+>Change-Id: I6b75c243873700dcb498303f1f308dea177feb4f
+>BUG: 1261758
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12244
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: I273f9078c0012df11a74bacefc73a370be7cdd98
+BUG: 1271727
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59399
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c |    7 ++++---
+ 1 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index 5d11523..bc680a8 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -2474,10 +2474,14 @@ glusterd_op_remove_brick (dict_t *dict, char **op_errstr)
+                 goto out;
+         }
+ 
++        if (volinfo->type == GF_CLUSTER_TYPE_TIER)
++                count = glusterd_set_detach_bricks(dict, volinfo);
++
+         /* Save the list of bricks for later usage only on starting a
+          * remove-brick. Right now this is required for displaying the task
+          * parameters with task status in volume status.
+          */
++
+         if (start_remove) {
+                 bricks_dict = dict_new ();
+                 if (!bricks_dict) {
+@@ -2493,9 +2497,6 @@ glusterd_op_remove_brick (dict_t *dict, char **op_errstr)
+                 }
+         }
+ 
+-        if (volinfo->type == GF_CLUSTER_TYPE_TIER)
+-                count = glusterd_set_detach_bricks(dict, volinfo);
+-
+         while ( i <= count) {
+                 snprintf (key, 256, "brick%d", i);
+                 ret = dict_get_str (dict, key, &brick);
+-- 
+1.7.1
+

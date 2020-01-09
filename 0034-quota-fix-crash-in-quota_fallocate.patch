@@ -1,0 +1,50 @@
+From cbb65ce6b3954c8318c35f6dcded9b69e9af9642 Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Thu, 8 Oct 2015 12:37:42 +0530
+Subject: [PATCH 34/67] quota: fix crash in quota_fallocate
+
+This is a backport of http://review.gluster.org/#/c/12314/
+
+list head was not initialized and brick
+was crashing with fallocate.
+
+This patch fixes the issue
+
+> Change-Id: I9757b88eab61054892f0fe3de63af2683cd4fef7
+> BUG: 1269754
+> Signed-off-by: vmallika <vmallika@redhat.com>
+
+> Change-Id: I516881f06de16c7092f29d8991d083418765ac79
+> BUG: 1269530
+> Signed-off-by: vmallika <vmallika@redhat.com>
+> Reviewed-on: http://review.gluster.org/12315
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+
+Change-Id: I45ad5009a2693cab57838751ade569e91fa0d9d1
+BUG: 1269753
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59455
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/features/quota/src/quota.c |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/features/quota/src/quota.c b/xlators/features/quota/src/quota.c
+index 3b803a0..aceb6fc 100644
+--- a/xlators/features/quota/src/quota.c
++++ b/xlators/features/quota/src/quota.c
+@@ -4815,6 +4815,8 @@ quota_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
+ 
+         WIND_IF_QUOTAOFF (priv->is_quota_on, off);
+ 
++        INIT_LIST_HEAD (&head);
++
+         GF_ASSERT (frame);
+         GF_VALIDATE_OR_GOTO ("quota", this, unwind);
+         GF_VALIDATE_OR_GOTO (this->name, fd, unwind);
+-- 
+1.7.1
+

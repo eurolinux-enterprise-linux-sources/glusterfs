@@ -14,6 +14,7 @@
 #endif
 
 #include "syncop.h"
+#include "libglusterfs-messages.h"
 
 int
 syncopctx_setfsuid (void *uid)
@@ -209,6 +210,46 @@ out:
 	return ret;
 }
 
+int
+syncopctx_setfslkowner (gf_lkowner_t *lk_owner)
+{
+        struct syncopctx *opctx = NULL;
+        int               ret = 0;
+
+        /* In args check */
+        if (!lk_owner) {
+                ret = -1;
+                errno = EINVAL;
+                goto out;
+        }
+
+        opctx = syncopctx_getctx ();
+
+        /* alloc for this thread the first time */
+        if (!opctx) {
+                opctx = GF_CALLOC (1, sizeof (*opctx), gf_common_mt_syncopctx);
+                if (!opctx) {
+                        ret = -1;
+                        goto out;
+                }
+
+                ret = syncopctx_setctx (opctx);
+                if (ret != 0) {
+                        GF_FREE (opctx);
+                        opctx = NULL;
+                        goto out;
+                }
+        }
+
+out:
+        if (opctx && lk_owner) {
+                opctx->lk_owner = *lk_owner;
+                opctx->valid |= SYNCOPCTX_LKOWNER;
+        }
+
+        return ret;
+}
+
 static void
 __run (struct synctask *task)
 {
@@ -222,20 +263,21 @@ __run (struct synctask *task)
         case SYNCTASK_SUSPEND:
                 break;
         case SYNCTASK_RUN:
-                gf_log (task->xl->name, GF_LOG_DEBUG,
-                        "re-running already running task");
+                gf_msg_debug (task->xl->name, 0, "re-running already running"
+                              " task");
                 env->runcount--;
                 break;
         case SYNCTASK_WAIT:
                 env->waitcount--;
                 break;
         case SYNCTASK_DONE:
-                gf_log (task->xl->name, GF_LOG_WARNING,
-                        "running completed task");
+                gf_msg (task->xl->name, GF_LOG_WARNING, 0,
+                        LG_MSG_COMPLETED_TASK, "running completed task");
 		return;
 	case SYNCTASK_ZOMBIE:
-		gf_log (task->xl->name, GF_LOG_WARNING,
-			"attempted to wake up zombie!!");
+		gf_msg (task->xl->name, GF_LOG_WARNING, 0,
+                        LG_MSG_WAKE_UP_ZOMBIE, "attempted to wake up "
+                        "zombie!!");
 		return;
         }
 
@@ -261,16 +303,19 @@ __wait (struct synctask *task)
                 env->runcount--;
                 break;
         case SYNCTASK_WAIT:
-                gf_log (task->xl->name, GF_LOG_WARNING,
-                        "re-waiting already waiting task");
+                gf_msg (task->xl->name, GF_LOG_WARNING, 0,
+                        LG_MSG_REWAITING_TASK, "re-waiting already waiting "
+                        "task");
                 env->waitcount--;
                 break;
         case SYNCTASK_DONE:
-                gf_log (task->xl->name, GF_LOG_WARNING,
+                gf_msg (task->xl->name, GF_LOG_WARNING, 0,
+                        LG_MSG_COMPLETED_TASK,
                         "running completed task");
                 return;
 	case SYNCTASK_ZOMBIE:
-		gf_log (task->xl->name, GF_LOG_WARNING,
+		gf_msg (task->xl->name, GF_LOG_WARNING, 0,
+                        LG_MSG_SLEEP_ZOMBIE,
 			"attempted to sleep a zombie!!");
 		return;
         }
@@ -291,11 +336,13 @@ synctask_yield (struct synctask *task)
         task->proc->sched.uc_flags &= ~_UC_TLSBASE;
 #endif
 
-        if (task->state != SYNCTASK_DONE)
+        if (task->state != SYNCTASK_DONE) {
                 task->state = SYNCTASK_SUSPEND;
+                (void) gf_backtrace_save (task->btbuf);
+        }
         if (swapcontext (&task->ctx, &task->proc->sched) < 0) {
-                gf_log ("syncop", GF_LOG_ERROR,
-                        "swapcontext failed (%s)", strerror (errno));
+                gf_msg ("syncop", GF_LOG_ERROR, errno,
+                        LG_MSG_SWAPCONTEXT_FAILED, "swapcontext failed");
         }
 
         THIS = oldTHIS;
@@ -346,7 +393,7 @@ synctask_destroy (struct synctask *task)
         if (!task)
                 return;
 
-        FREE (task->stack);
+        GF_FREE (task->stack);
 
         if (task->opframe)
                 STACK_DESTROY (task->opframe->root);
@@ -356,7 +403,7 @@ synctask_destroy (struct synctask *task)
                pthread_cond_destroy (&task->cond);
         }
 
-        FREE (task);
+        GF_FREE (task);
 }
 
 
@@ -395,8 +442,8 @@ synctask_setid (struct synctask *task, uid_t uid, gid_t gid)
 
 
 struct synctask *
-synctask_create (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
-		 call_frame_t *frame, void *opaque)
+synctask_create (struct syncenv *env, size_t stacksize, synctask_fn_t fn,
+                 synctask_cbk_t cbk, call_frame_t *frame, void *opaque)
 {
         struct synctask *newtask = NULL;
         xlator_t        *this    = THIS;
@@ -418,13 +465,15 @@ synctask_create (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
         if (destroymode)
                 return NULL;
 
-        newtask = CALLOC (1, sizeof (*newtask));
+        newtask = GF_CALLOC (1, sizeof (*newtask), gf_common_mt_synctask);
         if (!newtask)
                 return NULL;
 
         newtask->frame      = frame;
         if (!frame) {
                 newtask->opframe = create_frame (this, this->ctx->pool);
+                set_lk_owner_from_ptr (&newtask->opframe->root->lk_owner,
+                                       newtask->opframe->root);
         } else {
                 newtask->opframe = copy_frame (frame);
         }
@@ -444,21 +493,26 @@ synctask_create (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
         INIT_LIST_HEAD (&newtask->waitq);
 
         if (getcontext (&newtask->ctx) < 0) {
-                gf_log ("syncop", GF_LOG_ERROR,
-                        "getcontext failed (%s)",
-                        strerror (errno));
+                gf_msg ("syncop", GF_LOG_ERROR, errno,
+                        LG_MSG_GETCONTEXT_FAILED, "getcontext failed");
                 goto err;
         }
 
-        newtask->stack = CALLOC (1, env->stacksize);
+        if (stacksize <= 0) {
+                newtask->stack = GF_CALLOC (1, env->stacksize,
+                                            gf_common_mt_syncstack);
+                newtask->ctx.uc_stack.ss_size = env->stacksize;
+        } else {
+                newtask->stack = GF_CALLOC (1, stacksize,
+                                            gf_common_mt_syncstack);
+                newtask->ctx.uc_stack.ss_size = stacksize;
+        }
+
         if (!newtask->stack) {
-                gf_log ("syncop", GF_LOG_ERROR,
-                        "out of memory for stack");
                 goto err;
         }
 
         newtask->ctx.uc_stack.ss_sp   = newtask->stack;
-        newtask->ctx.uc_stack.ss_size = env->stacksize;
 
         makecontext (&newtask->ctx, (void (*)(void)) synctask_wrap, 2, newtask);
 
@@ -482,10 +536,10 @@ synctask_create (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
 	return newtask;
 err:
         if (newtask) {
-                FREE (newtask->stack);
+                GF_FREE (newtask->stack);
                 if (newtask->opframe)
                         STACK_DESTROY (newtask->opframe->root);
-                FREE (newtask);
+                GF_FREE (newtask);
         }
 
         return NULL;
@@ -513,13 +567,13 @@ synctask_join (struct synctask *task)
 
 
 int
-synctask_new (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
-              call_frame_t *frame, void *opaque)
+synctask_new1 (struct syncenv *env, size_t stacksize, synctask_fn_t fn,
+               synctask_cbk_t cbk, call_frame_t *frame, void *opaque)
 {
 	struct synctask *newtask = NULL;
 	int              ret = 0;
 
-	newtask = synctask_create (env, fn, cbk, frame, opaque);
+	newtask = synctask_create (env, stacksize, fn, cbk, frame, opaque);
 	if (!newtask)
 		return -1;
 
@@ -529,6 +583,12 @@ synctask_new (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
         return ret;
 }
 
+int
+synctask_new (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
+              call_frame_t *frame, void *opaque)
+{
+        return synctask_new1 (env, 0, fn, cbk, frame, opaque);
+}
 
 struct synctask *
 syncenv_task (struct syncproc *proc)
@@ -604,8 +664,8 @@ synctask_switchto (struct synctask *task)
 #endif
 
         if (swapcontext (&task->proc->sched, &task->ctx) < 0) {
-                gf_log ("syncop", GF_LOG_ERROR,
-                        "swapcontext failed (%s)", strerror (errno));
+        gf_msg ("syncop", GF_LOG_ERROR, errno, LG_MSG_SWAPCONTEXT_FAILED,
+                "swapcontext failed");
         }
 
         if (task->state == SYNCTASK_DONE) {
@@ -728,7 +788,7 @@ syncenv_destroy (struct syncenv *env)
         pthread_mutex_destroy (&env->mutex);
         pthread_cond_destroy (&env->cond);
 
-        FREE (env);
+        GF_FREE (env);
 
         return;
 }
@@ -749,7 +809,7 @@ syncenv_new (size_t stacksize, int procmin, int procmax)
 	if (procmin > procmax)
 		return NULL;
 
-        newenv = CALLOC (1, sizeof (*newenv));
+        newenv = GF_CALLOC (1, sizeof (*newenv), gf_common_mt_syncenv);
 
         if (!newenv)
                 return NULL;
@@ -783,16 +843,20 @@ syncenv_new (size_t stacksize, int procmin, int procmax)
 
 
 int
-synclock_init (synclock_t *lock)
+synclock_init (synclock_t *lock, lock_attr_t attr)
 {
-	if (!lock)
-		return -1;
+        if (!lock)
+               return -1;
 
-	pthread_cond_init (&lock->cond, 0);
-	lock->lock = 0;
-	INIT_LIST_HEAD (&lock->waitq);
+        pthread_cond_init (&lock->cond, 0);
+        lock->type = LOCK_NULL;
+        lock->owner = NULL;
+        lock->owner_tid = 0;
+        lock->lock = 0;
+        lock->attr = attr;
+        INIT_LIST_HEAD (&lock->waitq);
 
-	return pthread_mutex_init (&lock->guard, 0);
+        return pthread_mutex_init (&lock->guard, 0);
 }
 
 
@@ -810,32 +874,73 @@ synclock_destroy (synclock_t *lock)
 static int
 __synclock_lock (struct synclock *lock)
 {
-	struct synctask *task = NULL;
+        struct synctask *task = NULL;
 
-	if (!lock)
-		return -1;
+        if (!lock)
+                return -1;
 
-	task = synctask_get ();
+        task = synctask_get ();
 
-	while (lock->lock) {
-		if (task) {
-			/* called within a synctask */
-			list_add_tail (&task->waitq, &lock->waitq);
+        if (lock->lock && (lock->attr == SYNC_LOCK_RECURSIVE)) {
+                /*Recursive lock (if same owner requested for lock again then
+                 *increment lock count and return success).
+                 *Note:same number of unlocks required.
+                 */
+                switch (lock->type) {
+                case LOCK_TASK:
+                        if (task == lock->owner) {
+                                lock->lock++;
+                                gf_msg_trace ("", 0, "Recursive lock called by"
+                                              " sync task.owner= %p,lock=%d",
+                                              lock->owner, lock->lock);
+                                return 0;
+                        }
+                        break;
+                case LOCK_THREAD:
+                        if (pthread_self () == lock->owner_tid) {
+                                lock->lock++;
+                                gf_msg_trace ("", 0, "Recursive lock called by"
+                                              " thread ,owner=%u lock=%d",
+                                              (unsigned int) lock->owner_tid,
+                                              lock->lock);
+                                return 0;
+                        }
+                        break;
+                default:
+                        gf_msg ("", GF_LOG_CRITICAL, 0,
+                                LG_MSG_UNKNOWN_LOCK_TYPE, "unknown lock type");
+                        break;
+                }
+        }
+
+
+        while (lock->lock) {
+                if (task) {
+                        /* called within a synctask */
+                        list_add_tail (&task->waitq, &lock->waitq);
                         pthread_mutex_unlock (&lock->guard);
                         synctask_yield (task);
                         /* task is removed from waitq in unlock,
                          * under lock->guard.*/
                         pthread_mutex_lock (&lock->guard);
-		} else {
-			/* called by a non-synctask */
-			pthread_cond_wait (&lock->cond, &lock->guard);
-		}
-	}
+                } else {
+                        /* called by a non-synctask */
+                        pthread_cond_wait (&lock->cond, &lock->guard);
+                }
+        }
 
-	lock->lock = _gf_true;
-	lock->owner = task;
+        if (task) {
+                lock->type = LOCK_TASK;
+                lock->owner = task;    /* for synctask*/
 
-	return 0;
+        } else {
+                lock->type = LOCK_THREAD;
+                lock->owner_tid = pthread_self (); /* for non-synctask */
+
+        }
+        lock->lock = 1;
+
+        return 0;
 }
 
 
@@ -881,37 +986,78 @@ unlock:
 static int
 __synclock_unlock (synclock_t *lock)
 {
-	struct synctask *task = NULL;
-	struct synctask *curr = NULL;
+        struct synctask *task = NULL;
+        struct synctask *curr = NULL;
 
-	if (!lock)
-		return -1;
+        if (!lock)
+               return -1;
 
-	curr = synctask_get ();
+        if (lock->lock == 0) {
+                gf_msg ("", GF_LOG_CRITICAL, 0, LG_MSG_UNLOCK_BEFORE_LOCK,
+                        "Unlock called  before lock ");
+                return -1;
+        }
+        curr = synctask_get ();
+        /*unlock should be called by lock owner
+         *i.e this will not allow the lock in nonsync task and unlock
+         * in sync task and vice-versa
+         */
+        switch (lock->type) {
+        case LOCK_TASK:
+                if (curr == lock->owner) {
+                        lock->lock--;
+                        gf_msg_trace ("", 0, "Unlock success %p, remaining"
+                                      " locks=%d", lock->owner, lock->lock);
+                } else {
+                        gf_msg ("", GF_LOG_WARNING, 0, LG_MSG_LOCK_OWNER_ERROR,
+                                "Unlock called by %p, but lock held by %p",
+                                curr, lock->owner);
+                }
 
-	if (lock->owner != curr) {
-		/* warn ? */
-	}
+                break;
+        case LOCK_THREAD:
+                if (pthread_self () == lock->owner_tid) {
+                        lock->lock--;
+                        gf_msg_trace ("", 0, "Unlock success %u, remaining "
+                                      "locks=%d",
+                                      (unsigned int)lock->owner_tid,
+                                      lock->lock);
+                } else {
+                        gf_msg ("", GF_LOG_WARNING, 0, LG_MSG_LOCK_OWNER_ERROR,
+                                "Unlock called by %u, but lock held by %u",
+                                (unsigned int) pthread_self(),
+                                (unsigned int) lock->owner_tid);
+                }
 
-	lock->lock = _gf_false;
+                break;
+        default:
+                break;
+        }
 
-	/* There could be both synctasks and non synctasks
-	   waiting (or none, or either). As a mid-approach
-	   between maintaining too many waiting counters
-	   at one extreme and a thundering herd on unlock
-	   at the other, call a cond_signal (which wakes
-	   one waiter) and first synctask waiter. So at
-	   most we have two threads waking up to grab the
-	   just released lock.
-	*/
-	pthread_cond_signal (&lock->cond);
-	if (!list_empty (&lock->waitq)) {
-		task = list_entry (lock->waitq.next, struct synctask, waitq);
+        if (lock->lock > 0) {
+                 return 0;
+        }
+        lock->type = LOCK_NULL;
+        lock->owner = NULL;
+        lock->owner_tid = 0;
+        lock->lock = 0;
+        /* There could be both synctasks and non synctasks
+           waiting (or none, or either). As a mid-approach
+           between maintaining too many waiting counters
+           at one extreme and a thundering herd on unlock
+           at the other, call a cond_signal (which wakes
+           one waiter) and first synctask waiter. So at
+           most we have two threads waking up to grab the
+           just released lock.
+        */
+        pthread_cond_signal (&lock->cond);
+        if (!list_empty (&lock->waitq)) {
+                task = list_entry (lock->waitq.next, struct synctask, waitq);
                 list_del_init (&task->waitq);
-		synctask_wake (task);
-	}
+                synctask_wake (task);
+        }
 
-	return 0;
+        return 0;
 }
 
 
@@ -1073,43 +1219,26 @@ syncop_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_lookup (xlator_t *subvol, loc_t *loc, dict_t *xdata_req,
-               struct iatt *iatt, dict_t **xdata_rsp, struct iatt *parent)
+syncop_lookup (xlator_t *subvol, loc_t *loc, struct iatt *iatt,
+               struct iatt *parent, dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_lookup_cbk, subvol->fops->lookup,
-                loc, xdata_req);
+                loc, xdata_in);
 
         if (iatt)
                 *iatt = args.iatt1;
         if (parent)
                 *parent = args.iatt2;
-        if (xdata_rsp)
-                *xdata_rsp = args.xdata;
+        if (xdata_out)
+                *xdata_out = args.xdata;
         else if (args.xdata)
                 dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
         return args.op_ret;
-}
-
-static gf_dirent_t *
-entry_copy (gf_dirent_t *source)
-{
-        gf_dirent_t *sink = NULL;
-
-        sink = gf_dirent_for_name (source->d_name);
-
-        sink->d_off = source->d_off;
-        sink->d_ino = source->d_ino;
-        sink->d_type = source->d_type;
-        sink->d_stat = source->d_stat;
-
-	if (source->inode)
-		sink->inode = inode_ref (source->inode);
-        return sink;
 }
 
 int32_t
@@ -1132,13 +1261,21 @@ syncop_readdirp_cbk (call_frame_t *frame,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
 
         if (op_ret >= 0) {
                 list_for_each_entry (entry, &entries->list, list) {
                         tmp = entry_copy (entry);
-                        gf_log (this->name, GF_LOG_TRACE,
-                                "adding entry=%s, count=%d",
-                                tmp->d_name, count);
+                        if (!tmp) {
+                                args->op_ret = -1;
+                                args->op_errno = ENOMEM;
+                                gf_dirent_free (&(args->entries));
+                                break;
+                        }
+                        gf_msg_trace (this->name, 0, "adding entry=%s, "
+                                      "count=%d", tmp->d_name, count);
                         list_add_tail (&tmp->list, &(args->entries.list));
                         count++;
                 }
@@ -1155,17 +1292,24 @@ syncop_readdirp (xlator_t *subvol,
                  fd_t *fd,
                  size_t size,
                  off_t off,
-                 dict_t *dict,
-                 gf_dirent_t *entries)
+                 gf_dirent_t *entries,
+                 dict_t *xdata_in,
+                 dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_readdirp_cbk, subvol->fops->readdirp,
-                fd, size, off, dict);
+                fd, size, off, xdata_in);
 
         if (entries)
                 list_splice_init (&args.entries.list, &entries->list);
-        /* TODO: need to free all the 'args.entries' in 'else' case */
+        else
+                gf_dirent_free (&args.entries);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1193,13 +1337,21 @@ syncop_readdir_cbk (call_frame_t *frame,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         if (op_ret >= 0) {
                 list_for_each_entry (entry, &entries->list, list) {
                         tmp = entry_copy (entry);
-                        gf_log (this->name, GF_LOG_TRACE,
-                                "adding entry=%s, count=%d",
-                                tmp->d_name, count);
+                        if (!tmp) {
+                                args->op_ret = -1;
+                                args->op_errno = ENOMEM;
+                                gf_dirent_free (&(args->entries));
+                                break;
+                        }
+                        gf_msg_trace (this->name, 0, "adding "
+                                      "entry=%s, count=%d", tmp->d_name,
+                                      count);
                         list_add_tail (&tmp->list, &(args->entries.list));
                         count++;
                 }
@@ -1216,16 +1368,24 @@ syncop_readdir (xlator_t *subvol,
                 fd_t *fd,
                 size_t size,
                 off_t off,
-                gf_dirent_t *entries)
+                gf_dirent_t *entries,
+		dict_t *xdata_in,
+                dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_readdir_cbk, subvol->fops->readdir,
-                fd, size, off, NULL);
+                fd, size, off, xdata_in);
 
         if (entries)
                 list_splice_init (&args.entries.list, &entries->list);
-        /* TODO: need to free all the 'args.entries' in 'else' case */
+        else
+                gf_dirent_free (&args.entries);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1247,6 +1407,8 @@ syncop_opendir_cbk (call_frame_t *frame,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1256,12 +1418,19 @@ syncop_opendir_cbk (call_frame_t *frame,
 int
 syncop_opendir (xlator_t *subvol,
                 loc_t *loc,
-                fd_t *fd)
+                fd_t *fd,
+		dict_t *xdata_in,
+                dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_opendir_cbk, subvol->fops->opendir,
-                loc, fd, NULL);
+                loc, fd, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1279,6 +1448,8 @@ syncop_fsyncdir_cbk (call_frame_t *frame, void* cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1286,12 +1457,18 @@ syncop_fsyncdir_cbk (call_frame_t *frame, void* cookie, xlator_t *this,
 }
 
 int
-syncop_fsyncdir (xlator_t *subvol, fd_t *fd, int datasync)
+syncop_fsyncdir (xlator_t *subvol, fd_t *fd, int datasync, dict_t *xdata_in,
+                 dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fsyncdir_cbk, subvol->fops->fsyncdir,
-                fd, datasync, NULL);
+                fd, datasync, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1308,6 +1485,8 @@ syncop_removexattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1315,12 +1494,18 @@ syncop_removexattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_removexattr (xlator_t *subvol, loc_t *loc, const char *name, dict_t *xdata)
+syncop_removexattr (xlator_t *subvol, loc_t *loc, const char *name,
+                    dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
-        SYNCOP (subvol, (&args), syncop_removexattr_cbk, subvol->fops->removexattr,
-                loc, name, xdata);
+        SYNCOP (subvol, (&args), syncop_removexattr_cbk,
+                subvol->fops->removexattr, loc, name, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1337,6 +1522,8 @@ syncop_fremovexattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1344,12 +1531,18 @@ syncop_fremovexattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_fremovexattr (xlator_t *subvol, fd_t *fd, const char *name, dict_t *xdata)
+syncop_fremovexattr (xlator_t *subvol, fd_t *fd, const char *name,
+                     dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fremovexattr_cbk,
-                subvol->fops->fremovexattr, fd, name, xdata);
+                subvol->fops->fremovexattr, fd, name, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1366,6 +1559,8 @@ syncop_setxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1374,12 +1569,18 @@ syncop_setxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_setxattr (xlator_t *subvol, loc_t *loc, dict_t *dict, int32_t flags)
+syncop_setxattr (xlator_t *subvol, loc_t *loc, dict_t *dict, int32_t flags,
+		 dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_setxattr_cbk, subvol->fops->setxattr,
-                loc, dict, flags, NULL);
+                loc, dict, flags, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1396,6 +1597,8 @@ syncop_fsetxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1404,12 +1607,18 @@ syncop_fsetxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_fsetxattr (xlator_t *subvol, fd_t *fd, dict_t *dict, int32_t flags)
+syncop_fsetxattr (xlator_t *subvol, fd_t *fd, dict_t *dict, int32_t flags,
+		  dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fsetxattr_cbk, subvol->fops->fsetxattr,
-                fd, dict, flags, NULL);
+                fd, dict, flags, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1426,6 +1635,9 @@ syncop_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
         if (op_ret >= 0)
                 args->xattr = dict_ref (dict);
 
@@ -1435,17 +1647,23 @@ syncop_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_listxattr (xlator_t *subvol, loc_t *loc, dict_t **dict)
+syncop_listxattr (xlator_t *subvol, loc_t *loc, dict_t **dict, dict_t *xdata_in,
+                  dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_getxattr_cbk, subvol->fops->getxattr,
-                loc, NULL, NULL);
+                loc, NULL, xdata_in);
 
         if (dict)
                 *dict = args.xattr;
         else if (args.xattr)
                 dict_unref (args.xattr);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1453,17 +1671,23 @@ syncop_listxattr (xlator_t *subvol, loc_t *loc, dict_t **dict)
 }
 
 int
-syncop_getxattr (xlator_t *subvol, loc_t *loc, dict_t **dict, const char *key)
+syncop_getxattr (xlator_t *subvol, loc_t *loc, dict_t **dict, const char *key,
+                 dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_getxattr_cbk, subvol->fops->getxattr,
-                loc, key, NULL);
+                loc, key, xdata_in);
 
         if (dict)
                 *dict = args.xattr;
         else if (args.xattr)
                 dict_unref (args.xattr);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1471,17 +1695,23 @@ syncop_getxattr (xlator_t *subvol, loc_t *loc, dict_t **dict, const char *key)
 }
 
 int
-syncop_fgetxattr (xlator_t *subvol, fd_t *fd, dict_t **dict, const char *key)
+syncop_fgetxattr (xlator_t *subvol, fd_t *fd, dict_t **dict, const char *key,
+                  dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_getxattr_cbk, subvol->fops->fgetxattr,
-                fd, key, NULL);
+                fd, key, xdata_in);
 
         if (dict)
                 *dict = args.xattr;
         else if (args.xattr)
                 dict_unref (args.xattr);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1500,11 +1730,11 @@ syncop_statfs_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         if (op_ret == 0) {
                 args->statvfs_buf  = *buf;
-                if (xdata)
-                        args->xdata  = dict_ref (xdata);
         }
 
         __wake (args);
@@ -1514,19 +1744,19 @@ syncop_statfs_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_statfs (xlator_t *subvol, loc_t *loc, dict_t *xdata_req,
-               struct statvfs *buf, dict_t **xdata_rsp)
+syncop_statfs (xlator_t *subvol, loc_t *loc, struct statvfs *buf,
+               dict_t *xdata_in, dict_t **xdata_out)
 
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_statfs_cbk, subvol->fops->statfs,
-                loc, xdata_req);
+                loc, xdata_in);
 
         if (buf)
                 *buf = args.statvfs_buf;
-        if (xdata_rsp)
-                *xdata_rsp = args.xdata;
+        if (xdata_out)
+                *xdata_out = args.xdata;
         else if (args.xdata)
                 dict_unref (args.xdata);
 
@@ -1546,6 +1776,8 @@ syncop_setattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         if (op_ret == 0) {
                 args->iatt1  = *preop;
@@ -1560,17 +1792,23 @@ syncop_setattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 int
 syncop_setattr (xlator_t *subvol, loc_t *loc, struct iatt *iatt, int valid,
-                struct iatt *preop, struct iatt *postop)
+                struct iatt *preop, struct iatt *postop, dict_t *xdata_in,
+                dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_setattr_cbk, subvol->fops->setattr,
-                loc, iatt, valid, NULL);
+                loc, iatt, valid, xdata_in);
 
         if (preop)
                 *preop = args.iatt1;
         if (postop)
                 *postop = args.iatt2;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1580,17 +1818,23 @@ syncop_setattr (xlator_t *subvol, loc_t *loc, struct iatt *iatt, int valid,
 
 int
 syncop_fsetattr (xlator_t *subvol, fd_t *fd, struct iatt *iatt, int valid,
-                 struct iatt *preop, struct iatt *postop)
+                 struct iatt *preop, struct iatt *postop, dict_t *xdata_in,
+                 dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_setattr_cbk, subvol->fops->fsetattr,
-                fd, iatt, valid, NULL);
+                fd, iatt, valid, xdata_in);
 
         if (preop)
                 *preop = args.iatt1;
         if (postop)
                 *postop = args.iatt2;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1608,6 +1852,8 @@ syncop_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1615,12 +1861,18 @@ syncop_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_open (xlator_t *subvol, loc_t *loc, int32_t flags, fd_t *fd)
+syncop_open (xlator_t *subvol, loc_t *loc, int32_t flags, fd_t *fd,
+	     dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_open_cbk, subvol->fops->open,
-                loc, flags, fd, NULL);
+                loc, flags, fd, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1643,6 +1895,8 @@ syncop_readv_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         if (args->op_ret >= 0) {
                 if (iobref)
@@ -1660,12 +1914,17 @@ syncop_readv_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 int
 syncop_readv (xlator_t *subvol, fd_t *fd, size_t size, off_t off,
               uint32_t flags, struct iovec **vector, int *count,
-              struct iobref **iobref)
+              struct iobref **iobref, dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_readv_cbk, subvol->fops->readv,
-                fd, size, off, flags, NULL);
+                fd, size, off, flags, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 goto out;
@@ -1702,6 +1961,8 @@ syncop_writev_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1711,13 +1972,18 @@ syncop_writev_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 int
 syncop_writev (xlator_t *subvol, fd_t *fd, const struct iovec *vector,
                int32_t count, off_t offset, struct iobref *iobref,
-               uint32_t flags)
+               uint32_t flags, dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_writev_cbk, subvol->fops->writev,
                 fd, (struct iovec *) vector, count, offset, flags, iobref,
-                NULL);
+                xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1725,7 +1991,8 @@ syncop_writev (xlator_t *subvol, fd_t *fd, const struct iovec *vector,
 }
 
 int syncop_write (xlator_t *subvol, fd_t *fd, const char *buf, int size,
-                  off_t offset, struct iobref *iobref, uint32_t flags)
+                  off_t offset, struct iobref *iobref, uint32_t flags,
+                  dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0,};
         struct iovec    vec  = {0,};
@@ -1734,7 +2001,12 @@ int syncop_write (xlator_t *subvol, fd_t *fd, const char *buf, int size,
         vec.iov_base = (void *)buf;
 
         SYNCOP (subvol, (&args), syncop_writev_cbk, subvol->fops->writev,
-                fd, &vec, 1, offset, flags, iobref, NULL);
+                fd, &vec, 1, offset, flags, iobref, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1762,6 +2034,8 @@ syncop_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
 	if (buf)
 		args->iatt1 = *buf;
@@ -1773,15 +2047,21 @@ syncop_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 int
 syncop_create (xlator_t *subvol, loc_t *loc, int32_t flags, mode_t mode,
-               fd_t *fd, dict_t *xdata, struct iatt *iatt)
+               fd_t *fd, struct iatt *iatt,
+               dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_create_cbk, subvol->fops->create,
-                loc, flags, mode, 0, fd, xdata);
+                loc, flags, mode, 0, fd, xdata_in);
 
 	if (iatt)
 		*iatt = args.iatt1;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1800,6 +2080,8 @@ syncop_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1807,12 +2089,18 @@ syncop_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_unlink (xlator_t *subvol, loc_t *loc)
+syncop_unlink (xlator_t *subvol, loc_t *loc, dict_t *xdata_in,
+               dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_unlink_cbk, subvol->fops->unlink, loc,
-                0, NULL);
+                0, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1830,6 +2118,8 @@ syncop_rmdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1837,12 +2127,18 @@ syncop_rmdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_rmdir (xlator_t *subvol, loc_t *loc, int flags)
+syncop_rmdir (xlator_t *subvol, loc_t *loc, int flags, dict_t *xdata_in,
+              dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_rmdir_cbk, subvol->fops->rmdir, loc,
-                flags, NULL);
+                flags, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1862,6 +2158,11 @@ syncop_link_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
+        if (buf)
+                args->iatt1 = *buf;
 
         __wake (args);
 
@@ -1870,12 +2171,21 @@ syncop_link_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_link (xlator_t *subvol, loc_t *oldloc, loc_t *newloc)
+syncop_link (xlator_t *subvol, loc_t *oldloc, loc_t *newloc, struct iatt *iatt,
+             dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_link_cbk, subvol->fops->link,
-                oldloc, newloc, NULL);
+                oldloc, newloc, xdata_in);
+
+        if (iatt)
+                *iatt = args.iatt1;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1897,6 +2207,8 @@ syncop_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1905,12 +2217,18 @@ syncop_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_rename (xlator_t *subvol, loc_t *oldloc, loc_t *newloc)
+syncop_rename (xlator_t *subvol, loc_t *oldloc, loc_t *newloc,
+               dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_rename_cbk, subvol->fops->rename,
-                oldloc, newloc, NULL);
+                oldloc, newloc, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1930,6 +2248,8 @@ syncop_ftruncate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1937,12 +2257,18 @@ syncop_ftruncate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_ftruncate (xlator_t *subvol, fd_t *fd, off_t offset)
+syncop_ftruncate (xlator_t *subvol, fd_t *fd, off_t offset, dict_t *xdata_in,
+                  dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_ftruncate_cbk, subvol->fops->ftruncate,
-                fd, offset, NULL);
+                fd, offset, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1950,12 +2276,18 @@ syncop_ftruncate (xlator_t *subvol, fd_t *fd, off_t offset)
 }
 
 int
-syncop_truncate (xlator_t *subvol, loc_t *loc, off_t offset)
+syncop_truncate (xlator_t *subvol, loc_t *loc, off_t offset, dict_t *xdata_in,
+                 dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_ftruncate_cbk, subvol->fops->truncate,
-                loc, offset, NULL);
+                loc, offset, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -1973,6 +2305,8 @@ syncop_fsync_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -1981,12 +2315,18 @@ syncop_fsync_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_fsync (xlator_t *subvol, fd_t *fd, int dataonly)
+syncop_fsync (xlator_t *subvol, fd_t *fd, int dataonly, dict_t *xdata_in,
+              dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fsync_cbk, subvol->fops->fsync,
-                fd, dataonly, NULL);
+                fd, dataonly, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2005,6 +2345,8 @@ syncop_flush_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -2013,12 +2355,18 @@ syncop_flush_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_flush (xlator_t *subvol, fd_t *fd)
+syncop_flush (xlator_t *subvol, fd_t *fd, dict_t *xdata_in,
+              dict_t **xdata_out)
 {
         struct syncargs args = {0};
 
         SYNCOP (subvol, (&args), syncop_flush_cbk, subvol->fops->flush,
-                fd, NULL);
+                fd, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2028,7 +2376,8 @@ syncop_flush (xlator_t *subvol, fd_t *fd)
 
 int
 syncop_fstat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                  int32_t op_ret, int32_t op_errno, struct iatt *stbuf, dict_t *xdata)
+                  int32_t op_ret, int32_t op_errno, struct iatt *stbuf,
+                  dict_t *xdata)
 {
         struct syncargs *args = NULL;
 
@@ -2036,6 +2385,9 @@ syncop_fstat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
         if (op_ret == 0)
                 args->iatt1 = *stbuf;
 
@@ -2046,15 +2398,21 @@ syncop_fstat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_fstat (xlator_t *subvol, fd_t *fd, struct iatt *stbuf)
+syncop_fstat (xlator_t *subvol, fd_t *fd, struct iatt *stbuf, dict_t *xdata_in,
+              dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fstat_cbk, subvol->fops->fstat,
-                fd, NULL);
+                fd, xdata_in);
 
         if (stbuf)
                 *stbuf = args.iatt1;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2063,15 +2421,21 @@ syncop_fstat (xlator_t *subvol, fd_t *fd, struct iatt *stbuf)
 }
 
 int
-syncop_stat (xlator_t *subvol, loc_t *loc, struct iatt *stbuf)
+syncop_stat (xlator_t *subvol, loc_t *loc, struct iatt *stbuf, dict_t *xdata_in,
+             dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fstat_cbk, subvol->fops->stat,
-                loc, NULL);
+                loc, xdata_in);
 
         if (stbuf)
                 *stbuf = args.iatt1;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2091,6 +2455,9 @@ syncop_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
 	if (buf)
 		args->iatt1 = *buf;
 
@@ -2100,16 +2467,21 @@ syncop_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_symlink (xlator_t *subvol, loc_t *loc, const char *newpath, dict_t *dict,
-		struct iatt *iatt)
+syncop_symlink (xlator_t *subvol, loc_t *loc, const char *newpath,
+                struct iatt *iatt, dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_symlink_cbk, subvol->fops->symlink,
-                newpath, loc, 0, dict);
+                newpath, loc, 0, xdata_in);
 
 	if (iatt)
 		*iatt = args.iatt1;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2128,6 +2500,8 @@ syncop_readlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         if ((op_ret != -1) && path)
                 args->buffer = gf_strdup (path);
@@ -2138,16 +2512,22 @@ syncop_readlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_readlink (xlator_t *subvol, loc_t *loc, char **buffer, size_t size)
+syncop_readlink (xlator_t *subvol, loc_t *loc, char **buffer, size_t size,
+		 dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_readlink_cbk, subvol->fops->readlink,
-                loc, size, NULL);
+                loc, size, xdata_in);
 
         if (buffer)
                 *buffer = args.buffer;
         else GF_FREE (args.buffer);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2166,6 +2546,8 @@ syncop_mknod_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
 	if (buf)
 		args->iatt1 = *buf;
@@ -2177,15 +2559,20 @@ syncop_mknod_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 int
 syncop_mknod (xlator_t *subvol, loc_t *loc, mode_t mode, dev_t rdev,
-              dict_t *dict, struct iatt *iatt)
+              struct iatt *iatt, dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_mknod_cbk, subvol->fops->mknod,
-                loc, mode, rdev, 0, dict);
+                loc, mode, rdev, 0, xdata_in);
 
 	if (iatt)
 		*iatt = args.iatt1;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2206,6 +2593,9 @@ syncop_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
 	if (buf)
 		args->iatt1 = *buf;
 
@@ -2216,16 +2606,21 @@ syncop_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_mkdir (xlator_t *subvol, loc_t *loc, mode_t mode, dict_t *dict,
-	      struct iatt *iatt)
+syncop_mkdir (xlator_t *subvol, loc_t *loc, mode_t mode, struct iatt *iatt,
+              dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_mkdir_cbk, subvol->fops->mkdir,
-                loc, mode, 0, dict);
+                loc, mode, 0, xdata_in);
 
 	if (iatt)
 		*iatt = args.iatt1;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2243,6 +2638,9 @@ syncop_access_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
         __wake (args);
 
         return 0;
@@ -2264,12 +2662,18 @@ syncop_access_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
    got is the mode of the access.
 */
 int
-syncop_access (xlator_t *subvol, loc_t *loc, int32_t mask)
+syncop_access (xlator_t *subvol, loc_t *loc, int32_t mask, dict_t *xdata_in,
+               dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_access_cbk, subvol->fops->access,
-                loc, mask, NULL);
+                loc, mask, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2288,6 +2692,8 @@ syncop_fallocate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -2296,12 +2702,17 @@ syncop_fallocate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 int
 syncop_fallocate(xlator_t *subvol, fd_t *fd, int32_t keep_size, off_t offset,
-		 size_t len)
+		 size_t len, dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fallocate_cbk, subvol->fops->fallocate,
-                fd, keep_size, offset, len, NULL);
+                fd, keep_size, offset, len, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2320,6 +2731,8 @@ syncop_discard_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -2327,12 +2740,18 @@ syncop_discard_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_discard(xlator_t *subvol, fd_t *fd, off_t offset, size_t len)
+syncop_discard(xlator_t *subvol, fd_t *fd, off_t offset, size_t len,
+	       dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_discard_cbk, subvol->fops->discard,
-                fd, offset, len, NULL);
+                fd, offset, len, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2350,6 +2769,8 @@ syncop_zerofill_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -2357,18 +2778,68 @@ syncop_zerofill_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_zerofill(xlator_t *subvol, fd_t *fd, off_t offset, off_t len)
+syncop_zerofill(xlator_t *subvol, fd_t *fd, off_t offset, off_t len,
+		dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_zerofill_cbk, subvol->fops->zerofill,
-                fd, offset, len, NULL);
+                fd, offset, len, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
         return args.op_ret;
 }
 
+
+int
+syncop_ipc_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                int op_ret, int op_errno, dict_t *xdata)
+{
+        struct syncargs *args = NULL;
+
+        args = cookie;
+
+        args->op_ret   = op_ret;
+        args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
+        __wake (args);
+
+        return 0;
+}
+
+int
+syncop_ipc (xlator_t *subvol, int32_t op, dict_t *xdata_in, dict_t **xdata_out)
+{
+        struct syncargs args = {0, };
+
+        SYNCOP (subvol, (&args), syncop_ipc_cbk, subvol->fops->ipc,
+                op, xdata_in);
+
+        if (args.xdata) {
+                if (xdata_out) {
+                        /*
+                         * We're passing this reference to the caller, along
+                         * with the pointer itself.  That means they're
+                         * responsible for calling dict_unref at some point.
+                         */
+                        *xdata_out = args.xdata;
+                } else {
+                        dict_unref(args.xdata);
+                }
+        }
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
+        return args.op_ret;
+}
 
 int
 syncop_lk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
@@ -2381,6 +2852,9 @@ syncop_lk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
 	if (flock)
 		args->flock = *flock;
         __wake (args);
@@ -2390,14 +2864,20 @@ syncop_lk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 
 int
-syncop_lk (xlator_t *subvol, fd_t *fd, int cmd, struct gf_flock *flock)
+syncop_lk (xlator_t *subvol, fd_t *fd, int cmd, struct gf_flock *flock,
+	   dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_lk_cbk, subvol->fops->lk,
-                fd, cmd, flock, NULL);
+                fd, cmd, flock, xdata_in);
 
 	*flock = args.flock;
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;
@@ -2414,9 +2894,8 @@ syncop_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         args->op_ret   = op_ret;
         args->op_errno = op_errno;
-
         if (xdata)
-                args->xdata = dict_ref (xdata);
+                args->xdata  = dict_ref (xdata);
 
         __wake (args);
 
@@ -2426,19 +2905,77 @@ syncop_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
 int
 syncop_inodelk (xlator_t *subvol, const char *volume, loc_t *loc, int32_t cmd,
-                struct gf_flock *lock, dict_t *xdata_req, dict_t **xdata_rsp)
+                struct gf_flock *lock, dict_t *xdata_in, dict_t **xdata_out)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_inodelk_cbk, subvol->fops->inodelk,
-                volume, loc, cmd, lock, xdata_req);
+                volume, loc, cmd, lock, xdata_in);
 
-        if (xdata_rsp)
-                *xdata_rsp = args.xdata;
-        else {
-                if (args.xdata)
-                        dict_unref (args.xdata);
-        }
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
+
+        return args.op_ret;
+}
+
+int32_t
+syncop_xattrop_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                    int32_t op_ret, int32_t op_errno, dict_t *dict,
+                    dict_t *xdata)
+{
+        struct syncargs *args = NULL;
+
+        args = cookie;
+
+        args->op_ret   = op_ret;
+        args->op_errno = op_errno;
+        if (xdata)
+                args->xdata  = dict_ref (xdata);
+
+        __wake (args);
+
+        return 0;
+
+}
+
+int
+syncop_xattrop (xlator_t *subvol, loc_t *loc, gf_xattrop_flags_t flags,
+                dict_t *dict, dict_t *xdata_in, dict_t **xdata_out)
+{
+        struct syncargs args = {0, };
+
+        SYNCOP (subvol, (&args), syncop_xattrop_cbk, subvol->fops->xattrop,
+                loc, flags, dict, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
+
+        return args.op_ret;
+}
+
+int
+syncop_fxattrop (xlator_t *subvol, fd_t *fd, gf_xattrop_flags_t flags,
+                 dict_t *dict, dict_t *xdata_in, dict_t **xdata_out)
+{
+        struct syncargs args = {0, };
+
+        SYNCOP (subvol, (&args), syncop_xattrop_cbk, subvol->fops->fxattrop,
+                fd, flags, dict, xdata_in);
+
+        if (xdata_out)
+                *xdata_out = args.xdata;
+        else if (args.xdata)
+                dict_unref (args.xdata);
 
         if (args.op_ret < 0)
                 return -args.op_errno;

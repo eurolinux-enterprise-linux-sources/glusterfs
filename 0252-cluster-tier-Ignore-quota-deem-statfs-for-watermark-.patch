@@ -1,0 +1,64 @@
+From d123285f8f332d7dca04cfc0904b518f0a958088 Mon Sep 17 00:00:00 2001
+From: Nithya Balachandran <nbalacha@redhat.com>
+Date: Tue, 26 Jan 2016 19:02:09 +0530
+Subject: [PATCH 252/254] cluster/tier: Ignore quota-deem-statfs for watermark calculation
+
+The tier process watermark calculations were incorrect when the
+quota-deem-statfs option was enabled. We now ignore this while
+calculating hot tier usage to determine watermark levels.
+
+upstream: http://review.gluster.org/#/c/13288/
+
+Change-Id: I493d17e71061f8bbda3183ab32320ede0b8fb7ee
+BUG: 1300246
+Signed-off-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/66435
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Vijaikumar Mallikarjuna <vmallika@redhat.com>
+Reviewed-by: Rafi Kavungal Chundattu Parambil <rkavunga@redhat.com>
+---
+ xlators/cluster/dht/src/tier.c |   21 +++++++++++++++++++++
+ 1 files changed, 21 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index 7c15b5a..42ac836 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -108,6 +108,25 @@ tier_check_watermark (xlator_t *this, loc_t *root_loc)
+                 goto exit;
+         }
+ 
++        xdata = dict_new ();
++        if (!xdata) {
++                gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
++                        DHT_MSG_NO_MEMORY,
++                        "failed to allocate dictionary");
++                ret = -1;
++                goto exit;
++        }
++
++        ret = dict_set_int8 (xdata, GF_INTERNAL_IGNORE_DEEM_STATFS, 1);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        DHT_MSG_DICT_SET_FAILED,
++                        "Failed to set "
++                        GF_INTERNAL_IGNORE_DEEM_STATFS" in dict");
++                ret = -1;
++                goto exit;
++        }
++
+         /* Find how much free space is on the hot subvolume. Then see if that value */
+         /* is less than or greater than user defined watermarks. Stash results in */
+         /* the tier_conf data structure. */
+@@ -149,6 +168,8 @@ tier_check_watermark (xlator_t *this, loc_t *root_loc)
+         }
+ 
+ exit:
++        if (xdata)
++                dict_unref (xdata);
+         return ret;
+ }
+ 
+-- 
+1.7.1
+

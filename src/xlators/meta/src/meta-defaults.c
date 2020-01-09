@@ -19,6 +19,7 @@
 #include "meta-mem-types.h"
 #include "meta.h"
 
+#include "compat-errno.h"
 
 int
 meta_default_fgetxattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
@@ -96,6 +97,23 @@ meta_default_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
 		     struct iovec *vector, int32_t count, off_t off,
 		     uint32_t flags, struct iobref *iobref, dict_t *xdata)
 {
+	struct meta_ops *ops = NULL;
+	int ret = 0;
+	struct iatt dummy = { };
+
+	ops = meta_ops_get (fd->inode, this);
+	if (!ops)
+		goto err;
+
+	if (!ops->file_write)
+		goto err;
+
+	ret = ops->file_write (this, fd, vector, count);
+
+	META_STACK_UNWIND (writev, frame, (ret >= 0 ? ret : -1), (ret < 0 ? -ret : 0),
+			   &dummy, &dummy, xdata);
+	return 0;
+err:
         return default_writev_failure_cbk (frame, EPERM);
 }
 
@@ -266,7 +284,13 @@ int
 meta_default_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd,
 			off_t offset, dict_t *xdata)
 {
-        return default_ftruncate_failure_cbk (frame, EPERM);
+	struct iatt iatt = { };
+
+	meta_iatt_fill (&iatt, fd->inode, IA_IFREG);
+
+	META_STACK_UNWIND (ftruncate, frame, 0, 0, &iatt, &iatt, xdata);
+
+        return 0;
 }
 
 int
@@ -458,7 +482,13 @@ int
 meta_default_truncate (call_frame_t *frame, xlator_t *this, loc_t *loc,
 		       off_t offset, dict_t *xdata)
 {
-        return default_truncate_failure_cbk (frame, EPERM);
+	struct iatt iatt = { };
+
+	meta_iatt_fill (&iatt, loc->inode, IA_IFREG);
+
+	META_STACK_UNWIND (truncate, frame, 0, 0, &iatt, &iatt, xdata);
+
+        return 0;
 }
 
 int

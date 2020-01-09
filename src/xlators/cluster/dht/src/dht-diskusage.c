@@ -37,12 +37,15 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	double         percent = 0;
 	double         percent_inodes = 0;
 	uint64_t       bytes = 0;
+        uint32_t       bpc;     /* blocks per chunk */
+        uint32_t       chunks   = 0;
 
 	conf = this->private;
 	prev = cookie;
 
 	if (op_ret == -1) {
-		gf_log (this->name, GF_LOG_WARNING,
+		gf_msg (this->name, GF_LOG_WARNING, op_errno,
+                        DHT_MSG_GET_DISK_INFO_ERROR,
 			"failed to get disk info from %s", prev->this->name);
 		goto out;
 	}
@@ -50,17 +53,28 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	if (statvfs && statvfs->f_blocks) {
 		percent = (statvfs->f_bavail * 100) / statvfs->f_blocks;
 		bytes = (statvfs->f_bavail * statvfs->f_frsize);
+                /*
+                 * A 32-bit count of 1MB chunks allows a maximum brick size of
+                 * ~4PB.  It's possible that we could see a single local FS
+                 * bigger than that some day, but this code is likely to be
+                 * irrelevant by then.  Meanwhile, it's more important to keep
+                 * the chunk size small so the layout-calculation code that
+                 * uses this value can be tested on normal machines.
+                 */
+                bpc = (1 << 20) / statvfs->f_bsize;
+                chunks = (statvfs->f_blocks + bpc - 1) / bpc;
 	}
 
 	if (statvfs && statvfs->f_files) {
 		percent_inodes = (statvfs->f_ffree * 100) / statvfs->f_files;
 	} else {
-		/* set percent inodes to 100 for dynamically allocated inode filesystems
-		   this logic holds good so that, distribute has nothing to worry about
-		   total inodes rather let the 'create()' to be scheduled on the hashed
-		   subvol regardless of the total inodes. since we have no awareness on
-		   loosing inodes this logic fits well
-		*/
+                /*
+                 * Set percent inodes to 100 for dynamically allocated inode
+                 * filesystems. The rationale is that distribute need not
+                 * worry about total inodes; rather, let the 'create()' be
+                 * scheduled on the hashed subvol regardless of the total
+                 * inodes.
+		 */
 		percent_inodes = 100;
 	}
 
@@ -71,6 +85,7 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 				conf->du_stats[i].avail_percent = percent;
 				conf->du_stats[i].avail_space   = bytes;
 				conf->du_stats[i].avail_inodes  = percent_inodes;
+                                conf->du_stats[i].chunks        = chunks;
 				gf_msg_debug (this->name, 0,
 				              "subvolume '%s': avail_percent "
 					      "is: %.2f and avail_space "
@@ -80,6 +95,7 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 					      conf->du_stats[i].avail_percent,
 					      conf->du_stats[i].avail_space,
 					      conf->du_stats[i].avail_inodes);
+                                break;  /* no point in looping further */
 			}
 	}
 	UNLOCK (&conf->subvolume_lock);
@@ -174,7 +190,8 @@ dht_get_du_info (call_frame_t *frame, xlator_t *this, loc_t *loc)
                 ret = dict_set_int8 (statfs_local->params,
                                      GF_INTERNAL_IGNORE_DEEM_STATFS, 1);
                 if (ret) {
-                        gf_log (this->name, GF_LOG_ERROR,
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                DHT_MSG_DICT_SET_FAILED,
                                 "Failed to set "
                                 GF_INTERNAL_IGNORE_DEEM_STATFS" in dict");
                         goto err;
@@ -244,7 +261,7 @@ dht_is_subvol_filled (xlator_t *this, xlator_t *subvol)
 			gf_msg (this->name, GF_LOG_WARNING, 0,
                                 DHT_MSG_SUBVOL_INSUFF_SPACE,
 				"disk space on subvolume '%s' is getting "
-				"full (%.2f %%), consider adding more nodes",
+				"full (%.2f %%), consider adding more bricks",
 				subvol->name,
 				(100 - conf->du_stats[i].avail_percent));
 		}
@@ -255,7 +272,7 @@ dht_is_subvol_filled (xlator_t *this, xlator_t *subvol)
 			gf_msg (this->name, GF_LOG_CRITICAL, 0,
                                 DHT_MSG_SUBVOL_INSUFF_INODES,
 				"inodes on subvolume '%s' are at "
-				"(%.2f %%), consider adding more nodes",
+				"(%.2f %%), consider adding more bricks",
 				subvol->name,
 				(100 - conf->du_stats[i].avail_inodes));
 		}
@@ -322,7 +339,8 @@ out:
 }
 
 static inline
-int32_t dht_subvol_has_err (xlator_t *this, dht_layout_t *layout)
+int32_t dht_subvol_has_err (dht_conf_t *conf, xlator_t *this,
+                                         dht_layout_t *layout)
 {
         int ret = -1;
         int i   = 0;
@@ -338,6 +356,17 @@ int32_t dht_subvol_has_err (xlator_t *this, dht_layout_t *layout)
                         goto out;
                 }
         }
+
+        /* discard decommissioned subvol */
+        if (conf->decommission_subvols_cnt) {
+                for (i = 0; i < conf->subvolume_cnt; i++) {
+                        if (conf->decommissioned_bricks[i] &&
+                            conf->decommissioned_bricks[i] == this)
+                                ret = -1;
+                                goto out;
+                }
+        }
+
         ret = 0;
 out:
         return ret;
@@ -359,8 +388,9 @@ dht_subvol_with_free_space_inodes(xlator_t *this, xlator_t *subvol,
         conf = this->private;
 
         for(i=0; i < conf->subvolume_cnt; i++) {
-                /* check if subvol has layout errors, before selecting it */
-                ignore_subvol = dht_subvol_has_err (conf->subvolumes[i],
+                /* check if subvol has layout errors and also it is not a
+                 * decommissioned brick, before selecting it */
+                ignore_subvol = dht_subvol_has_err (conf, conf->subvolumes[i],
                                                     layout);
                 if (ignore_subvol)
                         continue;
@@ -407,8 +437,10 @@ dht_subvol_maxspace_nonzeroinode (xlator_t *this, xlator_t *subvol,
         conf = this->private;
 
         for (i = 0; i < conf->subvolume_cnt; i++) {
-                /* check if subvol has layout errors, before selecting it */
-                ignore_subvol = dht_subvol_has_err (conf->subvolumes[i],
+                /* check if subvol has layout errors and also it is not a
+                 * decommissioned brick, before selecting it*/
+
+                ignore_subvol = dht_subvol_has_err (conf, conf->subvolumes[i],
                                                     layout);
                 if (ignore_subvol)
                         continue;

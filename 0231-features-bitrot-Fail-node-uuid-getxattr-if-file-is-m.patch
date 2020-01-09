@@ -1,0 +1,173 @@
+From 3e64d52dc4f193fb3fdf2d8451b72e4666f94cc4 Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Wed, 30 Dec 2015 15:25:30 +0530
+Subject: [PATCH 231/237] features/bitrot: Fail node-uuid getxattr if file is marked bad
+
+Backport of http://review.gluster.org/#/c/13116/
+
+If xattr is node-uuid and the inode is marked bad, fail getxattr
+and fgetxattr with EIO. Returning EIO would result in AFR to
+choose correct node-uuid coresponding to the subvolume where
+the good copy of the file resides.
+
+BUG: 1288490
+Change-Id: I4f9bcd868094f14fb38972e40d4866e066d1c421
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64733
+Reviewed-by: Venky Shankar <vshankar@redhat.com>
+Tested-by: Venky Shankar <vshankar@redhat.com>
+---
+ tests/bitrot/bug-1294786.t                       |   68 ++++++++++++++++++++++
+ tests/cluster.rc                                 |   23 +++++++
+ xlators/features/bit-rot/src/stub/bit-rot-stub.c |   22 +++++++
+ 3 files changed, 113 insertions(+), 0 deletions(-)
+ create mode 100644 tests/bitrot/bug-1294786.t
+
+diff --git a/tests/bitrot/bug-1294786.t b/tests/bitrot/bug-1294786.t
+new file mode 100644
+index 0000000..2bfae36
+--- /dev/null
++++ b/tests/bitrot/bug-1294786.t
+@@ -0,0 +1,68 @@
++#!/bin/bash
++
++. $(dirname $0)/../include.rc
++. $(dirname $0)/../volume.rc
++. $(dirname $0)/../cluster.rc
++
++function get_bitd_count_1 {
++        ps auxww | grep glusterfs | grep bitd.pid | grep -v grep | grep $H1 | wc -l
++}
++
++function get_bitd_count_2 {
++        ps auxww | grep glusterfs | grep bitd.pid | grep -v grep | grep $H2 | wc -l
++}
++
++function get_node_uuid {
++        getfattr -n trusted.glusterfs.node-uuid --only-values $M0/FILE 2>/dev/null
++}
++
++cleanup;
++
++TEST launch_cluster 2
++
++TEST $CLI_1 peer probe $H2;
++EXPECT_WITHIN $PROBE_TIMEOUT 1 peer_count;
++
++TEST $CLI_1 volume create $V0 replica 2 $H1:$B1 $H2:$B2
++EXPECT 'Created' volinfo_field_1 $V0 'Status';
++
++TEST $CLI_1 volume start $V0
++EXPECT 'Started' volinfo_field_1 $V0 'Status';
++
++uuid1=$($CLI_1 system:: uuid get | awk '{print $2}')
++uuid2=$($CLI_2 system:: uuid get | awk '{print $2}')
++
++##Mount $V0
++TEST $GFS --volfile-id=$V0 --volfile-server=$H1 $M0
++
++#Enable bitrot
++TEST $CLI_1 volume bitrot $V0 enable
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" get_bitd_count_1
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" get_bitd_count_2
++
++#Create sample file
++TEST `echo "1234" > $M0/FILE`
++
++EXPECT "$uuid1" get_node_uuid;
++
++#Corrupt file from back-end
++TEST stat $B1/FILE
++echo "Corrupted data" >> $B1/FILE
++#Manually set bad-file xattr since we can't wait for an hour for scrubber.
++TEST setfattr -n trusted.bit-rot.bad-file -v 0x3100 $B1/FILE
++
++TEST $CLI_1 volume stop $V0
++TEST $CLI_1 volume start $V0
++EXPECT 'Started' volinfo_field_1 $V0 'Status';
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status_1 $V0 $H1 $B1
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" brick_up_status_1 $V0 $H2 $B2
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 0
++EXPECT_WITHIN $CHILD_UP_TIMEOUT "1" afr_child_up_status $V0 1
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" get_bitd_count_1
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "1" get_bitd_count_2
++#Trigger lookup so that bitrot xlator marks file as bad in its inode context.
++TEST stat $M0/FILE
++
++EXPECT "$uuid2" get_node_uuid;
++
++cleanup;
+diff --git a/tests/cluster.rc b/tests/cluster.rc
+index 6fd74bc..467bbcb 100644
+--- a/tests/cluster.rc
++++ b/tests/cluster.rc
+@@ -154,3 +154,26 @@ function cluster_volinfo_field()
+     local field=$3;
+     eval  \$CLI_$1  volume info $vol | grep "^$field: " | sed 's/.*: //';
+ }
++
++function volinfo_field_1()
++{
++    local vol=$1;
++    local field=$2;
++
++    $CLI_1 volume info $vol | grep "^$field: " | sed 's/.*: //';
++}
++
++function volinfo_field_2()
++{
++    local vol=$1;
++    local field=$2;
++
++    $CLI_2 volume info $vol | grep "^$field: " | sed 's/.*: //';
++}
++
++function brick_up_status_1 {
++        local vol=$1
++        local host=$2
++        local brick=$3
++        $CLI_1 volume status $vol $host:$brick --xml | sed -ne 's/.*<status>\([01]\)<\/status>/\1/p'
++}
+diff --git a/xlators/features/bit-rot/src/stub/bit-rot-stub.c b/xlators/features/bit-rot/src/stub/bit-rot-stub.c
+index 50f23b5..8fa0f6f 100644
+--- a/xlators/features/bit-rot/src/stub/bit-rot-stub.c
++++ b/xlators/features/bit-rot/src/stub/bit-rot-stub.c
+@@ -1608,6 +1608,17 @@ br_stub_getxattr (call_frame_t *frame, xlator_t *this,
+                 goto wind;
+         }
+ 
++        /**
++         * If xattr is node-uuid and the inode is marked bad, return EIO.
++         * Returning EIO would result in AFR to choose correct node-uuid
++         * coresponding to the subvolume * where the good copy of the
++         * file resides.
++         */
++        if (IA_ISREG (loc->inode->ia_type) && XATTR_IS_NODE_UUID (name) &&
++            br_stub_check_bad_object (this, loc->inode, &op_ret, &op_errno)) {
++                goto unwind;
++        }
++
+         if (br_stub_is_internal_xattr (name))
+                 goto unwind;
+ 
+@@ -1671,6 +1682,17 @@ br_stub_fgetxattr (call_frame_t *frame, xlator_t *this,
+                 goto wind;
+         }
+ 
++        /**
++         * If xattr is node-uuid and the inode is marked bad, return EIO.
++         * Returning EIO would result in AFR to choose correct node-uuid
++         * coresponding to the subvolume * where the good copy of the
++         * file resides.
++         */
++        if (IA_ISREG (fd->inode->ia_type) && XATTR_IS_NODE_UUID (name) &&
++            br_stub_check_bad_object (this, fd->inode, &op_ret, &op_errno)) {
++                goto unwind;
++        }
++
+         if (br_stub_is_internal_xattr (name))
+                 goto unwind;
+ 
+-- 
+1.7.1
+

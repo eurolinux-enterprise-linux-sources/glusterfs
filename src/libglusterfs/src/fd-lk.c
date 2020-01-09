@@ -10,7 +10,7 @@
 
 #include "fd-lk.h"
 #include "common-utils.h"
-
+#include "libglusterfs-messages.h"
 
 int32_t
 _fd_lk_delete_lock (fd_lk_ctx_node_t *lock)
@@ -89,8 +89,8 @@ fd_lk_ctx_t *
 _fd_lk_ctx_ref (fd_lk_ctx_t *lk_ctx)
 {
         if (!lk_ctx) {
-                gf_log_callingfn ("fd", GF_LOG_WARNING,
-                                  "invalid argument");
+                gf_msg_callingfn ("fd-lk", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "invalid argument");
                 return NULL;
         }
 
@@ -105,8 +105,8 @@ fd_lk_ctx_ref (fd_lk_ctx_t *lk_ctx)
         fd_lk_ctx_t *new_lk_ctx = NULL;
 
         if (!lk_ctx) {
-                gf_log_callingfn ("fd", GF_LOG_WARNING,
-                                  "invalid argument");
+                gf_msg_callingfn ("fd-lk", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "invalid argument");
                 return NULL;
         }
 
@@ -311,7 +311,7 @@ _fd_lk_sub_locks (struct _values *v,
                                              v->locks[2]->fl_end);
         } else if (small->fl_start == big->fl_start) {
                 /* One of the ends co-incide, break the
-                   locks into two seperate parts */
+                   locks into two separate parts */
                 v->locks[0] = fd_lk_ctx_node_new (small->cmd, NULL);
                 if (!v->locks[0])
                         goto out;
@@ -327,7 +327,7 @@ _fd_lk_sub_locks (struct _values *v,
                 v->locks[1]->user_flock.l_start = small->fl_end + 1;
         } else if (small->fl_end == big->fl_end) {
                 /* One of the ends co-incide, break the
-                   locks into two seperate parts */
+                   locks into two separate parts */
                 v->locks[0] = fd_lk_ctx_node_new (small->cmd, NULL);
                 if (!v->locks[0])
                         goto out;
@@ -418,19 +418,18 @@ print_lock_list (fd_lk_ctx_t *lk_ctx)
 {
         fd_lk_ctx_node_t    *lk     = NULL;
 
-        gf_log ("fd-lk", GF_LOG_DEBUG, "lock list:");
+        gf_msg_debug ("fd-lk", 0, "lock list:");
 
         list_for_each_entry (lk, &lk_ctx->lk_list, next)
-                gf_log ("fd-lk", GF_LOG_DEBUG, "owner = %s, "
-                        "cmd = %s fl_type = %s, fs_start = %"PRId64", "
-                        "fs_end = %"PRId64", user_flock: l_type = %s, "
-                        "l_start = %"PRId64", l_len = %"PRId64", ",
-                        lkowner_utoa (&lk->user_flock.l_owner),
-                        get_lk_cmd (lk->cmd), get_lk_type (lk->fl_type),
-                        lk->fl_start, lk->fl_end,
-                        get_lk_type (lk->user_flock.l_type),
-                        lk->user_flock.l_start,
-                        lk->user_flock.l_len);
+                gf_msg_debug ("fd-lk", 0, "owner = %s, cmd = %s fl_type = %s,"
+                              " fs_start = %"PRId64", fs_end = %"PRId64", "
+                              "user_flock: l_type = %s, l_start = %"PRId64", "
+                              "l_len = %"PRId64", ",
+                              lkowner_utoa (&lk->user_flock.l_owner),
+                              get_lk_cmd (lk->cmd), get_lk_type (lk->fl_type),
+                              lk->fl_start, lk->fl_end,
+                              get_lk_type (lk->user_flock.l_type),
+                              lk->user_flock.l_start, lk->user_flock.l_len);
 }
 
 int
@@ -447,15 +446,13 @@ fd_lk_insert_and_merge (fd_t *fd, int32_t cmd,
         lk_ctx = fd_lk_ctx_ref (fd->lk_ctx);
         lk     = fd_lk_ctx_node_new (cmd, flock);
 
-        gf_log ("fd-lk", GF_LOG_DEBUG,
-                "new lock requrest: owner = %s, fl_type = %s, "
-                "fs_start = %"PRId64", fs_end = %"PRId64", "
-                "user_flock: l_type = %s, l_start = %"PRId64", "
-                "l_len = %"PRId64, lkowner_utoa (&flock->l_owner),
-                get_lk_type (lk->fl_type), lk->fl_start,
-                lk->fl_end, get_lk_type (lk->user_flock.l_type),
-                lk->user_flock.l_start,
-                lk->user_flock.l_len);
+        gf_msg_debug ("fd-lk", 0, "new lock requrest: owner = %s, fl_type = %s"
+                      ", fs_start = %"PRId64", fs_end = %"PRId64", user_flock:"
+                      " l_type = %s, l_start = %"PRId64", l_len = %"PRId64,
+                      lkowner_utoa (&flock->l_owner),
+                      get_lk_type (lk->fl_type), lk->fl_start, lk->fl_end,
+                      get_lk_type (lk->user_flock.l_type),
+                      lk->user_flock.l_start, lk->user_flock.l_len);
 
         LOCK (&lk_ctx->lock);
         {

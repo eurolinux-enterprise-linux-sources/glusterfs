@@ -41,7 +41,7 @@
  */
 
 #define GLFS_COMP_BASE          GLFS_MSGID_COMP_GLUSTERFSD
-#define GLFS_NUM_MESSAGES       33
+#define GLFS_NUM_MESSAGES       34
 #define GLFS_MSGID_END          (GLFS_COMP_BASE + GLFS_NUM_MESSAGES + 1)
 /* Messaged with message IDs */
 #define glfs_msg_start_x GLFS_COMP_BASE, "Invalid: Start of messages"
@@ -107,6 +107,8 @@
 #define glusterfsd_msg_33 (GLFS_COMP_BASE + 33), "obsolete option " \
                         "'--volfile-max-fetch-attempts or fetch-attempts' " \
                         "was provided"
+#define glusterfsd_msg_34 (GLFS_COMP_BASE + 34), "memory accounting init" \
+                        " failed."
 /*------------*/
 #define glfs_msg_end_x GLFS_MSGID_END, "Invalid: End of messages"
 

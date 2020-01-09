@@ -1,0 +1,60 @@
+From 60bd260490c6e5825f2711a96b1af9e939415714 Mon Sep 17 00:00:00 2001
+From: Raghavendra Talur <rtalur@redhat.com>
+Date: Tue, 14 Jul 2015 23:24:55 +0530
+Subject: [PATCH 105/131] extras/hooks: Fix parsing of args in S30samba-set.sh
+
+        Backport of http://review.gluster.org/#/c/11668/
+
+BUG: 1277028
+Change-Id: I9c2621c91ef99bf571fc426b604aea504f278a54
+Signed-off-by: Raghavendra Talur <rtalur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60614
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ extras/hook-scripts/set/post/S30samba-set.sh |   14 +++++++++-----
+ 1 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/extras/hook-scripts/set/post/S30samba-set.sh b/extras/hook-scripts/set/post/S30samba-set.sh
+index b8c5acf..e359059 100755
+--- a/extras/hook-scripts/set/post/S30samba-set.sh
++++ b/extras/hook-scripts/set/post/S30samba-set.sh
+@@ -28,7 +28,7 @@ USERSMB_SET=""
+ USERCIFS_SET=""
+ 
+ function parse_args () {
+-        ARGS=$(getopt -l $OPTSPEC  -o "o" -name $PROGNAME $@)
++        ARGS=$(getopt -l $OPTSPEC  --name $PROGNAME -o "o:" -- $@)
+         eval set -- "$ARGS"
+ 
+         while true; do
+@@ -41,10 +41,13 @@ function parse_args () {
+                     shift
+                     GLUSTERD_WORKDIR=$1
+                     ;;
+-                *)
++                --)
++                    shift
++                    break
++                    ;;
++                -o)
+                     shift
+-                    for pair in $@; do
+-                        read key value < <(echo "$pair" | tr "=" " ")
++                        read key value < <(echo "$1" | tr "=" " ")
+                         case "$key" in
+                             "user.cifs")
+                                 USERCIFS_SET="YES"
+@@ -55,7 +58,8 @@ function parse_args () {
+                             *)
+                                 ;;
+                         esac
+-                    done
++                    ;;
++                *)
+                     shift
+                     break
+                     ;;
+-- 
+1.7.1
+

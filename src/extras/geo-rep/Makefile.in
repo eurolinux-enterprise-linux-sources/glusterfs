@@ -53,7 +53,8 @@ PROGRAMS = $(scripts_PROGRAMS)
 am_gsync_sync_gfid_OBJECTS =  \
 	gsync_sync_gfid-gsync-sync-gfid.$(OBJEXT)
 gsync_sync_gfid_OBJECTS = $(am_gsync_sync_gfid_OBJECTS)
-gsync_sync_gfid_DEPENDENCIES =  \
+am__DEPENDENCIES_1 =
+gsync_sync_gfid_DEPENDENCIES = $(am__DEPENDENCIES_1) \
 	$(top_builddir)/libglusterfs/src/libglusterfs.la
 AM_V_lt = $(am__v_lt_$(V))
 am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
@@ -62,6 +63,28 @@ gsync_sync_gfid_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC \
 	$(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=link $(CCLD) \
 	$(gsync_sync_gfid_CFLAGS) $(CFLAGS) $(gsync_sync_gfid_LDFLAGS) \
 	$(LDFLAGS) -o $@
+am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
+am__vpath_adj = case $$p in \
+    $(srcdir)/*) f=`echo "$$p" | sed "s|^$$srcdirstrip/||"`;; \
+    *) f=$$p;; \
+  esac;
+am__strip_dir = f=`echo $$p | sed -e 's|^.*/||'`;
+am__install_max = 40
+am__nobase_strip_setup = \
+  srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*|]/\\\\&/g'`
+am__nobase_strip = \
+  for p in $$list; do echo "$$p"; done | sed -e "s|$$srcdirstrip/||"
+am__nobase_list = $(am__nobase_strip_setup); \
+  for p in $$list; do echo "$$p $$p"; done | \
+  sed "s| $$srcdirstrip/| |;"' / .*\//!s/ .*/ ./; s,\( .*\)/[^/]*$$,\1,' | \
+  $(AWK) 'BEGIN { files["."] = "" } { files[$$2] = files[$$2] " " $$1; \
+    if (++n[$$2] == $(am__install_max)) \
+      { print $$2, files[$$2]; n[$$2] = 0; files[$$2] = "" } } \
+    END { for (dir in files) print dir, files[dir] }'
+am__base_list = \
+  sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
+  sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
+SCRIPTS = $(scripts_SCRIPTS)
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__depfiles_maybe = depfiles
@@ -90,32 +113,11 @@ am__v_GEN_ = $(am__v_GEN_$(AM_DEFAULT_VERBOSITY))
 am__v_GEN_0 = @echo "  GEN   " $@;
 SOURCES = $(gsync_sync_gfid_SOURCES)
 DIST_SOURCES = $(gsync_sync_gfid_SOURCES)
-am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
-am__vpath_adj = case $$p in \
-    $(srcdir)/*) f=`echo "$$p" | sed "s|^$$srcdirstrip/||"`;; \
-    *) f=$$p;; \
-  esac;
-am__strip_dir = f=`echo $$p | sed -e 's|^.*/||'`;
-am__install_max = 40
-am__nobase_strip_setup = \
-  srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*|]/\\\\&/g'`
-am__nobase_strip = \
-  for p in $$list; do echo "$$p"; done | sed -e "s|$$srcdirstrip/||"
-am__nobase_list = $(am__nobase_strip_setup); \
-  for p in $$list; do echo "$$p $$p"; done | \
-  sed "s| $$srcdirstrip/| |;"' / .*\//!s/ .*/ ./; s,\( .*\)/[^/]*$$,\1,' | \
-  $(AWK) 'BEGIN { files["."] = "" } { files[$$2] = files[$$2] " " $$1; \
-    if (++n[$$2] == $(am__install_max)) \
-      { print $$2, files[$$2]; n[$$2] = 0; files[$$2] = "" } } \
-    END { for (dir in files) print dir, files[dir] }'
-am__base_list = \
-  sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
-  sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
-DATA = $(scripts_DATA)
 ETAGS = etags
 CTAGS = ctags
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 ACLOCAL = @ACLOCAL@
+ACL_LIBS = @ACL_LIBS@
 AMTAR = @AMTAR@
 AM_DEFAULT_VERBOSITY = @AM_DEFAULT_VERBOSITY@
 AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
@@ -130,6 +132,7 @@ AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
 BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
 BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
+BUILD_PYTHON_SITE_PACKAGES = @BUILD_PYTHON_SITE_PACKAGES@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -150,12 +153,16 @@ EXEEXT = @EXEEXT@
 FGREP = @FGREP@
 FUSERMOUNT_SUBDIR = @FUSERMOUNT_SUBDIR@
 FUSE_CLIENT_SUBDIR = @FUSE_CLIENT_SUBDIR@
+GEOREP_EXTRAS_SUBDIR = @GEOREP_EXTRAS_SUBDIR@
+GFAPI_EXTRA_LDFLAGS = @GFAPI_EXTRA_LDFLAGS@
+GFAPI_LIBS = @GFAPI_LIBS@
+GFAPI_LT_VERSION = @GFAPI_LT_VERSION@
+GFAPI_VERSION = @GFAPI_VERSION@
 GF_CFLAGS = @GF_CFLAGS@
 GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
@@ -164,6 +171,10 @@ GLIB_LIBS = @GLIB_LIBS@
 GLUPY_SUBDIR = @GLUPY_SUBDIR@
 GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
 GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
+GLUSTERD_VOLFILE = @GLUSTERD_VOLFILE@
+GLUSTERD_WORKDIR = @GLUSTERD_WORKDIR@
+GLUSTERFSD_MISCDIR = @GLUSTERFSD_MISCDIR@
+GLUSTERFS_LIBEXECDIR = @GLUSTERFS_LIBEXECDIR@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -182,15 +193,20 @@ LEX = @LEX@
 LEXLIB = @LEXLIB@
 LEX_OUTPUT_ROOT = @LEX_OUTPUT_ROOT@
 LIBAIO = @LIBAIO@
+LIBGFCHANGELOG_LT_VERSION = @LIBGFCHANGELOG_LT_VERSION@
+LIBGFCHANGELOG_VERSION = @LIBGFCHANGELOG_VERSION@
+LIBGFDB_VERSION = @LIBGFDB_VERSION@
+LIBGFRPC_LT_VERSION = @LIBGFRPC_LT_VERSION@
+LIBGFXDR_LT_VERSION = @LIBGFXDR_LT_VERSION@
+LIBGLUSTERFS_LT_VERSION = @LIBGLUSTERFS_LT_VERSION@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
-LIBZ_CFLAGS = @LIBZ_CFLAGS@
-LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+MATH_LIB = @MATH_LIB@
 MKDIR_P = @MKDIR_P@
 NM = @NM@
 NMEDIT = @NMEDIT@
@@ -207,12 +223,15 @@ PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKGCONFIG_UUID = @PKGCONFIG_UUID@
 PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
 PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
 PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
 PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
+PYTHON_CFLAGS = @PYTHON_CFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
+PYTHON_LIBS = @PYTHON_LIBS@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
 PYTHON_VERSION = @PYTHON_VERSION@
@@ -227,9 +246,22 @@ SIZEOF_INT = @SIZEOF_INT@
 SIZEOF_LONG = @SIZEOF_LONG@
 SIZEOF_LONG_LONG = @SIZEOF_LONG_LONG@
 SIZEOF_SHORT = @SIZEOF_SHORT@
+SQLITE_CFLAGS = @SQLITE_CFLAGS@
+SQLITE_LIBS = @SQLITE_LIBS@
 STRIP = @STRIP@
 SYNCDAEMON_COMPILE = @SYNCDAEMON_COMPILE@
 SYNCDAEMON_SUBDIR = @SYNCDAEMON_SUBDIR@
+UMOUNTD_SUBDIR = @UMOUNTD_SUBDIR@
+UNITTEST_CFLAGS = @UNITTEST_CFLAGS@
+UNITTEST_LDFLAGS = @UNITTEST_LDFLAGS@
+UNITTEST_LIBS = @UNITTEST_LIBS@
+URCU_CDS_CFLAGS = @URCU_CDS_CFLAGS@
+URCU_CDS_LIBS = @URCU_CDS_LIBS@
+URCU_CFLAGS = @URCU_CFLAGS@
+URCU_LIBS = @URCU_LIBS@
+USE_POSIX_ACLS = @USE_POSIX_ACLS@
+UUID_CFLAGS = @UUID_CFLAGS@
+UUID_LIBS = @UUID_LIBS@
 VERSION = @VERSION@
 XML2_CONFIG = @XML2_CONFIG@
 XML_CPPFLAGS = @XML_CPPFLAGS@
@@ -292,22 +324,25 @@ pyexecdir = @pyexecdir@
 pythondir = @pythondir@
 sbindir = @sbindir@
 sharedstatedir = @sharedstatedir@
+shrext_cmds = @shrext_cmds@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
 systemddir = @systemddir@
 target_alias = @target_alias@
+tmpfilesdir = @tmpfilesdir@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 scriptsdir = $(datadir)/glusterfs/scripts
-scripts_DATA = gsync-upgrade.sh generate-gfid-file.sh get-gfid.sh \
+scripts_SCRIPTS = gsync-upgrade.sh generate-gfid-file.sh get-gfid.sh \
         slave-upgrade.sh
 
 gsync_sync_gfid_CFLAGS = $(GF_CFLAGS) -Wall -I$(top_srcdir)/libglusterfs/src
 gsync_sync_gfid_LDFLAGS = $(GF_LDFLAGS)
-gsync_sync_gfid_LDADD = $(GF_LIBS) $(top_builddir)/libglusterfs/src/libglusterfs.la
+gsync_sync_gfid_LDADD = $(GF_LDADD) $(top_builddir)/libglusterfs/src/libglusterfs.la
 gsync_sync_gfid_SOURCES = gsync-sync-gfid.c
+gsync_sync_gfid_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src
 EXTRA_DIST = gsync-sync-gfid.c gsync-upgrade.sh generate-gfid-file.sh \
 	get-gfid.sh slave-upgrade.sh
 
@@ -391,6 +426,40 @@ clean-scriptsPROGRAMS:
 gsync-sync-gfid$(EXEEXT): $(gsync_sync_gfid_OBJECTS) $(gsync_sync_gfid_DEPENDENCIES) 
 	@rm -f gsync-sync-gfid$(EXEEXT)
 	$(AM_V_CCLD)$(gsync_sync_gfid_LINK) $(gsync_sync_gfid_OBJECTS) $(gsync_sync_gfid_LDADD) $(LIBS)
+install-scriptsSCRIPTS: $(scripts_SCRIPTS)
+	@$(NORMAL_INSTALL)
+	test -z "$(scriptsdir)" || $(MKDIR_P) "$(DESTDIR)$(scriptsdir)"
+	@list='$(scripts_SCRIPTS)'; test -n "$(scriptsdir)" || list=; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  if test -f "$$d$$p"; then echo "$$d$$p"; echo "$$p"; else :; fi; \
+	done | \
+	sed -e 'p;s,.*/,,;n' \
+	    -e 'h;s|.*|.|' \
+	    -e 'p;x;s,.*/,,;$(transform)' | sed 'N;N;N;s,\n, ,g' | \
+	$(AWK) 'BEGIN { files["."] = ""; dirs["."] = 1; } \
+	  { d=$$3; if (dirs[d] != 1) { print "d", d; dirs[d] = 1 } \
+	    if ($$2 == $$4) { files[d] = files[d] " " $$1; \
+	      if (++n[d] == $(am__install_max)) { \
+		print "f", d, files[d]; n[d] = 0; files[d] = "" } } \
+	    else { print "f", d "/" $$4, $$1 } } \
+	  END { for (d in files) print "f", d, files[d] }' | \
+	while read type dir files; do \
+	     if test "$$dir" = .; then dir=; else dir=/$$dir; fi; \
+	     test -z "$$files" || { \
+	       echo " $(INSTALL_SCRIPT) $$files '$(DESTDIR)$(scriptsdir)$$dir'"; \
+	       $(INSTALL_SCRIPT) $$files "$(DESTDIR)$(scriptsdir)$$dir" || exit $$?; \
+	     } \
+	; done
+
+uninstall-scriptsSCRIPTS:
+	@$(NORMAL_UNINSTALL)
+	@list='$(scripts_SCRIPTS)'; test -n "$(scriptsdir)" || exit 0; \
+	files=`for p in $$list; do echo "$$p"; done | \
+	       sed -e 's,.*/,,;$(transform)'`; \
+	test -n "$$list" || exit 0; \
+	echo " ( cd '$(DESTDIR)$(scriptsdir)' && rm -f" $$files ")"; \
+	cd "$(DESTDIR)$(scriptsdir)" && rm -f $$files
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -425,46 +494,26 @@ distclean-compile:
 @am__fastdepCC_FALSE@	$(LTCOMPILE) -c -o $@ $<
 
 gsync_sync_gfid-gsync-sync-gfid.o: gsync-sync-gfid.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -MT gsync_sync_gfid-gsync-sync-gfid.o -MD -MP -MF $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Tpo -c -o gsync_sync_gfid-gsync-sync-gfid.o `test -f 'gsync-sync-gfid.c' || echo '$(srcdir)/'`gsync-sync-gfid.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(gsync_sync_gfid_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -MT gsync_sync_gfid-gsync-sync-gfid.o -MD -MP -MF $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Tpo -c -o gsync_sync_gfid-gsync-sync-gfid.o `test -f 'gsync-sync-gfid.c' || echo '$(srcdir)/'`gsync-sync-gfid.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Tpo $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Po
 @am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='gsync-sync-gfid.c' object='gsync_sync_gfid-gsync-sync-gfid.o' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -c -o gsync_sync_gfid-gsync-sync-gfid.o `test -f 'gsync-sync-gfid.c' || echo '$(srcdir)/'`gsync-sync-gfid.c
+@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(gsync_sync_gfid_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -c -o gsync_sync_gfid-gsync-sync-gfid.o `test -f 'gsync-sync-gfid.c' || echo '$(srcdir)/'`gsync-sync-gfid.c
 
 gsync_sync_gfid-gsync-sync-gfid.obj: gsync-sync-gfid.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -MT gsync_sync_gfid-gsync-sync-gfid.obj -MD -MP -MF $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Tpo -c -o gsync_sync_gfid-gsync-sync-gfid.obj `if test -f 'gsync-sync-gfid.c'; then $(CYGPATH_W) 'gsync-sync-gfid.c'; else $(CYGPATH_W) '$(srcdir)/gsync-sync-gfid.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(gsync_sync_gfid_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -MT gsync_sync_gfid-gsync-sync-gfid.obj -MD -MP -MF $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Tpo -c -o gsync_sync_gfid-gsync-sync-gfid.obj `if test -f 'gsync-sync-gfid.c'; then $(CYGPATH_W) 'gsync-sync-gfid.c'; else $(CYGPATH_W) '$(srcdir)/gsync-sync-gfid.c'; fi`
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Tpo $(DEPDIR)/gsync_sync_gfid-gsync-sync-gfid.Po
 @am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='gsync-sync-gfid.c' object='gsync_sync_gfid-gsync-sync-gfid.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -c -o gsync_sync_gfid-gsync-sync-gfid.obj `if test -f 'gsync-sync-gfid.c'; then $(CYGPATH_W) 'gsync-sync-gfid.c'; else $(CYGPATH_W) '$(srcdir)/gsync-sync-gfid.c'; fi`
+@am__fastdepCC_FALSE@	$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(gsync_sync_gfid_CPPFLAGS) $(CPPFLAGS) $(gsync_sync_gfid_CFLAGS) $(CFLAGS) -c -o gsync_sync_gfid-gsync-sync-gfid.obj `if test -f 'gsync-sync-gfid.c'; then $(CYGPATH_W) 'gsync-sync-gfid.c'; else $(CYGPATH_W) '$(srcdir)/gsync-sync-gfid.c'; fi`
 
 mostlyclean-libtool:
 	-rm -f *.lo
 
 clean-libtool:
 	-rm -rf .libs _libs
-install-scriptsDATA: $(scripts_DATA)
-	@$(NORMAL_INSTALL)
-	test -z "$(scriptsdir)" || $(MKDIR_P) "$(DESTDIR)$(scriptsdir)"
-	@list='$(scripts_DATA)'; test -n "$(scriptsdir)" || list=; \
-	for p in $$list; do \
-	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
-	  echo "$$d$$p"; \
-	done | $(am__base_list) | \
-	while read files; do \
-	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(scriptsdir)'"; \
-	  $(INSTALL_DATA) $$files "$(DESTDIR)$(scriptsdir)" || exit $$?; \
-	done
-
-uninstall-scriptsDATA:
-	@$(NORMAL_UNINSTALL)
-	@list='$(scripts_DATA)'; test -n "$(scriptsdir)" || list=; \
-	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
-	test -n "$$files" || exit 0; \
-	echo " ( cd '$(DESTDIR)$(scriptsdir)' && rm -f" $$files ")"; \
-	cd "$(DESTDIR)$(scriptsdir)" && rm -f $$files
 
 ID: $(HEADERS) $(SOURCES) $(LISP) $(TAGS_FILES)
 	list='$(SOURCES) $(HEADERS) $(LISP) $(TAGS_FILES)'; \
@@ -550,7 +599,7 @@ distdir: $(DISTFILES)
 	done
 check-am: all-am
 check: check-am
-all-am: Makefile $(PROGRAMS) $(DATA)
+all-am: Makefile $(PROGRAMS) $(SCRIPTS)
 installdirs:
 	for dir in "$(DESTDIR)$(scriptsdir)" "$(DESTDIR)$(scriptsdir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
@@ -603,7 +652,7 @@ info: info-am
 
 info-am:
 
-install-data-am: install-scriptsDATA install-scriptsPROGRAMS
+install-data-am: install-scriptsPROGRAMS install-scriptsSCRIPTS
 
 install-dvi: install-dvi-am
 
@@ -649,7 +698,7 @@ ps: ps-am
 
 ps-am:
 
-uninstall-am: uninstall-scriptsDATA uninstall-scriptsPROGRAMS
+uninstall-am: uninstall-scriptsPROGRAMS uninstall-scriptsSCRIPTS
 
 .MAKE: install-am install-strip
 
@@ -661,12 +710,12 @@ uninstall-am: uninstall-scriptsDATA uninstall-scriptsPROGRAMS
 	install-dvi-am install-exec install-exec-am install-html \
 	install-html-am install-info install-info-am install-man \
 	install-pdf install-pdf-am install-ps install-ps-am \
-	install-scriptsDATA install-scriptsPROGRAMS install-strip \
+	install-scriptsPROGRAMS install-scriptsSCRIPTS install-strip \
 	installcheck installcheck-am installdirs maintainer-clean \
 	maintainer-clean-generic mostlyclean mostlyclean-compile \
 	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
-	tags uninstall uninstall-am uninstall-scriptsDATA \
-	uninstall-scriptsPROGRAMS
+	tags uninstall uninstall-am uninstall-scriptsPROGRAMS \
+	uninstall-scriptsSCRIPTS
 
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.

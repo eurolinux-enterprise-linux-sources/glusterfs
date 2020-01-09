@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 append_licence_header ()
 {
@@ -22,8 +22,15 @@ append_licence_header ()
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
+#if !defined(__clang__)
+#if !defined(__NetBSD__)
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+#else
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #endif
 #endif
 
@@ -67,7 +74,7 @@ gen_headers ()
     rm -f $hfile;
     rpcgen -h -o $hfile $xfile;
     # the '#ifdef' part of file should be fixed
-    sed -i -e 's/-/_/g' $hfile;
+    sed -e 's/-/_/g' $hfile > ${hfile}.new && mv ${hfile}.new $hfile;
     # Gen header to temp file and append generated file
     append_licence_header $hfile $tmp_hfile;
     # now move the destination file to actual original file
@@ -85,11 +92,11 @@ main ()
         exit 1;
     fi
 
-    if [ $1 == "header" ]; then
+    if [ $1 = "header" ]; then
         gen_headers $2
     fi
 
-    if [ $1 == "source" ]; then
+    if [ $1 = "source" ]; then
         gen_sources $2
     fi
 }

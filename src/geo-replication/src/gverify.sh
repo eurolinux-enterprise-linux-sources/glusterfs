@@ -24,7 +24,7 @@ function cmd_master()
     cmd_line=$(cat <<EOF
 function do_verify() {
 v=\$1;
-d=\$(mktemp -d 2>/dev/null);
+d=\$(mktemp -d -t ${0##*/}.XXXXXX 2>/dev/null);
 glusterfs -s localhost --xlator-option="*dht.lookup-unhashed=off" --volfile-id \$v -l $slave_log_file \$d;
 i=\$(stat -c "%i" \$d);
 if [[ "\$i" -ne "1" ]]; then
@@ -80,7 +80,7 @@ function slave_stats()
     local ver;
     local status;
 
-    d=$(mktemp -d 2>/dev/null);
+    d=$(mktemp -d -t ${0##*/}.XXXXXX 2>/dev/null);
     glusterfs --xlator-option="*dht.lookup-unhashed=off" --volfile-server $SLAVEHOST --volfile-id $SLAVEVOL -l $slave_log_file $d;
     i=$(stat -c "%i" $d);
     if [[ "$i" -ne "1" ]]; then
@@ -90,7 +90,7 @@ function slave_stats()
     cd $d;
     disk_size=$(df -P -B1 $d | tail -1 | awk "{print \$2}");
     used_size=$(df -P -B1 $d | tail -1 | awk "{print \$3}");
-    no_of_files=$(find  $d -maxdepth 0 -empty);
+    no_of_files=$(find $d -maxdepth 1 -path "$d/.trashcan" -prune -o -path "$d" -o -print0 -quit);
     umount -l $d;
     rmdir $d;
 
@@ -134,7 +134,7 @@ function main()
         exit 1;
     fi;
 
-    ssh -oNumberOfPasswordPrompts=0 $2@$3 "echo Testing_Passwordless_SSH";
+    ssh -oNumberOfPasswordPrompts=0 -oStrictHostKeyChecking=no $2@$3 "echo Testing_Passwordless_SSH";
     if [ $? -ne 0 ]; then
         echo "FORCE_BLOCKER|Passwordless ssh login has not been setup with $3 for user $2." > $log_file
         exit 1;
@@ -179,7 +179,7 @@ function main()
         ERRORS=$(($ERRORS + 1));
     fi
 
-    if [ -z $slave_no_of_files ]; then
+    if [ ! -z $slave_no_of_files ]; then
         echo "$3::$4 is not empty. Please delete existing files in $3::$4 and retry, or use force to continue without deleting the existing files." >> $log_file;
         ERRORS=$(($ERRORS + 1));
     fi;

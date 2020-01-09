@@ -1,0 +1,47 @@
+From e63cae190d2d008826925498f970b076502f9269 Mon Sep 17 00:00:00 2001
+From: Saravanakumar Arumugam <sarumuga@redhat.com>
+Date: Wed, 23 Sep 2015 12:21:40 +0530
+Subject: [PATCH 161/162] geo-rep: geo-rep to handle CAPS based Hostname
+
+Problem:
+geo-replication session creation fails when Hostname
+is having CAPS in it.
+Issue is with the regex pattern which handles only small lettered
+Hostname.
+
+Fix:
+Fix the regex pattern to handle CAPS based hostname as well.
+
+Change-Id: I5c99c102e9706acc2b1fab1e6bf158e68beed373
+BUG: 1264800
+Signed-off-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-on: http://review.gluster.org/12216
+Reviewed-on: http://review.gluster.org/12862
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-by: Vijay Bellur <vbellur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62900
+Reviewed-by: Venky Shankar <vshankar@redhat.com>
+Tested-by: Venky Shankar <vshankar@redhat.com>
+---
+ geo-replication/syncdaemon/resource.py |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/resource.py b/geo-replication/syncdaemon/resource.py
+index 39c2482..c7ca2af 100644
+--- a/geo-replication/syncdaemon/resource.py
++++ b/geo-replication/syncdaemon/resource.py
+@@ -42,7 +42,7 @@ from gsyncdstatus import GeorepStatus
+ 
+ 
+ UrlRX = re.compile('\A(\w+)://([^ *?[]*)\Z')
+-HostRX = re.compile('[a-z\d](?:[a-z\d.-]*[a-z\d])?', re.I)
++HostRX = re.compile('[a-zA-Z\d](?:[a-zA-Z\d.-]*[a-zA-Z\d])?', re.I)
+ UserRX = re.compile("[\w!\#$%&'*+-\/=?^_`{|}~]+")
+ 
+ 
+-- 
+1.7.1
+

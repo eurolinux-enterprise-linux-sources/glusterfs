@@ -1,3 +1,3 @@
-SUBDIRS = stripe afr-v1 dht
+SUBDIRS = stripe afr dht ec
 
-CLEANFILES =
+CLEANFILES = 

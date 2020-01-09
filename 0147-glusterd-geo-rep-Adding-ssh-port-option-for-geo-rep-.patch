@@ -1,0 +1,380 @@
+From 14f81550c352c82dbae0a39a1a98049031bce51e Mon Sep 17 00:00:00 2001
+From: Kotresh HR <khiremat@redhat.com>
+Date: Mon, 2 Nov 2015 18:52:03 +0530
+Subject: [PATCH 147/162] glusterd/geo-rep: Adding ssh-port option for geo-rep create
+
+Geo-replication uses default ssh port 22 for setup.
+i.e., to distribute ssh keys to slaves. In container
+environments, custom port number might be used.
+Hence to support custom port number for ssh, option
+is provided in geo-rep create command to take the
+same.
+
+Change-Id: I0fb61959b1c085342b8e4c21ac4e076fba5462f1
+BUG: 1275971
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: http://review.gluster.org/12504
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Avra Sengupta <asengupt@redhat.com>
+Reviewed-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-by: Venky Shankar <vshankar@redhat.com>
+ (cherry picked from commit 5bb3c521431cc27b2826acd889bffb2f90ae7f73)
+Reviewed-on: http://review.gluster.org/12652
+Reviewed-by: Vijay Bellur <vbellur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62771
+Reviewed-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Tested-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+---
+ cli/src/cli-cmd-parser.c                           |   87 +++++++++++++-------
+ cli/src/cli-cmd-volume.c                           |    2 +-
+ .../S56glusterd-geo-rep-create-post.sh             |   28 +++++--
+ geo-replication/src/gverify.sh                     |   10 +-
+ xlators/mgmt/glusterd/src/glusterd-geo-rep.c       |   37 ++++++++-
+ 5 files changed, 117 insertions(+), 47 deletions(-)
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index 1d5e8b8..1d4d6cf 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -2408,6 +2408,51 @@ out:
+         return ret;
+ }
+ 
++/* ssh_port_parse: Parses and validates when ssh_port is given.
++ *                 ssh_index refers to index of ssh_port and
++ *                 type refers to either push-pem or no-verify
++ */
++
++static int32_t
++parse_ssh_port (const char **words, int wordcount, dict_t *dict,
++                unsigned *cmdi, int ssh_index, char *type) {
++
++        int        ret         = 0;
++        char      *end_ptr     = NULL;
++        int64_t    limit       = 0;
++
++        if (!strcmp ((char *)words[ssh_index], "ssh-port")) {
++                if (strcmp ((char *)words[ssh_index-1], "create")) {
++                        ret = -1;
++                        goto out;
++                }
++                (*cmdi)++;
++                limit = strtol (words[ssh_index+1], &end_ptr, 10);
++                if (errno == ERANGE || errno == EINVAL || limit <= 0
++                                    || strcmp (end_ptr, "") != 0) {
++                        ret = -1;
++                        cli_err ("Please enter an interger value for ssh_port ");
++                        goto out;
++                }
++
++                ret = dict_set_int32 (dict, "ssh_port", limit);
++                if (ret)
++                        goto out;
++                (*cmdi)++;
++        } else if (strcmp ((char *)words[ssh_index+1], "create")) {
++                ret = -1;
++                goto out;
++        }
++
++        ret = dict_set_int32 (dict, type, 1);
++        if (ret)
++                goto out;
++        (*cmdi)++;
++
++ out:
++        return ret;
++}
++
+ static int32_t
+ force_push_pem_no_verify_parse (const char **words, int wordcount,
+                       dict_t *dict, unsigned *cmdi)
+@@ -2432,44 +2477,26 @@ force_push_pem_no_verify_parse (const char **words, int wordcount,
+                 (*cmdi)++;
+ 
+                 if (!strcmp ((char *)words[wordcount-2], "push-pem")) {
+-                        if (strcmp ((char *)words[wordcount-3], "create")) {
+-                                ret = -1;
+-                                goto out;
+-                        }
+-                        ret = dict_set_int32 (dict, "push_pem", 1);
++                        ret = parse_ssh_port (words, wordcount, dict, cmdi,
++                                              wordcount-4, "push_pem");
+                         if (ret)
+                                 goto out;
+-                        (*cmdi)++;
+                 } else if (!strcmp ((char *)words[wordcount-2], "no-verify")) {
+-                        if (strcmp ((char *)words[wordcount-3], "create")) {
+-                                ret = -1;
+-                                goto out;
+-                        }
+-                        ret = dict_set_uint32 (dict, "no_verify",
+-                                               _gf_true);
++                        ret = parse_ssh_port (words, wordcount, dict, cmdi,
++                                              wordcount-4, "no_verify");
+                         if (ret)
+                                 goto out;
+-                        (*cmdi)++;
+                 }
+         } else if (!strcmp ((char *)words[wordcount-1], "push-pem")) {
+-                if (strcmp ((char *)words[wordcount-2], "create")) {
+-                        ret = -1;
+-                        goto out;
+-                }
+-                ret = dict_set_int32 (dict, "push_pem", 1);
++                ret = parse_ssh_port (words, wordcount, dict, cmdi, wordcount-3,
++                                      "push_pem");
+                 if (ret)
+                         goto out;
+-                (*cmdi)++;
+         } else if (!strcmp ((char *)words[wordcount-1], "no-verify")) {
+-                if ((strcmp ((char *)words[wordcount-2], "create"))) {
+-                        ret = -1;
+-                        goto out;
+-                }
+-                ret = dict_set_uint32 (dict, "no_verify",
+-                                       _gf_true);
++                ret = parse_ssh_port (words, wordcount, dict, cmdi, wordcount-3,
++                                      "no_verify");
+                 if (ret)
+                         goto out;
+-                (*cmdi)++;
+         }
+ 
+ out:
+@@ -2490,9 +2517,9 @@ cli_cmd_gsync_set_parse (const char **words, int wordcount, dict_t **options)
+         unsigned           glob    = 0;
+         unsigned           cmdi    = 0;
+         char               *opwords[] = { "create", "status", "start", "stop",
+-                                          "config", "force", "delete", "no-verify"
+-                                          "push-pem", "detail", "pause",
+-                                          "resume", NULL };
++                                          "config", "force", "delete",
++                                          "ssh-port", "no-verify", "push-pem",
++                                          "detail", "pause", "resume", NULL };
+         char               *w = NULL;
+         char               *save_ptr   = NULL;
+         char               *slave_temp = NULL;
+@@ -2507,7 +2534,7 @@ cli_cmd_gsync_set_parse (const char **words, int wordcount, dict_t **options)
+ 
+         /* new syntax:
+          *
+-         * volume geo-replication $m $s create [[no-verify] | [push-pem]] [force]
++         * volume geo-replication $m $s create [[ssh-port n] [[no-verify] | [push-pem]]] [force]
+          * volume geo-replication [$m [$s]] status [detail]
+          * volume geo-replication [$m] $s config [[!]$opt [$val]]
+          * volume geo-replication $m $s start|stop [force]
+diff --git a/cli/src/cli-cmd-volume.c b/cli/src/cli-cmd-volume.c
+index 0dab03f..3589119 100644
+--- a/cli/src/cli-cmd-volume.c
++++ b/cli/src/cli-cmd-volume.c
+@@ -2728,7 +2728,7 @@ struct cli_cmd volume_cmds[] = {
+          "reset all the reconfigured options"},
+ 
+ #if (SYNCDAEMON_COMPILE)
+-        {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [[no-verify]|[push-pem]] [force]"
++        {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [[ssh-port n] [[no-verify]|[push-pem]]] [force]"
+          "|start [force]|stop [force]|pause [force]|resume [force]|config|status [detail]|delete} [options...]",
+          cli_cmd_volume_gsync_set_cbk,
+          "Geo-sync operations",
+diff --git a/extras/hook-scripts/S56glusterd-geo-rep-create-post.sh b/extras/hook-scripts/S56glusterd-geo-rep-create-post.sh
+index 067dd74..a5e472e 100755
+--- a/extras/hook-scripts/S56glusterd-geo-rep-create-post.sh
++++ b/extras/hook-scripts/S56glusterd-geo-rep-create-post.sh
+@@ -1,10 +1,14 @@
+ #!/bin/bash
+ 
++#key_val_pair is the arguments passed to the script in the form of
++#key value pair
++
+ key_val_pair1=`echo $2 | cut -d ',' -f 1`
+ key_val_pair2=`echo $2 | cut -d ',' -f 2`
+ key_val_pair3=`echo $2 | cut -d ',' -f 3`
+ key_val_pair4=`echo $2 | cut -d ',' -f 4`
+ key_val_pair5=`echo $2 | cut -d ',' -f 5`
++key_val_pair6=`echo $2 | cut -d ',' -f 6`
+ 
+ mastervol=`echo $1 | cut -d '=' -f 2`
+ if [ "$mastervol" == "" ]; then
+@@ -64,17 +68,27 @@ if [ "$val" == "" ]; then
+ fi
+ slavevol=`echo $val`
+ 
++key=`echo $key_val_pair6 | cut -d '=' -f 1`
++val=`echo $key_val_pair6 | cut -d '=' -f 2`
++if [ "$key" != "ssh_port" ]; then
++    exit;
++fi
++if [ "$val" == "" ]; then
++    exit;
++fi
++SSH_PORT=`echo $val`
++
+ if [ -f $pub_file ]; then
+     # For a non-root user copy the pub file to the user's home directory
+     # For a root user copy the pub files to priv_dir->geo-rep.
+     if [ "$slave_user" != "root" ]; then
+-        slave_user_home_dir=`ssh $slave_user@$slave_ip "getent passwd $slave_user | cut -d ':' -f 6"`
+-        scp $pub_file $slave_user@$slave_ip:$slave_user_home_dir/common_secret.pem.pub_tmp
+-        ssh $slave_user@$slave_ip "mv $slave_user_home_dir/common_secret.pem.pub_tmp $slave_user_home_dir/${mastervol}_${slavevol}_common_secret.pem.pub"
++        slave_user_home_dir=`ssh -p ${SSH_PORT} $slave_user@$slave_ip "getent passwd $slave_user | cut -d ':' -f 6"`
++        scp -P ${SSH_PORT} $pub_file $slave_user@$slave_ip:$slave_user_home_dir/common_secret.pem.pub_tmp
++        ssh -p ${SSH_PORT} $slave_user@$slave_ip "mv $slave_user_home_dir/common_secret.pem.pub_tmp $slave_user_home_dir/${mastervol}_${slavevol}_common_secret.pem.pub"
+     else
+-        scp $pub_file $slave_ip:$pub_file_tmp
+-        ssh $slave_ip "mv $pub_file_tmp ${pub_file_dname}/${mastervol}_${slavevol}_${pub_file_bname}"
+-        ssh $slave_ip "gluster system:: copy file /geo-replication/${mastervol}_${slavevol}_common_secret.pem.pub > /dev/null"
+-        ssh $slave_ip "gluster system:: execute add_secret_pub root geo-replication/${mastervol}_${slavevol}_common_secret.pem.pub > /dev/null"
++        scp -P ${SSH_PORT} $pub_file $slave_ip:$pub_file_tmp
++        ssh -p ${SSH_PORT} $slave_ip "mv $pub_file_tmp ${pub_file_dname}/${mastervol}_${slavevol}_${pub_file_bname}"
++        ssh -p ${SSH_PORT} $slave_ip "gluster system:: copy file /geo-replication/${mastervol}_${slavevol}_common_secret.pem.pub > /dev/null"
++        ssh -p ${SSH_PORT} $slave_ip "gluster system:: execute add_secret_pub root geo-replication/${mastervol}_${slavevol}_common_secret.pem.pub > /dev/null"
+     fi
+ fi
+diff --git a/geo-replication/src/gverify.sh b/geo-replication/src/gverify.sh
+index 607be4a..5542706 100755
+--- a/geo-replication/src/gverify.sh
++++ b/geo-replication/src/gverify.sh
+@@ -1,16 +1,17 @@
+ #!/bin/bash
+ 
+ # Script to verify the Master and Slave Gluster compatibility.
+-# To use ./gverify <master volume> <slave host> <slave volume>
++# To use ./gverify <master volume> <slave user> <slave host> <slave volume> <ssh port> <log file>
+ # Returns 0 if master and slave compatible.
+ 
+ # Considering buffer_size 100MB
+ BUFFER_SIZE=104857600;
++SSH_PORT=$5;
+ slave_log_file=`gluster --print-logdir`/geo-replication-slaves/slave.log
+ 
+ function SSHM()
+ {
+-    ssh -q \
++    ssh -p ${SSH_PORT} -q \
+ 	-oPasswordAuthentication=no \
+ 	-oStrictHostKeyChecking=no \
+ 	-oControlMaster=yes \
+@@ -116,10 +117,9 @@ function ping_host ()
+ 
+ function main()
+ {
+-    log_file=$5
++    log_file=$6
+     > $log_file
+ 
+-    SSH_PORT=22
+     # Use FORCE_BLOCKER flag in the error message to differentiate
+     # between the errors which the force command should bypass
+ 
+@@ -134,7 +134,7 @@ function main()
+         exit 1;
+     fi;
+ 
+-    ssh -oNumberOfPasswordPrompts=0 -oStrictHostKeyChecking=no $2@$3 "echo Testing_Passwordless_SSH";
++    ssh -p ${SSH_PORT} -oNumberOfPasswordPrompts=0 -oStrictHostKeyChecking=no $2@$3 "echo Testing_Passwordless_SSH";
+     if [ $? -ne 0 ]; then
+         echo "FORCE_BLOCKER|Passwordless ssh login has not been setup with $3 for user $2." > $log_file
+         exit 1;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+index 8006a4d..5a61c68 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
++++ b/xlators/mgmt/glusterd/src/glusterd-geo-rep.c
+@@ -2310,7 +2310,8 @@ out:
+ 
+ static int
+ glusterd_verify_slave (char *volname, char *slave_url, char *slave_vol,
+-                       char **op_errstr, gf_boolean_t *is_force_blocker)
++                       int ssh_port, char **op_errstr,
++                       gf_boolean_t *is_force_blocker)
+ {
+         int32_t          ret                     = -1;
+         runner_t         runner                  = {0,};
+@@ -2362,7 +2363,12 @@ glusterd_verify_slave (char *volname, char *slave_url, char *slave_vol,
+         runner_argprintf (&runner, "%s", slave_user);
+         runner_argprintf (&runner, "%s", slave_ip);
+         runner_argprintf (&runner, "%s", slave_vol);
++        runner_argprintf (&runner, "%d", ssh_port);
+         runner_argprintf (&runner, "%s", log_file_path);
++        gf_msg_debug (this->name, 0, "gverify Args = %s %s %s %s %s %s %s",
++                      runner.argv[0], runner.argv[1], runner.argv[2],
++                      runner.argv[3], runner.argv[4], runner.argv[5],
++                      runner.argv[6]);
+         runner_redir (&runner, STDOUT_FILENO, RUN_PIPE);
+         synclock_unlock (&priv->big_lock);
+         ret = runner_run (&runner);
+@@ -2503,6 +2509,7 @@ glusterd_op_stage_gsync_create (dict_t *dict, char **op_errstr)
+         char                uuid_str [64]             = "";
+         int                 ret                       = -1;
+         int                 is_pem_push               = -1;
++        int                 ssh_port                  = 22;
+         gf_boolean_t        is_force                  = -1;
+         gf_boolean_t        is_no_verify              = -1;
+         gf_boolean_t        is_force_blocker          = -1;
+@@ -2596,6 +2603,16 @@ glusterd_op_stage_gsync_create (dict_t *dict, char **op_errstr)
+                          down_peerstr = NULL;
+                 }
+ 
++                ret = dict_get_int32 (dict, "ssh_port", &ssh_port);
++                if (ret < 0 && ret != -ENOENT) {
++                        snprintf (errmsg, sizeof (errmsg),
++                                  "Fetching ssh_port failed while "
++                                  "handling "GEOREP" options");
++                        gf_msg (this->name, GF_LOG_ERROR, 0,
++                                GD_MSG_DICT_GET_FAILED, "%s", errmsg);
++                        goto out;
++                }
++
+                 is_no_verify = dict_get_str_boolean (dict, "no_verify", _gf_false);
+ 
+                 if (!is_no_verify) {
+@@ -2604,7 +2621,8 @@ glusterd_op_stage_gsync_create (dict_t *dict, char **op_errstr)
+                         * and if it has enough memory and bypass in case of force if
+                         * the error is not a force blocker */
+                         ret = glusterd_verify_slave (volname, slave_url, slave_vol,
+-                                                     op_errstr, &is_force_blocker);
++                                                     ssh_port, op_errstr,
++                                                     &is_force_blocker);
+                         if (ret) {
+                                 if (is_force && !is_force_blocker) {
+                                         gf_msg (this->name, GF_LOG_INFO, 0,
+@@ -5605,6 +5623,7 @@ glusterd_op_gsync_create (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+         char               *slave                     = NULL;
+         int32_t             ret                       = -1;
+         int32_t             is_pem_push               = -1;
++        int32_t             ssh_port                  = 22;
+         gf_boolean_t        is_force                  = -1;
+         glusterd_conf_t    *conf                      = NULL;
+         glusterd_volinfo_t *volinfo                   = NULL;
+@@ -5684,6 +5703,15 @@ glusterd_op_gsync_create (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                 goto out;
+         }
+ 
++        ret = dict_get_int32 (dict, "ssh_port", &ssh_port);
++        if (ret < 0 && ret != -ENOENT) {
++                snprintf (errmsg, sizeof (errmsg), "Fetching ssh_port failed");
++                gf_msg (this->name, GF_LOG_ERROR, 0, GD_MSG_DICT_GET_FAILED,
++                        "%s", errmsg);
++                ret = -1;
++                goto out;
++        }
++
+         is_force = dict_get_str_boolean (dict, "force", _gf_false);
+ 
+         uuid_utoa_r (MY_UUID, uuid_str);
+@@ -5698,8 +5726,9 @@ glusterd_op_gsync_create (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+ 
+                 snprintf(hooks_args, sizeof(hooks_args),
+                          "is_push_pem=%d,pub_file=%s,slave_user=%s,slave_ip=%s,"
+-                         "slave_vol=%s", is_pem_push, common_pem_file,
+-                         slave_user, slave_ip, slave_vol);
++                         "slave_vol=%s,ssh_port=%d", is_pem_push,
++                         common_pem_file, slave_user, slave_ip, slave_vol,
++                         ssh_port);
+         } else
+                 snprintf(hooks_args, sizeof(hooks_args),
+                          "This argument will stop the hooks script");
+-- 
+1.7.1
+

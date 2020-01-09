@@ -48,7 +48,8 @@ typedef enum {
                         goto label;                                     \
                 }                                                       \
                 if (remote_fd == -1) {                                  \
-                        gf_log (xl->name, GF_LOG_WARNING, " (%s) "      \
+                        gf_msg (xl->name, GF_LOG_WARNING, EBADFD,       \
+                                PC_MSG_BAD_FD, " (%s) "                 \
                                 "remote_fd is -1. EBADFD",              \
                                 uuid_utoa (fd->inode->gfid));           \
                         op_errno = EBADFD;                              \
@@ -57,6 +58,8 @@ typedef enum {
         } while (0)
 
 #define CLIENT_STACK_UNWIND(op, frame, params ...) do {             \
+                if (!frame)                                         \
+                        break;                                      \
                 clnt_local_t *__local = frame->local;               \
                 frame->local = NULL;                                \
                 STACK_UNWIND_STRICT (op, frame, params);            \
@@ -83,6 +86,7 @@ typedef struct clnt_conf {
         rpc_clnt_prog_t       *handshake;
         rpc_clnt_prog_t       *dump;
 
+        int                    client_id;
         uint64_t               reopen_fd_count; /* Count of fds reopened after a
                                                    connection is established */
         gf_lock_t              rec_lock;
@@ -226,7 +230,8 @@ int client_submit_request (xlator_t *this, void *req,
                            struct iovec *rsp_payload, int rsp_count,
                            struct iobref *rsp_iobref, xdrproc_t xdrproc);
 
-int unserialize_rsp_dirent (struct gfs3_readdir_rsp *rsp, gf_dirent_t *entries);
+int unserialize_rsp_dirent (xlator_t *this, struct gfs3_readdir_rsp *rsp,
+                            gf_dirent_t *entries);
 int unserialize_rsp_direntp (xlator_t *this, fd_t *fd,
                              struct gfs3_readdirp_rsp *rsp, gf_dirent_t *entries);
 

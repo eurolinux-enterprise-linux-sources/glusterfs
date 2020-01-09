@@ -1,0 +1,120 @@
+From b0c90afe98d744e6fd908c59de63d5dc52a3a7ff Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Mon, 26 Oct 2015 14:14:18 +0530
+Subject: [PATCH 50/67] afr: fixes in transaction code
+
+Patches in master:  http://review.gluster.org/#/c/12368/ and
+http://review.gluster.org/#/c/12415/
+
+Combined patch in release-3.7:http://review.gluster.org/#/c/12399/
+
+1. When winding the pre-op, transaction.pre_op[i] is set. If the pre-op
+fails, transaction.failed_subvols[i] is set. If if fails on all chidren,
+we can directly proceed to unlock (via afr_changelog_post_op_now)
+without trying to wind the write, fail and then going to unlock.
+
+2. 'fop_subvols' seems to be an unused variable, hence removing it.
+
+3. Call local->transaction.wind() only on subvols where pre-op succeeded.
+
+Change-Id: Ie71b527e7818ab91bdd38e42728bfe857c5a8669
+BUG: 1275906
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60336
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c      |    7 -------
+ xlators/cluster/afr/src/afr-transaction.c |   12 +++++++++---
+ xlators/cluster/afr/src/afr.h             |    7 ++-----
+ 3 files changed, 11 insertions(+), 15 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 1c652f4..2ac0f07 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -1204,7 +1204,6 @@ afr_local_transaction_cleanup (afr_local_t *local, xlator_t *this)
+         }
+ 
+         GF_FREE (local->transaction.eager_lock);
+-        GF_FREE (local->transaction.fop_subvols);
+         GF_FREE (local->transaction.failed_subvols);
+ 
+         GF_FREE (local->transaction.basename);
+@@ -4176,12 +4175,6 @@ afr_transaction_local_init (afr_local_t *local, xlator_t *this)
+                         goto out;
+         }
+ 
+-        local->transaction.fop_subvols = GF_CALLOC (sizeof (*local->transaction.fop_subvols),
+-						    priv->child_count,
+-						    gf_afr_mt_char);
+-        if (!local->transaction.fop_subvols)
+-                goto out;
+-
+         local->transaction.failed_subvols = GF_CALLOC (sizeof (*local->transaction.failed_subvols),
+ 						       priv->child_count,
+ 						       gf_afr_mt_char);
+diff --git a/xlators/cluster/afr/src/afr-transaction.c b/xlators/cluster/afr/src/afr-transaction.c
+index 915b68e..4c85a4b 100644
+--- a/xlators/cluster/afr/src/afr-transaction.c
++++ b/xlators/cluster/afr/src/afr-transaction.c
+@@ -44,12 +44,16 @@ __afr_txn_write_fop (call_frame_t *frame, xlator_t *this)
+         afr_local_t *local = NULL;
+         afr_private_t *priv = NULL;
+         int call_count = -1;
++        unsigned char *failed_subvols = NULL;
+         int i = 0;
+ 
+         local = frame->local;
+         priv = this->private;
+ 
+-        call_count = AFR_COUNT (local->transaction.pre_op, priv->child_count);
++        failed_subvols = local->transaction.failed_subvols;
++
++        call_count = priv->child_count - AFR_COUNT (failed_subvols,
++                                                    priv->child_count);
+ 
+         if (call_count == 0) {
+                 local->transaction.resume (frame, this);
+@@ -59,7 +63,7 @@ __afr_txn_write_fop (call_frame_t *frame, xlator_t *this)
+         local->call_count = call_count;
+ 
+         for (i = 0; i < priv->child_count; i++) {
+-                if (local->transaction.pre_op[i]) {
++                if (local->transaction.pre_op[i] && !failed_subvols[i]) {
+ 			local->transaction.wind (frame, this, i);
+ 
+                         if (!--call_count)
+@@ -973,8 +977,10 @@ afr_changelog_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         priv = this->private;
+         child_index = (long) cookie;
+ 
+-	if (op_ret == -1)
++	if (op_ret == -1) {
++                local->op_errno = op_errno;
+ 		afr_transaction_fop_failed (frame, this, child_index);
++        }
+ 
+         if (priv->arbiter_count == 1 && !op_ret) {
+                 if (xattr)
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index 6a14feb..9ee5ae3 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -662,11 +662,8 @@ typedef struct _afr_local {
+                 dict_t **pre_op_xdata;
+                 unsigned char *pre_op_sources;
+ 
+-		/* @fop_subvols: subvolumes on which FOP will be attempted */
+-                unsigned char   *fop_subvols;
+-
+-		/* @failed_subvols: subvolumes on which FOP failed. Always
+-		   a subset of @fop_subvols */
++		/* @failed_subvols: subvolumes on which a pre-op or a
++                    FOP failed. */
+                 unsigned char   *failed_subvols;
+ 
+ 		/* @dirtied: flag which indicates whether we set dirty flag
+-- 
+1.7.1
+

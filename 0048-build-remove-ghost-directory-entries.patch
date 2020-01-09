@@ -1,0 +1,132 @@
+From c1b30953c642ea437b1c96e946ce5e97b02b0cce Mon Sep 17 00:00:00 2001
+From: Bala.FA <barumuga@redhat.com>
+Date: Mon, 7 Apr 2014 15:24:10 +0530
+Subject: [PATCH 48/67] build: remove ghost directory entries
+
+ovirt requires hook directories for gluster management and ghost
+directories are no more ghost entries
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Iaf1066ba0655619024f87eaaa039f0010578c567
+Signed-off-by: Bala.FA <barumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60133
+Tested-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in |   70 +++++++----------------------------------------------
+ 1 files changed, 9 insertions(+), 61 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 536c7a8..2c27777 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -718,7 +718,6 @@ install -D -p -m 0644 extras/glusterfs-logrotate \
+     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs
+ 
+ %if ( 0%{!?_without_georeplication:1} )
+-# geo-rep ghosts
+ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/geo-replication
+ touch %{buildroot}%{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
+ install -D -p -m 0644 extras/glusterfs-georep-logrotate \
+@@ -742,41 +741,13 @@ install -D -p -m 0644 extras/logger.conf.example \
+ %endif
+ %endif
+ 
+-# the rest of the ghosts
+ touch %{buildroot}%{_sharedstatedir}/glusterd/glusterd.info
+ touch %{buildroot}%{_sharedstatedir}/glusterd/options
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/stop/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/start/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/reset/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/remove-brick
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/remove-brick/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/remove-brick/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/set/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/create
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/create/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/create/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/delete
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/delete/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/delete/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/copy-file
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/copy-file/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/copy-file/pre
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/gsync-create
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/gsync-create/post
+-mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/gsync-create/pre
++subdirs=("add-brick" "create" "copy-file" "delete" "gsync-create" "remove-brick" "reset" "set" "start" "stop")
++for dir in ${subdirs[@]}
++do
++mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/"$dir"/{pre,post}
++done
+ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/glustershd
+ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/peers
+ mkdir -p %{buildroot}%{_sharedstatedir}/glusterd/vols
+@@ -1099,11 +1070,7 @@ fi
+ %{_libexecdir}/glusterfs/set_geo_rep_pem_keys.sh
+ %{_libexecdir}/glusterfs/peer_gsec_create
+ %{_libexecdir}/glusterfs/peer_mountbroker
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/geo-replication
+-%dir %{_sharedstatedir}/glusterd/hooks
+-%dir %{_sharedstatedir}/glusterd/hooks/1
+-%dir %{_sharedstatedir}/glusterd/hooks/1/gsync-create
+-%dir %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post
++%dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/geo-replication
+ %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post/S56glusterd-geo-rep-create-post.sh
+ %{_datadir}/glusterfs/scripts/get-gfid.sh
+ %{_datadir}/glusterfs/scripts/slave-upgrade.sh
+@@ -1152,8 +1119,7 @@ fi
+ %if 0%{?_tmpfilesdir:1}
+ %{_tmpfilesdir}/gluster.conf
+ %endif
+-%dir %{_sharedstatedir}/glusterd
+-%dir %{_sharedstatedir}/glusterd/groups
++%{_sharedstatedir}/glusterd/*
+ %config(noreplace) %{_sharedstatedir}/glusterd/groups/virt
+ # Legacy configs
+ %if ( 0%{_for_fedora_koji_builds} )
+@@ -1224,26 +1190,8 @@ fi
+ 
+ %ghost %attr(0644,-,-) %config(noreplace) %{_sharedstatedir}/glusterd/glusterd.info
+ %ghost %attr(0600,-,-) %{_sharedstatedir}/glusterd/options
+-# This is really ugly, but I have no idea how to mark these directories in
+-# any other way. They should belong to the glusterfs-server package, but
+-# don't exist after installation. They are generated on the first start...
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/stop/post
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/start/pre
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/post
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/remove-brick/pre
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/set/pre
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/post
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/create/pre
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/delete/pre
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/glustershd
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/vols
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/peers
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs
+-%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/nfs-server.vol
+-%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/nfs/run
+-%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
++%ghost %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/nfs-server.vol
++%ghost %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
+ 
+ # Extra utility script
+ %{_datadir}/glusterfs/scripts/stop-all-gluster-processes.sh
+-- 
+1.7.1
+

@@ -1,0 +1,54 @@
+From c1c20d097aae0a3cfb0f93f193de81cf76bdcd1e Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Mon, 12 Oct 2015 17:22:20 +0530
+Subject: [PATCH 15/23] tier/shd: inline warning when compiled with gcc v.5
+
+back port of>
+>Change-Id: I487a26263d6e940eed364a831e99f9b8390bc96a
+>BUG: 1226881
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12342
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Reviewed-by: Anoop C S <anoopcs@redhat.com>
+>Tested-by: Anoop C S <anoopcs@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+>(cherry picked from commit fc8df80f157c148cf60500be14c1f6a9aeed8d7b)
+
+>Change-Id: I03821a626ab08d20730ce3ea3f374178c899d369
+>BUG: 1271249
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12352
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Joseph Fernandes
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: I810a145e83a3f69d26e2079ebe0cd25c1f928965
+BUG: 1271733
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59404
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.h |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.h b/xlators/mgmt/glusterd/src/glusterd-utils.h
+index 02d2620..d20b4ec 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.h
+@@ -648,7 +648,7 @@ glusterd_import_quota_conf (dict_t *peer_data, int vol_idx,
+ gf_boolean_t
+ glusterd_is_shd_compatible_volume (glusterd_volinfo_t *volinfo);
+ 
+-inline gf_boolean_t
++gf_boolean_t
+ glusterd_is_shd_compatible_type (int type);
+ 
+ gf_boolean_t
+-- 
+1.7.1
+

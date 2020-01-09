@@ -17,7 +17,7 @@
 
 
 #include <pthread.h>
-#include "uuid.h"
+#include "compat-uuid.h"
 
 #include "glusterfs.h"
 #include "xlator.h"
@@ -70,7 +70,7 @@ typedef enum glusterd_op_sm_event_type_ {
 
 
 struct glusterd_op_sm_event_ {
-        struct list_head                list;
+        struct cds_list_head            list;
         void                            *ctx;
         glusterd_op_sm_event_type_t     event;
         uuid_t                          txn_id;
@@ -96,13 +96,14 @@ struct glusterd_op_info_ {
         int32_t                         brick_pending_count;
         int32_t                         op_count;
         glusterd_op_t                   op;
-        struct list_head                op_peers;
+        struct cds_list_head            op_peers;
         void                            *op_ctx;
         rpcsvc_request_t                *req;
         int32_t                         op_ret;
         int32_t                         op_errno;
         char                            *op_errstr;
-        struct  list_head               pending_bricks;
+        struct  cds_list_head           pending_bricks;
+        uint32_t                        txn_generation;
 };
 
 typedef struct glusterd_op_info_ glusterd_op_info_t;
@@ -163,9 +164,13 @@ typedef struct glusterd_txn_opinfo_object_ {
 } glusterd_txn_opinfo_obj;
 
 typedef enum cli_cmd_type_ {
-        PER_REPLICA,
-        ALL_REPLICA,
+        PER_HEAL_XL,
+        ALL_HEAL_XL,
  } cli_cmd_type;
+
+typedef struct glusterd_all_volume_options {
+        char          *option;
+} glusterd_all_vol_opts;
 
 int
 glusterd_op_sm_new_event (glusterd_op_sm_event_type_t event_type,
@@ -229,9 +234,6 @@ glusterd_check_option_exists(char *optstring, char **completion);
 int
 set_xlator_option (dict_t *dict, char *key, char *value);
 
-void
-glusterd_do_replace_brick (void *data);
-
 char*
 glusterd_op_sm_state_name_get (int state);
 
@@ -239,7 +241,7 @@ char*
 glusterd_op_sm_event_name_get (int event);
 int32_t
 glusterd_op_bricks_select (glusterd_op_t op, dict_t *dict, char **op_errstr,
-                           struct list_head *selected, dict_t *rsp_dict);
+                           struct cds_list_head *selected, dict_t *rsp_dict);
 int
 glusterd_brick_op_build_payload (glusterd_op_t op, glusterd_brickinfo_t *brickinfo,
                                  gd1_mgmt_brick_op_req **req, dict_t *dict);
@@ -293,4 +295,7 @@ glusterd_generate_txn_id (dict_t *dict, uuid_t **txn_id);
 
 void
 glusterd_set_opinfo (char *errstr, int32_t op_errno, int32_t op_ret);
+
+int
+glusterd_dict_set_volid (dict_t *dict, char *volname, char **op_errstr);
 #endif

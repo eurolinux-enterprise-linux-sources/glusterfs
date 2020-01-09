@@ -14,8 +14,15 @@
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
+#if !defined(__clang__)
+#if !defined(__NetBSD__)
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+#else
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #endif
 #endif
 
@@ -24,7 +31,7 @@
  * It was generated using rpcgen.
  */
 
-#include "glusterd1-xdr.h"
+#include "../../../rpc/xdr/src/glusterd1-xdr.h"
 
 bool_t
 xdr_glusterd_volume_status (XDR *xdrs, glusterd_volume_status *objp)

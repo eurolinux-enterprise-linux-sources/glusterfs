@@ -1,0 +1,68 @@
+From 98e0897940ae6f6fd371add34afe4237e1b26c40 Mon Sep 17 00:00:00 2001
+From: Niels de Vos <ndevos@redhat.com>
+Date: Thu, 18 Jun 2015 12:16:16 +0200
+Subject: [PATCH 56/67] rpm: glusterfs-devel for client-builds should not depend on -server
+
+glusterfs-devel for client-side packages should *not* include the
+libgfdb.so symlink and libgfdb.pc file or any of the libchangelog
+ones.
+
+Label: DOWNSTREAM ONLY
+
+Change-Id: Ifb4a9cf48841e5af5dd0a98b6de51e2ee469fc56
+BUG: 1227029
+Signed-off-by: Niels de Vos <ndevos@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/51019
+Reviewed-by: Balamurugan Arumugam <barumuga@redhat.com>
+Tested-by: Balamurugan Arumugam <barumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60139
+Tested-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in |   17 ++++++++++++++++-
+ 1 files changed, 16 insertions(+), 1 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 34e5401..75aea39 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1141,14 +1141,26 @@ fi
+ %exclude %{_includedir}/glusterfs/y.tab.h
+ %exclude %{_includedir}/glusterfs/api
+ %exclude %{_libdir}/libgfapi.so
++%if ( ! 0%{?_build_server} )
++%exclude %{_libdir}/libgfchangelog.so
++%endif
++%if ( 0%{!?_without_tiering:1} && ! 0%{?_build_server})
++%exclude %{_libdir}/libgfdb.so
++%endif
+ %{_libdir}/*.so
+ # Glupy Translator examples
+ %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/glupy/debug-trace.*
+ %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/glupy/helloworld.*
+ %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/glupy/negative.*
++%if ( 0%{?_build_server} )
+ %{_libdir}/pkgconfig/libgfchangelog.pc
+-%if ( 0%{!?_without_tiering:1} )
++%else
++%exclude %{_libdir}/pkgconfig/libgfchangelog.pc
++%endif
++%if ( 0%{!?_without_tiering:1} && 0%{?_build_server})
+ %{_libdir}/pkgconfig/libgfdb.pc
++%else
++%exclude %{_libdir}/pkgconfig/libgfdb.pc
+ %endif
+ 
+ %files client-xlators
+@@ -1835,6 +1847,9 @@ end
+ * Tue Aug 18 2015 Niels de Vos <ndevos@redhat.com>
+ - Include missing directories for glusterfind hooks scripts (#1225465)
+ 
++* Thu Jun 18 2015 Niels de Vos <ndevos@redhat.com>
++- glusterfs-devel for client-builds should not depend on -server (#1227029)
++
+ * Mon Jun 15 2015 Niels de Vos <ndevos@redhat.com>
+ - Replace hook script S31ganesha-set.sh by S31ganesha-start.sh (#1231738)
+ 
+-- 
+1.7.1
+

@@ -6282,7 +6282,8 @@ fi
 
 
 
-for ac_header in limits.h malloc.h unistd.h sysexits.h stdarg.h
+
+for ac_header in libintl.h limits.h malloc.h unistd.h sysexits.h stdarg.h
 do
 as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
 if { as_var=$as_ac_Header; eval "test \"\${$as_var+set}\" = set"; }; then
@@ -8114,7 +8115,7 @@ fi
 
 CPPFLAGS="$CPPFLAGS -I$srcdir"
 
-CFLAGS="$CFLAGS -std=gnu89"
+CFLAGS="$CFLAGS -std=gnu89 -static"
 
 ac_config_files="$ac_config_files Makefile"
 

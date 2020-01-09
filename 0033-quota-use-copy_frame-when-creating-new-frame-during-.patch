@@ -1,0 +1,79 @@
+From d053df37f44bc1d38947d4277dc82353d08f03a8 Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Tue, 6 Oct 2015 18:16:49 +0530
+Subject: [PATCH 33/67] quota: use copy_frame when creating new frame during quota_check_limit
+
+This is a backport of http://review.gluster.org/#/c/12265/
+
+DHT re-balance, sets frame root PID < 0 and quota_check_limit skips
+enforcement if this PID is less than 0.
+
+When creating new frame for quota_check_limit we need to use
+copy_frame instead of create_frame, so that all auth information
+are copied from original frame.
+
+> Change-Id: Ib3b4a3744f8b0d72a8bc32826f6edae836d6faed
+> BUG: 1267812
+> Signed-off-by: vmallika <vmallika@redhat.com>
+
+> Change-Id: Ieeaf23b10120a1e426ab1440a20e7f8dd8794ac0
+> BUG: 1265623
+> Signed-off-by: vmallika <vmallika@redhat.com>
+> Reviewed-on: http://review.gluster.org/12266
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+
+BUG: 1266878
+Change-Id: I4d3dcaad53a19118bf5f824c42588b4ea1ba15ef
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59454
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ tests/bugs/quota/bug-1260545.t     |    3 ++-
+ xlators/features/quota/src/quota.c |    3 +--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/tests/bugs/quota/bug-1260545.t b/tests/bugs/quota/bug-1260545.t
+index 7cd137d..b3e9eb4 100644
+--- a/tests/bugs/quota/bug-1260545.t
++++ b/tests/bugs/quota/bug-1260545.t
+@@ -20,11 +20,12 @@ TEST $CLI volume quota $V0 enable;
+ 
+ TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 $M0;
+ 
+-TEST $CLI volume quota $V0 limit-usage / 15MB
++TEST $CLI volume quota $V0 limit-usage / 10MB
+ TEST $CLI volume quota $V0 hard-timeout 0
+ TEST $CLI volume quota $V0 soft-timeout 0
+ 
+ TEST $QDD $M0/f1 256 40
++TEST ! $QDD $M0/f2 256 40
+ 
+ EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT "10.0MB" quotausage "/"
+ 
+diff --git a/xlators/features/quota/src/quota.c b/xlators/features/quota/src/quota.c
+index bd022ea..3b803a0 100644
+--- a/xlators/features/quota/src/quota.c
++++ b/xlators/features/quota/src/quota.c
+@@ -1373,7 +1373,7 @@ do_quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
+         if (parent == NULL)
+                 goto out;
+ 
+-        new_frame = create_frame (this, this->ctx->pool);
++        new_frame = copy_frame (frame);
+         if (new_frame == NULL)
+                 goto out;
+ 
+@@ -1381,7 +1381,6 @@ do_quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
+         if (new_local == NULL)
+                 goto out;
+ 
+-        new_frame->root->uid = new_frame->root->gid = 0;
+         new_frame->local = new_local;
+         new_local->par_frame = frame;
+ 
+-- 
+1.7.1
+

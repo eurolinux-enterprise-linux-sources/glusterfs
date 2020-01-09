@@ -14,8 +14,15 @@
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
+#if !defined(__clang__)
+#if !defined(__NetBSD__)
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+#else
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #endif
 #endif
 
@@ -24,7 +31,7 @@
  * It was generated using rpcgen.
  */
 
-#include "cli1-xdr.h"
+#include "../../../rpc/xdr/src/cli1-xdr.h"
 
 bool_t
 xdr_gf_cli_defrag_type (XDR *xdrs, gf_cli_defrag_type *objp)
@@ -57,7 +64,7 @@ xdr_gf1_cluster_type (XDR *xdrs, gf1_cluster_type *objp)
 }
 
 bool_t
-xdr_gf1_cli_replace_op (XDR *xdrs, gf1_cli_replace_op *objp)
+xdr_gf_bitrot_type (XDR *xdrs, gf_bitrot_type *objp)
 {
 	register int32_t *buf;
 
@@ -208,6 +215,16 @@ xdr_gf1_cli_snapshot_config (XDR *xdrs, gf1_cli_snapshot_config *objp)
 
 bool_t
 xdr_gf1_cli_snapshot_status (XDR *xdrs, gf1_cli_snapshot_status *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_enum (xdrs, (enum_t *) objp))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gf1_cli_snapshot_delete (XDR *xdrs, gf1_cli_snapshot_delete *objp)
 {
 	register int32_t *buf;
 

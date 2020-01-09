@@ -1,0 +1,92 @@
+From 4b6c10c0e191f5893bf85fafb5a9d4967743c199 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Tue, 29 Dec 2015 12:42:30 +0530
+Subject: [PATCH 222/224] tier/glusterd: tier daemon not updating the status
+
+Back port of http://review.gluster.org/#/c/13107/
+
+Tier process is not updating the status when the process killed
+mnually.
+
+>Change-Id: Ia5ea903af78ff3582da2242e6058f11c71923fab
+>BUG: 1294600
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+
+Change-Id: Iba5d9a0f372767363978d9959c27e27246226571
+BUG: 1294594
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64666
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-rebalance.c |    3 +-
+ xlators/mgmt/glusterd/src/glusterd-utils.c     |   32 ++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rebalance.c b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+index 4181b0a..ffd8c48 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rebalance.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+@@ -140,8 +140,7 @@ __glusterd_defrag_notify (struct rpc_clnt *rpc, void *mydata,
+                 UNLOCK (&defrag->lock);
+ 
+                 if (!gf_is_service_running (pidfile, NULL)) {
+-                        if (volinfo->type != GF_CLUSTER_TYPE_TIER &&
+-                            volinfo->rebal.defrag_status ==
++                        if (volinfo->rebal.defrag_status ==
+                                                 GF_DEFRAG_STATUS_STARTED) {
+                                 volinfo->rebal.defrag_status =
+                                                    GF_DEFRAG_STATUS_FAILED;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 9dd0ddd..bd95f49 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -6960,6 +6960,31 @@ glusterd_get_trusted_client_filepath (char *filepath,
+         return ret;
+ }
+ 
++void glusterd_update_tier_status (glusterd_volinfo_t *volinfo) {
++
++        glusterd_rebalance_t    *rebal       = NULL;
++
++        rebal = &volinfo->rebal;
++
++        if (volinfo->type != GF_CLUSTER_TYPE_TIER)
++                return;
++
++        /*
++         * If tier process status is stopped or failed, then
++         * manually changing the status.
++         */
++
++        switch (rebal->defrag_status) {
++        case GF_DEFRAG_STATUS_FAILED:
++        case GF_DEFRAG_STATUS_STOPPED:
++                rebal->defrag_status = GF_DEFRAG_STATUS_STARTED;
++                break;
++        default:
++                break;
++        }
++        return;
++}
++
+ int
+ glusterd_volume_defrag_restart (glusterd_volinfo_t *volinfo, char *op_errstr,
+                               size_t len, int cmd, defrag_cbk_fn_t cbk)
+@@ -6982,6 +7007,13 @@ glusterd_volume_defrag_restart (glusterd_volinfo_t *volinfo, char *op_errstr,
+          * there is an existing process already and connect to it. If not, then
+          * start the rebalance process
+          */
++
++        /*
++         * Changing the status of tier process to start the daemon
++         * forcefully.
++         */
++        glusterd_update_tier_status (volinfo);
++
+         switch (volinfo->rebal.defrag_status) {
+         case GF_DEFRAG_STATUS_COMPLETE:
+         case GF_DEFRAG_STATUS_STOPPED:
+-- 
+1.7.1
+

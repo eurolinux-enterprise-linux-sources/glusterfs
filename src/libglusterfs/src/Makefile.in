@@ -16,6 +16,7 @@
 @SET_MAKE@
 
 
+
 VPATH = @srcdir@
 pkgdatadir = $(datadir)/@PACKAGE@
 pkgincludedir = $(includedir)/@PACKAGE@
@@ -35,9 +36,21 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
+
+# FIXME: unbundle libuuid, see compat-uuid.h.
+@HAVE_LIBUUID_FALSE@am__append_1 = $(CONTRIBDIR)/uuid/clear.c \
+@HAVE_LIBUUID_FALSE@	$(CONTRIBDIR)/uuid/copy.c $(CONTRIBDIR)/uuid/gen_uuid.c \
+@HAVE_LIBUUID_FALSE@	$(CONTRIBDIR)/uuid/pack.c $(CONTRIBDIR)/uuid/parse.c \
+@HAVE_LIBUUID_FALSE@	$(CONTRIBDIR)/uuid/unparse.c $(CONTRIBDIR)/uuid/uuid_time.c \
+@HAVE_LIBUUID_FALSE@	$(CONTRIBDIR)/uuid/compare.c $(CONTRIBDIR)/uuid/isnull.c \
+@HAVE_LIBUUID_FALSE@	$(CONTRIBDIR)/uuid/unpack.c
+
+@UNITTEST_TRUE@am__append_2 = *.gcda *.gcno *_xunit.xml
+noinst_PROGRAMS =
+TESTS =
 subdir = libglusterfs/src
-DIST_COMMON = $(noinst_HEADERS) $(srcdir)/Makefile.am \
-	$(srcdir)/Makefile.in
+DIST_COMMON = $(libgfchangelog_HEADERS) $(noinst_HEADERS) \
+	$(srcdir)/Makefile.am $(srcdir)/Makefile.in
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/contrib/aclocal/mkdirp.m4 \
 	$(top_srcdir)/contrib/aclocal/python.m4 \
@@ -46,6 +59,7 @@ am__configure_deps = $(am__aclocal_m4_deps) $(CONFIGURE_DEPENDENCIES) \
 	$(ACLOCAL_M4)
 mkinstalldirs = $(install_sh) -d
 CONFIG_HEADER = $(top_builddir)/config.h
+CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
 am__vpath_adj = case $$p in \
@@ -68,9 +82,42 @@ am__nobase_list = $(am__nobase_strip_setup); \
 am__base_list = \
   sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
   sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
-am__installdirs = "$(DESTDIR)$(libdir)"
+am__installdirs = "$(DESTDIR)$(libdir)" \
+	"$(DESTDIR)$(libgfchangelogdir)"
 LTLIBRARIES = $(lib_LTLIBRARIES)
-libglusterfs_la_DEPENDENCIES =
+am__DEPENDENCIES_1 =
+libglusterfs_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
+am__libglusterfs_la_SOURCES_DIST = dict.c xlator.c logging.c hashfn.c \
+	defaults.c common-utils.c timer.c inode.c call-stub.c compat.c \
+	fd.c compat-errno.c event.c mem-pool.c gf-dirent.c syscall.c \
+	iobuf.c globals.c statedump.c stack.c checksum.c daemon.c \
+	timespec.c $(CONTRIBDIR)/rbtree/rb.c rbthash.c store.c \
+	latency.c graph.c syncop.c graph-print.c trie.c run.c \
+	options.c fd-lk.c circ-buff.c event-history.c gidcache.c ctx.c \
+	client_t.c event-poll.c event-epoll.c syncop-utils.c \
+	cluster-syncop.c refcount.c $(CONTRIBDIR)/libgen/basename_r.c \
+	$(CONTRIBDIR)/libgen/dirname_r.c \
+	$(CONTRIBDIR)/stdlib/gf_mkostemp.c strfd.c parse-utils.c \
+	$(CONTRIBDIR)/mount/mntent.c \
+	$(CONTRIBDIR)/libexecinfo/execinfo.c quota-common-utils.c \
+	rot-buffs.c $(CONTRIBDIR)/timer-wheel/timer-wheel.c \
+	$(CONTRIBDIR)/timer-wheel/find_last_bit.c tw.c \
+	$(CONTRIBDIR)/uuid/clear.c $(CONTRIBDIR)/uuid/copy.c \
+	$(CONTRIBDIR)/uuid/gen_uuid.c $(CONTRIBDIR)/uuid/pack.c \
+	$(CONTRIBDIR)/uuid/parse.c $(CONTRIBDIR)/uuid/unparse.c \
+	$(CONTRIBDIR)/uuid/uuid_time.c $(CONTRIBDIR)/uuid/compare.c \
+	$(CONTRIBDIR)/uuid/isnull.c $(CONTRIBDIR)/uuid/unpack.c
+@HAVE_LIBUUID_FALSE@am__objects_1 = libglusterfs_la-clear.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-copy.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-gen_uuid.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-pack.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-parse.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-unparse.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-uuid_time.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-compare.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-isnull.lo \
+@HAVE_LIBUUID_FALSE@	libglusterfs_la-unpack.lo
 am_libglusterfs_la_OBJECTS = libglusterfs_la-dict.lo \
 	libglusterfs_la-xlator.lo libglusterfs_la-logging.lo \
 	libglusterfs_la-hashfn.lo libglusterfs_la-defaults.lo \
@@ -85,21 +132,23 @@ am_libglusterfs_la_OBJECTS = libglusterfs_la-dict.lo \
 	libglusterfs_la-daemon.lo libglusterfs_la-timespec.lo \
 	libglusterfs_la-rb.lo libglusterfs_la-rbthash.lo \
 	libglusterfs_la-store.lo libglusterfs_la-latency.lo \
-	libglusterfs_la-graph.lo libglusterfs_la-clear.lo \
-	libglusterfs_la-copy.lo libglusterfs_la-gen_uuid.lo \
-	libglusterfs_la-pack.lo libglusterfs_la-parse.lo \
-	libglusterfs_la-unparse.lo libglusterfs_la-uuid_time.lo \
-	libglusterfs_la-compare.lo libglusterfs_la-isnull.lo \
-	libglusterfs_la-unpack.lo libglusterfs_la-syncop.lo \
+	libglusterfs_la-graph.lo libglusterfs_la-syncop.lo \
 	libglusterfs_la-graph-print.lo libglusterfs_la-trie.lo \
 	libglusterfs_la-run.lo libglusterfs_la-options.lo \
 	libglusterfs_la-fd-lk.lo libglusterfs_la-circ-buff.lo \
 	libglusterfs_la-event-history.lo libglusterfs_la-gidcache.lo \
 	libglusterfs_la-ctx.lo libglusterfs_la-client_t.lo \
 	libglusterfs_la-event-poll.lo libglusterfs_la-event-epoll.lo \
+	libglusterfs_la-syncop-utils.lo \
+	libglusterfs_la-cluster-syncop.lo libglusterfs_la-refcount.lo \
 	libglusterfs_la-basename_r.lo libglusterfs_la-dirname_r.lo \
 	libglusterfs_la-gf_mkostemp.lo libglusterfs_la-strfd.lo \
-	libglusterfs_la-mntent.lo
+	libglusterfs_la-parse-utils.lo libglusterfs_la-mntent.lo \
+	libglusterfs_la-execinfo.lo \
+	libglusterfs_la-quota-common-utils.lo \
+	libglusterfs_la-rot-buffs.lo libglusterfs_la-timer-wheel.lo \
+	libglusterfs_la-find_last_bit.lo libglusterfs_la-tw.lo \
+	$(am__objects_1)
 nodist_libglusterfs_la_OBJECTS = libglusterfs_la-y.tab.lo \
 	libglusterfs_la-graph.lex.lo
 libglusterfs_la_OBJECTS = $(am_libglusterfs_la_OBJECTS) \
@@ -109,8 +158,9 @@ am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
 am__v_lt_0 = --silent
 libglusterfs_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC \
 	$(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=link $(CCLD) \
-	$(libglusterfs_la_CFLAGS) $(CFLAGS) $(AM_LDFLAGS) $(LDFLAGS) \
-	-o $@
+	$(libglusterfs_la_CFLAGS) $(CFLAGS) $(libglusterfs_la_LDFLAGS) \
+	$(LDFLAGS) -o $@
+PROGRAMS = $(noinst_PROGRAMS)
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__depfiles_maybe = depfiles
@@ -138,12 +188,15 @@ AM_V_GEN = $(am__v_GEN_$(V))
 am__v_GEN_ = $(am__v_GEN_$(AM_DEFAULT_VERBOSITY))
 am__v_GEN_0 = @echo "  GEN   " $@;
 SOURCES = $(libglusterfs_la_SOURCES) $(nodist_libglusterfs_la_SOURCES)
-DIST_SOURCES = $(libglusterfs_la_SOURCES)
-HEADERS = $(noinst_HEADERS)
+DIST_SOURCES = $(am__libglusterfs_la_SOURCES_DIST)
+HEADERS = $(libgfchangelog_HEADERS) $(noinst_HEADERS)
 ETAGS = etags
 CTAGS = ctags
+am__tty_colors = \
+red=; grn=; lgn=; blu=; std=
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 ACLOCAL = @ACLOCAL@
+ACL_LIBS = @ACL_LIBS@
 AMTAR = @AMTAR@
 AM_DEFAULT_VERBOSITY = @AM_DEFAULT_VERBOSITY@
 AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
@@ -158,6 +211,7 @@ AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
 BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
 BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
+BUILD_PYTHON_SITE_PACKAGES = @BUILD_PYTHON_SITE_PACKAGES@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -178,12 +232,16 @@ EXEEXT = @EXEEXT@
 FGREP = @FGREP@
 FUSERMOUNT_SUBDIR = @FUSERMOUNT_SUBDIR@
 FUSE_CLIENT_SUBDIR = @FUSE_CLIENT_SUBDIR@
+GEOREP_EXTRAS_SUBDIR = @GEOREP_EXTRAS_SUBDIR@
+GFAPI_EXTRA_LDFLAGS = @GFAPI_EXTRA_LDFLAGS@
+GFAPI_LIBS = @GFAPI_LIBS@
+GFAPI_LT_VERSION = @GFAPI_LT_VERSION@
+GFAPI_VERSION = @GFAPI_VERSION@
 GF_CFLAGS = @GF_CFLAGS@
 GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
@@ -192,6 +250,10 @@ GLIB_LIBS = @GLIB_LIBS@
 GLUPY_SUBDIR = @GLUPY_SUBDIR@
 GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
 GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
+GLUSTERD_VOLFILE = @GLUSTERD_VOLFILE@
+GLUSTERD_WORKDIR = @GLUSTERD_WORKDIR@
+GLUSTERFSD_MISCDIR = @GLUSTERFSD_MISCDIR@
+GLUSTERFS_LIBEXECDIR = @GLUSTERFS_LIBEXECDIR@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -210,15 +272,20 @@ LEX = @LEX@
 LEXLIB = @LEXLIB@
 LEX_OUTPUT_ROOT = @LEX_OUTPUT_ROOT@
 LIBAIO = @LIBAIO@
+LIBGFCHANGELOG_LT_VERSION = @LIBGFCHANGELOG_LT_VERSION@
+LIBGFCHANGELOG_VERSION = @LIBGFCHANGELOG_VERSION@
+LIBGFDB_VERSION = @LIBGFDB_VERSION@
+LIBGFRPC_LT_VERSION = @LIBGFRPC_LT_VERSION@
+LIBGFXDR_LT_VERSION = @LIBGFXDR_LT_VERSION@
+LIBGLUSTERFS_LT_VERSION = @LIBGLUSTERFS_LT_VERSION@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
-LIBZ_CFLAGS = @LIBZ_CFLAGS@
-LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+MATH_LIB = @MATH_LIB@
 MKDIR_P = @MKDIR_P@
 NM = @NM@
 NMEDIT = @NMEDIT@
@@ -235,12 +302,15 @@ PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKGCONFIG_UUID = @PKGCONFIG_UUID@
 PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
 PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
 PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
 PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
+PYTHON_CFLAGS = @PYTHON_CFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
+PYTHON_LIBS = @PYTHON_LIBS@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
 PYTHON_VERSION = @PYTHON_VERSION@
@@ -255,9 +325,22 @@ SIZEOF_INT = @SIZEOF_INT@
 SIZEOF_LONG = @SIZEOF_LONG@
 SIZEOF_LONG_LONG = @SIZEOF_LONG_LONG@
 SIZEOF_SHORT = @SIZEOF_SHORT@
+SQLITE_CFLAGS = @SQLITE_CFLAGS@
+SQLITE_LIBS = @SQLITE_LIBS@
 STRIP = @STRIP@
 SYNCDAEMON_COMPILE = @SYNCDAEMON_COMPILE@
 SYNCDAEMON_SUBDIR = @SYNCDAEMON_SUBDIR@
+UMOUNTD_SUBDIR = @UMOUNTD_SUBDIR@
+UNITTEST_CFLAGS = @UNITTEST_CFLAGS@
+UNITTEST_LDFLAGS = @UNITTEST_LDFLAGS@
+UNITTEST_LIBS = @UNITTEST_LIBS@
+URCU_CDS_CFLAGS = @URCU_CDS_CFLAGS@
+URCU_CDS_LIBS = @URCU_CDS_LIBS@
+URCU_CFLAGS = @URCU_CFLAGS@
+URCU_LIBS = @URCU_LIBS@
+USE_POSIX_ACLS = @USE_POSIX_ACLS@
+UUID_CFLAGS = @UUID_CFLAGS@
+UUID_LIBS = @UUID_LIBS@
 VERSION = @VERSION@
 XML2_CONFIG = @XML2_CONFIG@
 XML_CPPFLAGS = @XML_CPPFLAGS@
@@ -320,59 +403,67 @@ pyexecdir = @pyexecdir@
 pythondir = @pythondir@
 sbindir = @sbindir@
 sharedstatedir = @sharedstatedir@
+shrext_cmds = @shrext_cmds@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
 systemddir = @systemddir@
 target_alias = @target_alias@
+tmpfilesdir = @tmpfilesdir@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-libglusterfs_la_CFLAGS = -Wall $(GF_CFLAGS) \
-	$(GF_DARWIN_LIBGLUSTERFS_CFLAGS)    \
-        -DDATADIR=\"$(localstatedir)\"
+libglusterfs_la_CFLAGS = $(GF_CFLAGS) $(GF_DARWIN_LIBGLUSTERFS_CFLAGS) \
+	-DDATADIR=\"$(localstatedir)\"
 
 libglusterfs_la_CPPFLAGS = $(GF_CPPFLAGS) -D__USE_FILE_OFFSET64 \
 	-DXLATORDIR=\"$(libdir)/glusterfs/$(PACKAGE_VERSION)/xlator\" \
-	-I$(top_srcdir)/rpc/rpc-lib/src/ -I$(CONTRIBDIR)/rbtree
+	-I$(top_srcdir)/rpc/rpc-lib/src/ -I$(CONTRIBDIR)/rbtree \
+	-I$(CONTRIBDIR)/libexecinfo ${ARGP_STANDALONE_CPPFLAGS} \
+	-DSBIN_DIR=\"$(sbindir)\" -I$(CONTRIBDIR)/timer-wheel
 
-libglusterfs_la_LIBADD = @LEXLIB@
+libglusterfs_la_LIBADD = @LEXLIB@ $(ZLIB_LIBS) $(MATH_LIB) $(UUID_LIBS)
+libglusterfs_la_LDFLAGS = -version-info $(LIBGLUSTERFS_LT_VERSION)
 lib_LTLIBRARIES = libglusterfs.la
+libgfchangelogdir = $(includedir)/glusterfs/gfchangelog
 CONTRIB_BUILDDIR = $(top_builddir)/contrib
-libglusterfs_la_SOURCES = dict.c xlator.c logging.c \
-	hashfn.c defaults.c common-utils.c timer.c inode.c call-stub.c \
-	compat.c fd.c compat-errno.c event.c mem-pool.c gf-dirent.c syscall.c \
-	iobuf.c globals.c statedump.c stack.c checksum.c daemon.c timespec.c \
-	$(CONTRIBDIR)/rbtree/rb.c rbthash.c store.c latency.c \
-	graph.c $(CONTRIBDIR)/uuid/clear.c $(CONTRIBDIR)/uuid/copy.c \
-	$(CONTRIBDIR)/uuid/gen_uuid.c $(CONTRIBDIR)/uuid/pack.c \
-	$(CONTRIBDIR)/uuid/parse.c $(CONTRIBDIR)/uuid/unparse.c \
-	$(CONTRIBDIR)/uuid/uuid_time.c $(CONTRIBDIR)/uuid/compare.c \
-	$(CONTRIBDIR)/uuid/isnull.c $(CONTRIBDIR)/uuid/unpack.c syncop.c \
-	graph-print.c trie.c run.c options.c fd-lk.c circ-buff.c \
-	event-history.c gidcache.c ctx.c client_t.c event-poll.c event-epoll.c \
-	$(CONTRIBDIR)/libgen/basename_r.c $(CONTRIBDIR)/libgen/dirname_r.c \
-	$(CONTRIBDIR)/stdlib/gf_mkostemp.c strfd.c \
-	$(CONTRIBDIR)/mount/mntent.c
-
-nodist_libglusterfs_la_SOURCES = y.tab.c graph.lex.c gf-error-codes.h
+libglusterfs_la_SOURCES = dict.c xlator.c logging.c hashfn.c \
+	defaults.c common-utils.c timer.c inode.c call-stub.c compat.c \
+	fd.c compat-errno.c event.c mem-pool.c gf-dirent.c syscall.c \
+	iobuf.c globals.c statedump.c stack.c checksum.c daemon.c \
+	timespec.c $(CONTRIBDIR)/rbtree/rb.c rbthash.c store.c \
+	latency.c graph.c syncop.c graph-print.c trie.c run.c \
+	options.c fd-lk.c circ-buff.c event-history.c gidcache.c ctx.c \
+	client_t.c event-poll.c event-epoll.c syncop-utils.c \
+	cluster-syncop.c refcount.c $(CONTRIBDIR)/libgen/basename_r.c \
+	$(CONTRIBDIR)/libgen/dirname_r.c \
+	$(CONTRIBDIR)/stdlib/gf_mkostemp.c strfd.c parse-utils.c \
+	$(CONTRIBDIR)/mount/mntent.c \
+	$(CONTRIBDIR)/libexecinfo/execinfo.c quota-common-utils.c \
+	rot-buffs.c $(CONTRIBDIR)/timer-wheel/timer-wheel.c \
+	$(CONTRIBDIR)/timer-wheel/find_last_bit.c tw.c $(am__append_1)
+nodist_libglusterfs_la_SOURCES = y.tab.c graph.lex.c
 BUILT_SOURCES = graph.lex.c
 noinst_HEADERS = common-utils.h defaults.h dict.h glusterfs.h hashfn.h timespec.h \
 	logging.h xlator.h stack.h timer.h list.h inode.h call-stub.h compat.h \
 	fd.h revision.h compat-errno.h event.h mem-pool.h byte-order.h \
 	gf-dirent.h locking.h syscall.h iobuf.h globals.h statedump.h \
 	checksum.h daemon.h $(CONTRIBDIR)/rbtree/rb.h store.h\
-	rbthash.h iatt.h latency.h mem-types.h $(CONTRIBDIR)/uuid/uuidd.h \
-	$(CONTRIBDIR)/uuid/uuid.h $(CONTRIBDIR)/uuid/uuidP.h \
-	$(CONTRIB_BUILDDIR)/uuid/uuid_types.h syncop.h graph-utils.h trie.h \
+	rbthash.h iatt.h latency.h mem-types.h syncop.h cluster-syncop.h \
+	graph-utils.h trie.h refcount.h \
 	run.h options.h lkowner.h fd-lk.h circ-buff.h event-history.h \
 	gidcache.h client_t.h glusterfs-acl.h glfs-message-id.h \
-	template-component-messages.h strfd.h \
-	$(CONTRIBDIR)/mount/mntent_compat.h lvm-defaults.h
+	template-component-messages.h strfd.h syncop-utils.h parse-utils.h \
+	ctr-messages.h libglusterfs-messages.h \
+	$(CONTRIBDIR)/mount/mntent_compat.h lvm-defaults.h \
+	$(CONTRIBDIR)/libexecinfo/execinfo_compat.h \
+	unittest/unittest.h quota-common-utils.h rot-buffs.h \
+	$(CONTRIBDIR)/timer-wheel/timer-wheel.h compat-uuid.h \
+	upcall-utils.h tw.h
 
+libgfchangelog_HEADERS = changelog.h
 EXTRA_DIST = graph.l graph.y
-CLEANFILES = graph.lex.c y.tab.c y.tab.h
-CONFIG_CLEAN_FILES = $(CONTRIB_BUILDDIR)/uuid/uuid_types.h
+CLEANFILES = graph.lex.c y.tab.c y.tab.h $(am__append_2)
 all: $(BUILT_SOURCES)
 	$(MAKE) $(AM_MAKEFLAGS) all-am
 
@@ -442,6 +533,15 @@ clean-libLTLIBRARIES:
 libglusterfs.la: $(libglusterfs_la_OBJECTS) $(libglusterfs_la_DEPENDENCIES) 
 	$(AM_V_CCLD)$(libglusterfs_la_LINK) -rpath $(libdir) $(libglusterfs_la_OBJECTS) $(libglusterfs_la_LIBADD) $(LIBS)
 
+clean-noinstPROGRAMS:
+	@list='$(noinst_PROGRAMS)'; test -n "$$list" || exit 0; \
+	echo " rm -f" $$list; \
+	rm -f $$list || exit $$?; \
+	test -n "$(EXEEXT)" || exit 0; \
+	list=`for p in $$list; do echo "$$p"; done | sed 's/$(EXEEXT)$$//'`; \
+	echo " rm -f" $$list; \
+	rm -f $$list
+
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
 
@@ -454,6 +554,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-circ-buff.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-clear.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-client_t.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-cluster-syncop.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-common-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-compare.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-compat-errno.Plo@am__quote@
@@ -468,8 +569,10 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-event-history.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-event-poll.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-event.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-execinfo.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-fd-lk.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-fd.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-find_last_bit.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-gen_uuid.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-gf-dirent.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-gf_mkostemp.Plo@am__quote@
@@ -488,19 +591,26 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-mntent.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-options.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-pack.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-parse-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-parse.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-quota-common-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-rb.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-rbthash.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-refcount.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-rot-buffs.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-run.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-stack.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-statedump.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-store.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-strfd.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-syncop-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-syncop.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-syscall.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-timer-wheel.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-timer.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-timespec.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-trie.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-tw.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-unpack.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-unparse.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-uuid_time.Plo@am__quote@
@@ -755,86 +865,6 @@ libglusterfs_la-graph.lo: graph.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-graph.lo `test -f 'graph.c' || echo '$(srcdir)/'`graph.c
 
-libglusterfs_la-clear.lo: $(CONTRIBDIR)/uuid/clear.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-clear.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-clear.Tpo -c -o libglusterfs_la-clear.lo `test -f '$(CONTRIBDIR)/uuid/clear.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/clear.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-clear.Tpo $(DEPDIR)/libglusterfs_la-clear.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/clear.c' object='libglusterfs_la-clear.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-clear.lo `test -f '$(CONTRIBDIR)/uuid/clear.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/clear.c
-
-libglusterfs_la-copy.lo: $(CONTRIBDIR)/uuid/copy.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-copy.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-copy.Tpo -c -o libglusterfs_la-copy.lo `test -f '$(CONTRIBDIR)/uuid/copy.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/copy.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-copy.Tpo $(DEPDIR)/libglusterfs_la-copy.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/copy.c' object='libglusterfs_la-copy.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-copy.lo `test -f '$(CONTRIBDIR)/uuid/copy.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/copy.c
-
-libglusterfs_la-gen_uuid.lo: $(CONTRIBDIR)/uuid/gen_uuid.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-gen_uuid.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-gen_uuid.Tpo -c -o libglusterfs_la-gen_uuid.lo `test -f '$(CONTRIBDIR)/uuid/gen_uuid.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/gen_uuid.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-gen_uuid.Tpo $(DEPDIR)/libglusterfs_la-gen_uuid.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/gen_uuid.c' object='libglusterfs_la-gen_uuid.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-gen_uuid.lo `test -f '$(CONTRIBDIR)/uuid/gen_uuid.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/gen_uuid.c
-
-libglusterfs_la-pack.lo: $(CONTRIBDIR)/uuid/pack.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-pack.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-pack.Tpo -c -o libglusterfs_la-pack.lo `test -f '$(CONTRIBDIR)/uuid/pack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/pack.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-pack.Tpo $(DEPDIR)/libglusterfs_la-pack.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/pack.c' object='libglusterfs_la-pack.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-pack.lo `test -f '$(CONTRIBDIR)/uuid/pack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/pack.c
-
-libglusterfs_la-parse.lo: $(CONTRIBDIR)/uuid/parse.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-parse.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-parse.Tpo -c -o libglusterfs_la-parse.lo `test -f '$(CONTRIBDIR)/uuid/parse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/parse.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-parse.Tpo $(DEPDIR)/libglusterfs_la-parse.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/parse.c' object='libglusterfs_la-parse.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-parse.lo `test -f '$(CONTRIBDIR)/uuid/parse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/parse.c
-
-libglusterfs_la-unparse.lo: $(CONTRIBDIR)/uuid/unparse.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-unparse.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-unparse.Tpo -c -o libglusterfs_la-unparse.lo `test -f '$(CONTRIBDIR)/uuid/unparse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unparse.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-unparse.Tpo $(DEPDIR)/libglusterfs_la-unparse.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/unparse.c' object='libglusterfs_la-unparse.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-unparse.lo `test -f '$(CONTRIBDIR)/uuid/unparse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unparse.c
-
-libglusterfs_la-uuid_time.lo: $(CONTRIBDIR)/uuid/uuid_time.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-uuid_time.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-uuid_time.Tpo -c -o libglusterfs_la-uuid_time.lo `test -f '$(CONTRIBDIR)/uuid/uuid_time.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/uuid_time.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-uuid_time.Tpo $(DEPDIR)/libglusterfs_la-uuid_time.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/uuid_time.c' object='libglusterfs_la-uuid_time.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-uuid_time.lo `test -f '$(CONTRIBDIR)/uuid/uuid_time.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/uuid_time.c
-
-libglusterfs_la-compare.lo: $(CONTRIBDIR)/uuid/compare.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-compare.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-compare.Tpo -c -o libglusterfs_la-compare.lo `test -f '$(CONTRIBDIR)/uuid/compare.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/compare.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-compare.Tpo $(DEPDIR)/libglusterfs_la-compare.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/compare.c' object='libglusterfs_la-compare.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-compare.lo `test -f '$(CONTRIBDIR)/uuid/compare.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/compare.c
-
-libglusterfs_la-isnull.lo: $(CONTRIBDIR)/uuid/isnull.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-isnull.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-isnull.Tpo -c -o libglusterfs_la-isnull.lo `test -f '$(CONTRIBDIR)/uuid/isnull.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/isnull.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-isnull.Tpo $(DEPDIR)/libglusterfs_la-isnull.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/isnull.c' object='libglusterfs_la-isnull.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-isnull.lo `test -f '$(CONTRIBDIR)/uuid/isnull.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/isnull.c
-
-libglusterfs_la-unpack.lo: $(CONTRIBDIR)/uuid/unpack.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-unpack.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-unpack.Tpo -c -o libglusterfs_la-unpack.lo `test -f '$(CONTRIBDIR)/uuid/unpack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unpack.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-unpack.Tpo $(DEPDIR)/libglusterfs_la-unpack.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/unpack.c' object='libglusterfs_la-unpack.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-unpack.lo `test -f '$(CONTRIBDIR)/uuid/unpack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unpack.c
-
 libglusterfs_la-syncop.lo: syncop.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-syncop.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-syncop.Tpo -c -o libglusterfs_la-syncop.lo `test -f 'syncop.c' || echo '$(srcdir)/'`syncop.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-syncop.Tpo $(DEPDIR)/libglusterfs_la-syncop.Plo
@@ -939,6 +969,30 @@ libglusterfs_la-event-epoll.lo: event-epoll.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-event-epoll.lo `test -f 'event-epoll.c' || echo '$(srcdir)/'`event-epoll.c
 
+libglusterfs_la-syncop-utils.lo: syncop-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-syncop-utils.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-syncop-utils.Tpo -c -o libglusterfs_la-syncop-utils.lo `test -f 'syncop-utils.c' || echo '$(srcdir)/'`syncop-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-syncop-utils.Tpo $(DEPDIR)/libglusterfs_la-syncop-utils.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='syncop-utils.c' object='libglusterfs_la-syncop-utils.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-syncop-utils.lo `test -f 'syncop-utils.c' || echo '$(srcdir)/'`syncop-utils.c
+
+libglusterfs_la-cluster-syncop.lo: cluster-syncop.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-cluster-syncop.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-cluster-syncop.Tpo -c -o libglusterfs_la-cluster-syncop.lo `test -f 'cluster-syncop.c' || echo '$(srcdir)/'`cluster-syncop.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-cluster-syncop.Tpo $(DEPDIR)/libglusterfs_la-cluster-syncop.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='cluster-syncop.c' object='libglusterfs_la-cluster-syncop.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-cluster-syncop.lo `test -f 'cluster-syncop.c' || echo '$(srcdir)/'`cluster-syncop.c
+
+libglusterfs_la-refcount.lo: refcount.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-refcount.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-refcount.Tpo -c -o libglusterfs_la-refcount.lo `test -f 'refcount.c' || echo '$(srcdir)/'`refcount.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-refcount.Tpo $(DEPDIR)/libglusterfs_la-refcount.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='refcount.c' object='libglusterfs_la-refcount.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-refcount.lo `test -f 'refcount.c' || echo '$(srcdir)/'`refcount.c
+
 libglusterfs_la-basename_r.lo: $(CONTRIBDIR)/libgen/basename_r.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-basename_r.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-basename_r.Tpo -c -o libglusterfs_la-basename_r.lo `test -f '$(CONTRIBDIR)/libgen/basename_r.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/libgen/basename_r.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-basename_r.Tpo $(DEPDIR)/libglusterfs_la-basename_r.Plo
@@ -971,6 +1025,14 @@ libglusterfs_la-strfd.lo: strfd.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-strfd.lo `test -f 'strfd.c' || echo '$(srcdir)/'`strfd.c
 
+libglusterfs_la-parse-utils.lo: parse-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-parse-utils.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-parse-utils.Tpo -c -o libglusterfs_la-parse-utils.lo `test -f 'parse-utils.c' || echo '$(srcdir)/'`parse-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-parse-utils.Tpo $(DEPDIR)/libglusterfs_la-parse-utils.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='parse-utils.c' object='libglusterfs_la-parse-utils.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-parse-utils.lo `test -f 'parse-utils.c' || echo '$(srcdir)/'`parse-utils.c
+
 libglusterfs_la-mntent.lo: $(CONTRIBDIR)/mount/mntent.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-mntent.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-mntent.Tpo -c -o libglusterfs_la-mntent.lo `test -f '$(CONTRIBDIR)/mount/mntent.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/mount/mntent.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-mntent.Tpo $(DEPDIR)/libglusterfs_la-mntent.Plo
@@ -978,6 +1040,134 @@ libglusterfs_la-mntent.lo: $(CONTRIBDIR)/mount/mntent.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/mount/mntent.c' object='libglusterfs_la-mntent.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-mntent.lo `test -f '$(CONTRIBDIR)/mount/mntent.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/mount/mntent.c
+
+libglusterfs_la-execinfo.lo: $(CONTRIBDIR)/libexecinfo/execinfo.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-execinfo.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-execinfo.Tpo -c -o libglusterfs_la-execinfo.lo `test -f '$(CONTRIBDIR)/libexecinfo/execinfo.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/libexecinfo/execinfo.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-execinfo.Tpo $(DEPDIR)/libglusterfs_la-execinfo.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/libexecinfo/execinfo.c' object='libglusterfs_la-execinfo.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-execinfo.lo `test -f '$(CONTRIBDIR)/libexecinfo/execinfo.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/libexecinfo/execinfo.c
+
+libglusterfs_la-quota-common-utils.lo: quota-common-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-quota-common-utils.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-quota-common-utils.Tpo -c -o libglusterfs_la-quota-common-utils.lo `test -f 'quota-common-utils.c' || echo '$(srcdir)/'`quota-common-utils.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-quota-common-utils.Tpo $(DEPDIR)/libglusterfs_la-quota-common-utils.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='quota-common-utils.c' object='libglusterfs_la-quota-common-utils.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-quota-common-utils.lo `test -f 'quota-common-utils.c' || echo '$(srcdir)/'`quota-common-utils.c
+
+libglusterfs_la-rot-buffs.lo: rot-buffs.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-rot-buffs.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-rot-buffs.Tpo -c -o libglusterfs_la-rot-buffs.lo `test -f 'rot-buffs.c' || echo '$(srcdir)/'`rot-buffs.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-rot-buffs.Tpo $(DEPDIR)/libglusterfs_la-rot-buffs.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='rot-buffs.c' object='libglusterfs_la-rot-buffs.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-rot-buffs.lo `test -f 'rot-buffs.c' || echo '$(srcdir)/'`rot-buffs.c
+
+libglusterfs_la-timer-wheel.lo: $(CONTRIBDIR)/timer-wheel/timer-wheel.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-timer-wheel.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-timer-wheel.Tpo -c -o libglusterfs_la-timer-wheel.lo `test -f '$(CONTRIBDIR)/timer-wheel/timer-wheel.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/timer-wheel/timer-wheel.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-timer-wheel.Tpo $(DEPDIR)/libglusterfs_la-timer-wheel.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/timer-wheel/timer-wheel.c' object='libglusterfs_la-timer-wheel.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-timer-wheel.lo `test -f '$(CONTRIBDIR)/timer-wheel/timer-wheel.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/timer-wheel/timer-wheel.c
+
+libglusterfs_la-find_last_bit.lo: $(CONTRIBDIR)/timer-wheel/find_last_bit.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-find_last_bit.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-find_last_bit.Tpo -c -o libglusterfs_la-find_last_bit.lo `test -f '$(CONTRIBDIR)/timer-wheel/find_last_bit.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/timer-wheel/find_last_bit.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-find_last_bit.Tpo $(DEPDIR)/libglusterfs_la-find_last_bit.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/timer-wheel/find_last_bit.c' object='libglusterfs_la-find_last_bit.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-find_last_bit.lo `test -f '$(CONTRIBDIR)/timer-wheel/find_last_bit.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/timer-wheel/find_last_bit.c
+
+libglusterfs_la-tw.lo: tw.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-tw.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-tw.Tpo -c -o libglusterfs_la-tw.lo `test -f 'tw.c' || echo '$(srcdir)/'`tw.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-tw.Tpo $(DEPDIR)/libglusterfs_la-tw.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='tw.c' object='libglusterfs_la-tw.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-tw.lo `test -f 'tw.c' || echo '$(srcdir)/'`tw.c
+
+libglusterfs_la-clear.lo: $(CONTRIBDIR)/uuid/clear.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-clear.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-clear.Tpo -c -o libglusterfs_la-clear.lo `test -f '$(CONTRIBDIR)/uuid/clear.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/clear.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-clear.Tpo $(DEPDIR)/libglusterfs_la-clear.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/clear.c' object='libglusterfs_la-clear.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-clear.lo `test -f '$(CONTRIBDIR)/uuid/clear.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/clear.c
+
+libglusterfs_la-copy.lo: $(CONTRIBDIR)/uuid/copy.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-copy.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-copy.Tpo -c -o libglusterfs_la-copy.lo `test -f '$(CONTRIBDIR)/uuid/copy.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/copy.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-copy.Tpo $(DEPDIR)/libglusterfs_la-copy.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/copy.c' object='libglusterfs_la-copy.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-copy.lo `test -f '$(CONTRIBDIR)/uuid/copy.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/copy.c
+
+libglusterfs_la-gen_uuid.lo: $(CONTRIBDIR)/uuid/gen_uuid.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-gen_uuid.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-gen_uuid.Tpo -c -o libglusterfs_la-gen_uuid.lo `test -f '$(CONTRIBDIR)/uuid/gen_uuid.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/gen_uuid.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-gen_uuid.Tpo $(DEPDIR)/libglusterfs_la-gen_uuid.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/gen_uuid.c' object='libglusterfs_la-gen_uuid.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-gen_uuid.lo `test -f '$(CONTRIBDIR)/uuid/gen_uuid.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/gen_uuid.c
+
+libglusterfs_la-pack.lo: $(CONTRIBDIR)/uuid/pack.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-pack.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-pack.Tpo -c -o libglusterfs_la-pack.lo `test -f '$(CONTRIBDIR)/uuid/pack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/pack.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-pack.Tpo $(DEPDIR)/libglusterfs_la-pack.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/pack.c' object='libglusterfs_la-pack.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-pack.lo `test -f '$(CONTRIBDIR)/uuid/pack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/pack.c
+
+libglusterfs_la-parse.lo: $(CONTRIBDIR)/uuid/parse.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-parse.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-parse.Tpo -c -o libglusterfs_la-parse.lo `test -f '$(CONTRIBDIR)/uuid/parse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/parse.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-parse.Tpo $(DEPDIR)/libglusterfs_la-parse.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/parse.c' object='libglusterfs_la-parse.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-parse.lo `test -f '$(CONTRIBDIR)/uuid/parse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/parse.c
+
+libglusterfs_la-unparse.lo: $(CONTRIBDIR)/uuid/unparse.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-unparse.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-unparse.Tpo -c -o libglusterfs_la-unparse.lo `test -f '$(CONTRIBDIR)/uuid/unparse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unparse.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-unparse.Tpo $(DEPDIR)/libglusterfs_la-unparse.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/unparse.c' object='libglusterfs_la-unparse.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-unparse.lo `test -f '$(CONTRIBDIR)/uuid/unparse.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unparse.c
+
+libglusterfs_la-uuid_time.lo: $(CONTRIBDIR)/uuid/uuid_time.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-uuid_time.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-uuid_time.Tpo -c -o libglusterfs_la-uuid_time.lo `test -f '$(CONTRIBDIR)/uuid/uuid_time.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/uuid_time.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-uuid_time.Tpo $(DEPDIR)/libglusterfs_la-uuid_time.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/uuid_time.c' object='libglusterfs_la-uuid_time.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-uuid_time.lo `test -f '$(CONTRIBDIR)/uuid/uuid_time.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/uuid_time.c
+
+libglusterfs_la-compare.lo: $(CONTRIBDIR)/uuid/compare.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-compare.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-compare.Tpo -c -o libglusterfs_la-compare.lo `test -f '$(CONTRIBDIR)/uuid/compare.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/compare.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-compare.Tpo $(DEPDIR)/libglusterfs_la-compare.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/compare.c' object='libglusterfs_la-compare.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-compare.lo `test -f '$(CONTRIBDIR)/uuid/compare.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/compare.c
+
+libglusterfs_la-isnull.lo: $(CONTRIBDIR)/uuid/isnull.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-isnull.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-isnull.Tpo -c -o libglusterfs_la-isnull.lo `test -f '$(CONTRIBDIR)/uuid/isnull.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/isnull.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-isnull.Tpo $(DEPDIR)/libglusterfs_la-isnull.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/isnull.c' object='libglusterfs_la-isnull.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-isnull.lo `test -f '$(CONTRIBDIR)/uuid/isnull.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/isnull.c
+
+libglusterfs_la-unpack.lo: $(CONTRIBDIR)/uuid/unpack.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-unpack.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-unpack.Tpo -c -o libglusterfs_la-unpack.lo `test -f '$(CONTRIBDIR)/uuid/unpack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unpack.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-unpack.Tpo $(DEPDIR)/libglusterfs_la-unpack.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/uuid/unpack.c' object='libglusterfs_la-unpack.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-unpack.lo `test -f '$(CONTRIBDIR)/uuid/unpack.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/unpack.c
 
 libglusterfs_la-y.tab.lo: y.tab.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-y.tab.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-y.tab.Tpo -c -o libglusterfs_la-y.tab.lo `test -f 'y.tab.c' || echo '$(srcdir)/'`y.tab.c
@@ -1000,6 +1190,26 @@ mostlyclean-libtool:
 
 clean-libtool:
 	-rm -rf .libs _libs
+install-libgfchangelogHEADERS: $(libgfchangelog_HEADERS)
+	@$(NORMAL_INSTALL)
+	test -z "$(libgfchangelogdir)" || $(MKDIR_P) "$(DESTDIR)$(libgfchangelogdir)"
+	@list='$(libgfchangelog_HEADERS)'; test -n "$(libgfchangelogdir)" || list=; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_HEADER) $$files '$(DESTDIR)$(libgfchangelogdir)'"; \
+	  $(INSTALL_HEADER) $$files "$(DESTDIR)$(libgfchangelogdir)" || exit $$?; \
+	done
+
+uninstall-libgfchangelogHEADERS:
+	@$(NORMAL_UNINSTALL)
+	@list='$(libgfchangelog_HEADERS)'; test -n "$(libgfchangelogdir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	test -n "$$files" || exit 0; \
+	echo " ( cd '$(DESTDIR)$(libgfchangelogdir)' && rm -f" $$files ")"; \
+	cd "$(DESTDIR)$(libgfchangelogdir)" && rm -f $$files
 
 ID: $(HEADERS) $(SOURCES) $(LISP) $(TAGS_FILES)
 	list='$(SOURCES) $(HEADERS) $(LISP) $(TAGS_FILES)'; \
@@ -1053,6 +1263,98 @@ GTAGS:
 distclean-tags:
 	-rm -f TAGS ID GTAGS GRTAGS GSYMS GPATH tags
 
+check-TESTS: $(TESTS)
+	@failed=0; all=0; xfail=0; xpass=0; skip=0; \
+	srcdir=$(srcdir); export srcdir; \
+	list=' $(TESTS) '; \
+	$(am__tty_colors); \
+	if test -n "$$list"; then \
+	  for tst in $$list; do \
+	    if test -f ./$$tst; then dir=./; \
+	    elif test -f $$tst; then dir=; \
+	    else dir="$(srcdir)/"; fi; \
+	    if $(TESTS_ENVIRONMENT) $${dir}$$tst; then \
+	      all=`expr $$all + 1`; \
+	      case " $(XFAIL_TESTS) " in \
+	      *[\ \	]$$tst[\ \	]*) \
+		xpass=`expr $$xpass + 1`; \
+		failed=`expr $$failed + 1`; \
+		col=$$red; res=XPASS; \
+	      ;; \
+	      *) \
+		col=$$grn; res=PASS; \
+	      ;; \
+	      esac; \
+	    elif test $$? -ne 77; then \
+	      all=`expr $$all + 1`; \
+	      case " $(XFAIL_TESTS) " in \
+	      *[\ \	]$$tst[\ \	]*) \
+		xfail=`expr $$xfail + 1`; \
+		col=$$lgn; res=XFAIL; \
+	      ;; \
+	      *) \
+		failed=`expr $$failed + 1`; \
+		col=$$red; res=FAIL; \
+	      ;; \
+	      esac; \
+	    else \
+	      skip=`expr $$skip + 1`; \
+	      col=$$blu; res=SKIP; \
+	    fi; \
+	    echo "$${col}$$res$${std}: $$tst"; \
+	  done; \
+	  if test "$$all" -eq 1; then \
+	    tests="test"; \
+	    All=""; \
+	  else \
+	    tests="tests"; \
+	    All="All "; \
+	  fi; \
+	  if test "$$failed" -eq 0; then \
+	    if test "$$xfail" -eq 0; then \
+	      banner="$$All$$all $$tests passed"; \
+	    else \
+	      if test "$$xfail" -eq 1; then failures=failure; else failures=failures; fi; \
+	      banner="$$All$$all $$tests behaved as expected ($$xfail expected $$failures)"; \
+	    fi; \
+	  else \
+	    if test "$$xpass" -eq 0; then \
+	      banner="$$failed of $$all $$tests failed"; \
+	    else \
+	      if test "$$xpass" -eq 1; then passes=pass; else passes=passes; fi; \
+	      banner="$$failed of $$all $$tests did not behave as expected ($$xpass unexpected $$passes)"; \
+	    fi; \
+	  fi; \
+	  dashes="$$banner"; \
+	  skipped=""; \
+	  if test "$$skip" -ne 0; then \
+	    if test "$$skip" -eq 1; then \
+	      skipped="($$skip test was not run)"; \
+	    else \
+	      skipped="($$skip tests were not run)"; \
+	    fi; \
+	    test `echo "$$skipped" | wc -c` -le `echo "$$banner" | wc -c` || \
+	      dashes="$$skipped"; \
+	  fi; \
+	  report=""; \
+	  if test "$$failed" -ne 0 && test -n "$(PACKAGE_BUGREPORT)"; then \
+	    report="Please report to $(PACKAGE_BUGREPORT)"; \
+	    test `echo "$$report" | wc -c` -le `echo "$$banner" | wc -c` || \
+	      dashes="$$report"; \
+	  fi; \
+	  dashes=`echo "$$dashes" | sed s/./=/g`; \
+	  if test "$$failed" -eq 0; then \
+	    echo "$$grn$$dashes"; \
+	  else \
+	    echo "$$red$$dashes"; \
+	  fi; \
+	  echo "$$banner"; \
+	  test -z "$$skipped" || echo "$$skipped"; \
+	  test -z "$$report" || echo "$$report"; \
+	  echo "$$dashes$$std"; \
+	  test "$$failed" -eq 0; \
+	else :; fi
+
 distdir: $(DISTFILES)
 	@srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*]/\\\\&/g'`; \
 	topsrcdirstrip=`echo "$(top_srcdir)" | sed 's/[].[^$$\\*]/\\\\&/g'`; \
@@ -1084,11 +1386,12 @@ distdir: $(DISTFILES)
 	  fi; \
 	done
 check-am: all-am
+	$(MAKE) $(AM_MAKEFLAGS) check-TESTS
 check: $(BUILT_SOURCES)
 	$(MAKE) $(AM_MAKEFLAGS) check-am
-all-am: Makefile $(LTLIBRARIES) $(HEADERS)
+all-am: Makefile $(LTLIBRARIES) $(PROGRAMS) $(HEADERS)
 installdirs:
-	for dir in "$(DESTDIR)$(libdir)"; do \
+	for dir in "$(DESTDIR)$(libdir)" "$(DESTDIR)$(libgfchangelogdir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
 install: $(BUILT_SOURCES)
@@ -1122,7 +1425,7 @@ maintainer-clean-generic:
 clean: clean-am
 
 clean-am: clean-generic clean-libLTLIBRARIES clean-libtool \
-	mostlyclean-am
+	clean-noinstPROGRAMS mostlyclean-am
 
 distclean: distclean-am
 	-rm -rf ./$(DEPDIR)
@@ -1142,7 +1445,7 @@ info: info-am
 
 info-am:
 
-install-data-am:
+install-data-am: install-libgfchangelogHEADERS
 
 install-dvi: install-dvi-am
 
@@ -1188,23 +1491,25 @@ ps: ps-am
 
 ps-am:
 
-uninstall-am: uninstall-libLTLIBRARIES
+uninstall-am: uninstall-libLTLIBRARIES uninstall-libgfchangelogHEADERS
 
-.MAKE: all check install install-am install-strip
+.MAKE: all check check-am install install-am install-strip
 
-.PHONY: CTAGS GTAGS all all-am check check-am clean clean-generic \
-	clean-libLTLIBRARIES clean-libtool ctags distclean \
-	distclean-compile distclean-generic distclean-libtool \
-	distclean-tags distdir dvi dvi-am html html-am info info-am \
-	install install-am install-data install-data-am install-dvi \
-	install-dvi-am install-exec install-exec-am install-html \
-	install-html-am install-info install-info-am \
-	install-libLTLIBRARIES install-man install-pdf install-pdf-am \
-	install-ps install-ps-am install-strip installcheck \
-	installcheck-am installdirs maintainer-clean \
+.PHONY: CTAGS GTAGS all all-am check check-TESTS check-am clean \
+	clean-generic clean-libLTLIBRARIES clean-libtool \
+	clean-noinstPROGRAMS ctags distclean distclean-compile \
+	distclean-generic distclean-libtool distclean-tags distdir dvi \
+	dvi-am html html-am info info-am install install-am \
+	install-data install-data-am install-dvi install-dvi-am \
+	install-exec install-exec-am install-html install-html-am \
+	install-info install-info-am install-libLTLIBRARIES \
+	install-libgfchangelogHEADERS install-man install-pdf \
+	install-pdf-am install-ps install-ps-am install-strip \
+	installcheck installcheck-am installdirs maintainer-clean \
 	maintainer-clean-generic mostlyclean mostlyclean-compile \
 	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
-	tags uninstall uninstall-am uninstall-libLTLIBRARIES
+	tags uninstall uninstall-am uninstall-libLTLIBRARIES \
+	uninstall-libgfchangelogHEADERS
 
 
 graph.lex.c: graph.l y.tab.h

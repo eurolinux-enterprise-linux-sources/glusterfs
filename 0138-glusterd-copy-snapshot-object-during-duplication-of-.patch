@@ -1,0 +1,106 @@
+From 922c2299b5d61a7691a354de97e54282d4433844 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Tue, 24 Nov 2015 13:45:20 +0530
+Subject: [PATCH 138/138] glusterd: copy snapshot object during duplication of volfile
+
+Back port of > http://review.gluster.org/#/c/12734/
+
+When creating duplicate volfile for hot/cold tier, we need to
+copy the snapshot object in to volfile as it requires to generate
+snapshot brick volfile.
+
+>Change-Id: I39ccfa20cd1c16ef2801901e3cd3a31c76f8995d
+>BUG: 1284789
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+
+>Change-Id: Ia0892dfc3af24ee428e0aa0a3e23063a91049a57
+>BUG: 1285629
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12756
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Avra Sengupta <asengupt@redhat.com>
+>Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+
+Change-Id: I24fd84b35b197d826b1eae8fe96b8f5004acd37c
+BUG: 1285166
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62427
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ tests/basic/tier/tier-snapshot.t           |   48 ++++++++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-utils.c |    2 +
+ 2 files changed, 50 insertions(+), 0 deletions(-)
+ create mode 100644 tests/basic/tier/tier-snapshot.t
+
+diff --git a/tests/basic/tier/tier-snapshot.t b/tests/basic/tier/tier-snapshot.t
+new file mode 100644
+index 0000000..b90d560
+--- /dev/null
++++ b/tests/basic/tier/tier-snapshot.t
+@@ -0,0 +1,48 @@
++#!/bin/bash
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../snapshot.rc
++
++cleanup;
++
++TEST init_n_bricks 4;
++TEST setup_lvm 4;
++
++TEST glusterd;
++
++TEST pidof glusterd;
++
++TEST $CLI volume create $V0 replica 2 $H0:$L1 $H0:$L2 ;
++
++TEST $CLI volume start $V0;
++
++TEST $CLI volume attach-tier $V0 replica 2 $H0:$L3 $H0:$L4 ;
++
++TEST $GFS --volfile-server=$H0 --volfile-id=$V0 $M0;
++
++for i in {1..10} ; do echo "file" > $M0/file$i ; done
++
++TEST $CLI snapshot config activate-on-create enable
++
++TEST $CLI snapshot create snap1 $V0 no-timestamp;
++
++for i in {11..20} ; do echo "file" > $M0/file$i ; done
++
++TEST $CLI snapshot create snap2 $V0 no-timestamp;
++
++mkdir $M0/dir1;
++mkdir $M0/dir2;
++
++for i in {1..10} ; do echo "foo" > $M0/dir1/foo$i ; done
++for i in {1..10} ; do echo "foo" > $M0/dir2/foo$i ; done
++
++TEST $CLI snapshot create snap3 $V0 no-timestamp;
++
++for i in {11..20} ; do echo "foo" > $M0/dir1/foo$i ; done
++for i in {11..20} ; do echo "foo" > $M0/dir2/foo$i ; done
++
++TEST $CLI snapshot create snap4 $V0 no-timestamp;
++
++TEST $CLI snapshot delete all;
++
++cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 61c4a51..c4ee083 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -728,6 +728,8 @@ glusterd_create_sub_tier_volinfo (glusterd_volinfo_t *volinfo,
+         gf_uuid_copy ((*dup_volinfo)->volume_id, volinfo->volume_id);
+         (*dup_volinfo)->is_snap_volume   = volinfo->is_snap_volume;
+         (*dup_volinfo)->status           = volinfo->status;
++        (*dup_volinfo)->snapshot         = volinfo->snapshot;
++
+         memcpy (&(*dup_volinfo)->tier_info, &volinfo->tier_info,
+                 sizeof (volinfo->tier_info));
+ 
+-- 
+1.7.1
+

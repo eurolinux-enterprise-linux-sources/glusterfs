@@ -1,0 +1,189 @@
+From 59d4b8ad4aa9723e6f9bdd0ae6535c9ed67fe6fa Mon Sep 17 00:00:00 2001
+From: Saravanakumar Arumugam <sarumuga@redhat.com>
+Date: Wed, 14 Oct 2015 11:49:49 +0530
+Subject: [PATCH 65/67] geo-rep: Avoid cold tier bricks during ENTRY operation
+
+This is a series of patch which aims to fix geo-replication
+in a Tiering Volume.
+
+Problem:
+Consider, a file is placed in volume initially and then hot tier is
+attached. During any operation on the file, due to lookup a linkto
+file is created in hot tier.
+
+Now, any namespace operation carried out on the file is recorded in
+both cold and hot tier.
+There is a room for races when both changelogs are replayed.
+
+Solution:
+So, We are going to replay (namespace related)operations
+only in the hot tier.
+
+Why?
+a. If the file is directly placed in Hot tier , all fops will be
+recorded in HOT tier.
+b. If  the file is already present in Cold tier, and if any fop is
+carried out, it creates linkto file in Hot tier.
+Now, operations like UNLINK, RENAME are captured in Hot
+tier(by means of linkto file).
+
+This way, we can get both tier's operation in HOT tier itself.
+
+Now, once the file is demoted to COLD tier, any namespace operation
+carried out on the cold tier can be avoided as we directly RECORD
+the same in HOT tier.
+
+How?
+1. Check whether the brick is cold tier and skip ENTRY operation.
+2. Also, if it is cold tier brick, use Xsync(which is used during initial run).
+   This will help in getting all cold tier bricks changes using File System crawl
+   and helps in avoiding races with hot tier brick(which can happen
+   if historychangelog used in cold tier brick).
+
+Dependent patches:
+1. http://review.gluster.org/12239
+2. http://review.gluster.org/12326
+
+Change-Id: I7692b1dbb8813a7e253451bca02f8f09a5782dde
+BUG: 1267185
+Signed-off-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-on: http://review.gluster.org/12355
+Reviewed-on: http://review.gluster.org/12429
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60166
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ geo-replication/syncdaemon/gsyncd.py   |    1 +
+ geo-replication/syncdaemon/master.py   |   10 ++++++++++
+ geo-replication/syncdaemon/monitor.py  |   17 +++++++++++++----
+ geo-replication/syncdaemon/resource.py |    7 ++++++-
+ 4 files changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gsyncd.py b/geo-replication/syncdaemon/gsyncd.py
+index 32e4eb7..4ea931d 100644
+--- a/geo-replication/syncdaemon/gsyncd.py
++++ b/geo-replication/syncdaemon/gsyncd.py
+@@ -356,6 +356,7 @@ def main_i():
+                   action='callback', callback=store_local_curry('canon'))
+     op.add_option('--canonicalize-escape-url', dest='url_print',
+                   action='callback', callback=store_local_curry('canon_esc'))
++    op.add_option('--is-coldtier', default=False, action='store_true')
+ 
+     tunables = [norm(o.get_opt_string()[2:])
+                 for o in op.option_list
+diff --git a/geo-replication/syncdaemon/master.py b/geo-replication/syncdaemon/master.py
+index 1bc2450..02c00ac 100644
+--- a/geo-replication/syncdaemon/master.py
++++ b/geo-replication/syncdaemon/master.py
+@@ -809,6 +809,13 @@ class GMasterChangelogMixin(GMasterCommon):
+             et = e[self.IDX_START:self.IDX_END]   # entry type
+             ec = e[self.IDX_END:].split(' ')      # rest of the bits
+ 
++            # skip ENTRY operation if cold tier brick
++            if self.name == 'live_changelog':
++                if boolify(gconf.is_coldtier) and et == self.TYPE_ENTRY:
++                    logging.debug('skip ENTRY op: %s if cold tier brick'
++                                  % (ec[self.POS_TYPE]))
++                    continue
++
+             if et == self.TYPE_ENTRY:
+                 # extract information according to the type of
+                 # the entry operation. create(), mkdir() and mknod()
+@@ -1111,6 +1118,7 @@ class GMasterChangelogMixin(GMasterCommon):
+         self.changelog_done_func = self.changelog_agent.done
+         self.processed_changelogs_dir = os.path.join(self.setup_working_dir(),
+                                                      ".processed")
++        self.name = "live_changelog"
+         self.status = status
+ 
+ 
+@@ -1123,6 +1131,7 @@ class GMasterChangeloghistoryMixin(GMasterChangelogMixin):
+         self.history_turns = 0
+         self.processed_changelogs_dir = os.path.join(self.setup_working_dir(),
+                                                      ".history/.processed")
++        self.name = "history_changelog"
+         self.status = status
+ 
+     def crawl(self):
+@@ -1217,6 +1226,7 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
+         self.tempdir = self.setup_working_dir()
+         self.tempdir = os.path.join(self.tempdir, 'xsync')
+         self.processed_changelogs_dir = self.tempdir
++        self.name = "xsync"
+         logging.info('xsync temp directory: %s' % self.tempdir)
+         try:
+             os.makedirs(self.tempdir)
+diff --git a/geo-replication/syncdaemon/monitor.py b/geo-replication/syncdaemon/monitor.py
+index ba5c8e3..c41eb96 100644
+--- a/geo-replication/syncdaemon/monitor.py
++++ b/geo-replication/syncdaemon/monitor.py
+@@ -99,6 +99,10 @@ class Volinfo(object):
+     def get(self, elem):
+         return self.tree.findall('.//' + elem)
+ 
++    def is_cold(self, brickpath):
++        logging.debug('brickpath: ' + repr(brickpath))
++        return brickpath in self.cold_bricks
++
+     @property
+     @memoize
+     def bricks(self):
+@@ -127,6 +131,10 @@ class Volinfo(object):
+     def disperse_count(self):
+         return int(self.get('disperseCount')[0].text)
+ 
++    @property
++    @memoize
++    def cold_bricks(self):
++        return [b.text for b in self.get('coldBricks/brick')]
+ 
+ class Monitor(object):
+ 
+@@ -248,9 +256,9 @@ class Monitor(object):
+                                                  '--rpc-fd',
+                                                  ','.join([str(rw), str(ww),
+                                                            str(ra), str(wa)]),
+-                                                 '--subvol-num', str(w[2]),
+-                                                 '--resource-remote',
+-                                                 remote_host])
++                                                 '--subvol-num', str(w[2])] +
++                         (['--is-coldtier'] if w[3] else []) +
++                         ['--resource-remote', remote_host])
+ 
+             cpids.add(cpid)
+             agents.add(apid)
+@@ -377,7 +385,8 @@ def distribute(*resources):
+                 slaves = slavevols
+ 
+     workerspex = [(brick['dir'], slaves[idx % len(slaves)],
+-                  get_subvol_num(idx, mvol.replica_count, mvol.disperse_count))
++                  get_subvol_num(idx, mvol.replica_count, mvol.disperse_count),
++                  mvol.is_cold(":".join([brick['host'], brick['dir']])))
+                   for idx, brick in enumerate(mvol.bricks)
+                   if is_host_local(brick['host'])]
+     logging.info('worker specs: ' + repr(workerspex))
+diff --git a/geo-replication/syncdaemon/resource.py b/geo-replication/syncdaemon/resource.py
+index c73347a..51f8862 100644
+--- a/geo-replication/syncdaemon/resource.py
++++ b/geo-replication/syncdaemon/resource.py
+@@ -1435,7 +1435,12 @@ class GLUSTER(AbstractUrl, SlaveLocal, SlaveRemote):
+             # Note: if config.change_detector is xsync then
+             # it will not use changelog history api
+             try:
+-                g3.crawlwrap(oneshot=True)
++                # if cold brick type, avoid changeloghistory and use xsync
++                if (boolify(gconf.is_coldtier)):
++                        logging.info("cold tier using xsync crawl")
++                        g1.crawlwrap(oneshot=True)
++                else:
++                        g3.crawlwrap(oneshot=True)
+             except PartialHistoryAvailable as e:
+                 logging.info('Partial history available, using xsync crawl'
+                              ' after consuming history till %s' % str(e))
+-- 
+1.7.1
+

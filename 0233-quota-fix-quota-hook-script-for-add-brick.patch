@@ -1,0 +1,182 @@
+From f7f5abc35356646bc03e9e0f107ed306e442312f Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Tue, 29 Dec 2015 17:35:30 +0530
+Subject: [PATCH 233/237] quota: fix quota hook script for add-brick
+
+This is a backport of http://review.gluster.org/#/c/13110/
+
+Hook script should not call any CLI commands
+as this can cause parallel operation problem,
+so remove quota list command from the script
+
+> Change-Id: I76a364133403371b172e063abd5f742075b20a2f
+> BUG: 1294637
+> Signed-off-by: vmallika <vmallika@redhat.com>
+
+Change-Id: I4f32a6e3cacdbb2de1e9345f2ee2b9c6a2f1f49d
+BUG: 1293380
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/65064
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ .../post/disabled-quota-root-xattr-heal.sh         |   53 ++++++++++----------
+ tests/basic/quota-add-brick.t                      |   48 ++++++++++++++++++
+ 2 files changed, 75 insertions(+), 26 deletions(-)
+ create mode 100644 tests/basic/quota-add-brick.t
+
+diff --git a/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh b/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
+index 9e72464..7de6130 100755
+--- a/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
++++ b/extras/hook-scripts/add-brick/post/disabled-quota-root-xattr-heal.sh
+@@ -21,7 +21,6 @@ VOLUME_OP=
+ GLUSTERD_WORKDIR=
+ ENABLED_NAME="S28Quota-root-xattr-heal.sh"
+ 
+-
+ cleanup_mountpoint ()
+ {
+         umount -f $MOUNT_DIR;
+@@ -37,6 +36,19 @@ cleanup_mountpoint ()
+         fi
+ }
+ 
++disable_and_exit ()
++{
++        ls $ENABLED_STATE;
++        RET=$?
++        if [ 0 -eq $RET ]
++        then
++                unlink $ENABLED_STATE;
++                exit $?
++        fi
++
++        exit 0
++}
++
+ ##------------------------------------------
+ ## Parse the arguments
+ ##------------------------------------------
+@@ -73,20 +85,12 @@ done
+ 
+ ENABLED_STATE="$GLUSTERD_WORKDIR/hooks/$VERSION/$VOLUME_OP/post/$ENABLED_NAME"
+ 
+-
+-FLAG=`gluster volume quota $VOL_NAME list / 2>&1 | grep \
+-      '\(No quota configured on volume\)\|\(Limit not set\)'`;
+-if ! [ -z $FLAG ]
++## Is quota enabled?
++FLAG=`cat $GLUSTERD_WORKDIR/vols/$VOL_NAME/info | grep "^features.quota=" \
++      | awk -F'=' '{print $NF}'`;
++if [ "$FLAG" != "on" ]
+ then
+-        ls $ENABLED_STATE;
+-        RET=$?
+-        if [ 0 -eq $RET ]
+-        then
+-                unlink $ENABLED_STATE;
+-                exit $?
+-        fi
+-
+-        exit $RET;
++        disable_and_exit
+ fi
+ 
+ ## -----------------------------------
+@@ -102,16 +106,22 @@ fi
+ ## ------------------
+ ## Getfattr the value
+ ## ------------------
+-VALUE=`getfattr -n "$QUOTA_CONFIG_XATTR" -e hex --absolute-names $MOUNT_DIR \
+-       2>&1 | grep $QUOTA_CONFIG_XATTR | awk -F'=' '{print $2}'`
++VALUE=$(getfattr -n $QUOTA_CONFIG_XATTR -e hex --absolute-names $MOUNT_DIR 2>&1)
+ RET=$?
+ if [ 0 -ne $RET ]
+ then
+         ## Clean up and exit
+         cleanup_mountpoint;
+ 
++        echo $VALUE | grep -iq "No such attribute"
++        if [ 0 -eq $? ]; then
++                disable_and_exit
++        fi
++
+         exit $RET;
+ fi
++
++VALUE=$(echo $VALUE | grep $QUOTA_CONFIG_XATTR | awk -F'=' '{print $NF}')
+ ## ------------------
+ 
+ ## ---------
+@@ -129,13 +139,4 @@ fi
+ ## ---------
+ 
+ cleanup_mountpoint;
+-
+-## Disable
+-ls $ENABLED_STATE;
+-RET=$?
+-if [ 0 -eq $RET ]
+-then
+-        unlink $ENABLED_STATE;
+-        exit $?
+-fi
+-exit $?
++disable_and_exit;
+diff --git a/tests/basic/quota-add-brick.t b/tests/basic/quota-add-brick.t
+new file mode 100644
+index 0000000..4f9e500
+--- /dev/null
++++ b/tests/basic/quota-add-brick.t
+@@ -0,0 +1,48 @@
++#!/bin/bash
++
++. $(dirname $0)/../include.rc
++. $(dirname $0)/../volume.rc
++
++function has_limit_xattr {
++        getfattr -n trusted.glusterfs.quota.limit-set.1 -e hex --absolute-names $1
++        echo $?
++}
++
++cleanup;
++
++TEST glusterd
++TEST pidof glusterd
++
++TEST $CLI volume create $V0 $H0:$B0/${V0}1
++TEST $CLI volume start $V0
++TEST $CLI volume quota $V0 enable
++TEST $CLI volume quota $V0 limit-usage / 1MB
++
++TEST glusterfs --volfile-server=$H0 --volfile-id=$V0 $M0;
++
++TEST mkdir $M0/d1
++TEST $CLI volume quota $V0 limit-usage /d1 1MB
++
++EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT 0 has_limit_xattr $B0/${V0}1
++
++#add-brick, check if limit xattr is healed
++TEST $CLI volume add-brick $V0 $H0:$B0/${V0}2
++EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT 0 has_limit_xattr $B0/${V0}2
++
++
++#stop volume, add brick, start volume, check if limit xattr is healed
++TEST $CLI volume stop $V0
++TEST $CLI volume add-brick $V0 $H0:$B0/${V0}3
++TEST $CLI volume start $V0
++EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT 0 has_limit_xattr $B0/${V0}3
++
++#attach-tier, check if limit xattr is healed
++TEST $CLI volume tier $V0 attach $H0:$B0/${V0}4
++EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT 0 has_limit_xattr $B0/${V0}4
++
++#Check if DHT has healed limit xattrs in the sub directory
++ls -l $M0/
++stat $M0/d1
++EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT 0 has_limit_xattr $B0/${V0}2/d1
++EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT 0 has_limit_xattr $B0/${V0}3/d1
++EXPECT_WITHIN $MARKER_UPDATE_TIMEOUT 0 has_limit_xattr $B0/${V0}4/d1
+-- 
+1.7.1
+

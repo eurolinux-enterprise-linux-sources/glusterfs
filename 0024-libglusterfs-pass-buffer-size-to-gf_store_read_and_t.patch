@@ -1,0 +1,101 @@
+From ee18fa1cdf1539bc73eb4c8106ab631577b4c328 Mon Sep 17 00:00:00 2001
+From: Gaurav Kumar Garg <garg.gaurav52@gmail.com>
+Date: Tue, 13 Oct 2015 14:40:55 +0530
+Subject: [PATCH 24/28] libglusterfs: pass buffer size to gf_store_read_and_tokenize function
+
+This patch is backport of: http://review.gluster.org/12346
+
+Previously if user set an option where length of key=value goes beyond
+PATH_MAX (4096) character then tokenzing the option at the time of
+reading configuration file will fail.
+This is because of the we was having restraction in fgets to read maximum
+of PATH_MAX (4096) length of character.
+Consequence of this is when user try to restart glusterd, after setting
+key=value length beyond PATH_MAX (4096) character, glusterd will not restart.
+
+With this fix instead of PATH_MAX, consumer of gf_store_read_and_tokenize
+function will decide the size of the buffer length.
+
+  > Change-Id: I655a8ce982effdfff8f3e785ea31f543dbe39301
+  > BUG: 1271150
+  > Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+
+Change-Id: I2772d89601aface15de86a162c2740a01f4141e5
+BUG: 1269203
+Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59441
+Reviewed-by: Krishnan Parthasarathi <kparthas@redhat.com>
+Tested-by: Krishnan Parthasarathi <kparthas@redhat.com>
+---
+ libglusterfs/src/store.c                   |    6 ++++--
+ libglusterfs/src/store.h                   |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-store.c |    2 +-
+ 3 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/libglusterfs/src/store.c b/libglusterfs/src/store.c
+index 3da82a4..53b44b1 100644
+--- a/libglusterfs/src/store.c
++++ b/libglusterfs/src/store.c
+@@ -181,7 +181,7 @@ out:
+ }
+ 
+ int
+-gf_store_read_and_tokenize (FILE *file, char *str, char **iter_key,
++gf_store_read_and_tokenize (FILE *file, char *str, int size, char **iter_key,
+                             char **iter_val, gf_store_op_errno_t *store_errno)
+ {
+         int32_t     ret         =   -1;
+@@ -197,7 +197,7 @@ gf_store_read_and_tokenize (FILE *file, char *str, char **iter_key,
+         GF_ASSERT (iter_val);
+         GF_ASSERT (store_errno);
+ 
+-        temp = fgets (str, PATH_MAX, file);
++        temp = fgets (str, size, file);
+         if (temp == NULL || feof (file)) {
+                 ret = -1;
+                 *store_errno = GD_STORE_EOF;
+@@ -292,6 +292,7 @@ gf_store_retrieve_value (gf_store_handle_t *handle, char *key, char **value)
+ 
+         do {
+                 ret = gf_store_read_and_tokenize (handle->read, scan_str,
++                                                  st.st_size + 1,
+                                                   &iter_key, &iter_val,
+                                                   &store_errno);
+                 if (ret < 0) {
+@@ -574,6 +575,7 @@ gf_store_iter_get_next (gf_store_iter_t *iter, char  **key, char **value,
+         }
+ 
+         ret = gf_store_read_and_tokenize (iter->file, scan_str,
++                                          st.st_size + 1,
+                                           &iter_key, &iter_val,
+                                           &store_errno);
+         if (ret < 0) {
+diff --git a/libglusterfs/src/store.h b/libglusterfs/src/store.h
+index 6b7c98a..44af117 100644
+--- a/libglusterfs/src/store.h
++++ b/libglusterfs/src/store.h
+@@ -64,7 +64,7 @@ int32_t
+ gf_store_unlink_tmppath (gf_store_handle_t *shandle);
+ 
+ int
+-gf_store_read_and_tokenize (FILE *file, char *str, char **iter_key,
++gf_store_read_and_tokenize (FILE *file, char *str, int size, char **iter_key,
+                             char **iter_val, gf_store_op_errno_t *store_errno);
+ 
+ int32_t
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 0b94728..82c775a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -3469,7 +3469,7 @@ glusterd_store_retrieve_missed_snaps_list (xlator_t  *this)
+         }
+ 
+         do {
+-                ret = gf_store_read_and_tokenize (fp, buf,
++                ret = gf_store_read_and_tokenize (fp, buf, sizeof (buf),
+                                                   &missed_node_info, &value,
+                                                   &store_errno);
+                 if (ret) {
+-- 
+1.7.1
+

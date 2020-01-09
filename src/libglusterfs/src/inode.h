@@ -33,8 +33,8 @@ typedef struct _dentry dentry_t;
 #include "list.h"
 #include "xlator.h"
 #include "iatt.h"
-#include "uuid.h"
-
+#include "compat-uuid.h"
+#include "fd.h"
 
 struct _inode_table {
         pthread_mutex_t    lock;
@@ -259,5 +259,26 @@ inode_ctx_put(inode_t *inode, xlator_t *this, uint64_t v)
 
 gf_boolean_t
 __is_root_gfid (uuid_t gfid);
+
+void
+__inode_table_set_lru_limit (inode_table_t *table, uint32_t lru_limit);
+
+void
+inode_table_set_lru_limit (inode_table_t *table, uint32_t lru_limit);
+
+void
+inode_ctx_merge (fd_t *fd, inode_t *inode, inode_t *linked_inode);
+
+int
+inode_is_linked (inode_t *inode);
+
+void
+inode_set_need_lookup (inode_t *inode, xlator_t *this);
+
+gf_boolean_t
+inode_needs_lookup (inode_t *inode, xlator_t *this);
+
+int
+inode_has_dentry (inode_t *inode);
 
 #endif /* _INODE_H */

@@ -1,0 +1,48 @@
+From d4ea400fcf8a7fe441b864e3e87b3131ebebe834 Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Thu, 3 Dec 2015 15:40:16 +0530
+Subject: [PATCH 166/168] tier/dht: Fix mem leak from lookup response dict
+
+Fixing memory leak from response dict during a parent
+lookup to get the path.
+
+Backport of http://review.gluster.org/12867
+
+> Change-Id: I60c23d0b25e7f763f0e53c40e71ee053aba6d555
+> BUG: 1288019
+> Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+> Reviewed-on: http://review.gluster.org/12867
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Joseph Fernandes
+> Tested-by: Joseph Fernandes
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+
+Change-Id: Icb8c2b759032399f2d558b5887555d568d0c6321
+BUG: 1285998
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63125
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ xlators/cluster/dht/src/tier.c |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index e9d607a..f176589 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -525,6 +525,12 @@ abort:
+                         loc_wipe (&loc);
+                         loc_wipe (&p_loc);
+ 
++
++                        if (xdata_response) {
++                                dict_unref (xdata_response);
++                                xdata_response = NULL;
++                        }
++
+                         if ((total_files > defrag->tier_conf.max_migrate_files)
+                             || (total_migrated_bytes >
+                                 defrag->tier_conf.max_migrate_bytes)) {
+-- 
+1.7.1
+

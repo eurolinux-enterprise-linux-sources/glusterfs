@@ -1,0 +1,335 @@
+From f3fbc236bce0e599e1c29dd0f1cc21f617ae4c81 Mon Sep 17 00:00:00 2001
+From: jiffin tony thottan <jthottan@redhat.com>
+Date: Thu, 27 Aug 2015 23:26:40 +0530
+Subject: [PATCH 107/131] snapshot : copying nfs-ganesha export file
+
+Backport of http://review.gluster.org/#/c/12034/
+
+While taking snapshot, the export file used by the volume should
+copy to snap directory. So that when restore of snapshot happens,
+the volume can retain all its configuration for exporting via
+nfs-ganesha. The export file is stored at "/etc/ganesha/export" in
+the following format "export.<volname>.conf"
+
+The fix handles given cases in the following manner :
+
+case a: The nfs-ganesha(global) is ON during snapshot and restore.
+        i.) Volume was exported during snapshot. When we restore snapshot,
+            then volume should be exported back with old configuration file.
+        ii.) Volume was unexported during snapshot. When we restore snapshot,
+             then volume should unexported again.
+
+case b: The nfs-ganesha is ON during snapshot and OFF during restore
+        Volume was exported during snapshot. When we restore snapshot, the
+        conf will be copied to corresponding location and if nfs-ganesha enabled
+        again, then volume will be exported.
+
+For the clones, export conf file will created in /etc/ganesha/export and then
+export it via ganesha.
+
+Upstream Reference:
+
+(cherry picked from commit 5583bac79851d24f0a552478b361049fe63c32b7)
+>Change-Id: Ideecda15bd4db58e991cf6c8de7bb93f3db6cd20
+>BUG: 1257709
+>Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+>Reviewed-on: http://review.gluster.org/12034
+>Reviewed-by: Avra Sengupta <asengupt@redhat.com>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+
+Change-Id: I3c13d062a4b7381e955fb089c5a511527b3ce633
+BUG: 1246007
+Signed-off-by: Jiffin Tony Thottan <jthottan@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61183
+Reviewed-by: Kaleb Keithley <kkeithle@redhat.com>
+Reviewed-by: Avra Sengupta <asengupt@redhat.com>
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ .../mgmt/glusterd/src/glusterd-snapshot-utils.c    |  185 ++++++++++++++++++++
+ .../mgmt/glusterd/src/glusterd-snapshot-utils.h    |    7 +
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c      |   20 ++
+ xlators/mgmt/glusterd/src/glusterd.h               |    1 +
+ 4 files changed, 213 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+index 2840449..c31f2d8 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.c
+@@ -3492,6 +3492,135 @@ out:
+ 
+ }
+ 
++/* *
++ * Here there are two possibilities, either destination is snaphot or
++ * clone. In the case of snapshot nfs_ganesha export file will be copied
++ * to snapdir. If it is clone , then new export file will be created for
++ * the clone in the GANESHA_EXPORT_DIRECTORY, replacing occurences of
++ * volname with clonename
++ */
++int
++glusterd_copy_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
++                                glusterd_volinfo_t *dest_vol)
++{
++
++        int32_t         ret                     = -1;
++        char            snap_dir[PATH_MAX]      = "";
++        char            src_path[PATH_MAX]      = "";
++        char            dest_path[PATH_MAX]     = "";
++        char            buffer[BUFSIZ]          = "";
++        char            *find_ptr               = NULL;
++        char            *buff_ptr               = NULL;
++        char            *tmp_ptr                = NULL;
++        xlator_t        *this                   = NULL;
++        glusterd_conf_t *priv                   = NULL;
++        struct  stat    stbuf                   = {0,};
++        FILE            *src                    = NULL;
++        FILE            *dest                   = NULL;
++
++
++        this = THIS;
++        GF_VALIDATE_OR_GOTO ("snapshot", this, out);
++        priv = this->private;
++        GF_VALIDATE_OR_GOTO (this->name, priv, out);
++
++        GF_VALIDATE_OR_GOTO (this->name, src_vol, out);
++        GF_VALIDATE_OR_GOTO (this->name, dest_vol, out);
++
++        if (src_vol->is_snap_volume) {
++                GLUSTERD_GET_SNAP_DIR (snap_dir, src_vol->snapshot, priv);
++                ret = snprintf (src_path, sizeof (src_path),
++                                "%s/export.%s.conf", snap_dir,
++                                src_vol->snapshot->snapname);
++        } else {
++                ret = snprintf (src_path, sizeof (src_path),
++                                "%s/export.%s.conf", GANESHA_EXPORT_DIRECTORY,
++                                src_vol->volname);
++                if (ret < 0)
++                        goto out;
++        }
++
++        ret = lstat (src_path, &stbuf);
++        if (ret) {
++                /* *
++                * If export file is not present, volume is not exported
++                * via ganesha. So it is not necessary to copy that during
++                * snapshot.
++                */
++                if (errno == ENOENT) {
++                        ret = 0;
++                        gf_msg_debug (this->name, 0, "%s not found", src_path);
++                } else
++                        gf_msg (this->name, GF_LOG_WARNING, errno,
++                                GD_MSG_FILE_OP_FAILED,
++                                "Stat on %s failed with %s",
++                                src_path, strerror (errno));
++                goto out;
++        }
++
++        if (dest_vol->is_snap_volume) {
++                memset (snap_dir, 0 , PATH_MAX);
++                GLUSTERD_GET_SNAP_DIR (snap_dir, dest_vol->snapshot, priv);
++                ret = snprintf (dest_path, sizeof (dest_path),
++                                "%s/export.%s.conf", snap_dir,
++                                dest_vol->snapshot->snapname);
++                if (ret < 0)
++                        goto out;
++
++                ret = glusterd_copy_file (src_path, dest_path);
++                if (ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
++                                GD_MSG_NO_MEMORY, "Failed to copy %s in %s",
++                                src_path, dest_path);
++                        goto out;
++                }
++
++        } else {
++                ret = snprintf (dest_path, sizeof (dest_path),
++                                "%s/export.%s.conf", GANESHA_EXPORT_DIRECTORY,
++                                dest_vol->volname);
++                if (ret < 0)
++                        goto out;
++
++                src = fopen (src_path, "r");
++                dest = fopen (dest_path, "w");
++
++                /* *
++                 * if the source volume is snapshot, the export conf file
++                 * consists of orginal volname
++                 */
++                if (src_vol->is_snap_volume)
++                        find_ptr = gf_strdup (src_vol->parent_volname);
++                else
++                        find_ptr = gf_strdup (src_vol->volname);
++
++                if (!find_ptr)
++                        goto out;
++
++                /* Replacing volname with clonename */
++                while (fgets(buffer, BUFSIZ, src)) {
++                        buff_ptr = buffer;
++                        while ((tmp_ptr = strstr(buff_ptr, find_ptr))) {
++                                while (buff_ptr < tmp_ptr)
++                                        fputc((int)*buff_ptr++, dest);
++                                fputs(dest_vol->volname, dest);
++                                buff_ptr += strlen(find_ptr);
++                        }
++                        fputs(buff_ptr, dest);
++                        memset (buffer, 0, BUFSIZ);
++                }
++        }
++out:
++        if (src)
++                fclose (src);
++        if (dest)
++                fclose (dest);
++        if (find_ptr)
++                GF_FREE(find_ptr);
++
++        return ret;
++}
++
+ int32_t
+ glusterd_restore_geo_rep_files (glusterd_volinfo_t *snap_vol)
+ {
+@@ -3582,6 +3711,62 @@ out:
+         return ret;
+ }
+ 
++int
++glusterd_restore_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
++                                   glusterd_snap_t *snap)
++{
++
++        int32_t         ret                     = -1;
++        char            snap_dir[PATH_MAX]      = "";
++        char            src_path[PATH_MAX]      = "";
++        char            dest_path[PATH_MAX]     = "";
++        xlator_t        *this                   = NULL;
++        glusterd_conf_t *priv                   = NULL;
++        struct  stat    stbuf                   = {0,};
++
++        this = THIS;
++        GF_VALIDATE_OR_GOTO ("snapshot", this, out);
++        priv = this->private;
++        GF_VALIDATE_OR_GOTO (this->name, priv, out);
++
++        GF_VALIDATE_OR_GOTO (this->name, src_vol, out);
++        GF_VALIDATE_OR_GOTO (this->name, snap, out);
++
++        GLUSTERD_GET_SNAP_DIR (snap_dir, snap, priv);
++
++        ret = snprintf (src_path, sizeof (src_path), "%s/export.%s.conf",
++                       snap_dir, snap->snapname);
++        if (ret < 0)
++                goto out;
++
++        ret = lstat (src_path, &stbuf);
++        if (ret) {
++                if (errno == ENOENT) {
++                        ret = 0;
++                        gf_msg_debug (this->name, 0, "%s not found", src_path);
++                } else
++                        gf_msg (this->name, GF_LOG_WARNING, errno,
++                                GD_MSG_FILE_OP_FAILED,
++                                "Stat on %s failed with %s",
++                                src_path, strerror (errno));
++                goto out;
++        }
++
++        ret = snprintf (dest_path, sizeof (dest_path), "%s/export.%s.conf",
++                        GANESHA_EXPORT_DIRECTORY, src_vol->volname);
++        if (ret < 0)
++                goto out;
++
++        ret = glusterd_copy_file (src_path, dest_path);
++        if (ret)
++                gf_msg (this->name, GF_LOG_ERROR, ENOMEM,
++                        GD_MSG_NO_MEMORY, "Failed to copy %s in %s",
++                        src_path, dest_path);
++
++out:
++        return ret;
++
++}
+ /* Snapd functions */
+ int
+ glusterd_is_snapd_enabled (glusterd_volinfo_t *volinfo)
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h
+index 63d39e8..c0e7e8e 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot-utils.h
+@@ -99,12 +99,19 @@ glusterd_get_geo_rep_session (char *slave_key, char *origin_volname,
+ int32_t
+ glusterd_restore_geo_rep_files (glusterd_volinfo_t *snap_vol);
+ 
++int
++glusterd_restore_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
++                                   glusterd_snap_t *snap);
+ int32_t
+ glusterd_copy_quota_files (glusterd_volinfo_t *src_vol,
+                            glusterd_volinfo_t *dest_vol,
+                            gf_boolean_t *conf_present);
+ 
+ int
++glusterd_copy_nfs_ganesha_file (glusterd_volinfo_t *src_vol,
++                                glusterd_volinfo_t *dest_vol);
++
++int
+ glusterd_snap_use_rsp_dict (dict_t *aggr, dict_t *rsp_dict);
+ 
+ int
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index 5d7b07a..82df5c4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -5245,6 +5245,16 @@ glusterd_do_snap_vol (glusterd_volinfo_t *origin_vol, glusterd_snap_t *snap,
+                                 origin_vol->volname);
+                         goto out;
+                 }
++
++
++        }
++
++        ret = glusterd_copy_nfs_ganesha_file (origin_vol, snap_vol);
++        if (ret < 0) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        GD_MSG_VOL_OP_FAILED, "Failed to copy export "
++                        "file for volume %s", origin_vol->volname);
++                goto out;
+         }
+         glusterd_auth_set_username (snap_vol, username);
+         glusterd_auth_set_password (snap_vol, password);
+@@ -9633,6 +9643,16 @@ gd_restore_snap_volume (dict_t *dict, dict_t *rsp_dict,
+                         snap_vol->snapshot->snapname);
+         }
+ 
++        ret = glusterd_restore_nfs_ganesha_file (orig_vol, snap);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_WARNING, 0,
++                        GD_MSG_SNAP_RESTORE_FAIL,
++                        "Failed to restore "
++                        "nfs-ganesha export file for snap %s",
++                        snap_vol->snapshot->snapname);
++                goto out;
++        }
++
+         ret = glusterd_copy_quota_files (snap_vol, orig_vol, &conf_present);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+diff --git a/xlators/mgmt/glusterd/src/glusterd.h b/xlators/mgmt/glusterd/src/glusterd.h
+index b020b6a..1220c87 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.h
++++ b/xlators/mgmt/glusterd/src/glusterd.h
+@@ -56,6 +56,7 @@
+ #define GLUSTERD_SHARED_STORAGE_KEY     "cluster.enable-shared-storage"
+ 
+ #define GANESHA_HA_CONF  CONFDIR "/ganesha-ha.conf"
++#define GANESHA_EXPORT_DIRECTORY        CONFDIR"/exports"
+ #define GLUSTERD_SNAPS_MAX_HARD_LIMIT 256
+ #define GLUSTERD_SNAPS_DEF_SOFT_LIMIT_PERCENT 90
+ #define GLUSTERD_SNAPS_MAX_SOFT_LIMIT_PERCENT 100
+-- 
+1.7.1
+

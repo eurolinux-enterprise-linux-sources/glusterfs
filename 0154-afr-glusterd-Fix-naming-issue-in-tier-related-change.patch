@@ -1,0 +1,183 @@
+From 225e68db8c3eb8ce88425ea617a69eb25a163c9a Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Tue, 27 Oct 2015 09:37:56 +0530
+Subject: [PATCH 154/162] afr/glusterd: Fix naming issue in tier related changes
+
+changing some of the function names added recently as
+part of the tiering changes.
+
+Back port of>
+>Change-Id: I238831128ee00cdf83f8a80be937d3528d133099
+>BUG: 1275489
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12431
+>Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+>Change-Id: Id2125e20690e697948a7e48529d853626e345879
+>BUG: 1285978
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12774
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: Iea62dea887792a17eebdb84f818a9a4f6b0bab20
+BUG: 1275912
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62834
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-op-sm.c      |    6 ++++--
+ xlators/mgmt/glusterd/src/glusterd-utils.c      |   10 ++++++----
+ xlators/mgmt/glusterd/src/glusterd-volgen.c     |    9 +++++----
+ xlators/mgmt/glusterd/src/glusterd-volgen.h     |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c |    8 ++++----
+ 5 files changed, 20 insertions(+), 15 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-op-sm.c b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+index f5452ec..e03d1ca 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-op-sm.c
++++ b/xlators/mgmt/glusterd/src/glusterd-op-sm.c
+@@ -1656,7 +1656,8 @@ glusterd_op_stage_status_volume (dict_t *dict, char **op_errstr)
+                 }
+         } else if ((cmd & GF_CLI_STATUS_SHD) != 0) {
+                 if (glusterd_is_shd_compatible_volume (volinfo)) {
+-                        shd_enabled = is_self_heal_enabled (volinfo, vol_opts);
++                        shd_enabled = gd_is_self_heal_enabled (volinfo,
++                                                               vol_opts);
+                 } else {
+                         ret = -1;
+                         snprintf (msg, sizeof (msg),
+@@ -3292,7 +3293,8 @@ glusterd_op_status_volume (dict_t *dict, char **op_errstr,
+                         }
+ 
+                         if (glusterd_is_shd_compatible_volume (volinfo))
+-                                shd_enabled = is_self_heal_enabled (volinfo, vol_opts);
++                                shd_enabled = gd_is_self_heal_enabled
++                                                         (volinfo, vol_opts);
+                         if (shd_enabled) {
+                                 ret = glusterd_add_node_to_dict
+                                         (priv->shd_svc.name, rsp_dict,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index 4d37705..9708d19 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -6459,7 +6459,7 @@ out:
+ }
+ 
+ static inline int
+-is_replica_volume (int type)
++glusterd_is_replica_volume (int type)
+ {
+         if (type == GF_CLUSTER_TYPE_REPLICATE ||
+             type == GF_CLUSTER_TYPE_STRIPE_REPLICATE)
+@@ -6471,11 +6471,13 @@ glusterd_is_volume_replicate (glusterd_volinfo_t *volinfo)
+ {
+         gf_boolean_t    replicates = _gf_false;
+         if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+-                replicates = is_replica_volume (volinfo->tier_info.cold_type) |
+-                             is_replica_volume (volinfo->tier_info.hot_type);
++                replicates = glusterd_is_replica_volume
++                                            (volinfo->tier_info.cold_type) |
++                             glusterd_is_replica_volume
++                                            (volinfo->tier_info.hot_type);
+                 return replicates;
+        }
+-       return is_replica_volume ((volinfo->type));
++       return glusterd_is_replica_volume ((volinfo->type));
+ }
+ 
+ gf_boolean_t
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index 82330a2..3d33559 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -4286,8 +4286,8 @@ volgen_graph_set_iam_shd (volgen_graph_t *graph)
+ }
+ 
+ static int
+-prepare_shd_volume_options_for_tier (glusterd_volinfo_t *volinfo,
+-                                     dict_t *set_dict)
++glusterd_prepare_shd_volume_options_for_tier (glusterd_volinfo_t *volinfo,
++                                              dict_t *set_dict)
+ {
+         int             ret             = -1;
+         char           *key             = NULL;
+@@ -4317,7 +4317,8 @@ prepare_shd_volume_options (glusterd_volinfo_t *volinfo,
+         int     ret = 0;
+ 
+         if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+-                ret = prepare_shd_volume_options_for_tier (volinfo, set_dict);
++                ret = glusterd_prepare_shd_volume_options_for_tier (volinfo,
++                                                                    set_dict);
+                 if (ret)
+                         goto out;
+         } else {
+@@ -4442,7 +4443,7 @@ out:
+ }
+ 
+ gf_boolean_t
+-is_self_heal_enabled (glusterd_volinfo_t *volinfo, dict_t *dict)
++gd_is_self_heal_enabled (glusterd_volinfo_t *volinfo, dict_t *dict)
+ {
+ 
+         char            *shd_key                = NULL;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.h b/xlators/mgmt/glusterd/src/glusterd-volgen.h
+index cf8a795..f1dc823 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.h
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.h
+@@ -291,6 +291,6 @@ int
+ glusterd_volopt_validate (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
+                           char *value, char **op_errstr);
+ gf_boolean_t
+-is_self_heal_enabled (glusterd_volinfo_t *volinfo, dict_t *dict);
++gd_is_self_heal_enabled (glusterd_volinfo_t *volinfo, dict_t *dict);
+ 
+ #endif
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index c23af02..ae2b9dd 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -695,7 +695,7 @@ glusterd_handle_cli_delete_volume (rpcsvc_request_t *req)
+                                             __glusterd_handle_cli_delete_volume);
+ }
+ static char*
+-_get_shd_key (int type)
++gd_get_shd_key (int type)
+ {
+         char            *key               = NULL;
+ 
+@@ -722,7 +722,7 @@ glusterd_handle_shd_option_for_tier (glusterd_volinfo_t *volinfo,
+         char           *key             = NULL;
+         int             ret             = 0;
+ 
+-        key = _get_shd_key (volinfo->tier_info.cold_type);
++        key = gd_get_shd_key (volinfo->tier_info.cold_type);
+         if (key) {
+                 count++;
+                 snprintf (dict_key, sizeof (dict_key), "key%d", count);
+@@ -735,7 +735,7 @@ glusterd_handle_shd_option_for_tier (glusterd_volinfo_t *volinfo,
+                         goto out;
+         }
+ 
+-        key = _get_shd_key (volinfo->tier_info.hot_type);
++        key = gd_get_shd_key (volinfo->tier_info.hot_type);
+         if (key) {
+                 count++;
+                 snprintf (dict_key, sizeof (dict_key), "key%d", count);
+@@ -1908,7 +1908,7 @@ glusterd_op_stage_heal_volume (dict_t *dict, char **op_errstr)
+                 ret = 0;
+                 goto out;
+         }
+-        enabled = is_self_heal_enabled (volinfo, opt_dict);
++        enabled = gd_is_self_heal_enabled (volinfo, opt_dict);
+         if (!enabled) {
+                 ret = -1;
+                 snprintf (msg, sizeof (msg), "Self-heal-daemon is "
+-- 
+1.7.1
+

@@ -1,0 +1,1182 @@
+From 8360ce18a73c62d14a6267418566df7ce9764132 Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Thu, 15 Oct 2015 12:41:13 +0530
+Subject: [PATCH 82/98] quota: add version to quota xattrs
+
+This is a backport of http://review.gluster.org/12386
+
+When a quota is disable and the clean-up process terminated
+without completely cleaning-up the quota xattrs.
+Now when quota is enabled again, this can mess-up the accounting
+
+A version number is suffixed for all quota xattrs and this version
+number is specific to marker xaltor, i.e when quota xattrs are
+requested by quotad/client marker will remove the version suffix in the
+key before sending the response
+
+> Change-Id: I1ca2c11460645edba0f6b68db70d476d8d26e1eb
+> BUG: 1272411
+> Signed-off-by: vmallika <vmallika@redhat.com>
+> Reviewed-on: http://review.gluster.org/12386
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Reviewed-by: Krishnan Parthasarathi <kparthas@redhat.com>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+> Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+
+Change-Id: I227f5d0ec250de99a04bca00fb837ed12426f616
+BUG: 1265200
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60609
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ cli/src/cli-rpc-ops.c                             |   11 +-
+ libglusterfs/src/glusterfs.h                      |    7 +-
+ tests/bugs/quota/bug-1243798.t                    |    4 +-
+ xlators/cluster/dht/src/dht-common.c              |    4 +-
+ xlators/cluster/stripe/src/stripe-helpers.c       |    2 +-
+ xlators/cluster/stripe/src/stripe.c               |    4 +-
+ xlators/features/marker/src/marker-quota-helper.c |   10 +-
+ xlators/features/marker/src/marker-quota.c        |   72 ++++---
+ xlators/features/marker/src/marker-quota.h        |   34 +++-
+ xlators/features/marker/src/marker.c              |  237 ++++++++++++++++++---
+ xlators/features/marker/src/marker.h              |    1 +
+ xlators/features/quota/src/quota.c                |    6 +
+ xlators/lib/src/libxlator.h                       |    4 -
+ xlators/mgmt/glusterd/src/glusterd-quota.c        |   28 ++-
+ xlators/mgmt/glusterd/src/glusterd-store.c        |    9 +
+ xlators/mgmt/glusterd/src/glusterd-store.h        |    1 +
+ xlators/mgmt/glusterd/src/glusterd-utils.c        |    8 +
+ xlators/mgmt/glusterd/src/glusterd-volgen.c       |    6 +
+ xlators/mgmt/glusterd/src/glusterd.h              |    1 +
+ 19 files changed, 352 insertions(+), 97 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index b9fdb59..0de43d0 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -3078,9 +3078,9 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
+         GF_ASSERT (path);
+ 
+         if (type == GF_QUOTA_OPTION_TYPE_LIST)
+-                key = "trusted.glusterfs.quota.limit-set";
++                key = QUOTA_LIMIT_KEY;
+         else
+-                key = "trusted.glusterfs.quota.limit-objects";
++                key = QUOTA_LIMIT_OBJECTS_KEY;
+ 
+ 
+         ret = sys_lgetxattr (mountdir, key, (void *)&limits, sizeof (limits));
+@@ -3108,8 +3108,7 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
+         limits.hl = ntoh64 (limits.hl);
+         limits.sl = ntoh64 (limits.sl);
+ 
+-        xattr_size = sys_lgetxattr (mountdir, "trusted.glusterfs.quota.size",
+-                                    NULL, 0);
++        xattr_size = sys_lgetxattr (mountdir, QUOTA_SIZE_KEY, NULL, 0);
+         if (xattr_size < (sizeof (int64_t) * 2) &&
+             type == GF_QUOTA_OPTION_TYPE_LIST_OBJECTS) {
+                 ret = -1;
+@@ -3118,13 +3117,13 @@ print_quota_list_from_mountdir (cli_local_t *local, char *mountdir,
+                  * and the xattr healing is not completed.
+                  */
+         } else if (xattr_size > (sizeof (int64_t) * 2)) {
+-                ret = sys_lgetxattr (mountdir, "trusted.glusterfs.quota.size",
++                ret = sys_lgetxattr (mountdir, QUOTA_SIZE_KEY,
+                                      &used_space, sizeof (used_space));
+         } else if (xattr_size > 0) {
+                 /* This is for compatibility.
+                  * Older version had only file usage
+                  */
+-                ret = sys_lgetxattr (mountdir, "trusted.glusterfs.quota.size",
++                ret = sys_lgetxattr (mountdir, QUOTA_SIZE_KEY,
+                              &(used_space.size), sizeof (used_space.size));
+                 used_space.file_count = 0;
+                 used_space.dir_count = 0;
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index 2a55648..67677bf 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -89,9 +89,6 @@
+ #define GF_XATTR_LOCKINFO_KEY   "trusted.glusterfs.lockinfo"
+ #define GF_XATTR_GET_REAL_FILENAME_KEY "glusterfs.get_real_filename:"
+ #define GF_XATTR_USER_PATHINFO_KEY   "glusterfs.pathinfo"
+-#define QUOTA_LIMIT_KEY "trusted.glusterfs.quota.limit-set"
+-#define QUOTA_LIMIT_OBJECTS_KEY "trusted.glusterfs.quota.limit-objects"
+-#define VIRTUAL_QUOTA_XATTR_CLEANUP_KEY "glusterfs.quota-xattr-cleanup"
+ #define GF_INTERNAL_IGNORE_DEEM_STATFS "ignore-deem-statfs"
+ 
+ #define GF_READDIR_SKIP_DIRS       "readdir-filter-directories"
+@@ -161,7 +158,11 @@
+ #define GF_XATTR_STIME_PATTERN "trusted.glusterfs.*.stime"
+ #define GF_XATTR_TRIGGER_SYNC "glusterfs.geo-rep.trigger-sync"
+ 
++/* quota xattrs */
+ #define QUOTA_SIZE_KEY "trusted.glusterfs.quota.size"
++#define QUOTA_LIMIT_KEY "trusted.glusterfs.quota.limit-set"
++#define QUOTA_LIMIT_OBJECTS_KEY "trusted.glusterfs.quota.limit-objects"
++#define VIRTUAL_QUOTA_XATTR_CLEANUP_KEY "glusterfs.quota-xattr-cleanup"
+ 
+ /* Index xlator related */
+ #define GF_XATTROP_INDEX_GFID "glusterfs.xattrop_index_gfid"
+diff --git a/tests/bugs/quota/bug-1243798.t b/tests/bugs/quota/bug-1243798.t
+index dc53c69..9917b5d 100644
+--- a/tests/bugs/quota/bug-1243798.t
++++ b/tests/bugs/quota/bug-1243798.t
+@@ -33,8 +33,8 @@ sleep 2
+ 
+ #Remove size and contri xattr from /dir1
+ #Remove contri xattr from /dir1/dir2
+-setfattr -x trusted.glusterfs.quota.size $B0/$V0/dir1
+-setfattr -x trusted.glusterfs.quota.00000000-0000-0000-0000-000000000001.contri $B0/$V0/dir1
++setfattr -x trusted.glusterfs.quota.size.1 $B0/$V0/dir1
++setfattr -x trusted.glusterfs.quota.00000000-0000-0000-0000-000000000001.contri.1 $B0/$V0/dir1
+ contri=$(getfattr -d -m . -e hex $B0/$V0/dir1/dir2 | grep contri | awk -F= '{print $1}')
+ setfattr -x $contri $B0/$V0/dir1/dir2
+ 
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index e9985ad..e042ff6 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -3250,8 +3250,8 @@ dht_getxattr (call_frame_t *frame, xlator_t *this,
+                 return 0;
+         }
+ 
+-        if (key && (!strcmp (GF_XATTR_QUOTA_LIMIT_LIST, key) ||
+-                    !strcmp (GF_XATTR_QUOTA_LIMIT_LIST_OBJECT, key))) {
++        if (key && (!strcmp (QUOTA_LIMIT_KEY, key) ||
++                    !strcmp (QUOTA_LIMIT_OBJECTS_KEY, key))) {
+                 /* quota hardlimit and aggregated size of a directory is stored
+                  * in inode contexts of each brick. Hence its good enough that
+                  * we send getxattr for this key to any brick.
+diff --git a/xlators/cluster/stripe/src/stripe-helpers.c b/xlators/cluster/stripe/src/stripe-helpers.c
+index 3c12809..02ee6a4 100644
+--- a/xlators/cluster/stripe/src/stripe-helpers.c
++++ b/xlators/cluster/stripe/src/stripe-helpers.c
+@@ -51,7 +51,7 @@ stripe_aggregate (dict_t *this, char *key, data_t *value, void *data)
+ 
+         dst = data;
+ 
+-        if (strcmp (key, GF_XATTR_QUOTA_SIZE_KEY) == 0) {
++        if (strcmp (key, QUOTA_SIZE_KEY) == 0) {
+                 ret = dict_get_bin (dst, key, (void **)&size);
+                 if (ret < 0) {
+                         size = GF_CALLOC (1, sizeof (int64_t),
+diff --git a/xlators/cluster/stripe/src/stripe.c b/xlators/cluster/stripe/src/stripe.c
+index db36391..c3bf97f 100644
+--- a/xlators/cluster/stripe/src/stripe.c
++++ b/xlators/cluster/stripe/src/stripe.c
+@@ -5510,8 +5510,8 @@ stripe_getxattr (call_frame_t *frame, xlator_t *this,
+         loc_copy (&local->loc, loc);
+ 
+ 
+-        if (name && strncmp (name, GF_XATTR_QUOTA_SIZE_KEY,
+-                             strlen (GF_XATTR_QUOTA_SIZE_KEY)) == 0) {
++        if (name && strncmp (name, QUOTA_SIZE_KEY,
++                             strlen (QUOTA_SIZE_KEY)) == 0) {
+                 local->wind_count = priv->child_count;
+ 
+                 for (i = 0, trav=this->children; i < priv->child_count; i++,
+diff --git a/xlators/features/marker/src/marker-quota-helper.c b/xlators/features/marker/src/marker-quota-helper.c
+index df76f12..4aba599 100644
+--- a/xlators/features/marker/src/marker-quota-helper.c
++++ b/xlators/features/marker/src/marker-quota-helper.c
+@@ -260,19 +260,19 @@ mq_dict_set_contribution (xlator_t *this, dict_t *dict, loc_t *loc,
+                           uuid_t gfid, char *contri_key)
+ {
+         int32_t ret                  = -1;
+-        char    key[CONTRI_KEY_MAX]  = {0, };
++        char    key[QUOTA_KEY_MAX]   = {0, };
+ 
+         GF_VALIDATE_OR_GOTO ("marker", this, out);
+         GF_VALIDATE_OR_GOTO ("marker", dict, out);
+         GF_VALIDATE_OR_GOTO ("marker", loc, out);
+ 
+         if (gfid && !gf_uuid_is_null(gfid)) {
+-                GET_CONTRI_KEY (key, gfid, ret);
++                GET_CONTRI_KEY (this, key, gfid, ret);
+         } else if (loc->parent) {
+-                GET_CONTRI_KEY (key, loc->parent->gfid, ret);
++                GET_CONTRI_KEY (this, key, loc->parent->gfid, ret);
+         } else {
+                 /* nameless lookup, fetch contributions to all parents */
+-                GET_CONTRI_KEY (key, NULL, ret);
++                GET_CONTRI_KEY (this, key, NULL, ret);
+         }
+ 
+         if (ret < 0)
+@@ -283,7 +283,7 @@ mq_dict_set_contribution (xlator_t *this, dict_t *dict, loc_t *loc,
+                 goto out;
+ 
+         if (contri_key)
+-                strncpy (contri_key, key, CONTRI_KEY_MAX);
++                strncpy (contri_key, key, QUOTA_KEY_MAX);
+ 
+ out:
+         if (ret < 0)
+diff --git a/xlators/features/marker/src/marker-quota.c b/xlators/features/marker/src/marker-quota.c
+index 645faa4..bb65c87 100644
+--- a/xlators/features/marker/src/marker-quota.c
++++ b/xlators/features/marker/src/marker-quota.c
+@@ -211,10 +211,12 @@ _quota_dict_get_meta (xlator_t *this, dict_t *dict, char *key,
+ }
+ 
+ int32_t
+-quota_dict_set_size_meta (dict_t *dict, const quota_meta_t *meta)
++quota_dict_set_size_meta (xlator_t *this, dict_t *dict,
++                          const quota_meta_t *meta)
+ {
+-        int32_t         ret      = -ENOMEM;
+-        quota_meta_t   *value    = NULL;
++        int32_t         ret                        = -ENOMEM;
++        quota_meta_t   *value                      = NULL;
++        char            size_key[QUOTA_KEY_MAX]    = {0, };
+ 
+         value = GF_CALLOC (2, sizeof (quota_meta_t), gf_common_quota_meta_t);
+         if (value == NULL) {
+@@ -228,7 +230,10 @@ quota_dict_set_size_meta (dict_t *dict, const quota_meta_t *meta)
+         value[1].file_count = 0;
+         value[1].dir_count = hton64 (1);
+ 
+-        ret = dict_set_bin (dict, QUOTA_SIZE_KEY, value,
++        GET_SIZE_KEY (this, size_key, ret);
++        if (ret < 0)
++                goto out;
++        ret = dict_set_bin (dict, size_key, value,
+                             (sizeof (quota_meta_t) * 2));
+         if (ret < 0) {
+                 gf_log_callingfn ("quota", GF_LOG_ERROR, "dict set failed");
+@@ -285,7 +290,8 @@ mq_are_xattrs_set (xlator_t *this, loc_t *loc, gf_boolean_t *contri_set,
+                    gf_boolean_t *size_set)
+ {
+         int32_t        ret                         = -1;
+-        char           contri_key[CONTRI_KEY_MAX]  = {0, };
++        char           contri_key[QUOTA_KEY_MAX]   = {0, };
++        char           size_key[QUOTA_KEY_MAX]     = {0, };
+         quota_meta_t   meta                        = {0, };
+         struct iatt    stbuf                       = {0,};
+         dict_t        *dict                        = NULL;
+@@ -297,7 +303,7 @@ mq_are_xattrs_set (xlator_t *this, loc_t *loc, gf_boolean_t *contri_set,
+                 goto out;
+         }
+ 
+-        ret = mq_req_xattr (this, loc, dict, contri_key);
++        ret = mq_req_xattr (this, loc, dict, contri_key, size_key);
+         if (ret < 0)
+                 goto out;
+ 
+@@ -316,8 +322,7 @@ mq_are_xattrs_set (xlator_t *this, loc_t *loc, gf_boolean_t *contri_set,
+         *contri_set = _gf_true;
+         *size_set = _gf_true;
+         if (loc->inode->ia_type == IA_IFDIR) {
+-                ret = quota_dict_get_inode_meta (rsp_dict, QUOTA_SIZE_KEY,
+-                                                 &meta);
++                ret = quota_dict_get_inode_meta (rsp_dict, size_key, &meta);
+                 if (ret < 0 || meta.dir_count == 0)
+                         *size_set = _gf_false;
+         }
+@@ -361,7 +366,7 @@ mq_create_size_xattrs (xlator_t *this, quota_inode_ctx_t *ctx, loc_t *loc)
+                 goto out;
+         }
+ 
+-        ret = quota_dict_set_size_meta (dict, &size);
++        ret = quota_dict_set_size_meta (this, dict, &size);
+         if (ret < 0)
+                 goto out;
+ 
+@@ -582,7 +587,8 @@ _mq_get_metadata (xlator_t *this, loc_t *loc, quota_meta_t *contri,
+ {
+         int32_t            ret                         = -1;
+         quota_meta_t       meta                        = {0, };
+-        char               contri_key[CONTRI_KEY_MAX]  = {0, };
++        char               contri_key[QUOTA_KEY_MAX]   = {0, };
++        char               size_key[QUOTA_KEY_MAX]     = {0, };
+         dict_t            *dict                        = NULL;
+         dict_t            *rsp_dict                    = NULL;
+         struct iatt        stbuf                       = {0,};
+@@ -600,7 +606,10 @@ _mq_get_metadata (xlator_t *this, loc_t *loc, quota_meta_t *contri,
+         }
+ 
+         if (size && loc->inode->ia_type == IA_IFDIR) {
+-                ret = dict_set_int64 (dict, QUOTA_SIZE_KEY, 0);
++                GET_SIZE_KEY (this, size_key, ret);
++                if (ret < 0)
++                        goto out;
++                ret = dict_set_int64 (dict, size_key, 0);
+                 if (ret < 0) {
+                         gf_log (this->name, GF_LOG_ERROR, "dict_set failed.");
+                         goto out;
+@@ -625,7 +634,7 @@ _mq_get_metadata (xlator_t *this, loc_t *loc, quota_meta_t *contri,
+ 
+         if (size) {
+                 if (loc->inode->ia_type == IA_IFDIR) {
+-                        ret = quota_dict_get_meta (rsp_dict, QUOTA_SIZE_KEY,
++                        ret = quota_dict_get_meta (rsp_dict, size_key,
+                                                    &meta);
+                         if (ret < 0) {
+                                 gf_log (this->name, GF_LOG_ERROR,
+@@ -754,9 +763,9 @@ mq_remove_contri (xlator_t *this, loc_t *loc, quota_inode_ctx_t *ctx,
+                   inode_contribution_t *contri, quota_meta_t *delta)
+ {
+         int32_t              ret                         = -1;
+-        char                 contri_key[CONTRI_KEY_MAX]  = {0, };
++        char                 contri_key[QUOTA_KEY_MAX]   = {0, };
+ 
+-        GET_CONTRI_KEY (contri_key, contri->gfid, ret);
++        GET_CONTRI_KEY (this, contri_key, contri->gfid, ret);
+         if (ret < 0) {
+                 gf_log (this->name, GF_LOG_ERROR, "get contri_key "
+                         "failed for %s", uuid_utoa(contri->gfid));
+@@ -803,7 +812,7 @@ mq_update_contri (xlator_t *this, loc_t *loc, inode_contribution_t *contri,
+                   quota_meta_t *delta)
+ {
+         int32_t              ret                         = -1;
+-        char                 contri_key[CONTRI_KEY_MAX]  = {0, };
++        char                 contri_key[QUOTA_KEY_MAX]   = {0, };
+         dict_t              *dict                        = NULL;
+ 
+         GF_VALIDATE_OR_GOTO ("marker", loc, out);
+@@ -823,7 +832,7 @@ mq_update_contri (xlator_t *this, loc_t *loc, inode_contribution_t *contri,
+                 goto out;
+         }
+ 
+-        GET_CONTRI_KEY (contri_key, contri->gfid, ret);
++        GET_CONTRI_KEY (this, contri_key, contri->gfid, ret);
+         if (ret < 0) {
+                 gf_log (this->name, GF_LOG_ERROR, "get contri_key "
+                         "failed for %s", uuid_utoa(contri->gfid));
+@@ -889,7 +898,7 @@ mq_update_size (xlator_t *this, loc_t *loc, quota_meta_t *delta)
+                 goto out;
+         }
+ 
+-        ret = quota_dict_set_size_meta (dict, delta);
++        ret = quota_dict_set_size_meta (this, dict, delta);
+         if (ret < 0)
+                 goto out;
+ 
+@@ -1800,12 +1809,13 @@ mq_inspect_directory_xattr (xlator_t *this, quota_inode_ctx_t *ctx,
+                             inode_contribution_t *contribution, loc_t *loc,
+                             dict_t *dict, struct iatt buf)
+ {
+-        int32_t               ret                          = 0;
++        int32_t               ret                          = -1;
+         int8_t                dirty                        = -1;
+         quota_meta_t          size                         = {0, };
+         quota_meta_t          contri                       = {0, };
+         quota_meta_t          delta                        = {0, };
+-        char                  contri_key[CONTRI_KEY_MAX]   = {0, };
++        char                  contri_key[QUOTA_KEY_MAX]    = {0, };
++        char                  size_key[QUOTA_KEY_MAX]      = {0, };
+         gf_boolean_t          status                       = _gf_false;
+ 
+         ret = dict_get_int8 (dict, QUOTA_DIRTY_KEY, &dirty);
+@@ -1817,13 +1827,16 @@ mq_inspect_directory_xattr (xlator_t *this, quota_inode_ctx_t *ctx,
+                 dirty = 0;
+         }
+ 
+-        ret = _quota_dict_get_meta (this, dict, QUOTA_SIZE_KEY, &size,
++        GET_SIZE_KEY (this, size_key, ret);
++        if (ret < 0)
++                goto out;
++        ret = _quota_dict_get_meta (this, dict, size_key, &size,
+                                     IA_IFDIR, _gf_false);
+         if (ret < 0)
+                 goto create_xattr;
+ 
+         if (!loc_is_root(loc)) {
+-                GET_CONTRI_KEY (contri_key, contribution->gfid, ret);
++                GET_CONTRI_KEY (this, contri_key, contribution->gfid, ret);
+                 if (ret < 0)
+                         goto out;
+ 
+@@ -1888,7 +1901,7 @@ mq_inspect_file_xattr (xlator_t *this, quota_inode_ctx_t *ctx,
+         quota_meta_t          size                         = {0, };
+         quota_meta_t          contri                       = {0, };
+         quota_meta_t          delta                        = {0, };
+-        char                  contri_key[CONTRI_KEY_MAX]   = {0, };
++        char                  contri_key[QUOTA_KEY_MAX]    = {0, };
+         gf_boolean_t          status                       = _gf_false;
+ 
+         LOCK (&ctx->lock);
+@@ -1903,7 +1916,7 @@ mq_inspect_file_xattr (xlator_t *this, quota_inode_ctx_t *ctx,
+         }
+         UNLOCK (&ctx->lock);
+ 
+-        GET_CONTRI_KEY (contri_key, contribution->gfid, ret);
++        GET_CONTRI_KEY (this, contri_key, contribution->gfid, ret);
+         if (ret < 0)
+                 goto out;
+ 
+@@ -1980,9 +1993,10 @@ out:
+ 
+ int32_t
+ mq_req_xattr (xlator_t *this, loc_t *loc, dict_t *dict,
+-              char *contri_key)
++              char *contri_key, char *size_key)
+ {
+-        int32_t               ret       = -1;
++        int32_t               ret                = -1;
++        char                  key[QUOTA_KEY_MAX] = {0, };
+ 
+         GF_VALIDATE_OR_GOTO ("marker", this, out);
+         GF_VALIDATE_OR_GOTO ("marker", loc, out);
+@@ -1995,7 +2009,13 @@ mq_req_xattr (xlator_t *this, loc_t *loc, dict_t *dict,
+                         goto out;
+         }
+ 
+-        ret = dict_set_uint64 (dict, QUOTA_SIZE_KEY, 0);
++        GET_SIZE_KEY (this, key, ret);
++        if (ret < 0)
++                goto out;
++        if (size_key)
++                strncpy (size_key, key, QUOTA_KEY_MAX);
++
++        ret = dict_set_uint64 (dict, key, 0);
+         if (ret < 0)
+                 goto out;
+ 
+diff --git a/xlators/features/marker/src/marker-quota.h b/xlators/features/marker/src/marker-quota.h
+index 39e67e9..d655f12 100644
+--- a/xlators/features/marker/src/marker-quota.h
++++ b/xlators/features/marker/src/marker-quota.h
+@@ -24,7 +24,7 @@
+ #define QUOTA_DIRTY_KEY "trusted.glusterfs.quota.dirty"
+ 
+ #define CONTRIBUTION  "contri"
+-#define CONTRI_KEY_MAX 512
++#define QUOTA_KEY_MAX 512
+ #define READDIR_BUF 4096
+ 
+ 
+@@ -61,22 +61,40 @@
+                 ret = 0;                                \
+         } while (0);
+ 
+-#define GET_CONTRI_KEY(var, _gfid, _ret)                                  \
++#define GET_CONTRI_KEY(_this, var, _gfid, _ret)                           \
+         do {                                                              \
++                marker_conf_t  *_priv = _this->private;                   \
+                 if (_gfid != NULL) {                                      \
+                         char _gfid_unparsed[40];                          \
+                         gf_uuid_unparse (_gfid, _gfid_unparsed);          \
+-                        _ret = snprintf (var, CONTRI_KEY_MAX,             \
++                        _ret = snprintf (var, QUOTA_KEY_MAX,              \
+                                          QUOTA_XATTR_PREFIX               \
+-                                         ".%s.%s." CONTRIBUTION, "quota", \
+-                                         _gfid_unparsed);                 \
++                                         ".%s.%s." CONTRIBUTION ".%d",    \
++                                         "quota", _gfid_unparsed,         \
++                                         _priv->version);                 \
+                 } else {                                                  \
+-                        _ret = snprintf (var, CONTRI_KEY_MAX,             \
++                        _ret = snprintf (var, QUOTA_KEY_MAX,              \
+                                          QUOTA_XATTR_PREFIX               \
+-                                         ".%s.." CONTRIBUTION, "quota");  \
++                                         ".%s.." CONTRIBUTION ".%d",      \
++                                         "quota", _priv->version);        \
+                 }                                                         \
+         } while (0)
+ 
++#define GET_QUOTA_KEY(_this, var, key, _ret)                              \
++        do {                                                              \
++                marker_conf_t  *_priv = _this->private;                   \
++                if (_priv->version > 0)                                   \
++                        _ret = snprintf (var, QUOTA_KEY_MAX, "%s.%d",     \
++                                         key, _priv->version);            \
++                else                                                      \
++                        _ret = snprintf (var, QUOTA_KEY_MAX, "%s", key);  \
++        } while (0)
++
++#define GET_SIZE_KEY(_this, var, _ret)                                    \
++        {                                                                 \
++                GET_QUOTA_KEY (_this, var, QUOTA_SIZE_KEY, _ret);         \
++        }
++
+ #define QUOTA_SAFE_INCREMENT(lock, var)         \
+         do {                                    \
+                 LOCK (lock);                    \
+@@ -117,7 +135,7 @@ struct inode_contribution {
+ typedef struct inode_contribution inode_contribution_t;
+ 
+ int32_t
+-mq_req_xattr (xlator_t *, loc_t *, dict_t *, char *);
++mq_req_xattr (xlator_t *, loc_t *, dict_t *, char *, char *);
+ 
+ int32_t
+ mq_xattr_state (xlator_t *, loc_t *, dict_t *, struct iatt);
+diff --git a/xlators/features/marker/src/marker.c b/xlators/features/marker/src/marker.c
+index c80237a..41c3e1d 100644
+--- a/xlators/features/marker/src/marker.c
++++ b/xlators/features/marker/src/marker.c
+@@ -27,7 +27,7 @@
+ 
+ #define _GF_UID_GID_CHANGED 1
+ 
+-static char   *quota_external_xattrs[] = {
++static char *mq_ext_xattrs[] = {
+         QUOTA_SIZE_KEY,
+         QUOTA_LIMIT_KEY,
+         QUOTA_LIMIT_OBJECTS_KEY,
+@@ -40,6 +40,80 @@ fini (xlator_t *this);
+ int32_t
+ marker_start_setxattr (call_frame_t *, xlator_t *);
+ 
++/* When client/quotad request for quota xattrs,
++ * replace the key-name by adding the version number
++ * in end of the key-name.
++ * In the cbk, result value of xattrs for original
++ * key-name.
++ * Below function marker_key_replace_with_ver and
++ * marker_key_set_ver is used for setting/removing
++ * version for the key-name
++ */
++int
++marker_key_replace_with_ver (xlator_t *this, dict_t *dict)
++{
++        int                ret                     = -1;
++        int                i                       = 0;
++        marker_conf_t     *priv                    = NULL;
++        char               key[QUOTA_KEY_MAX]      = {0, };
++
++        priv = this->private;
++
++        if (dict == NULL || priv->version <= 0) {
++                ret = 0;
++                goto out;
++        }
++
++        for (i = 0; mq_ext_xattrs[i]; i++) {
++                if (dict_get (dict, mq_ext_xattrs[i])) {
++                        GET_QUOTA_KEY (this, key, mq_ext_xattrs[i], ret);
++                        if (ret < 0)
++                                goto out;
++
++                        ret = dict_set (dict, key,
++                                        dict_get (dict, mq_ext_xattrs[i]));
++                        if (ret < 0)
++                                goto out;
++
++                        dict_del (dict, mq_ext_xattrs[i]);
++                }
++        }
++
++        ret = 0;
++
++out:
++        return ret;
++}
++
++int
++marker_key_set_ver (xlator_t *this, dict_t *dict)
++{
++        int              ret                     = -1;
++        int              i                       = -1;
++        marker_conf_t   *priv                    = NULL;
++        char             key[QUOTA_KEY_MAX]      = {0, };
++
++        priv = this->private;
++
++        if (dict == NULL || priv->version <= 0) {
++                ret = 0;
++                goto out;
++        }
++
++        for (i = 0; mq_ext_xattrs[i]; i++) {
++                GET_QUOTA_KEY (this, key, mq_ext_xattrs[i], ret);
++                if (ret < 0)
++                        goto out;
++
++                if (dict_get (dict, key))
++                        dict_set (dict, mq_ext_xattrs[i], dict_get (dict, key));
++        }
++
++        ret = 0;
++out:
++        return ret;
++}
++
+ marker_local_t *
+ marker_local_ref (marker_local_t *local)
+ {
+@@ -336,7 +410,7 @@ marker_filter_internal_xattrs (xlator_t *this, dict_t *xattrs)
+ 
+         priv = this->private;
+         if (priv->feature_enabled & GF_QUOTA)
+-                ext = quota_external_xattrs;
++                ext = mq_ext_xattrs;
+ 
+         dict_foreach_match (xattrs, _is_quota_internal_xattr, ext,
+                             dict_remove_foreach_fn, NULL);
+@@ -348,6 +422,18 @@ marker_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                      int32_t op_ret, int32_t op_errno, dict_t *dict,
+                      dict_t *xdata)
+ {
++        int32_t     ret  = -1;
++
++        if (op_ret < 0)
++                goto unwind;
++
++        ret = marker_key_set_ver (this, dict);
++        if (ret < 0) {
++                op_ret = -1;
++                op_errno = ENOMEM;
++                goto unwind;
++        }
++
+         if (cookie) {
+                 gf_log (this->name, GF_LOG_DEBUG,
+                         "Filtering the quota extended attributes");
+@@ -373,6 +459,7 @@ marker_getxattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 marker_filter_internal_xattrs (frame->this, dict);
+         }
+ 
++unwind:
+         MARKER_STACK_UNWIND (getxattr, frame, op_ret, op_errno, dict, xdata);
+         return 0;
+ }
+@@ -381,13 +468,29 @@ int32_t
+ marker_getxattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                  const char *name, dict_t *xdata)
+ {
+-        gf_boolean_t    is_true  = _gf_false;
+-        marker_conf_t   *priv    = NULL;
+-        unsigned long   cookie   = 0;
+-        marker_local_t  *local   = NULL;
++        gf_boolean_t     is_true  = _gf_false;
++        marker_conf_t   *priv                       = NULL;
++        unsigned long    cookie                     = 0;
++        marker_local_t  *local                      = NULL;
++        char             key[QUOTA_KEY_MAX]         = {0, };
++        int32_t          ret                        = -1;
++        int32_t          i                          = 0;
+ 
+         priv = this->private;
+ 
++        if (name) {
++                for (i = 0; mq_ext_xattrs[i]; i++) {
++                        if (strcmp (name, mq_ext_xattrs[i]))
++                                continue;
++
++                        GET_QUOTA_KEY (this, key, mq_ext_xattrs[i], ret);
++                        if (ret < 0)
++                                goto out;
++                        name = key;
++                        break;
++                }
++        }
++
+         frame->local = mem_get0 (this->local_pool);
+         local = frame->local;
+         if (local == NULL)
+@@ -425,7 +528,6 @@ out:
+         return 0;
+ }
+ 
+-
+ int32_t
+ marker_setxattr_done (call_frame_t *frame)
+ {
+@@ -1202,7 +1304,7 @@ marker_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         marker_local_t *oplocal                         = NULL;
+         call_stub_t    *stub                            = NULL;
+         int32_t         ret                             = 0;
+-        char            contri_key[CONTRI_KEY_MAX]      = {0, };
++        char            contri_key[QUOTA_KEY_MAX]       = {0, };
+         loc_t           newloc                          = {0, };
+ 
+         local = (marker_local_t *) frame->local;
+@@ -1239,7 +1341,8 @@ marker_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+                 local->stub = stub;
+ 
+-                GET_CONTRI_KEY (contri_key, oplocal->loc.parent->gfid, ret);
++                GET_CONTRI_KEY (this, contri_key, oplocal->loc.parent->gfid,
++                                ret);
+                 if (ret < 0) {
+                         local->err = ENOMEM;
+                         goto quota_err;
+@@ -1303,7 +1406,7 @@ marker_do_rename (call_frame_t *frame, void *cookie, xlator_t *this,
+ {
+         marker_local_t       *local                      = NULL;
+         marker_local_t       *oplocal                    = NULL;
+-        char                  contri_key[CONTRI_KEY_MAX] = {0, };
++        char                  contri_key[QUOTA_KEY_MAX]  = {0, };
+         int32_t               ret                        = 0;
+         quota_meta_t          contribution               = {0, };
+ 
+@@ -1324,7 +1427,7 @@ marker_do_rename (call_frame_t *frame, void *cookie, xlator_t *this,
+                 goto err;
+         }
+ 
+-        GET_CONTRI_KEY (contri_key, oplocal->loc.parent->gfid, ret);
++        GET_CONTRI_KEY (this, contri_key, oplocal->loc.parent->gfid, ret);
+         if (ret < 0) {
+                 local->err = errno ? errno : ENOMEM;
+                 goto err;
+@@ -1351,7 +1454,7 @@ marker_get_oldpath_contribution (call_frame_t *lk_frame, void *cookie,
+         call_frame_t    *frame                      = NULL;
+         marker_local_t  *local                      = NULL;
+         marker_local_t  *oplocal                    = NULL;
+-        char             contri_key[CONTRI_KEY_MAX] = {0, };
++        char             contri_key[QUOTA_KEY_MAX]  = {0, };
+         int32_t          ret                        = 0;
+ 
+         local = lk_frame->local;
+@@ -1370,7 +1473,7 @@ marker_get_oldpath_contribution (call_frame_t *lk_frame, void *cookie,
+                 local->lk_frame = NULL;
+         }
+ 
+-        GET_CONTRI_KEY (contri_key, oplocal->loc.parent->gfid, ret);
++        GET_CONTRI_KEY (this, contri_key, oplocal->loc.parent->gfid, ret);
+         if (ret < 0) {
+                 local->err = errno ? errno : ENOMEM;
+                 goto err;
+@@ -2294,6 +2397,10 @@ marker_setxattr (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *dict,
+                 return 0;
+         }
+ 
++        ret = marker_key_replace_with_ver (this, dict);
++        if (ret < 0)
++                goto err;
++
+         if (priv->feature_enabled == 0)
+                 goto wind;
+ 
+@@ -2557,12 +2664,27 @@ int32_t
+ marker_removexattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
+                     const char *name, dict_t *xdata)
+ {
+-        int32_t          ret   = 0;
+-        marker_local_t  *local = NULL;
+-        marker_conf_t   *priv  = NULL;
++        int32_t          ret                  = -1;
++        int32_t          i                    = 0;
++        marker_local_t  *local                = NULL;
++        marker_conf_t   *priv                 = NULL;
++        char             key[QUOTA_KEY_MAX]   = {0, };
+ 
+         priv = this->private;
+ 
++        if (name) {
++                for (i = 0; mq_ext_xattrs[i]; i++) {
++                        if (strcmp (name, mq_ext_xattrs[i]))
++                                continue;
++
++                        GET_QUOTA_KEY (this, key, mq_ext_xattrs[i], ret);
++                        if (ret < 0)
++                                goto err;
++                        name = key;
++                        break;
++                }
++        }
++
+         if (priv->feature_enabled == 0)
+                 goto wind;
+ 
+@@ -2599,14 +2721,26 @@ marker_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                    int32_t op_ret, int32_t op_errno, inode_t *inode,
+                    struct iatt *buf, dict_t *dict, struct iatt *postparent)
+ {
+-        marker_conf_t  *priv    = NULL;
+-        marker_local_t *local   = NULL;
+-        dict_t         *xattrs  = NULL;
++        marker_conf_t  *priv                       = NULL;
++        marker_local_t *local                      = NULL;
++        dict_t         *xattrs                     = NULL;
++        int32_t         ret                        = -1;
++
+         priv = this->private;
++        local = (marker_local_t *) frame->local;
++        frame->local = NULL;
+ 
+         if (op_ret == -1) {
+                 gf_log (this->name, GF_LOG_TRACE, "lookup failed with %s",
+                         strerror (op_errno));
++                goto unwind;
++        }
++
++        ret = marker_key_set_ver (this, dict);
++        if (ret < 0) {
++                op_ret = -1;
++                op_errno = ENOMEM;
++                goto unwind;
+         }
+ 
+         if (dict && __has_quota_xattrs (dict)) {
+@@ -2621,10 +2755,7 @@ marker_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 xattrs = dict_ref (dict);
+         }
+ 
+-        local = (marker_local_t *) frame->local;
+-
+-        frame->local = NULL;
+-
++unwind:
+         STACK_UNWIND_STRICT (lookup, frame, op_ret, op_errno, inode, buf,
+                              xattrs, postparent);
+ 
+@@ -2656,9 +2787,9 @@ int32_t
+ marker_lookup (call_frame_t *frame, xlator_t *this,
+                loc_t *loc, dict_t *xattr_req)
+ {
+-        int32_t         ret     = 0;
+-        marker_local_t *local   = NULL;
+-        marker_conf_t  *priv    = NULL;
++        int32_t         ret                     = 0;
++        marker_local_t *local                   = NULL;
++        marker_conf_t  *priv                    = NULL;
+ 
+         priv = this->private;
+ 
+@@ -2666,6 +2797,10 @@ marker_lookup (call_frame_t *frame, xlator_t *this,
+         if (!xattr_req)
+                 goto err;
+ 
++        ret = marker_key_replace_with_ver (this, xattr_req);
++        if (ret < 0)
++                goto err;
++
+         if (priv->feature_enabled == 0)
+                 goto wind;
+ 
+@@ -2680,7 +2815,8 @@ marker_lookup (call_frame_t *frame, xlator_t *this,
+                 goto err;
+ 
+         if ((priv->feature_enabled & GF_QUOTA))
+-                mq_req_xattr (this, loc, xattr_req, NULL);
++                mq_req_xattr (this, loc, xattr_req, NULL, NULL);
++
+ wind:
+         STACK_WIND (frame, marker_lookup_cbk, FIRST_CHILD(this),
+                     FIRST_CHILD(this)->fops->lookup, loc, xattr_req);
+@@ -2712,7 +2848,6 @@ marker_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 goto out;
+         }
+ 
+-
+         list_for_each_entry (entry, &entries->list, list) {
+                 if (entry->inode == entry->inode->table->root) {
+                         inode_unref (parent);
+@@ -2736,6 +2871,13 @@ marker_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 inode_unref (parent);
+                 parent = inode_ref (entry->inode);
+                 loc_wipe (&loc);
++
++                ret = marker_key_set_ver (this, entry->dict);
++                if (ret < 0) {
++                        op_ret = -1;
++                        op_errno = ENOMEM;
++                        break;
++                }
+         }
+ 
+         if (parent)
+@@ -2794,10 +2936,16 @@ marker_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 }
+ 
+                 mq_xattr_state (this, &loc, entry->dict, entry->d_stat);
+-
+                 loc_wipe (&loc);
+                 GF_FREE (resolvedpath);
+                 resolvedpath = NULL;
++
++                ret = marker_key_set_ver (this, entry->dict);
++                if (ret < 0) {
++                        op_ret = -1;
++                        op_errno = ENOMEM;
++                        goto unwind;
++                }
+         }
+ 
+ unwind:
+@@ -2813,6 +2961,7 @@ marker_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
+         marker_conf_t  *priv  = NULL;
+         loc_t           loc   = {0, };
+         marker_local_t *local = NULL;
++        int             ret   = -1;
+ 
+         priv = this->private;
+ 
+@@ -2820,6 +2969,10 @@ marker_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
+         if (!dict)
+                 goto unwind;
+ 
++        ret = marker_key_replace_with_ver (this, dict);
++        if (ret < 0)
++                goto unwind;
++
+         if (dict_get (dict, GET_ANCESTRY_DENTRY_KEY)) {
+                 STACK_WIND (frame, marker_build_ancestry_cbk,
+                             FIRST_CHILD(this),
+@@ -2833,7 +2986,7 @@ marker_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
+ 
+                         loc.parent = local->loc.inode = inode_ref (fd->inode);
+ 
+-                        mq_req_xattr (this, &loc, dict, NULL);
++                        mq_req_xattr (this, &loc, dict, NULL, NULL);
+                 }
+ 
+                 STACK_WIND (frame, marker_readdirp_cbk,
+@@ -2982,6 +3135,7 @@ reconfigure (xlator_t *this, dict_t *options)
+         data_t         *data    = NULL;
+         gf_boolean_t    flag    = _gf_false;
+         marker_conf_t  *priv    = NULL;
++        int32_t         version = 0;
+ 
+         GF_ASSERT (this);
+         GF_ASSERT (this->private);
+@@ -3006,6 +3160,18 @@ reconfigure (xlator_t *this, dict_t *options)
+                         priv->feature_enabled |= GF_INODE_QUOTA;
+         }
+ 
++        data = dict_get (options, "quota-version");
++        if (data)
++                ret = gf_string2int32 (data->data, &version);
++
++        if (priv->feature_enabled) {
++                if (version >= 0)
++                        priv->version = version;
++                else
++                        gf_log (this->name, GF_LOG_ERROR, "Invalid quota "
++                                "version %d", priv->version);
++        }
++
+         data = dict_get (options, "xtime");
+         if (data) {
+                 ret = gf_string2boolean (data->data, &flag);
+@@ -3061,6 +3227,7 @@ init (xlator_t *this)
+         priv = this->private;
+ 
+         priv->feature_enabled = 0;
++        priv->version = 0;
+ 
+         LOCK_INIT (&priv->lock);
+ 
+@@ -3078,6 +3245,16 @@ init (xlator_t *this)
+                         priv->feature_enabled |= GF_INODE_QUOTA;
+         }
+ 
++        data = dict_get (options, "quota-version");
++        if (data)
++                ret = gf_string2int32 (data->data, &priv->version);
++
++        if (priv->feature_enabled && priv->version < 0) {
++                gf_log (this->name, GF_LOG_ERROR, "Invalid quota version %d",
++                        priv->version);
++                goto err;
++        }
++
+         data = dict_get (options, "xtime");
+         if (data) {
+                 ret = gf_string2boolean (data->data, &flag);
+diff --git a/xlators/features/marker/src/marker.h b/xlators/features/marker/src/marker.h
+index e6e1933..19f6547 100644
+--- a/xlators/features/marker/src/marker.h
++++ b/xlators/features/marker/src/marker.h
+@@ -147,6 +147,7 @@ struct marker_conf{
+         char        *marker_xattr;
+         uint64_t     quota_lk_owner;
+         gf_lock_t    lock;
++        int32_t      version;
+ };
+ typedef struct marker_conf marker_conf_t;
+ 
+diff --git a/xlators/features/quota/src/quota.c b/xlators/features/quota/src/quota.c
+index aceb6fc..940baea 100644
+--- a/xlators/features/quota/src/quota.c
++++ b/xlators/features/quota/src/quota.c
+@@ -874,6 +874,12 @@ quota_build_ancestry (inode_t *inode, quota_ancestry_built_t ancestry_cbk,
+                 goto err;
+         }
+ 
++        op_ret = dict_set_int8 (xdata_req, QUOTA_LIMIT_OBJECTS_KEY, 1);
++        if (op_ret < 0) {
++                op_errno = -op_ret;
++                goto err;
++        }
++
+         op_ret = dict_set_int8 (xdata_req, GET_ANCESTRY_DENTRY_KEY, 1);
+         if (op_ret < 0) {
+                 op_errno = -op_ret;
+diff --git a/xlators/lib/src/libxlator.h b/xlators/lib/src/libxlator.h
+index 20d5a32..9d21e71 100644
+--- a/xlators/lib/src/libxlator.h
++++ b/xlators/lib/src/libxlator.h
+@@ -31,10 +31,6 @@
+ #define UUID_SIZE 36
+ #define MARKER_UUID_TYPE    1
+ #define MARKER_XTIME_TYPE   2
+-#define GF_XATTR_QUOTA_SIZE_KEY "trusted.glusterfs.quota.size"
+-#define GF_XATTR_QUOTA_LIMIT_LIST "trusted.limit.list"
+-#define GF_XATTR_QUOTA_LIMIT_LIST_OBJECT "trusted.limit.objects"
+-
+ 
+ typedef int32_t (*xlator_specf_unwind_t) (call_frame_t *frame,
+                                           int op_ret, int op_errno,
+diff --git a/xlators/mgmt/glusterd/src/glusterd-quota.c b/xlators/mgmt/glusterd/src/glusterd-quota.c
+index 22dd3d3..762e90b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-quota.c
++++ b/xlators/mgmt/glusterd/src/glusterd-quota.c
+@@ -1212,8 +1212,7 @@ glusterd_remove_quota_limit (char *volname, char *path, char **op_errstr,
+         }
+ 
+         if (type == GF_QUOTA_OPTION_TYPE_REMOVE) {
+-                ret = sys_lremovexattr (abspath,
+-                                        "trusted.glusterfs.quota.limit-set");
++                ret = sys_lremovexattr (abspath, QUOTA_LIMIT_KEY);
+                 if (ret) {
+                         gf_asprintf (op_errstr, "removexattr failed on %s. "
+                                      "Reason : %s", abspath, strerror (errno));
+@@ -1222,8 +1221,7 @@ glusterd_remove_quota_limit (char *volname, char *path, char **op_errstr,
+         }
+ 
+         if (type == GF_QUOTA_OPTION_TYPE_REMOVE_OBJECTS) {
+-                ret = sys_lremovexattr (abspath,
+-                                "trusted.glusterfs.quota.limit-objects");
++                ret = sys_lremovexattr (abspath, QUOTA_LIMIT_OBJECTS_KEY);
+                 if (ret) {
+                         gf_asprintf (op_errstr, "removexattr failed on %s. "
+                                      "Reason : %s", abspath, strerror (errno));
+@@ -1499,19 +1497,33 @@ glusterd_op_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                         goto out;
+         }
+ 
++
++        if (GF_QUOTA_OPTION_TYPE_ENABLE == type)
++                volinfo->quota_version++;
++        ret = glusterd_store_volinfo (volinfo,
++                                      GLUSTERD_VOLINFO_VER_AC_INCREMENT);
++        if (ret) {
++                if (GF_QUOTA_OPTION_TYPE_ENABLE == type)
++                        volinfo->quota_version--;
++                goto out;
++        }
++
+         ret = glusterd_create_volfiles_and_notify_services (volinfo);
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                         GD_MSG_VOLFILE_CREATE_FAIL, "Unable to re-create "
+                                                   "volfiles");
++                if (GF_QUOTA_OPTION_TYPE_ENABLE == type) {
++                        /* rollback volinfo */
++                        volinfo->quota_version--;
++                        ret = glusterd_store_volinfo (volinfo,
++                                      GLUSTERD_VOLINFO_VER_AC_INCREMENT);
++                }
++
+                 ret = -1;
+                 goto out;
+         }
+ 
+-        ret = glusterd_store_volinfo (volinfo, GLUSTERD_VOLINFO_VER_AC_INCREMENT);
+-        if (ret)
+-                goto out;
+-
+         if (GLUSTERD_STATUS_STARTED == volinfo->status) {
+                 if (priv->op_version == GD_OP_VERSION_MIN)
+                         ret = priv->nfs_svc.manager (&(priv->nfs_svc), NULL, 0);
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 5e9c5f2..7329fc1 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -1012,6 +1012,12 @@ glusterd_volume_exclude_options_write (int fd, glusterd_volinfo_t *volinfo)
+                         goto out;
+         }
+ 
++        snprintf (buf, sizeof (buf), "%d", volinfo->quota_version);
++        ret = gf_store_save_value (fd, GLUSTERD_STORE_KEY_VOL_QUOTA_VERSION,
++                                   buf);
++        if (ret)
++                goto out;
++
+         ret = glusterd_volume_write_tier_details (fd, volinfo);
+ 
+         ret = glusterd_volume_write_snap_details (fd, volinfo);
+@@ -2671,6 +2677,9 @@ glusterd_store_update_volinfo (glusterd_volinfo_t *volinfo)
+                 } else if (!strncmp (key, GLUSTERD_STORE_KEY_COLD_TYPE,
+                                      strlen (key))) {
+                         volinfo->tier_info.cold_type = atoi (value);
++                } else if (!strncmp (key, GLUSTERD_STORE_KEY_VOL_QUOTA_VERSION,
++                            strlen (GLUSTERD_STORE_KEY_VOL_QUOTA_VERSION))) {
++                        volinfo->quota_version = atoi (value);
+                 } else {
+ 
+                         if (is_key_glusterd_hooks_friendly (key)) {
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.h b/xlators/mgmt/glusterd/src/glusterd-store.h
+index 5ba0add..4933adb 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.h
++++ b/xlators/mgmt/glusterd/src/glusterd-store.h
+@@ -63,6 +63,7 @@ typedef enum glusterd_store_ver_ac_{
+ #define GLUSTERD_STORE_KEY_PARENT_VOLNAME       "parent_volname"
+ #define GLUSTERD_STORE_KEY_VOL_OP_VERSION       "op-version"
+ #define GLUSTERD_STORE_KEY_VOL_CLIENT_OP_VERSION "client-op-version"
++#define GLUSTERD_STORE_KEY_VOL_QUOTA_VERSION    "quota-version"
+ 
+ #define GLUSTERD_STORE_KEY_COLD_TYPE            "cold_type"
+ #define GLUSTERD_STORE_KEY_COLD_COUNT           "cold_count"
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index a8b758d..009fb5c 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -2493,6 +2493,9 @@ glusterd_add_volume_to_dict (glusterd_volinfo_t *volinfo,
+         snprintf (key, sizeof (key), "%s%d.caps", prefix, count);
+         ret = dict_set_int32 (dict, key, volinfo->caps);
+ 
++        memset (key, 0, sizeof (key));
++        snprintf (key, sizeof (key), "%s%d.quota-version", prefix, count);
++        ret = dict_set_int32 (dict, key, volinfo->quota_version);
+ out:
+         GF_FREE (volume_id_str);
+         GF_FREE (rebalance_id_str);
+@@ -3573,6 +3576,11 @@ glusterd_import_volinfo (dict_t *peer_data, int count,
+         /*This is not present in older glusterfs versions, so ignore ret value*/
+         ret = dict_get_int32 (peer_data, key, &new_volinfo->caps);
+ 
++        memset (key, 0, sizeof (key));
++        snprintf (key, sizeof (key), "%s%d.quota_version", prefix, count);
++        /*This is not present in older glusterfs versions, so ignore ret value*/
++        ret = dict_get_int32 (peer_data, key, &new_volinfo->quota_version);
++
+         ret = glusterd_import_bricks (peer_data, count, new_volinfo, prefix);
+         if (ret)
+                 goto out;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index a497129..cb25dd8 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -1868,6 +1868,7 @@ brick_graph_add_marker (volgen_graph_t *graph, glusterd_volinfo_t *volinfo,
+         xlator_t        *xl = NULL;
+         char            tstamp_file[PATH_MAX] = {0,};
+         char            volume_id[64] = {0,};
++        char            buf[32]       = {0,};
+ 
+         if (!graph || !volinfo || !set_dict)
+                 goto out;
+@@ -1885,6 +1886,11 @@ brick_graph_add_marker (volgen_graph_t *graph, glusterd_volinfo_t *volinfo,
+         if (ret)
+                 goto out;
+ 
++        snprintf (buf, sizeof (buf), "%d", volinfo->quota_version);
++        ret = xlator_set_option (xl, "quota-version", buf);
++        if (ret)
++                goto out;
++
+ out:
+         return ret;
+ }
+diff --git a/xlators/mgmt/glusterd/src/glusterd.h b/xlators/mgmt/glusterd/src/glusterd.h
+index 2fdfa9b..b020b6a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.h
++++ b/xlators/mgmt/glusterd/src/glusterd.h
+@@ -414,6 +414,7 @@ struct glusterd_volinfo_ {
+         gd_quorum_status_t        quorum_status;
+ 
+         glusterd_snapdsvc_t       snapd;
++        int32_t                   quota_version;
+ };
+ 
+ typedef enum gd_snap_status_ {
+-- 
+1.7.1
+

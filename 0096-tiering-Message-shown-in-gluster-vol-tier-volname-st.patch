@@ -1,0 +1,53 @@
+From bcd840fbf3d8542fd8a77cd0e38400fb6838bf7e Mon Sep 17 00:00:00 2001
+From: Mohamed Ashiq <mliyazud@redhat.com>
+Date: Sat, 7 Nov 2015 00:19:48 +0530
+Subject: [PATCH 96/98] tiering:Message shown in gluster vol tier <volname> status output is incorrect
+
+    backport of http://review.gluster.org/12532
+
+Change-Id: I15a1a637090f1cc2f200d5c3582317e4aa3cf334
+BUG: 1275919
+Signed-off-by: Mohamed Ashiq <mliyazud@redhat.com>
+>Change-Id: I15a1a637090f1cc2f200d5c3582317e4aa3cf334
+>BUG: 1278927
+>Signed-off-by: Mohamed Ashiq <mliyazud@redhat.com>
+>Reviewed-on: http://review.gluster.org/12532
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61037
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-rpc-ops.c |    7 +++++--
+ 1 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 64ca5f7..c76f499 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -1836,7 +1836,9 @@ done:
+                                     rsp.op_errstr);
+         else {
+                 if (rsp.op_ret)
+-                        if (cmd == GF_DEFRAG_CMD_START_TIER) {
++
++                        if (cmd == GF_DEFRAG_CMD_START_TIER || cmd ==
++                            GF_DEFRAG_CMD_STATUS_TIER) {
+                                 cli_err ("Tiering Migration Functionality: %s:"
+                                          " failed%s%s", volname,
+                                          strlen (msg) ? ": " : "", msg);
+@@ -1845,7 +1847,8 @@ done:
+                                          volname, strlen (msg) ? ": " : "",
+                                          msg);
+                 else
+-                        if (cmd == GF_DEFRAG_CMD_START_TIER) {
++                        if (cmd == GF_DEFRAG_CMD_START_TIER || cmd ==
++                            GF_DEFRAG_CMD_STATUS_TIER) {
+                                 cli_out ("Tiering Migration Functionality: %s:"
+                                          " success%s%s", volname,
+                                          strlen (msg) ? ": " : "", msg);
+-- 
+1.7.1
+

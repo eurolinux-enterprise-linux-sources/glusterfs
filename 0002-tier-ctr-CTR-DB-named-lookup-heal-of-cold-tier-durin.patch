@@ -1,0 +1,374 @@
+From 0dd41b1bbd007095f982c6f8c06680caa67d9cff Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Tue, 4 Aug 2015 20:38:06 +0530
+Subject: [PATCH 02/23] tier/ctr: CTR DB named lookup heal of cold tier during attach tier
+
+Heal hardlink in the db for already existing data in the cold
+tier during attach tier. i.e during fix layout do lookup to files
+in the cold tier.
+
+CTR xlator on the  brick/server side does db update/insert of the hardlink on a namelookup.
+Currently the namedlookup is done synchronous to the fixlayout that is
+triggered by attach tier. This is not performant, adding more time to
+fixlayout. The performant approach is record the hardlinks on a compressed
+datastore and then do the namelookup asynchronously later, giving the ctr db
+eventual consistency
+
+backport of http://review.gluster.org/#/c/11828/
+
+>> Change-Id: I4ffc337fffe7d447804786851a9183a51b5044a9
+>> BUG: 1252586
+>> Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+>> Reviewed-on: http://review.gluster.org/11828
+>> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>> Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>> Tested-by: Dan Lambright <dlambrig@redhat.com>
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+
+Change-Id: Icb6e7df92bf3b9074b8a1ddcc12afe9fef5476aa
+BUG: 1271705
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59391
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ libglusterfs/src/glusterfs.h                       |    2 +
+ tests/basic/tier/legacy-many.t                     |  122 ++++++++++++++++++
+ xlators/cluster/dht/src/dht-rebalance.c            |  130 +++++++++++++++++++-
+ .../changetimerecorder/src/changetimerecorder.c    |    1 -
+ .../features/changetimerecorder/src/ctr-helper.h   |    8 +-
+ 5 files changed, 257 insertions(+), 6 deletions(-)
+ create mode 100644 tests/basic/tier/legacy-many.t
+
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index f23f19c..2a55648 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -244,6 +244,8 @@
+ #define CTR_RESPONSE_LINK_COUNT_XDATA "ctr_response_link_count"
+ #define CTR_REQUEST_LINK_COUNT_XDATA  "ctr_request_link_count"
+ 
++#define CTR_ATTACH_TIER_LOOKUP    "ctr_attach_tier_lookup"
++
+ #define GF_LOG_LRU_BUFSIZE_DEFAULT 5
+ #define GF_LOG_LRU_BUFSIZE_MIN 0
+ #define GF_LOG_LRU_BUFSIZE_MAX 20
+diff --git a/tests/basic/tier/legacy-many.t b/tests/basic/tier/legacy-many.t
+new file mode 100644
+index 0000000..1727549
+--- /dev/null
++++ b/tests/basic/tier/legacy-many.t
+@@ -0,0 +1,122 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++
++LAST_BRICK=3
++CACHE_BRICK_FIRST=4
++CACHE_BRICK_LAST=5
++DEMOTE_TIMEOUT=12
++PROMOTE_TIMEOUT=5
++MIGRATION_TIMEOUT=10
++DEMOTE_FREQ=60
++PROMOTE_FREQ=4
++TEST_DIR="test_files"
++NUM_FILES=20
++
++
++# Grab md5sum without file path (failed attempt notifications are discarded)
++function fingerprint {
++    md5sum $1 2> /dev/null | grep --only-matching -m 1 '^[0-9a-f]*'
++}
++
++# Create a large number of files. Store their md5 signatures.
++function create_many_files {
++    mkdir ${TEST_DIR}
++    for i in `seq 1 $NUM_FILES`; do
++        dd if=/dev/urandom of=./${TEST_DIR}/i$i bs=1048576 count=1;
++        id[i]=$(fingerprint "./${TEST_DIR}/i$i");
++    done
++}
++
++function confirm_tier_removed {
++    $CLI system getspec $V0 | grep $1
++    if [ $? == 0 ]; then
++        echo "1"
++    else
++        echo "0"
++    fi
++}
++
++function confirm_vol_stopped {
++    $CLI volume stop $1
++    if [ $? == 0 ]; then
++        echo "0"
++    else
++        echo "1"
++    fi
++}
++
++function check_counters {
++    index=0
++    ret=0
++    rm -f /tmp/tc*.txt
++    echo "0" > /tmp/tc2.txt
++
++    $CLI volume rebalance $V0 tier status | grep localhost > /tmp/tc.txt
++
++    promote=`cat /tmp/tc.txt |awk '{print $2}'`
++    demote=`cat /tmp/tc.txt |awk '{print $3}'`
++   if [ "${promote}" != "${1}" ]; then
++        echo "1" > /tmp/tc2.txt
++
++   elif [ "${demote}" != "${2}" ]; then
++        echo "2" > /tmp/tc2.txt
++   fi
++
++    # temporarily disable non-Linux tests.
++    case $OSTYPE in
++        NetBSD | FreeBSD | Darwin)
++            echo "0" > /tmp/tc2.txt
++            ;;
++    esac
++    cat /tmp/tc2.txt
++}
++
++function read_all {
++    for file in *
++    do
++        cat $file
++    done
++}
++
++cleanup
++
++TEST glusterd
++TEST pidof glusterd
++
++# Create distributed replica volume
++TEST $CLI volume create $V0 replica 2 $H0:$B0/${V0}{0..$LAST_BRICK}
++TEST $CLI volume start $V0
++
++TEST $CLI volume set $V0 performance.quick-read off
++TEST $CLI volume set $V0 performance.io-cache off
++TEST $CLI volume set $V0 features.ctr-enabled on
++
++TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
++
++# Create a number of "legacy" files before attaching tier
++cd $M0
++TEST create_many_files
++wait
++
++# Attach tier
++TEST $CLI volume attach-tier $V0 replica 2 $H0:$B0/${V0}$CACHE_BRICK_FIRST $H0:$B0/${V0}$CACHE_BRICK_LAST
++TEST $CLI volume rebalance $V0 tier status
++
++TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
++TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
++TEST $CLI volume set $V0 cluster.read-freq-threshold 0
++TEST $CLI volume set $V0 cluster.write-freq-threshold 0
++
++# Read "legacy" files
++drop_cache $M0
++cd ${TEST_DIR}
++TEST read_all
++
++# Test to make sure files were promoted as expected
++sleep $DEMOTE_TIMEOUT
++EXPECT_WITHIN $DEMOTE_TIMEOUT "0" check_counters 20 0
++
++cd;
++cleanup
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 6471d54..425c40f 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -2559,6 +2559,118 @@ gf_defrag_settle_hash (xlator_t *this, gf_defrag_info_t *defrag,
+         return 0;
+ }
+ 
++
++
++/* Function for doing a named lookup on file inodes during an attach tier
++ * So that a hardlink lookup heal i.e gfid to parent gfid lookup heal
++ * happens on pre-existing data. This is required so that the ctr database has
++ * hardlinks of all the exisitng file in the volume. CTR xlator on the
++ * brick/server side does db update/insert of the hardlink on a namelookup.
++ * Currently the namedlookup is done synchronous to the fixlayout that is
++ * triggered by attach tier. This is not performant, adding more time to
++ * fixlayout. The performant approach is record the hardlinks on a compressed
++ * datastore and then do the namelookup asynchronously later, giving the ctr db
++ * eventual consistency
++ * */
++int
++gf_fix_layout_tier_attach_lookup (xlator_t *this,
++                                 loc_t *parent_loc,
++                                 gf_dirent_t *file_dentry)
++{
++        int                      ret            = -1;
++        dict_t                  *lookup_xdata   = NULL;
++        dht_conf_t              *conf           = NULL;
++        loc_t                    file_loc       = {0,};
++        struct iatt              iatt           = {0,};
++
++        GF_VALIDATE_OR_GOTO ("tier", this, out);
++
++        GF_VALIDATE_OR_GOTO (this->name, parent_loc, out);
++
++        GF_VALIDATE_OR_GOTO (this->name, file_dentry, out);
++
++        GF_VALIDATE_OR_GOTO (this->name, this->private, out);
++
++        if (!parent_loc->inode) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_LOG_TIER_ERROR,
++                        "%s/%s parent is NULL", parent_loc->path,
++                        file_dentry->d_name);
++                goto out;
++        }
++
++
++        conf   = this->private;
++
++        loc_wipe (&file_loc);
++
++        if (gf_uuid_is_null (file_dentry->d_stat.ia_gfid)) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_LOG_TIER_ERROR,
++                        "%s/%s gfid not present", parent_loc->path,
++                        file_dentry->d_name);
++                goto out;
++        }
++
++        gf_uuid_copy (file_loc.gfid, file_dentry->d_stat.ia_gfid);
++
++        if (gf_uuid_is_null (parent_loc->gfid)) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_LOG_TIER_ERROR,
++                        "%s/%s"
++                        " gfid not present", parent_loc->path,
++                        file_dentry->d_name);
++                goto out;
++        }
++
++        gf_uuid_copy (file_loc.pargfid, parent_loc->gfid);
++
++
++        ret = dht_build_child_loc (this, &file_loc, parent_loc,
++                                                file_dentry->d_name);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_LOG_TIER_ERROR,
++                        "Child loc build failed");
++                ret = -1;
++                goto out;
++        }
++
++        lookup_xdata = dict_new ();
++        if (!lookup_xdata) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_LOG_TIER_ERROR,
++                        "Failed creating lookup dict for %s",
++                        file_dentry->d_name);
++                goto out;
++        }
++
++        ret = dict_set_int32 (lookup_xdata, CTR_ATTACH_TIER_LOOKUP, 1);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_LOG_TIER_ERROR,
++                        "Failed to set lookup flag");
++                goto out;
++        }
++
++        gf_uuid_copy (file_loc.parent->gfid, parent_loc->gfid);
++
++        /* Sending lookup to cold tier only */
++        ret = syncop_lookup (conf->subvolumes[0], &file_loc, &iatt,
++                        NULL, lookup_xdata, NULL);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_LOG_TIER_ERROR,
++                        "%s lookup failed", file_loc.path);
++                goto out;
++        }
++
++        ret = 0;
++
++out:
++
++        loc_wipe (&file_loc);
++
++        if (lookup_xdata)
++                dict_unref (lookup_xdata);
++
++        return ret;
++}
++
++
+ int
+ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+                   dict_t *fix_layout, dict_t *migrate_data)
+@@ -2574,6 +2686,8 @@ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+         struct iatt              iatt           = {0,};
+         inode_t                 *linked_inode   = NULL, *inode = NULL;
+ 
++
++
+         ret = syncop_lookup (this, loc, &iatt, NULL, NULL, NULL);
+         if (ret) {
+                 gf_log (this->name, GF_LOG_ERROR, "Lookup failed on %s",
+@@ -2635,10 +2749,22 @@ gf_defrag_fix_layout (xlator_t *this, gf_defrag_info_t *defrag, loc_t *loc,
+                         if (!strcmp (entry->d_name, ".") ||
+                             !strcmp (entry->d_name, ".."))
+                                 continue;
++                        if (!IA_ISDIR (entry->d_stat.ia_type)) {
++
++                                /* If its a fix layout during the attach
++                                 * tier operation do lookups on files
++                                 * on cold subvolume so that there is a
++                                 * CTR DB Lookup Heal triggered on existing
++                                 * data.
++                                 * */
++                                if (defrag->cmd ==
++                                        GF_DEFRAG_CMD_START_TIER) {
++                                        gf_fix_layout_tier_attach_lookup
++                                                (this, loc, entry);
++                                }
+ 
+-                        if (!IA_ISDIR (entry->d_stat.ia_type))
+                                 continue;
+-
++                        }
+                         loc_wipe (&entry_loc);
+ 
+                         ret =dht_build_child_loc (this, &entry_loc, loc,
+diff --git a/xlators/features/changetimerecorder/src/changetimerecorder.c b/xlators/features/changetimerecorder/src/changetimerecorder.c
+index 8acd811..6ef3d76 100644
+--- a/xlators/features/changetimerecorder/src/changetimerecorder.c
++++ b/xlators/features/changetimerecorder/src/changetimerecorder.c
+@@ -214,7 +214,6 @@ ctr_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         gf_boolean_t    _is_heal_needed         = _gf_false;
+ 
+         CTR_IS_DISABLED_THEN_GOTO(this, out);
+-        CTR_IF_INTERNAL_FOP_THEN_GOTO (frame, dict, out);
+ 
+         /* if the lookup failed lookup dont do anything*/
+         if (op_ret == -1) {
+diff --git a/xlators/features/changetimerecorder/src/ctr-helper.h b/xlators/features/changetimerecorder/src/ctr-helper.h
+index d6521d2..516dfd4 100644
+--- a/xlators/features/changetimerecorder/src/ctr-helper.h
++++ b/xlators/features/changetimerecorder/src/ctr-helper.h
+@@ -282,10 +282,12 @@ do {\
+  * */
+ #define CTR_IS_INTERNAL_FOP(frame, dict)\
+         (AFR_SELF_HEAL_FOP (frame) \
+-        || REBALANCE_FOP (frame) \
+-        || TIER_REBALANCE_FOP (frame) \
++        || (REBALANCE_FOP (frame) && dict && \
++            !dict_get (dict, CTR_ATTACH_TIER_LOOKUP)) \
++        || (TIER_REBALANCE_FOP (frame) && dict && \
++           !dict_get (dict, CTR_ATTACH_TIER_LOOKUP)) \
+         || (dict && \
+-        dict_get (dict, GLUSTERFS_INTERNAL_FOP_KEY)))
++            dict_get (dict, GLUSTERFS_INTERNAL_FOP_KEY)))
+ 
+ /**
+  * ignore internal fops for all clients except AFR self-heal daemon
+-- 
+1.7.1
+

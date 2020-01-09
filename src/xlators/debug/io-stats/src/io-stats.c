@@ -37,6 +37,7 @@
 #include "defaults.h"
 #include "logging.h"
 #include "cli1-xdr.h"
+#include "statedump.h"
 
 #define MAX_LIST_MEMBERS 100
 
@@ -86,9 +87,10 @@ struct ios_stat_head {
 };
 
 struct ios_lat {
-        double  min;
-        double  max;
-        double  avg;
+        double      min;
+        double      max;
+        double      avg;
+        uint64_t    total;
 };
 
 struct ios_global_stats {
@@ -381,6 +383,7 @@ ios_stat_unref (struct ios_stat *iosstat)
         UNLOCK (&iosstat->lock);
 
         if (cleanup) {
+                LOCK_DESTROY (&iosstat->lock);
                 GF_FREE (iosstat);
                 iosstat = NULL;
         }
@@ -447,7 +450,7 @@ ios_stat_add_to_list (struct ios_stat_head *list_head, uint64_t value,
                         if (cnt == list_head->members)
                                 last = entry;
 
-                        if (!uuid_compare (iosstat->gfid,
+                        if (!gf_uuid_compare (iosstat->gfid,
                             entry->iosstat->gfid)) {
                                 list_entry = entry;
                                 found = cnt;
@@ -478,11 +481,13 @@ ios_stat_add_to_list (struct ios_stat_head *list_head, uint64_t value,
                         new->value = value;
                         ios_stat_ref (iosstat);
                         list_add_tail (&new->list, &tmp->list);
-                        stat = last->iosstat;
-                        last->iosstat = NULL;
-                        ios_stat_unref (stat);
-                        list_del (&last->list);
-                        GF_FREE (last);
+                        if (last) {
+                                stat = last->iosstat;
+                                last->iosstat = NULL;
+                                ios_stat_unref (stat);
+                                list_del (&last->list);
+                                GF_FREE (last);
+                        }
                         if (reposition == MAX_LIST_MEMBERS)
                                 list_head->min_cnt = value;
                         else if (min_count) {
@@ -723,13 +728,13 @@ io_stats_dump_global_to_logfp (xlator_t *this, struct ios_global_stats *stats,
                 ios_log (this, logfp, "\nTIMESTAMP \t\t\t THROUGHPUT(KBPS)"
                          "\tFILE NAME");
                 list_head = &conf->thru_list[IOS_STATS_THRU_READ];
-                ios_dump_throughput_stats(list_head, this, logfp, IOS_STATS_THRU_READ);
+                ios_dump_throughput_stats(list_head, this, logfp, IOS_STATS_TYPE_READ);
 
                 ios_log (this, logfp, "\n======Write Throughput File Stats======");
                 ios_log (this, logfp, "\nTIMESTAMP \t\t\t THROUGHPUT(KBPS)"
                          "\tFILE NAME");
                 list_head = &conf->thru_list[IOS_STATS_THRU_WRITE];
-                ios_dump_throughput_stats (list_head, this, logfp, IOS_STATS_THRU_WRITE);
+                ios_dump_throughput_stats (list_head, this, logfp, IOS_STATS_TYPE_WRITE);
         }
         return 0;
 }
@@ -1051,6 +1056,8 @@ update_ios_latency_stats (struct ios_global_stats   *stats, double elapsed,
 
         GF_ASSERT (stats);
 
+        stats->latency[op].total += elapsed;
+
         if (!stats->latency[op].min)
                 stats->latency[op].min = elapsed;
         if (stats->latency[op].min > elapsed)
@@ -1251,7 +1258,7 @@ io_stats_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto unwind;
         }
         iosstat->filename = gf_strdup (path);
-        uuid_copy (iosstat->gfid, buf->ia_gfid);
+        gf_uuid_copy (iosstat->gfid, buf->ia_gfid);
         LOCK_INIT (&iosstat->lock);
         ios_inode_ctx_set (fd->inode, this, iosstat);
 
@@ -1301,7 +1308,7 @@ io_stats_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                      gf_io_stats_mt_ios_stat);
                 if (iosstat) {
                         iosstat->filename = gf_strdup (path);
-                        uuid_copy (iosstat->gfid, fd->inode->gfid);
+                        gf_uuid_copy (iosstat->gfid, fd->inode->gfid);
                         LOCK_INIT (&iosstat->lock);
                         ios_inode_ctx_set (fd->inode, this, iosstat);
                 }
@@ -1544,6 +1551,9 @@ io_stats_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         struct ios_stat *iosstat = NULL;
         char   *path = frame->local;
 
+        if (!path)
+                goto unwind;
+
         UPDATE_PROFILE_STATS (frame, MKDIR);
         if (op_ret < 0)
                 goto unwind;
@@ -1552,7 +1562,7 @@ io_stats_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (iosstat) {
                 LOCK_INIT (&iosstat->lock);
                 iosstat->filename = gf_strdup(path);
-                uuid_copy (iosstat->gfid, buf->ia_gfid);
+                gf_uuid_copy (iosstat->gfid, buf->ia_gfid);
                 ios_inode_ctx_set (inode, this, iosstat);
         }
 
@@ -1974,7 +1984,8 @@ int
 io_stats_mkdir (call_frame_t *frame, xlator_t *this,
                 loc_t *loc, mode_t mode, mode_t umask, dict_t *xdata)
 {
-        frame->local = gf_strdup (loc->path);
+        if (loc->path)
+                frame->local = gf_strdup (loc->path);
 
         START_FOP_LATENCY (frame);
 
@@ -2088,7 +2099,8 @@ int
 io_stats_open (call_frame_t *frame, xlator_t *this, loc_t *loc,
                int32_t flags, fd_t *fd, dict_t *xdata)
 {
-        frame->local = gf_strdup (loc->path);
+        if (loc->path)
+                frame->local = gf_strdup (loc->path);
 
         START_FOP_LATENCY (frame);
 
@@ -2105,7 +2117,8 @@ io_stats_create (call_frame_t *frame, xlator_t *this,
                  loc_t *loc, int32_t flags, mode_t mode,
                  mode_t umask, fd_t *fd, dict_t *xdata)
 {
-        frame->local = gf_strdup (loc->path);
+        if (loc->path)
+                frame->local = gf_strdup (loc->path);
 
         START_FOP_LATENCY (frame);
 
@@ -2660,6 +2673,69 @@ io_stats_clear (struct ios_conf *conf)
         return ret;
 }
 
+int32_t
+io_priv (xlator_t *this)
+{
+        int                 i;
+        char                key[GF_DUMP_MAX_BUF_LEN];
+        char                key_prefix_cumulative[GF_DUMP_MAX_BUF_LEN];
+        char                key_prefix_incremental[GF_DUMP_MAX_BUF_LEN];
+        double              min, max, avg;
+        uint64_t            count, total;
+        struct ios_conf    *conf = NULL;
+
+        conf = this->private;
+        if (!conf)
+                return -1;
+
+        if(!conf->count_fop_hits || !conf->measure_latency)
+                return -1;
+
+        gf_proc_dump_write("cumulative.data_read", "%"PRIu64,
+                                                conf->cumulative.data_read);
+        gf_proc_dump_write("cumulative.data_written", "%"PRIu64,
+                                                conf->cumulative.data_written);
+
+        gf_proc_dump_write("incremental.data_read", "%"PRIu64,
+                                                conf->incremental.data_read);
+        gf_proc_dump_write("incremental.data_written", "%"PRIu64,
+                                                conf->incremental.data_written);
+
+        snprintf (key_prefix_cumulative, GF_DUMP_MAX_BUF_LEN, "%s.cumulative",
+                                                                    this->name);
+        snprintf (key_prefix_incremental, GF_DUMP_MAX_BUF_LEN, "%s.incremental",
+                                                                    this->name);
+
+        for (i = 0; i < GF_FOP_MAXVALUE; i++) {
+                count = conf->cumulative.fop_hits[i];
+                total = conf->cumulative.latency[i].total;
+                min = conf->cumulative.latency[i].min;
+                max = conf->cumulative.latency[i].max;
+                avg = conf->cumulative.latency[i].avg;
+
+                gf_proc_dump_build_key (key, key_prefix_cumulative,
+                                        (char *)gf_fop_list[i]);
+
+                gf_proc_dump_write (key,"%"PRId64",%"PRId64",%.03f,%.03f,%.03f",
+                                    count, total, min, max, avg);
+
+                count = conf->incremental.fop_hits[i];
+                total = conf->incremental.latency[i].total;
+                min = conf->incremental.latency[i].min;
+                max = conf->incremental.latency[i].max;
+                avg = conf->incremental.latency[i].avg;
+
+                gf_proc_dump_build_key (key, key_prefix_incremental,
+                                        (char *)gf_fop_list[i]);
+
+                gf_proc_dump_write (key,"%"PRId64",%"PRId64",%.03f,%.03f,%.03f",
+                                    count, total, min, max, avg);
+
+        }
+
+        return 0;
+}
+
 int
 reconfigure (xlator_t *this, dict_t *options)
 {
@@ -2723,7 +2799,8 @@ reconfigure (xlator_t *this, dict_t *options)
 
         ret = 0;
 out:
-        gf_log (this->name, GF_LOG_DEBUG, "reconfigure returning %d", ret);
+        gf_log (this ? this->name : "io-stats",
+                        GF_LOG_DEBUG, "reconfigure returning %d", ret);
         return ret;
 }
 
@@ -2745,6 +2822,17 @@ mem_acct_init (xlator_t *this)
         }
 
         return ret;
+}
+
+void
+ios_conf_destroy (struct ios_conf *conf)
+{
+        if (!conf)
+                return;
+
+        ios_destroy_top_stats (conf);
+        LOCK_DESTROY (&conf->lock);
+        GF_FREE(conf);
 }
 
 int
@@ -2782,12 +2870,13 @@ init (xlator_t *this)
 
         conf = GF_CALLOC (1, sizeof(*conf), gf_io_stats_mt_ios_conf);
 
-        if (!conf) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "Out of memory.");
-                return -1;
-        }
+        if (!conf)
+                goto out;
 
+        /*
+         * Init it just after calloc, so that we are sure the lock is inited
+         * in case of error paths.
+         */
         LOCK_INIT (&conf->lock);
 
         gettimeofday (&conf->cumulative.started_at, NULL);
@@ -2795,7 +2884,7 @@ init (xlator_t *this)
 
         ret = ios_init_top_stats (conf);
         if (ret)
-                return -1;
+                goto out;
 
         GF_OPTION_INIT ("dump-fd-stats", conf->dump_fd_stats, bool, out);
 
@@ -2838,12 +2927,13 @@ init (xlator_t *this)
         this->private = conf;
         ret = 0;
 out:
-        if (!this->private)
+        if (!this->private) {
+                ios_conf_destroy (conf);
                 ret = -1;
+        }
 
         return ret;
 }
-
 
 void
 fini (xlator_t *this)
@@ -2854,15 +2944,9 @@ fini (xlator_t *this)
                 return;
 
         conf = this->private;
-
-        if (!conf)
-                return;
         this->private = NULL;
 
-        ios_destroy_top_stats (conf);
-
-        GF_FREE(conf);
-
+        ios_conf_destroy (conf);
         gf_log (this->name, GF_LOG_INFO,
                 "io-stats translator unloaded");
         return;
@@ -2984,6 +3068,10 @@ notify (xlator_t *this, int32_t event, void *data, ...)
 out:
         return ret;
 }
+
+struct xlator_dumpops dumpops = {
+        .priv    = io_priv
+};
 
 struct xlator_fops fops = {
         .stat        = io_stats_stat,

@@ -1,0 +1,81 @@
+From 6bc286c8d8f9a1e34d7f6c3d6e04efa4bc808083 Mon Sep 17 00:00:00 2001
+From: Manikandan Selvaganesh <mselvaga@redhat.com>
+Date: Mon, 5 Oct 2015 12:59:18 +0530
+Subject: [PATCH 29/67] tier/cli : throw a warning when user issues a detach-tier commit/force
+            command
+
+> Change-Id: Idf7664d509156ce46ef4308ffc07fb556a0aedd2
+> BUG: 1268755
+> Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+> Reviewed-on: http://review.gluster.org/12297
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: mohammed rafi  kc <rkavunga@redhat.com>
+> Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: Idf7664d509156ce46ef4308ffc07fb556a0aedd2
+BUG: 1236052
+Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59377
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-cmd-parser.c |    4 +++-
+ cli/src/cli-cmd-volume.c |    3 ++-
+ cli/src/cli.h            |    2 +-
+ 3 files changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index ffe945b..ab18aa1 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -1762,7 +1762,7 @@ out:
+ 
+ int32_t
+ cli_cmd_volume_detach_tier_parse (const char **words, int wordcount,
+-                                  dict_t **options)
++                                  dict_t **options, int *question)
+ {
+         int      ret = -1;
+         char    *word = NULL;
+@@ -1794,8 +1794,10 @@ cli_cmd_volume_detach_tier_parse (const char **words, int wordcount,
+         if (!strcmp(word, "start")) {
+                 command = GF_OP_CMD_DETACH_START;
+         } else if (!strcmp(word, "commit")) {
++                *question = 1;
+                 command = GF_OP_CMD_DETACH_COMMIT;
+         } else if (!strcmp(word, "force")) {
++                *question = 1;
+                 command = GF_OP_CMD_DETACH_COMMIT_FORCE;
+         } else if (!strcmp(word, "stop"))
+                 command = GF_OP_CMD_STOP_DETACH_TIER;
+diff --git a/cli/src/cli-cmd-volume.c b/cli/src/cli-cmd-volume.c
+index 4f71e21..c23f31b 100644
+--- a/cli/src/cli-cmd-volume.c
++++ b/cli/src/cli-cmd-volume.c
+@@ -1001,7 +1001,8 @@ do_cli_cmd_volume_detach_tier (struct cli_state *state,
+         if (!frame)
+                 goto out;
+ 
+-        ret = cli_cmd_volume_detach_tier_parse(words, wordcount, &options);
++        ret = cli_cmd_volume_detach_tier_parse(words, wordcount, &options,
++                                               &need_question);
+         if (ret) {
+                 cli_usage_out (word->pattern);
+                 parse_error = 1;
+diff --git a/cli/src/cli.h b/cli/src/cli.h
+index ccf5576..5931579 100644
+--- a/cli/src/cli.h
++++ b/cli/src/cli.h
+@@ -274,7 +274,7 @@ cli_cmd_volume_add_brick_parse (const char **words, int wordcount,
+ 
+ int32_t
+ cli_cmd_volume_detach_tier_parse (const char **words, int wordcount,
+-                                  dict_t **options);
++                                  dict_t **options, int *question);
+ 
+ int32_t
+ cli_cmd_volume_tier_parse (const char **words, int wordcount,
+-- 
+1.7.1
+

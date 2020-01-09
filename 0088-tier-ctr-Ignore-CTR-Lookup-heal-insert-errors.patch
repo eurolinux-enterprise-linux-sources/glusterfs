@@ -1,0 +1,77 @@
+From a8984e39e3da012167b5bea870b262a3d711f68b Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Tue, 3 Nov 2015 12:08:16 +0530
+Subject: [PATCH 88/98] tier/ctr: Ignore CTR Lookup heal insert errors
+
+CTR doesnt read from the DB, so to make sure that file records are
+created it does a heal during a lookup. It remembers the decision in
+the inode context cache and retrys periodically. When the volume is
+restarted it looses all the inode cache from the previous time and CTR
+lookup heals tries the heal again, but this time it finds that the records
+are already there from sql and logs this error, and remembers this until the
+volume is restarted or inode is flushed out of inode cache of the brick.
+
+Solution: the log levels should be reduced to trace for this case and
+customers need not see this.
+
+Backport of http://review.gluster.org/#/c/12491/
+
+Change-Id: I33bef7f38512861845af54c5f7c560b1ef43d92a
+BUG: 1276248
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60998
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ libglusterfs/src/gfdb/gfdb_data_store.c     |    3 ++-
+ libglusterfs/src/gfdb/gfdb_sqlite3.c        |    3 ++-
+ libglusterfs/src/gfdb/gfdb_sqlite3_helper.c |    5 ++++-
+ 3 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/libglusterfs/src/gfdb/gfdb_data_store.c b/libglusterfs/src/gfdb/gfdb_data_store.c
+index 937c7c6..e7ff815 100644
+--- a/libglusterfs/src/gfdb/gfdb_data_store.c
++++ b/libglusterfs/src/gfdb/gfdb_data_store.c
+@@ -382,7 +382,8 @@ insert_record (gfdb_conn_node_t *_conn_node,
+                 ret = db_operations_t->insert_record_op (gf_db_connection,
+                                                         gfdb_db_record);
+                 if (ret) {
+-                        gf_msg (GFDB_DATA_STORE, GF_LOG_ERROR, 0,
++                        gf_msg (GFDB_DATA_STORE, _gfdb_log_level (GF_LOG_ERROR,
++                                gfdb_db_record->ignore_errors), 0,
+                                 LG_MSG_INSERT_OR_UPDATE_FAILED, "Insert/Update"
+                                 " operation failed");
+                 }
+diff --git a/libglusterfs/src/gfdb/gfdb_sqlite3.c b/libglusterfs/src/gfdb/gfdb_sqlite3.c
+index 224c6ba..642aa76 100644
+--- a/libglusterfs/src/gfdb/gfdb_sqlite3.c
++++ b/libglusterfs/src/gfdb/gfdb_sqlite3.c
+@@ -538,7 +538,8 @@ int gf_sqlite3_insert(void *db_conn, gfdb_db_record_t *gfdb_db_record)
+         case GFDB_FOP_WIND:
+                 ret = gf_sql_insert_wind (sql_conn, gfdb_db_record);
+                 if (ret) {
+-                        gf_msg (GFDB_STR_SQLITE3, GF_LOG_ERROR, 0,
++                        gf_msg (GFDB_STR_SQLITE3, _gfdb_log_level (GF_LOG_ERROR,
++                                gfdb_db_record->ignore_errors), 0,
+                                 LG_MSG_INSERT_FAILED, "Failed wind insert");
+                         goto out;
+                 }
+diff --git a/libglusterfs/src/gfdb/gfdb_sqlite3_helper.c b/libglusterfs/src/gfdb/gfdb_sqlite3_helper.c
+index 266840a..426fab0 100644
+--- a/libglusterfs/src/gfdb/gfdb_sqlite3_helper.c
++++ b/libglusterfs/src/gfdb/gfdb_sqlite3_helper.c
+@@ -795,7 +795,10 @@ gf_sql_insert_wind (gf_sql_connection_t  *sql_conn,
+                                         gfdb_db_record->link_consistency,
+                                         gfdb_db_record->ignore_errors);
+                         if (ret) {
+-                                gf_msg (GFDB_STR_SQLITE3, GF_LOG_ERROR, 0,
++                                gf_msg (GFDB_STR_SQLITE3,
++                                        _gfdb_log_level (GF_LOG_ERROR,
++                                                gfdb_db_record->ignore_errors),
++                                        0,
+                                         LG_MSG_INSERT_FAILED, "Failed "
+                                         "inserting link in DB");
+                                 goto out;
+-- 
+1.7.1
+

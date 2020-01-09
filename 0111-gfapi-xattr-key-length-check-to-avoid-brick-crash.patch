@@ -1,0 +1,216 @@
+From 3fab6f72ec0323841e1ebff1e439c1e80854f91b Mon Sep 17 00:00:00 2001
+From: Milind Changire <mchangir@redhat.com>
+Date: Tue, 17 Nov 2015 13:16:34 +0530
+Subject: [PATCH 111/131] gfapi: xattr key length check to avoid brick crash
+
+Added check to test if xattr key length > max allowed for OS
+distribution and return:
+EINVAL if xattr name pointer is NULL or 0 length
+ENAMETOOLONG if xattr name length > max allowed for distribution
+
+Function exit path for invalid input is via label "out:" for
+mandatory __GLFS_EXIT_FS.
+
+Typically the VFS does this in the kernel for us.  But since we are
+bypassing the VFS by providing the libgfapi to talk directly to the
+brick process, we need to add such checks.
+
+Change-Id: I90f5b2046d47885276ce5eff61afb4139e3d0208
+BUG: 1272929
+Reviewed-on: http://review.gluster.org/#/c/12207/
+Reviewed-on: http://review.gluster.org/#/c/12387/
+Signed-off-by: Milind Changire <mchangir@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61657
+Reviewed-by: Raghavendra Talur <rtalur@redhat.com>
+Reviewed-by: Soumya Koduri <skoduri@redhat.com>
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Tested-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+---
+ api/src/glfs-fops.c       |   50 +++++++++++++++++++++++++++++++++++++++++++++
+ api/src/glfs-handleops.c  |   20 ++++++++++++++++++
+ libglusterfs/src/compat.h |   16 ++++++++++++++
+ 3 files changed, 86 insertions(+), 0 deletions(-)
+
+diff --git a/api/src/glfs-fops.c b/api/src/glfs-fops.c
+index f17d721..dd9bece 100644
+--- a/api/src/glfs-fops.c
++++ b/api/src/glfs-fops.c
+@@ -2846,12 +2846,25 @@ glfs_getxattr_common (struct glfs *fs, const char *path, const char *name,
+         DECLARE_OLD_THIS;
+         __GLFS_ENTRY_VALIDATE_FS (fs, invalid_fs);
+ 
++        if (!name || *name == '\0') {
++                ret = -1;
++                errno = EINVAL;
++                goto out;
++        }
++
++        if (strlen(name) > GF_XATTR_NAME_MAX) {
++                ret = -1;
++                errno = ENAMETOOLONG;
++                goto out;
++        }
++
+ 	subvol = glfs_active_subvol (fs);
+ 	if (!subvol) {
+ 		ret = -1;
+ 		errno = EIO;
+ 		goto out;
+ 	}
++
+ retry:
+ 	if (follow)
+ 		ret = glfs_resolve (fs, subvol, path, &loc, &iatt, reval);
+@@ -2916,6 +2929,18 @@ pub_glfs_fgetxattr (struct glfs_fd *glfd, const char *name, void *value,
+         DECLARE_OLD_THIS;
+ 	__GLFS_ENTRY_VALIDATE_FD (glfd, invalid_fs);
+ 
++        if (!name || *name == '\0') {
++                ret = -1;
++                errno = EINVAL;
++                goto out;
++        }
++
++        if (strlen(name) > GF_XATTR_NAME_MAX) {
++                ret = -1;
++                errno = ENAMETOOLONG;
++                goto out;
++        }
++
+ 	subvol = glfs_active_subvol (glfd->fs);
+ 	if (!subvol) {
+ 		ret = -1;
+@@ -3109,12 +3134,25 @@ glfs_setxattr_common (struct glfs *fs, const char *path, const char *name,
+         DECLARE_OLD_THIS;
+         __GLFS_ENTRY_VALIDATE_FS (fs, invalid_fs);
+ 
++        if (!name || *name == '\0') {
++                ret = -1;
++                errno = EINVAL;
++                goto out;
++        }
++
++        if (strlen(name) > GF_XATTR_NAME_MAX) {
++                ret = -1;
++                errno = ENAMETOOLONG;
++                goto out;
++        }
++
+ 	subvol = glfs_active_subvol (fs);
+ 	if (!subvol) {
+ 		ret = -1;
+ 		errno = EIO;
+ 		goto out;
+ 	}
++
+ retry:
+ 	if (follow)
+ 		ret = glfs_resolve (fs, subvol, path, &loc, &iatt, reval);
+@@ -3184,6 +3222,18 @@ pub_glfs_fsetxattr (struct glfs_fd *glfd, const char *name, const void *value,
+         DECLARE_OLD_THIS;
+ 	__GLFS_ENTRY_VALIDATE_FD (glfd, invalid_fs);
+ 
++        if (!name || *name == '\0') {
++                ret = -1;
++                errno = EINVAL;
++                goto out;
++        }
++
++        if (strlen(name) > GF_XATTR_NAME_MAX) {
++                ret = -1;
++                errno = ENAMETOOLONG;
++                goto out;
++        }
++
+ 	subvol = glfs_active_subvol (glfd->fs);
+ 	if (!subvol) {
+ 		ret = -1;
+diff --git a/api/src/glfs-handleops.c b/api/src/glfs-handleops.c
+index 0f201a2..0fe5b35 100644
+--- a/api/src/glfs-handleops.c
++++ b/api/src/glfs-handleops.c
+@@ -326,6 +326,16 @@ glfs_h_getxattrs_common (struct glfs *fs, struct glfs_object *object,
+                 return -1;
+         }
+ 
++        if (!name || *name == '\0') {
++                errno = EINVAL;
++                return -1;
++        }
++
++        if (strlen(name) > GF_XATTR_NAME_MAX) {
++                errno = ENAMETOOLONG;
++                return -1;
++        }
++
+         /* get the active volume */
+         subvol = glfs_active_subvol (fs);
+         if (!subvol) {
+@@ -476,6 +486,16 @@ pub_glfs_h_setxattrs (struct glfs *fs, struct glfs_object *object,
+                 return -1;
+         }
+ 
++        if (!name || *name == '\0') {
++                errno = EINVAL;
++                return -1;
++        }
++
++        if (strlen(name) > GF_XATTR_NAME_MAX) {
++                errno = ENAMETOOLONG;
++                return -1;
++        }
++
+         DECLARE_OLD_THIS;
+         __GLFS_ENTRY_VALIDATE_FS (fs, invalid_fs);
+ 
+diff --git a/libglusterfs/src/compat.h b/libglusterfs/src/compat.h
+index 1522257..9f994db 100644
+--- a/libglusterfs/src/compat.h
++++ b/libglusterfs/src/compat.h
+@@ -44,6 +44,7 @@
+ #ifndef _PATH_UMOUNT
+ #define _PATH_UMOUNT "/bin/umount"
+ #endif
++#define GF_XATTR_NAME_MAX       XATTR_NAME_MAX
+ #endif /* GF_LINUX_HOST_OS */
+ 
+ #ifdef HAVE_XATTR_H
+@@ -80,6 +81,7 @@
+ #ifdef GF_DARWIN_HOST_OS
+ #include <machine/endian.h>
+ #include <libkern/OSByteOrder.h>
++#include <sys/xattr.h>
+ 
+ #define htobe16(x) OSSwapHostToBigInt16(x)
+ #define htole16(x) OSSwapHostToLittleInt16(x)
+@@ -132,8 +134,18 @@ enum {
+ #ifdef __FreeBSD__
+ #undef ino_t
+ #define ino_t uint64_t
++#include <sys/types.h>
++#include <sys/extattr.h>
++/* Using NAME_MAX since EXTATTR_MAXNAMELEN is inside a preprocessor conditional
++ * for the kernel
++ */
++#define GF_XATTR_NAME_MAX       NAME_MAX
+ #endif /* __FreeBSD__ */
+ 
++#ifdef __NetBSD__
++#define GF_XATTR_NAME_MAX       XATTR_NAME_MAX
++#endif
++
+ #ifndef ino64_t
+ #define ino64_t ino_t
+ #endif
+@@ -482,4 +494,8 @@ int gf_mkostemp (char *tmpl, int suffixlen, int flags);
+ 
+ int gf_umount_lazy(char *xlname, char *path, int rmdir);
+ 
++#ifndef GF_XATTR_NAME_MAX
++#error 'Please define GF_XATTR_NAME_MAX for your OS distribution.'
++#endif
++
+ #endif /* __COMPAT_H__ */
+-- 
+1.7.1
+

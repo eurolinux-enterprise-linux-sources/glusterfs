@@ -1,0 +1,49 @@
+From 67df45db5929c63f46828b83ccb07b731f60bd3a Mon Sep 17 00:00:00 2001
+From: anand <anekkunt@redhat.com>
+Date: Tue, 15 Sep 2015 12:05:51 +0530
+Subject: [PATCH 30/67] systemd/spec/glusterd: Adding EnvironmentFile in glusterd systemctrl service file.
+
+Issue: glusterd was not running in debug mode, this is because of
+"systemctrl start glusterd" was not reading configuration from glusterd-sysconfig file.
+
+Fix: Set glusterd-sysconfig file as "EnvironmentFile"  and pass args to glusterd.
+
+Backport of:
+>Change-Id: I6a032a2e86e5a25c39199ddf953bfbd6590d53b6
+>BUG: 1263087
+>Signed-off-by: anand <anekkunt@redhat.com>
+>Reviewed-on: http://review.gluster.org/12175
+>Reviewed-by: Anoop C S <anoopcs@redhat.com>
+>Reviewed-by: Niels de Vos <ndevos@redhat.com>
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+
+Change-Id: I9df304ba62045ec618ededdfa1b2cf88235af516
+BUG: 1262627
+Signed-off-by: anand <anekkunt@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59493
+Reviewed-by: Kaushal Madappa <kaushal@redhat.com>
+Reviewed-by: Krishnan Parthasarathi <kparthas@redhat.com>
+Tested-by: Krishnan Parthasarathi <kparthas@redhat.com>
+---
+ extras/systemd/glusterd.service.in |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/extras/systemd/glusterd.service.in b/extras/systemd/glusterd.service.in
+index a5d260d..5f962a6 100644
+--- a/extras/systemd/glusterd.service.in
++++ b/extras/systemd/glusterd.service.in
+@@ -7,7 +7,9 @@ Before=network-online.target
+ Type=forking
+ PIDFile=@localstatedir@/run/glusterd.pid
+ LimitNOFILE=65536
+-ExecStart=@prefix@/sbin/glusterd -p @localstatedir@/run/glusterd.pid
++Environment="LOG_LEVEL=INFO"
++EnvironmentFile=-@sysconfdir@/sysconfig/glusterd
++ExecStart=@prefix@/sbin/glusterd -p @localstatedir@/run/glusterd.pid  --log-level $LOG_LEVEL $GLUSTERD_OPTIONS
+ KillMode=process
+ 
+ [Install]
+-- 
+1.7.1
+

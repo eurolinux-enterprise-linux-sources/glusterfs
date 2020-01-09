@@ -1,0 +1,67 @@
+From 7f5c7271cd6ed1b99954e321fafcc813d17f2125 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Mon, 9 Nov 2015 16:43:21 +0530
+Subject: [PATCH 124/131] glusterd: brick failed to start
+
+brick volfiles are generated in post validate, if
+it is running version higher than GLUSTER_3_7_3,
+else will be running in syncop.
+
+If the code fall back to syncop, and volume is stopped
+then we were returning the operation with out generating
+volfiles.
+
+back port of >
+>Change-Id: I3b16ee29de19c5d34e45d77d6b7e4b665c2a4653
+>BUG: 1282322
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12552
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+>(cherry picked from commit 571cbcf56ef865d64ebdb1621c791fe467501e52)
+back port of >
+>Change-Id: I3b16ee29de19c5d34e45d77d6b7e4b665c2a4653
+>BUG: 1279351
+>Reviewed-on: http://review.gluster.org/12585
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: I57bcf99a05fcb615aa6cf9ffa927f57637baf61e
+BUG: 1278408
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61981
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index 4d40ced..d448312 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -1342,7 +1342,7 @@ glusterd_op_perform_add_bricks (glusterd_volinfo_t *volinfo, int32_t count,
+ 
+         ret = 0;
+         if (GLUSTERD_STATUS_STARTED != volinfo->status)
+-                goto out;
++                goto generate_volfiles;
+ 
+         ret = generate_brick_volfiles (volinfo);
+         if (ret)
+@@ -1418,6 +1418,8 @@ glusterd_op_perform_add_bricks (glusterd_volinfo_t *volinfo, int32_t count,
+                               _glusterd_restart_gsync_session, &param);
+         }
+         volinfo->caps = caps;
++
++generate_volfiles:
+         if (conf->op_version <= GD_OP_VERSION_3_7_3) {
+                ret = glusterd_create_volfiles_and_notify_services (volinfo);
+         } else {
+-- 
+1.7.1
+

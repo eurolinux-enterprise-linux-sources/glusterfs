@@ -348,7 +348,7 @@ svs_fill_ino_from_gfid (struct iatt *buf)
         GF_VALIDATE_OR_GOTO (this->name, buf, out);
 
         /* consider least significant 8 bytes of value out of gfid */
-        if (uuid_is_null (buf->ia_gfid)) {
+        if (gf_uuid_is_null (buf->ia_gfid)) {
                 buf->ia_ino = -1;
                 goto out;
         }
@@ -380,7 +380,7 @@ svs_iatt_fill (uuid_t gfid, struct iatt *buf)
         buf->ia_blocks = 8;
         buf->ia_size = 4096;
 
-        uuid_copy (buf->ia_gfid, gfid);
+        gf_uuid_copy (buf->ia_gfid, gfid);
         svs_fill_ino_from_gfid (buf);
 
         buf->ia_prot = ia_prot_from_st_mode (0755);
@@ -475,7 +475,7 @@ __svs_initialise_snapshot_volume (xlator_t *this, const char *name,
                                        24007);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "setting the "
-                        "volfile srever for snap volume %s "
+                        "volfile server for snap volume %s "
                         "failed", dirent->name);
                 goto out;
         }

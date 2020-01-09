@@ -1,0 +1,182 @@
+From 9785d79077c88a1114bfca9add9640bb2e8a579c Mon Sep 17 00:00:00 2001
+From: Bala.FA <barumuga@redhat.com>
+Date: Wed, 17 Jun 2015 21:34:52 +0530
+Subject: [PATCH 57/67] build: add pretrans check
+
+This patch adds pretrans check for client-xlators, ganesha and
+python-gluster sub-packages.
+
+Label: DOWNSTREAM ONLY
+
+Bug: 1232641
+Change-Id: I454016319832c11902c0ca79a79fbbcf8ac0a121
+Signed-off-by: Bala.FA <barumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/50967
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60140
+Tested-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in |  127 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 files changed, 127 insertions(+), 0 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 75aea39..9de6d69 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -1544,6 +1544,47 @@ end
+ 
+ 
+ 
++%pretrans client-xlators -p <lua>
++if not posix.access("/bin/bash", "x") then
++    -- initial installation, no shell, no running glusterfsd
++    return 0
++end
++
++-- TODO: move this completely to a lua script
++-- For now, we write a temporary bash script and execute that.
++
++script = [[#!/bin/sh
++pidof -c -o %PPID -x glusterfsd &>/dev/null
++
++if [ $? -eq 0 ]; then
++   pushd . > /dev/null 2>&1
++   for volume in /var/lib/glusterd/vols/*; do cd $volume;
++       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
++       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
++       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
++          exit 1;
++       fi
++   done
++
++   popd > /dev/null 2>&1
++   exit 1;
++fi
++]]
++
++-- rpm in RHEL5 does not have os.tmpname()
++-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
++tmpname = "/tmp/glusterfs-client-xlators_pretrans_" .. os.date("%s")
++tmpfile = io.open(tmpname, "w")
++tmpfile:write(script)
++tmpfile:close()
++ok, how, val = os.execute("/bin/bash " .. tmpname)
++os.remove(tmpname)
++if not (ok == 0) then
++   error("Detected running glusterfs processes", ok)
++end
++
++
++
+ %pretrans devel -p <lua>
+ if not posix.access("/bin/bash", "x") then
+     -- initial installation, no shell, no running glusterfsd
+@@ -1626,6 +1667,47 @@ end
+ 
+ 
+ 
++%pretrans ganesha -p <lua>
++if not posix.access("/bin/bash", "x") then
++    -- initial installation, no shell, no running glusterfsd
++    return 0
++end
++
++-- TODO: move this completely to a lua script
++-- For now, we write a temporary bash script and execute that.
++
++script = [[#!/bin/sh
++pidof -c -o %PPID -x glusterfsd &>/dev/null
++
++if [ $? -eq 0 ]; then
++   pushd . > /dev/null 2>&1
++   for volume in /var/lib/glusterd/vols/*; do cd $volume;
++       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
++       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
++       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
++          exit 1;
++       fi
++   done
++
++   popd > /dev/null 2>&1
++   exit 1;
++fi
++]]
++
++-- rpm in RHEL5 does not have os.tmpname()
++-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
++tmpname = "/tmp/glusterfs-ganesha_pretrans_" .. os.date("%s")
++tmpfile = io.open(tmpname, "w")
++tmpfile:write(script)
++tmpfile:close()
++ok, how, val = os.execute("/bin/bash " .. tmpname)
++os.remove(tmpname)
++if not (ok == 0) then
++   error("Detected running glusterfs processes", ok)
++end
++
++
++
+ %if ( 0%{!?_without_georeplication:1} )
+ %pretrans geo-replication -p <lua>
+ if not posix.access("/bin/bash", "x") then
+@@ -1710,6 +1792,47 @@ end
+ 
+ 
+ 
++%pretrans -n python-gluster -p <lua>
++if not posix.access("/bin/bash", "x") then
++    -- initial installation, no shell, no running glusterfsd
++    return 0
++end
++
++-- TODO: move this completely to a lua script
++-- For now, we write a temporary bash script and execute that.
++
++script = [[#!/bin/sh
++pidof -c -o %PPID -x glusterfsd &>/dev/null
++
++if [ $? -eq 0 ]; then
++   pushd . > /dev/null 2>&1
++   for volume in /var/lib/glusterd/vols/*; do cd $volume;
++       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
++       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
++       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
++          exit 1;
++       fi
++   done
++
++   popd > /dev/null 2>&1
++   exit 1;
++fi
++]]
++
++-- rpm in RHEL5 does not have os.tmpname()
++-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
++tmpname = "/tmp/python-gluster_pretrans_" .. os.date("%s")
++tmpfile = io.open(tmpname, "w")
++tmpfile:write(script)
++tmpfile:close()
++ok, how, val = os.execute("/bin/bash " .. tmpname)
++os.remove(tmpname)
++if not (ok == 0) then
++   error("Detected running glusterfs processes", ok)
++end
++
++
++
+ %if ( 0%{!?_without_rdma:1} )
+ %pretrans rdma -p <lua>
+ if not posix.access("/bin/bash", "x") then
+@@ -1847,6 +1970,10 @@ end
+ * Tue Aug 18 2015 Niels de Vos <ndevos@redhat.com>
+ - Include missing directories for glusterfind hooks scripts (#1225465)
+ 
++* Thu Jun 18 2015 Bala.FA <barumuga@redhat.com>
++- add pretrans check for client-xlators, ganesha and python-gluster
++  sub-packages (#1232641)
++
+ * Thu Jun 18 2015 Niels de Vos <ndevos@redhat.com>
+ - glusterfs-devel for client-builds should not depend on -server (#1227029)
+ 
+-- 
+1.7.1
+

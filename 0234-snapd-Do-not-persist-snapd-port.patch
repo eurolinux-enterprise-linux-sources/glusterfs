@@ -1,0 +1,71 @@
+From ced43344979ef4fdf9a22570d69852e6599113bf Mon Sep 17 00:00:00 2001
+From: Avra Sengupta <asengupt@redhat.com>
+Date: Wed, 30 Dec 2015 16:37:05 +0530
+Subject: [PATCH 234/237] snapd: Do not persist snapd port
+
+Backport of http://review.gluster.org/#/c/13119/
+
+Currently snapd persists the port it uses
+to sign-in with glusterd, without checking
+if that particular port is being used by any
+other process. As a result, it might erroneously
+sign out any other process using the same port.
+
+Hence forcing snapd to ignore the persisted port,
+and using a new one while coming up.
+
+Change-Id: Ibb9ec3762aac445f03d96e85660585be4ab27bcb
+BUG: 1277944
+Signed-off-by: Avra Sengupta <asengupt@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/65079
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-snapd-svc.c |   22 +++++++++++-----------
+ 1 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c b/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c
+index 2ec7200..2df94eb 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapd-svc.c
+@@ -294,18 +294,19 @@ glusterd_snapdsvc_start (glusterd_svc_t *svc, int flags)
+                          "--brick-name", snapd_id,
+                          "-S", svc->conn.sockpath, NULL);
+ 
+-        snapd_port = volinfo->snapd.port;
++
++        snapd_port = pmap_registry_alloc (THIS);
+         if (!snapd_port) {
+-                snapd_port = pmap_registry_alloc (THIS);
+-                if (!snapd_port) {
+-                        snprintf (msg, sizeof (msg), "Could not allocate port "
+-                                  "for snapd service for volume %s",
+-                                  volinfo->volname);
+-                        runner_log (&runner, this->name, GF_LOG_DEBUG, msg);
+-                        ret = -1;
+-                        goto out;
+-                }
++                snprintf (msg, sizeof (msg), "Could not allocate port "
++                          "for snapd service for volume %s",
++                          volinfo->volname);
++                runner_log (&runner, this->name, GF_LOG_DEBUG, msg);
++                ret = -1;
++                goto out;
+         }
++
++        volinfo->snapd.port = snapd_port;
++
+         runner_add_arg (&runner, "--brick-port");
+         runner_argprintf (&runner, "%d", snapd_port);
+         runner_add_arg (&runner, "--xlator-option");
+@@ -326,7 +327,6 @@ glusterd_snapdsvc_start (glusterd_svc_t *svc, int flags)
+                 }
+                 synclock_lock (&priv->big_lock);
+         }
+-        volinfo->snapd.port = snapd_port;
+ 
+ out:
+         return ret;
+-- 
+1.7.1
+

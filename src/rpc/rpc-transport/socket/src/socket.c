@@ -31,9 +31,15 @@
 #include "xdr-nfs3.h"
 #include "rpcsvc.h"
 
+/* for TCP_USER_TIMEOUT */
+#if !defined(TCP_USER_TIMEOUT) && defined(GF_LINUX_HOST_OS)
+#include <linux/tcp.h>
+#else
+#include <netinet/tcp.h>
+#endif
+
 #include <fcntl.h>
 #include <errno.h>
-#include <netinet/tcp.h>
 #include <rpc/xdr.h>
 #include <sys/ioctl.h>
 #define GF_LOG_ERRNO(errno) ((errno == ENOTCONN) ? GF_LOG_DEBUG : GF_LOG_ERROR)
@@ -43,18 +49,44 @@
 #define SSL_OWN_CERT_OPT    "transport.socket.ssl-own-cert"
 #define SSL_PRIVATE_KEY_OPT "transport.socket.ssl-private-key"
 #define SSL_CA_LIST_OPT     "transport.socket.ssl-ca-list"
+#define SSL_CERT_DEPTH_OPT  "transport.socket.ssl-cert-depth"
+#define SSL_CIPHER_LIST_OPT "transport.socket.ssl-cipher-list"
+#define SSL_DH_PARAM_OPT    "transport.socket.ssl-dh-param"
+#define SSL_EC_CURVE_OPT    "transport.socket.ssl-ec-curve"
+#define SSL_CRL_PATH_OPT    "transport.socket.ssl-crl-path"
 #define OWN_THREAD_OPT      "transport.socket.own-thread"
 
 /* TBD: do automake substitutions etc. (ick) to set these. */
+#if !defined(DEFAULT_ETC_SSL)
+#  ifdef GF_LINUX_HOST_OS
+#    define DEFAULT_ETC_SSL "/etc/ssl"
+#  endif
+#  ifdef GF_BSD_HOST_OS
+#    define DEFAULT_ETC_SSL "/etc/openssl"
+#  endif
+#  ifdef GF_DARWIN_HOST_OS
+#    define DEFAULT_ETC_SSL "/usr/local/etc/openssl"
+#  endif
+#  if !defined(DEFAULT_ETC_SSL)
+#    define DEFAULT_ETC_SSL "/etc/ssl"
+#  endif
+#endif
+
 #if !defined(DEFAULT_CERT_PATH)
-#define DEFAULT_CERT_PATH   "/etc/ssl/glusterfs.pem"
+#define DEFAULT_CERT_PATH   DEFAULT_ETC_SSL "/glusterfs.pem"
 #endif
 #if !defined(DEFAULT_KEY_PATH)
-#define DEFAULT_KEY_PATH    "/etc/ssl/glusterfs.key"
+#define DEFAULT_KEY_PATH    DEFAULT_ETC_SSL "/glusterfs.key"
 #endif
 #if !defined(DEFAULT_CA_PATH)
-#define DEFAULT_CA_PATH     "/etc/ssl/glusterfs.ca"
+#define DEFAULT_CA_PATH     DEFAULT_ETC_SSL "/glusterfs.ca"
 #endif
+#if !defined(DEFAULT_VERIFY_DEPTH)
+#define DEFAULT_VERIFY_DEPTH 1
+#endif
+#define DEFAULT_CIPHER_LIST "EECDH:EDH:HIGH:!3DES:!RC4:!DES:!MD5:!aNULL:!eNULL"
+#define DEFAULT_DH_PARAM   DEFAULT_ETC_SSL "/dhparam.pem"
+#define DEFAULT_EC_CURVE   "prime256v1"
 
 #define POLL_MASK_INPUT  (POLLIN | POLLPRI)
 #define POLL_MASK_OUTPUT (POLLOUT)
@@ -262,7 +294,7 @@ out:
 #define ssl_read_one(t,b,l)  ssl_do((t),(b),(l),(SSL_trinary_func *)SSL_read)
 #define ssl_write_one(t,b,l) ssl_do((t),(b),(l),(SSL_trinary_func *)SSL_write)
 
-static int
+static char *
 ssl_setup_connection (rpc_transport_t *this, int server)
 {
 	X509             *peer = NULL;
@@ -313,7 +345,7 @@ ssl_setup_connection (rpc_transport_t *this, int server)
 		NID_commonName, peer_CN, sizeof(peer_CN)-1);
 	peer_CN[sizeof(peer_CN)-1] = '\0';
 	gf_log(this->name,GF_LOG_INFO,"peer CN = %s", peer_CN);
-	return 0;
+        return gf_strdup(peer_CN);
 
 	/* Error paths. */
 ssl_error:
@@ -323,17 +355,20 @@ free_ssl:
 	SSL_free(priv->ssl_ssl);
         priv->ssl_ssl = NULL;
 done:
-	return ret;
+	return NULL;
 }
 
 
 static void
 ssl_teardown_connection (socket_private_t *priv)
 {
-        SSL_shutdown(priv->ssl_ssl);
-        SSL_clear(priv->ssl_ssl);
-        SSL_free(priv->ssl_ssl);
-        priv->ssl_ssl = NULL;
+        if (priv->ssl_ssl) {
+                SSL_shutdown(priv->ssl_ssl);
+                SSL_clear(priv->ssl_ssl);
+                SSL_free(priv->ssl_ssl);
+                priv->ssl_ssl = NULL;
+        }
+        priv->use_ssl = _gf_false;
 }
 
 
@@ -495,12 +530,19 @@ __socket_rwv (rpc_transport_t *this, struct iovec *vector, int count,
                         --opcount;
                         continue;
                 }
-                if (write) {
+                if (priv->use_ssl && !priv->ssl_ssl) {
+                        /*
+                         * We could end up here with priv->ssl_ssl still NULL
+                         * if (a) the connection failed and (b) some fool
+                         * called other socket functions anyway.  Demoting to
+                         * non-SSL might be insecure, so just fail it outright.
+                         */
+                        ret = -1;
+                } else if (write) {
 			if (priv->use_ssl) {
-				ret = ssl_write_one(this,
-					opvector->iov_base, opvector->iov_len);
-			}
-			else {
+                                ret = ssl_write_one (this, opvector->iov_base,
+                                                     opvector->iov_len);
+			} else {
 				ret = writev (sock, opvector, IOV_MIN(opcount));
 			}
 
@@ -546,7 +588,7 @@ __socket_rwv (rpc_transport_t *this, struct iovec *vector, int count,
                                         strerror (errno));
                         }
 
-			if (priv->use_ssl) {
+			if (priv->use_ssl && priv->ssl_ssl) {
 				ssl_dump_error_stack(this->name);
 			}
                         opcount = -1;
@@ -767,10 +809,12 @@ __socket_nodelay (int fd)
 
 
 static int
-__socket_keepalive (int fd, int family, int keepalive_intvl, int keepalive_idle)
+__socket_keepalive (int fd, int family, int keepalive_intvl,
+                    int keepalive_idle, int timeout)
 {
         int     on = 1;
         int     ret = -1;
+        int     timeout_ms = timeout * 1000;
 
         ret = setsockopt (fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof (on));
         if (ret == -1) {
@@ -783,7 +827,7 @@ __socket_keepalive (int fd, int family, int keepalive_intvl, int keepalive_idle)
                 goto done;
 
 #if !defined(GF_LINUX_HOST_OS) && !defined(__NetBSD__)
-#ifdef GF_SOLARIS_HOST_OS
+#if defined(GF_SOLARIS_HOST_OS) || defined(__FreeBSD__)
         ret = setsockopt (fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive_intvl,
                           sizeof (keepalive_intvl));
 #else
@@ -800,7 +844,7 @@ __socket_keepalive (int fd, int family, int keepalive_intvl, int keepalive_idle)
                 goto done;
 
         ret = setsockopt (fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepalive_idle,
-                          sizeof (keepalive_intvl));
+                          sizeof (keepalive_idle));
         if (ret == -1) {
                 gf_log ("socket", GF_LOG_WARNING,
                         "failed to set keep idle %d on socket %d, %s",
@@ -815,11 +859,23 @@ __socket_keepalive (int fd, int family, int keepalive_intvl, int keepalive_idle)
                         keepalive_intvl, fd, strerror(errno));
                 goto err;
         }
+
+#if defined(TCP_USER_TIMEOUT)
+        ret = setsockopt (fd, IPPROTO_TCP , TCP_USER_TIMEOUT, &timeout_ms,
+                          sizeof (timeout_ms));
+        if (ret == -1) {
+                gf_log ("socket", GF_LOG_WARNING, "failed to set "
+                        "TCP_USER_TIMEOUT %d on socket %d, %s", timeout_ms, fd,
+                        strerror(errno));
+                goto err;
+        }
+#endif
 #endif
 
 done:
-        gf_log (THIS->name, GF_LOG_TRACE, "Keep-alive enabled for socket %d, interval "
-                "%d, idle: %d", fd, keepalive_intvl, keepalive_idle);
+        gf_log (THIS->name, GF_LOG_TRACE, "Keep-alive enabled for socket %d, "
+                "interval %d, idle: %d, timeout: %d", fd, keepalive_intvl,
+                keepalive_idle, timeout);
 
 err:
         return ret;
@@ -863,6 +919,7 @@ __socket_reset (rpc_transport_t *this)
 
         if (priv->incoming.iobuf) {
                 iobuf_unref (priv->incoming.iobuf);
+                priv->incoming.iobuf = NULL;
         }
 
         GF_FREE (priv->incoming.request_info);
@@ -1827,7 +1884,8 @@ __socket_read_reply (rpc_transport_t *this)
 
                 if (ret == -1) {
                         gf_log (this->name, GF_LOG_WARNING,
-                                "notify for event MAP_XID failed");
+                                "notify for event MAP_XID failed for %s",
+                                this->peerinfo.identifier);
                         goto out;
                 }
         }
@@ -1926,10 +1984,10 @@ out:
 }
 
 
-static inline
-void __socket_reset_priv (socket_private_t *priv)
+static inline void
+__socket_reset_priv (socket_private_t *priv)
 {
-        struct gf_sock_incoming      *in         = NULL;
+        struct gf_sock_incoming   *in    = NULL;
 
         /* used to reduce the indirection */
         in = &priv->incoming;
@@ -1941,6 +1999,7 @@ void __socket_reset_priv (socket_private_t *priv)
 
         if (in->iobuf) {
                 iobuf_unref (in->iobuf);
+                in->iobuf = NULL;
         }
 
         if (in->request_info != NULL) {
@@ -1951,7 +2010,6 @@ void __socket_reset_priv (socket_private_t *priv)
         memset (&in->payload_vector, 0,
                 sizeof (in->payload_vector));
 
-        in->iobuf = NULL;
 }
 
 
@@ -2014,6 +2072,12 @@ __socket_proto_state_machine (rpc_transport_t *this,
 
                         in->fraghdr = ntoh32 (in->fraghdr);
                         in->total_bytes_read += RPC_FRAGSIZE(in->fraghdr);
+
+                        if (in->total_bytes_read >= GF_UNIT_GB) {
+                                ret = -ENOMEM;
+                                goto out;
+                        }
+
                         iobuf = iobuf_get2 (this->ctx->iobuf_pool,
                                             (in->total_bytes_read +
                                              sizeof (in->fraghdr)));
@@ -2130,6 +2194,7 @@ out:
         if ((ret == -1) && (errno == EAGAIN)) {
                 ret = 0;
         }
+
         return ret;
 }
 
@@ -2306,14 +2371,28 @@ socket_poller (void *ctx)
 	gf_boolean_t      to_write = _gf_false;
 	int               ret = 0;
         uint32_t          gen = 0;
+        char             *cname = NULL;
+
+        GF_ASSERT (this);
+        /* Set THIS early on in the life of this thread, instead of setting it
+         * conditionally
+         */
+        THIS = this->xl;
 
         priv->ot_state = OT_RUNNING;
 
         if (priv->use_ssl) {
-                if (ssl_setup_connection(this,priv->connected) < 0) {
+                cname = ssl_setup_connection(this,priv->connected);
+                if (!cname) {
                         gf_log (this->name,GF_LOG_ERROR, "%s setup failed",
                                 priv->connected ? "server" : "client");
                         goto err;
+                }
+                if (priv->connected) {
+                        this->ssl_name = cname;
+                }
+                else {
+                        GF_FREE(cname);
                 }
         }
 
@@ -2328,7 +2407,6 @@ socket_poller (void *ctx)
         }
 
         if (priv->connected == 0) {
-		THIS = this->xl;
                 ret = socket_connect_finish (this);
                 if (ret != 0) {
                         gf_log (this->name, GF_LOG_WARNING,
@@ -2369,8 +2447,7 @@ socket_poller (void *ctx)
 			       "poll error on pipe");
 			break;
 		}
-		/* Only glusterd actually seems to need this. */
-		THIS = this->xl;
+
 		if (pfd[1].revents & POLL_MASK_INPUT) {
 			ret = socket_event_poll_in(this);
 			if (ret >= 0) {
@@ -2448,8 +2525,7 @@ err:
         priv->sock = -1;
         priv->ot_state = OT_IDLE;
         pthread_mutex_unlock(&priv->lock);
-        rpc_transport_notify (this->listener, RPC_TRANSPORT_DISCONNECT,
-                              this);
+        rpc_transport_notify (this, RPC_TRANSPORT_DISCONNECT, this);
         rpc_transport_unref (this);
 	return NULL;
 }
@@ -2494,6 +2570,7 @@ socket_server_event_handler (int fd, int idx, void *data,
         socklen_t                addrlen = sizeof (new_sockaddr);
         socket_private_t        *new_priv = NULL;
         glusterfs_ctx_t         *ctx = NULL;
+        char                    *cname = NULL;
 
         this = data;
         GF_VALIDATE_OR_GOTO ("socket", this, out);
@@ -2534,7 +2611,8 @@ socket_server_event_handler (int fd, int idx, void *data,
                                 ret = __socket_keepalive (new_sock,
                                                           new_sockaddr.ss_family,
                                                           priv->keepaliveintvl,
-                                                          priv->keepaliveidle);
+                                                          priv->keepaliveidle,
+                                                          priv->timeout);
                                 if (ret == -1)
                                         gf_log (this->name, GF_LOG_WARNING,
                                                 "Failed to set keep-alive: %s",
@@ -2557,6 +2635,7 @@ socket_server_event_handler (int fd, int idx, void *data,
                                 GF_FREE (new_trans);
                                 goto unlock;
                         }
+                        INIT_LIST_HEAD (&new_trans->list);
 
                         new_trans->name = gf_strdup (this->name);
 
@@ -2598,13 +2677,31 @@ socket_server_event_handler (int fd, int idx, void *data,
                         new_trans->listener = this;
                         new_priv = new_trans->private;
 
-			new_priv->use_ssl = priv->use_ssl;
+                        if (new_sockaddr.ss_family == AF_UNIX) {
+                                new_priv->use_ssl = _gf_false;
+                        }
+                        else {
+                                switch (priv->srvr_ssl) {
+                                case MGMT_SSL_ALWAYS:
+                                        /* Glusterd with secure_mgmt. */
+                                        new_priv->use_ssl = _gf_true;
+                                        break;
+                                case MGMT_SSL_COPY_IO:
+                                        /* Glusterfsd. */
+                                        new_priv->use_ssl = priv->ssl_enabled;
+                                        break;
+                                default:
+                                        new_priv->use_ssl = _gf_false;
+                                }
+                        }
+
 			new_priv->sock = new_sock;
 			new_priv->own_thread = priv->own_thread;
 
                         new_priv->ssl_ctx = priv->ssl_ctx;
-			if (priv->use_ssl && !priv->own_thread) {
-				if (ssl_setup_connection(new_trans,1) < 0) {
+			if (new_priv->use_ssl && !new_priv->own_thread) {
+				cname = ssl_setup_connection(new_trans,1);
+                                if (!cname) {
 					gf_log(this->name,GF_LOG_ERROR,
 					       "server setup failed");
 					close(new_sock);
@@ -2612,6 +2709,7 @@ socket_server_event_handler (int fd, int idx, void *data,
                                         GF_FREE (new_trans);
 					goto unlock;
 				}
+                                this->ssl_name = cname;
 			}
 
                         if (!priv->bio && !priv->own_thread) {
@@ -2678,6 +2776,9 @@ unlock:
         pthread_mutex_unlock (&priv->lock);
 
 out:
+        if (cname && (cname != this->ssl_name)) {
+                GF_FREE(cname);
+        }
         return ret;
 }
 
@@ -2722,6 +2823,23 @@ socket_connect_error_cbk (void *opaque)
         return NULL;
 }
 
+static void
+socket_fix_ssl_opts (rpc_transport_t *this, socket_private_t *priv,
+                     uint16_t port)
+{
+        if (port == GF_DEFAULT_SOCKET_LISTEN_PORT) {
+                gf_log (this->name, GF_LOG_DEBUG,
+                        "%s SSL for portmapper connection",
+                        priv->mgmt_ssl ? "enabling" : "disabling");
+                priv->use_ssl = priv->mgmt_ssl;
+        }
+        else if (priv->ssl_enabled && !priv->use_ssl) {
+                gf_log(this->name,GF_LOG_DEBUG,
+                       "re-enabling SSL for I/O connection");
+                priv->use_ssl = _gf_true;
+        }
+}
+
 static int
 socket_connect (rpc_transport_t *this, int port)
 {
@@ -2738,6 +2856,8 @@ socket_connect (rpc_transport_t *this, int port)
         gf_boolean_t                   refd      = _gf_false;
         socket_connect_error_state_t  *arg             = NULL;
         pthread_t                      th_id           = {0, };
+        char                          *cname           = NULL;
+        gf_boolean_t                   ign_enoent      = _gf_false;
 
         GF_VALIDATE_OR_GOTO ("socket", this, err);
         GF_VALIDATE_OR_GOTO ("socket", this->private, err);
@@ -2773,23 +2893,16 @@ socket_connect (rpc_transport_t *this, int port)
                         goto unlock;
                 }
 
-                if (port > 0) {
-                        sock_union.sin.sin_port = htons (port);
-                }
-                if (ntohs(sock_union.sin.sin_port) ==
-                    GF_DEFAULT_SOCKET_LISTEN_PORT) {
-                        if (priv->use_ssl) {
-                                gf_log(this->name,GF_LOG_DEBUG,
-                                "disabling SSL for portmapper connection");
-                                priv->use_ssl = _gf_false;
-                        }
+                if (sa_family == AF_UNIX) {
+                        priv->ssl_enabled = _gf_false;
+                        priv->mgmt_ssl = _gf_false;
                 }
                 else {
-                        if (priv->ssl_enabled && !priv->use_ssl) {
-                                gf_log(this->name,GF_LOG_DEBUG,
-                                       "re-enabling SSL for I/O connection");
-                                priv->use_ssl = _gf_true;
+                        if (port > 0) {
+                                sock_union.sin.sin_port = htons (port);
                         }
+                        socket_fix_ssl_opts (this, priv,
+                                             ntohs(sock_union.sin.sin_port));
                 }
 
                 memcpy (&this->peerinfo.sockaddr, &sock_union.storage,
@@ -2844,7 +2957,8 @@ socket_connect (rpc_transport_t *this, int port)
                         ret = __socket_keepalive (priv->sock,
                                                   sa_family,
                                                   priv->keepaliveintvl,
-                                                  priv->keepaliveidle);
+                                                  priv->keepaliveidle,
+                                                  priv->timeout);
                         if (ret == -1)
                                 gf_log (this->name, GF_LOG_ERROR,
                                         "Failed to set keep-alive: %s",
@@ -2863,6 +2977,10 @@ socket_connect (rpc_transport_t *this, int port)
                         ret = inet_pton (AF_INET, local_addr,
                                          &(addr->sin_addr.s_addr));
                 }
+
+                /* If client wants ENOENT to be ignored */
+               ign_enoent = dict_get_str_boolean (this->options,
+                   "transport.socket.ignore-enoent", _gf_false);
 
                 ret = client_bind (this, SA (&this->myinfo.sockaddr),
                                    &this->myinfo.sockaddr_len, priv->sock);
@@ -2885,6 +3003,13 @@ socket_connect (rpc_transport_t *this, int port)
                 ret = connect (priv->sock, SA (&this->peerinfo.sockaddr),
                                this->peerinfo.sockaddr_len);
 
+                if (ret == -1 && errno == ENOENT && ign_enoent) {
+                        gf_log (this->name, GF_LOG_WARNING,
+                               "Ignore failed connection attempt on %s, (%s) ",
+                                this->peerinfo.identifier, strerror (errno));
+                        goto handler;
+                }
+
                 if (ret == -1 && ((errno != EINPROGRESS) && (errno != ENOENT))) {
                         /* For unix path based sockets, the socket path is
                          * cryptic (md5sum of path) and may not be useful for
@@ -2901,11 +3026,19 @@ socket_connect (rpc_transport_t *this, int port)
                 }
 
                 if (priv->use_ssl && !priv->own_thread) {
-                        ret = ssl_setup_connection(this,0);
-                        if (ret < 0) {
+                        cname = ssl_setup_connection(this,0);
+                        if (!cname) {
+                                errno = ENOTCONN;
+                                ret = -1;
                                 gf_log(this->name,GF_LOG_ERROR,
                                        "client setup failed");
                                 goto handler;
+                        }
+                        if (priv->connected) {
+                                this->ssl_name = cname;
+                        }
+                        else {
+                                GF_FREE(cname);
                         }
                 }
 
@@ -2925,7 +3058,6 @@ handler:
                         if (priv->own_thread) {
                                 close(priv->sock);
                                 priv->sock = -1;
-                                goto unlock;
                         }
                         else {
                                 /* Ignore error from connect. epoll events
@@ -3390,8 +3522,21 @@ socket_throttle (rpc_transport_t *this, gf_boolean_t onoff)
            will never read() any more data until throttling
            is turned off.
         */
-        priv->idx = event_select_on (this->ctx->event_pool, priv->sock,
-                                     priv->idx, (int) !onoff, -1);
+        pthread_mutex_lock (&priv->lock);
+        {
+
+                /* Throttling is useless on a disconnected transport. In fact,
+                 * it's dangerous since priv->idx and priv->sock are set to -1
+                 * on a disconnected transport, which breaks epoll's event to
+                 * registered fd mapping. */
+
+                if (priv->connected == 1)
+                        priv->idx = event_select_on (this->ctx->event_pool,
+                                                     priv->sock,
+                                                     priv->idx, (int) !onoff,
+                                                     -1);
+        }
+        pthread_mutex_unlock (&priv->lock);
         return 0;
 }
 
@@ -3417,6 +3562,7 @@ reconfigure (rpc_transport_t *this, dict_t *options)
         char             *optstr        = NULL;
         int               ret           = 0;
         uint64_t          windowsize    = 0;
+        uint32_t          timeout       = 0;
 
         GF_VALIDATE_OR_GOTO ("socket", this, out);
         GF_VALIDATE_OR_GOTO ("socket", this->private, out);
@@ -3444,6 +3590,13 @@ reconfigure (rpc_transport_t *this, dict_t *options)
         }
         else
                 priv->keepalive = 1;
+
+        if (dict_get_uint32 (this->options, "transport.tcp-user-timeout",
+                             &timeout) == 0) {
+                priv->timeout = timeout;
+                gf_log (this->name, GF_LOG_DEBUG, "Reconfigued "
+                        "transport.tcp-user-timeout=%d", timeout);
+        }
 
         optstr = NULL;
         if (dict_get_str (this->options, "tcp-window-size",
@@ -3491,6 +3644,76 @@ out:
 
 }
 
+/*
+ * Unlike the stuff in init, this only needs to be called once GLOBALLY no
+ * matter how many translators/sockets we end up with.  Conveniently,
+ * __attribute__(constructor) provides exactly those semantics in a pretty
+ * portable fashion.
+ */
+
+static pthread_mutex_t  *lock_array     = NULL;
+static gf_boolean_t     constructor_ok  = _gf_false;
+
+static void
+locking_func (int mode, int type, const char *file, int line)
+{
+        if (mode & CRYPTO_UNLOCK) {
+                pthread_mutex_unlock (&lock_array[type]);
+        } else {
+                pthread_mutex_lock (&lock_array[type]);
+        }
+}
+
+#if HAVE_CRYPTO_THREADID
+static void
+threadid_func (CRYPTO_THREADID *id)
+{
+        /*
+         * We're not supposed to know whether a pthread_t is a number or a
+         * pointer, but we definitely need an unsigned long.  Even though it
+         * happens to be an unsigned long already on Linux, do the cast just in
+         * case that's not so on another platform.  Note that this can still
+         * break if any platforms are left where a pointer is larger than an
+         * unsigned long.  In that case there's not much we can do; hopefully
+         * anyone porting to such a platform will be aware enough to notice the
+         * compile warnings about truncating the pointer value.
+         */
+        CRYPTO_THREADID_set_numeric (id, (unsigned long)pthread_self());
+}
+#else /* older openssl */
+static unsigned long
+legacy_threadid_func (void)
+{
+	/* See comments above, it applies here too. */
+	return (unsigned long)pthread_self();
+}
+#endif
+
+static void __attribute__((constructor))
+init_openssl_mt (void)
+{
+        int     num_locks       = CRYPTO_num_locks();
+        int     i;
+
+        lock_array = GF_CALLOC (num_locks, sizeof(pthread_mutex_t),
+                                gf_sock_mt_lock_array);
+        if (lock_array) {
+                for (i = 0; i < num_locks; ++i) {
+                        pthread_mutex_init (&lock_array[i], NULL);
+                }
+                CRYPTO_set_locking_callback (locking_func);
+#if HAVE_CRYPTO_THREADID
+                CRYPTO_THREADID_set_callback (threadid_func);
+#else /* older openssl */
+                CRYPTO_set_id_callback (legacy_threadid_func);
+#endif
+                constructor_ok = _gf_true;
+        }
+
+        SSL_library_init();
+        SSL_load_error_strings();
+}
+
 static int
 socket_init (rpc_transport_t *this)
 {
@@ -3499,8 +3722,14 @@ socket_init (rpc_transport_t *this)
         uint64_t          windowsize = GF_DEFAULT_SOCKET_WINDOW_SIZE;
         char             *optstr = NULL;
         uint32_t          keepalive = 0;
+        uint32_t          timeout = 0;
         uint32_t          backlog = 0;
 	int               session_id = 0;
+        int32_t           cert_depth = DEFAULT_VERIFY_DEPTH;
+        char             *cipher_list = DEFAULT_CIPHER_LIST;
+        char             *dh_param = DEFAULT_DH_PARAM;
+        char             *ec_curve = DEFAULT_EC_CURVE;
+        char             *crl_path = NULL;
 
         if (this->private) {
                 gf_log_callingfn (this->name, GF_LOG_ERROR,
@@ -3608,6 +3837,13 @@ socket_init (rpc_transport_t *this)
                 priv->keepaliveidle = keepalive;
         }
 
+        if (dict_get_uint32 (this->options, "transport.tcp-user-timeout",
+                             &timeout) == 0) {
+                priv->timeout = timeout;
+        }
+        gf_log (this->name, GF_LOG_DEBUG, "Configued "
+                "transport.tcp-user-timeout=%d", priv->timeout);
+
         if (dict_get_uint32 (this->options,
                              "transport.socket.listen-backlog",
                              &backlog) == 0) {
@@ -3639,6 +3875,8 @@ socket_init (rpc_transport_t *this)
 				"invalid value given for ssl-enabled boolean");
 		}
 	}
+        priv->mgmt_ssl = this->ctx->secure_mgmt;
+        priv->srvr_ssl = this->ctx->secure_srvr;
 
         priv->ssl_own_cert = DEFAULT_CERT_PATH;
 	if (dict_get_str(this->options,SSL_OWN_CERT_OPT,&optstr) == 0) {
@@ -3673,9 +3911,24 @@ socket_init (rpc_transport_t *this)
 	}
         priv->ssl_ca_list = gf_strdup(priv->ssl_ca_list);
 
+	if (dict_get_str(this->options,SSL_CRL_PATH_OPT,&optstr) == 0) {
+                if (!priv->ssl_enabled) {
+                        gf_log(this->name,GF_LOG_WARNING,
+                               "%s specified without %s (ignored)",
+                               SSL_CRL_PATH_OPT, SSL_ENABLED_OPT);
+		}
+		if (strcasecmp(optstr, "NULL") == 0)
+			crl_path = NULL;
+		else
+			crl_path = optstr;
+	}
+
         gf_log(this->name, priv->ssl_enabled ? GF_LOG_INFO: GF_LOG_DEBUG,
-               "SSL support is %s",
+               "SSL support on the I/O path is %s",
                priv->ssl_enabled ? "ENABLED" : "NOT enabled");
+        gf_log(this->name, priv->mgmt_ssl ? GF_LOG_INFO: GF_LOG_DEBUG,
+               "SSL support for glusterd is %s",
+               priv->mgmt_ssl ? "ENABLED" : "NOT enabled");
         /*
          * This might get overridden temporarily in socket_connect (q.v.)
          * if we're using the glusterd portmapper.
@@ -3684,8 +3937,9 @@ socket_init (rpc_transport_t *this)
 
 	priv->own_thread = priv->use_ssl;
 	if (dict_get_str(this->options,OWN_THREAD_OPT,&optstr) == 0) {
+                gf_log (this->name, GF_LOG_INFO, "OWN_THREAD_OPT found");
                 if (gf_string2boolean (optstr, &priv->own_thread) != 0) {
-                        gf_log (this->name, GF_LOG_ERROR,
+                        gf_log (this->name, GF_LOG_WARNING,
 				"invalid value given for own-thread boolean");
 		}
 	}
@@ -3693,18 +3947,127 @@ socket_init (rpc_transport_t *this)
                "using %s polling thread",
 	       priv->own_thread ? "private" : "system");
 
-	if (priv->use_ssl) {
-		SSL_library_init();
-		SSL_load_error_strings();
-		priv->ssl_meth = (SSL_METHOD *)TLSv1_method();
+        if (!dict_get_int32 (this->options, SSL_CERT_DEPTH_OPT, &cert_depth)) {
+                gf_log (this->name, GF_LOG_INFO,
+                        "using certificate depth %d", cert_depth);
+        }
+        if (!dict_get_str (this->options, SSL_CIPHER_LIST_OPT, &cipher_list)) {
+                gf_log (this->name, GF_LOG_INFO,
+                        "using cipher list %s", cipher_list);
+        }
+        if (!dict_get_str (this->options, SSL_DH_PARAM_OPT, &dh_param)) {
+                gf_log (this->name, GF_LOG_INFO,
+                        "using DH parameters %s", dh_param);
+        }
+        if (!dict_get_str (this->options, SSL_EC_CURVE_OPT, &ec_curve)) {
+                gf_log (this->name, GF_LOG_INFO,
+                        "using EC curve %s", ec_curve);
+        }
+
+	if (priv->ssl_enabled || priv->mgmt_ssl) {
+                BIO *bio = NULL;
+
+                /*
+                 * The right time to check this is after all of our relevant
+                 * fields have been set, but before we start issuing OpenSSL
+                 * calls for the current translator.  In other words, now.
+                 */
+                if (!constructor_ok) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "can't initialize TLS socket (%s)",
+                                "static constructor failed");
+                        goto err;
+                }
+
+#if HAVE_TLSV1_2_METHOD
+		priv->ssl_meth = (SSL_METHOD *)TLSv1_2_method();
+#else
+/*
+ * Nobody should use an OpenSSL so old it does not support TLS 1.2.
+ * If that is really required, build with -DUSE_INSECURE_OPENSSL
+ */
+#ifndef USE_INSECURE_OPENSSL
+#error Old and insecure OpenSSL, use -DUSE_INSECURE_OPENSSL to use it anyway
+#endif
+		/* SSLv23_method uses highest available protocol */
+		priv->ssl_meth = (SSL_METHOD *)SSLv23_method();
+#endif
 		priv->ssl_ctx = SSL_CTX_new(priv->ssl_meth);
 
-                if (SSL_CTX_set_cipher_list(priv->ssl_ctx,
-                                            "HIGH:-SSLv2") == 0) {
+                SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_SSLv2);
+                SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_SSLv3);
+                SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_TICKET);
+                SSL_CTX_set_options(priv->ssl_ctx, SSL_OP_NO_COMPRESSION);
+
+		if ((bio = BIO_new_file(dh_param, "r")) == NULL) {
+			gf_log(this->name,GF_LOG_ERROR,
+			       "failed to open %s, "
+			       "DH ciphers are disabled", dh_param);
+		}
+
+		if (bio != NULL) {
+#ifdef ERR_R_DH_LIB
+                        DH *dh;
+                        unsigned long err;
+
+                        dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
+                        BIO_free(bio);
+                        if (dh != NULL) {
+				SSL_CTX_set_options(priv->ssl_ctx,
+						    SSL_OP_SINGLE_DH_USE);
+				SSL_CTX_set_tmp_dh(priv->ssl_ctx, dh);
+				DH_free(dh);
+                        } else {
+                                err = ERR_get_error();
+                                gf_log(this->name,GF_LOG_ERROR,
+                                       "failed to read DH param from %s: %s "
+                                       "DH ciphers are disabled.",
+                                       dh_param, ERR_error_string(err, NULL));
+                        }
+#else /* ERR_R_DH_LIB */
+                        BIO_free(bio);
+                        gf_log(this->name, GF_LOG_ERROR,
+                               "OpenSSL has no DH support");
+#endif /* ERR_R_DH_LIB */
+                }
+
+                if (ec_curve != NULL) {
+#ifdef ERR_R_ECDH_LIB
+                        EC_KEY *ecdh = NULL;
+                        int nid;
+                        unsigned long err;
+
+                        nid = OBJ_sn2nid(ec_curve);
+                        if (nid != 0)
+                                ecdh = EC_KEY_new_by_curve_name(nid);
+
+                        if (ecdh != NULL) {
+				SSL_CTX_set_options(priv->ssl_ctx,
+						    SSL_OP_SINGLE_ECDH_USE);
+				SSL_CTX_set_tmp_ecdh(priv->ssl_ctx, ecdh);
+				EC_KEY_free(ecdh);
+                        } else {
+                                err = ERR_get_error();
+                                gf_log(this->name, GF_LOG_ERROR,
+                                       "failed to load EC curve %s: %s. "
+				       "ECDH ciphers are disabled.",
+                                       ec_curve, ERR_error_string(err, NULL));
+			}
+#else /* ERR_R_ECDH_LIB */
+                        gf_log(this->name, GF_LOG_ERROR,
+                               "OpenSSL has no ECDH support");
+#endif /* ERR_R_ECDH_LIB */
+                }
+
+		/* This must be done after DH and ECDH setups */
+                if (SSL_CTX_set_cipher_list(priv->ssl_ctx, cipher_list) == 0) {
                         gf_log(this->name,GF_LOG_ERROR,
                                "failed to find any valid ciphers");
                         goto err;
                 }
+
+		SSL_CTX_set_options(priv->ssl_ctx,
+                                    SSL_OP_CIPHER_SERVER_PREFERENCE);
 
 		if (!SSL_CTX_use_certificate_chain_file(priv->ssl_ctx,
 							priv->ssl_own_cert)) {
@@ -3722,15 +4085,29 @@ socket_init (rpc_transport_t *this)
 		}
 
 		if (!SSL_CTX_load_verify_locations(priv->ssl_ctx,
-						   priv->ssl_ca_list,0)) {
+						   priv->ssl_ca_list,
+						   crl_path)) {
 			gf_log(this->name,GF_LOG_ERROR,
 			       "could not load CA list");
 			goto err;
 		}
 
 #if (OPENSSL_VERSION_NUMBER < 0x00905100L)
-		SSL_CTX_set_verify_depth(ctx,1);
+		SSL_CTX_set_verify_depth(ctx,cert_depth);
 #endif
+
+		if (crl_path) {
+#ifdef X509_V_FLAG_CRL_CHECK_ALL
+			X509_STORE *x509store;
+
+			x509store  = SSL_CTX_get_cert_store(priv->ssl_ctx);
+			X509_STORE_set_flags(x509store,
+			    X509_V_FLAG_CRL_CHECK|X509_V_FLAG_CRL_CHECK_ALL);
+#else
+			gf_log(this->name,GF_LOG_ERROR,
+			       "OpenSSL version does not support CRL");
+#endif
+		}
 
 		priv->ssl_session_id = ++session_id;
 		SSL_CTX_set_session_id_context(priv->ssl_ctx,
@@ -3738,6 +4115,14 @@ socket_init (rpc_transport_t *this)
 					       sizeof(priv->ssl_session_id));
 
 		SSL_CTX_set_verify(priv->ssl_ctx,SSL_VERIFY_PEER,0);
+
+                /*
+                 * Since glusterfs shares the same settings for client-side
+                 * and server-side of SSL, we need to ignore any certificate
+                 * usage specification (SSL client vs SSL server), otherwise
+                 * SSL connexions will fail with 'unsupported cerritifcate"
+                 */
+                SSL_CTX_set_purpose(priv->ssl_ctx, X509_PURPOSE_ANY);
 	}
 
         if (priv->own_thread) {
@@ -3800,7 +4185,6 @@ fini (rpc_transport_t *this)
         this->private = NULL;
 }
 
-
 int32_t
 init (rpc_transport_t *this)
 {
@@ -3850,6 +4234,9 @@ struct volume_options options[] = {
           .min   = GF_MIN_SOCKET_WINDOW_SIZE,
           .max   = GF_MAX_SOCKET_WINDOW_SIZE
         },
+        { .key   = {"transport.tcp-user-timeout"},
+          .type  = GF_OPTION_TYPE_INT,
+        },
         { .key   = {"transport.socket.nodelay"},
           .type  = GF_OPTION_TYPE_BOOL
         },
@@ -3883,8 +4270,60 @@ struct volume_options options[] = {
 	{ .key   = {SSL_CA_LIST_OPT},
 	  .type  = GF_OPTION_TYPE_STR
 	},
+	{ .key   = {SSL_CERT_DEPTH_OPT},
+	  .type  = GF_OPTION_TYPE_STR
+	},
+	{ .key   = {SSL_CIPHER_LIST_OPT},
+	  .type  = GF_OPTION_TYPE_STR
+	},
+	{ .key   = {SSL_DH_PARAM_OPT},
+	  .type  = GF_OPTION_TYPE_STR
+	},
+	{ .key   = {SSL_EC_CURVE_OPT},
+	  .type  = GF_OPTION_TYPE_STR
+	},
+	{ .key   = {SSL_CRL_PATH_OPT},
+	  .type  = GF_OPTION_TYPE_STR
+	},
 	{ .key   = {OWN_THREAD_OPT},
 	  .type  = GF_OPTION_TYPE_BOOL
 	},
+        { .key   = {"ssl-own-cert"},
+          .type  = GF_OPTION_TYPE_STR,
+          .description = "SSL certificate. Ignored if SSL is not enabled."
+        },
+        { .key   = {"ssl-private-key"},
+          .type  = GF_OPTION_TYPE_STR,
+          .description = "SSL private key. Ignored if SSL is not enabled."
+        },
+        { .key   = {"ssl-ca-list"},
+          .type  = GF_OPTION_TYPE_STR,
+          .description = "SSL CA list. Ignored if SSL is not enabled."
+        },
+        { .key   = {"ssl-cert-depth"},
+          .type  = GF_OPTION_TYPE_INT,
+          .description = "Maximum certificate-chain depth.  If zero, the "
+                         "peer's certificate itself must be in the local "
+                         "certificate list.  Otherwise, there may be up to N "
+                         "signing certificates between the peer's and the "
+                         "local list.  Ignored if SSL is not enabled."
+        },
+        { .key   = {"ssl-cipher-list"},
+          .type  = GF_OPTION_TYPE_STR,
+          .description = "Allowed SSL ciphers. Ignored if SSL is not enabled."
+        },
+        { .key   = {"ssl-dh-param"},
+          .type  = GF_OPTION_TYPE_STR,
+          .description = "DH parameters file. Ignored if SSL is not enabled."
+        },
+        { .key   = {"ssl-ec-curve"},
+          .type  = GF_OPTION_TYPE_STR,
+          .description = "ECDH curve name. Ignored if SSL is not enabled."
+        },
+        { .key   = {"ssl-crl-path"},
+          .type  = GF_OPTION_TYPE_STR,
+          .description = "Path to directory containing CRL. "
+                         "Ignored if SSL is not enabled."
+        },
         { .key = {NULL} }
 };

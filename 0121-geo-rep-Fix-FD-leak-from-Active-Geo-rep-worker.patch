@@ -1,0 +1,71 @@
+From 4ef90cf2bcaeea93dac4f150758d7757dc49675c Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Sun, 11 Oct 2015 20:26:16 +0530
+Subject: [PATCH 121/131] geo-rep: Fix FD leak from Active Geo-rep worker
+
+Active worker tries to acquire lock in each iteration. On every successfull
+lock acqusition it was not closing previously opened lock fd.
+
+To see the leak, get the PID of worker,
+    ps -ax | grep feedback-fd
+    watch ls /proc/$pid/fd
+
+BUG: 1224928
+Change-Id: Ic476c24c306e7ab372c5560fbb80ef39f4fb31af
+Signed-off-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-on: http://review.gluster.org/12332
+Reviewed-on: http://review.gluster.org/12650
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-by: Venky Shankar <vshankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61972
+---
+ geo-replication/syncdaemon/gconf.py  |    1 +
+ geo-replication/syncdaemon/master.py |   15 +++++++++++++++
+ 2 files changed, 16 insertions(+), 0 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gconf.py b/geo-replication/syncdaemon/gconf.py
+index 39a70a6..97395b4 100644
+--- a/geo-replication/syncdaemon/gconf.py
++++ b/geo-replication/syncdaemon/gconf.py
+@@ -27,5 +27,6 @@ class GConf(object):
+        to PASSIVE as well mainly for debugging"""
+     active_earlier = False
+     passive_earlier = False
++    mgmt_lock_fd = None
+ 
+ gconf = GConf()
+diff --git a/geo-replication/syncdaemon/master.py b/geo-replication/syncdaemon/master.py
+index b2cfb85..8552e11 100644
+--- a/geo-replication/syncdaemon/master.py
++++ b/geo-replication/syncdaemon/master.py
+@@ -468,10 +468,25 @@ class GMasterCommon(object):
+                 raise
+         try:
+             fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++            # Close the previously acquired lock so that
++            # fd will not leak. Reset fd to None
++            if gconf.mgmt_lock_fd:
++                os.close(gconf.mgmt_lock_fd)
++                gconf.mgmt_lock_fd = None
++
++            # Save latest FD for future use
++            gconf.mgmt_lock_fd = fd
+         except:
+             ex = sys.exc_info()[1]
+             if fd:
+                 os.close(fd)
++
++            # When previously Active becomes Passive, Close the
++            # fd of previously acquired lock
++            if gconf.mgmt_lock_fd:
++                os.close(gconf.mgmt_lock_fd)
++                gconf.mgmt_lock_fd = None
++
+             if isinstance(ex, IOError) and ex.errno in (EACCES, EAGAIN):
+                 # cannot grab, it's taken
+                 if not gconf.passive_earlier:
+-- 
+1.7.1
+

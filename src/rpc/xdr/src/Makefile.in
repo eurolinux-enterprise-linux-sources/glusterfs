@@ -77,7 +77,7 @@ am__objects_1 = libgfxdr_la-glusterfs3-xdr.lo libgfxdr_la-cli1-xdr.lo \
 	libgfxdr_la-nlm4-xdr.lo libgfxdr_la-nsm-xdr.lo \
 	libgfxdr_la-rpc-common-xdr.lo libgfxdr_la-glusterd1-xdr.lo \
 	libgfxdr_la-acl3-xdr.lo libgfxdr_la-portmap-xdr.lo \
-	libgfxdr_la-mount3udp.lo
+	libgfxdr_la-mount3udp.lo libgfxdr_la-changelog-xdr.lo
 am_libgfxdr_la_OBJECTS = $(am__objects_1) libgfxdr_la-xdr-generic.lo \
 	libgfxdr_la-xdr-nfs3.lo libgfxdr_la-msg-nfs3.lo
 libgfxdr_la_OBJECTS = $(am_libgfxdr_la_OBJECTS)
@@ -86,7 +86,7 @@ am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
 am__v_lt_0 = --silent
 libgfxdr_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(libgfxdr_la_CFLAGS) \
-	$(CFLAGS) $(AM_LDFLAGS) $(LDFLAGS) -o $@
+	$(CFLAGS) $(libgfxdr_la_LDFLAGS) $(LDFLAGS) -o $@
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__depfiles_maybe = depfiles
@@ -120,6 +120,7 @@ ETAGS = etags
 CTAGS = ctags
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 ACLOCAL = @ACLOCAL@
+ACL_LIBS = @ACL_LIBS@
 AMTAR = @AMTAR@
 AM_DEFAULT_VERBOSITY = @AM_DEFAULT_VERBOSITY@
 AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
@@ -134,6 +135,7 @@ AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
 BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
 BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
+BUILD_PYTHON_SITE_PACKAGES = @BUILD_PYTHON_SITE_PACKAGES@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -154,12 +156,16 @@ EXEEXT = @EXEEXT@
 FGREP = @FGREP@
 FUSERMOUNT_SUBDIR = @FUSERMOUNT_SUBDIR@
 FUSE_CLIENT_SUBDIR = @FUSE_CLIENT_SUBDIR@
+GEOREP_EXTRAS_SUBDIR = @GEOREP_EXTRAS_SUBDIR@
+GFAPI_EXTRA_LDFLAGS = @GFAPI_EXTRA_LDFLAGS@
+GFAPI_LIBS = @GFAPI_LIBS@
+GFAPI_LT_VERSION = @GFAPI_LT_VERSION@
+GFAPI_VERSION = @GFAPI_VERSION@
 GF_CFLAGS = @GF_CFLAGS@
 GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
@@ -168,6 +174,10 @@ GLIB_LIBS = @GLIB_LIBS@
 GLUPY_SUBDIR = @GLUPY_SUBDIR@
 GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
 GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
+GLUSTERD_VOLFILE = @GLUSTERD_VOLFILE@
+GLUSTERD_WORKDIR = @GLUSTERD_WORKDIR@
+GLUSTERFSD_MISCDIR = @GLUSTERFSD_MISCDIR@
+GLUSTERFS_LIBEXECDIR = @GLUSTERFS_LIBEXECDIR@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -186,15 +196,20 @@ LEX = @LEX@
 LEXLIB = @LEXLIB@
 LEX_OUTPUT_ROOT = @LEX_OUTPUT_ROOT@
 LIBAIO = @LIBAIO@
+LIBGFCHANGELOG_LT_VERSION = @LIBGFCHANGELOG_LT_VERSION@
+LIBGFCHANGELOG_VERSION = @LIBGFCHANGELOG_VERSION@
+LIBGFDB_VERSION = @LIBGFDB_VERSION@
+LIBGFRPC_LT_VERSION = @LIBGFRPC_LT_VERSION@
+LIBGFXDR_LT_VERSION = @LIBGFXDR_LT_VERSION@
+LIBGLUSTERFS_LT_VERSION = @LIBGLUSTERFS_LT_VERSION@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
-LIBZ_CFLAGS = @LIBZ_CFLAGS@
-LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
+MATH_LIB = @MATH_LIB@
 MKDIR_P = @MKDIR_P@
 NM = @NM@
 NMEDIT = @NMEDIT@
@@ -211,12 +226,15 @@ PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKGCONFIG_UUID = @PKGCONFIG_UUID@
 PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
 PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
 PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
 PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
+PYTHON_CFLAGS = @PYTHON_CFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
+PYTHON_LIBS = @PYTHON_LIBS@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
 PYTHON_VERSION = @PYTHON_VERSION@
@@ -231,9 +249,22 @@ SIZEOF_INT = @SIZEOF_INT@
 SIZEOF_LONG = @SIZEOF_LONG@
 SIZEOF_LONG_LONG = @SIZEOF_LONG_LONG@
 SIZEOF_SHORT = @SIZEOF_SHORT@
+SQLITE_CFLAGS = @SQLITE_CFLAGS@
+SQLITE_LIBS = @SQLITE_LIBS@
 STRIP = @STRIP@
 SYNCDAEMON_COMPILE = @SYNCDAEMON_COMPILE@
 SYNCDAEMON_SUBDIR = @SYNCDAEMON_SUBDIR@
+UMOUNTD_SUBDIR = @UMOUNTD_SUBDIR@
+UNITTEST_CFLAGS = @UNITTEST_CFLAGS@
+UNITTEST_LDFLAGS = @UNITTEST_LDFLAGS@
+UNITTEST_LIBS = @UNITTEST_LIBS@
+URCU_CDS_CFLAGS = @URCU_CDS_CFLAGS@
+URCU_CDS_LIBS = @URCU_CDS_LIBS@
+URCU_CFLAGS = @URCU_CFLAGS@
+URCU_LIBS = @URCU_LIBS@
+USE_POSIX_ACLS = @USE_POSIX_ACLS@
+UUID_CFLAGS = @UUID_CFLAGS@
+UUID_LIBS = @UUID_LIBS@
 VERSION = @VERSION@
 XML2_CONFIG = @XML2_CONFIG@
 XML_CPPFLAGS = @XML_CPPFLAGS@
@@ -296,16 +327,19 @@ pyexecdir = @pyexecdir@
 pythondir = @pythondir@
 sbindir = @sbindir@
 sharedstatedir = @sharedstatedir@
+shrext_cmds = @shrext_cmds@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
 systemddir = @systemddir@
 target_alias = @target_alias@
+tmpfilesdir = @tmpfilesdir@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 XDRSOURCES = glusterfs3-xdr.c cli1-xdr.c nlm4-xdr.c nsm-xdr.c \
-	rpc-common-xdr.c glusterd1-xdr.c acl3-xdr.c portmap-xdr.c mount3udp.c
+	rpc-common-xdr.c glusterd1-xdr.c acl3-xdr.c portmap-xdr.c \
+	mount3udp.c changelog-xdr.c
 
 XDRHEADERS = $(XDRSOURCES:.c=.h)
 XDRGENFILES = $(XDRSOURCES:.c=.x)
@@ -315,10 +349,12 @@ libgfxdr_la_CPPFLAGS = $(GF_CPPFLAGS) -D__USE_FILE_OFFSET64 \
 			-I$(top_srcdir)/libglusterfs/src -I$(top_srcdir)/rpc/rpc-lib/src
 
 libgfxdr_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la
+libgfxdr_la_LDFLAGS = -version-info $(LIBGFXDR_LT_VERSION)
 libgfxdr_la_SOURCES = $(XDRSOURCES) xdr-generic.c xdr-nfs3.c msg-nfs3.c
 noinst_HEADERS = $(XDRHEADERS) xdr-generic.h xdr-nfs3.h msg-nfs3.h glusterfs3.h
 CLEANFILES = $(XDRSOURCES) $(XDRHEADERS)
 EXTRA_DIST = $(XDRGENFILES)
+xdrsrc = $(top_srcdir)/rpc/xdr/src
 all: all-am
 
 .SUFFIXES:
@@ -394,6 +430,7 @@ distclean-compile:
 	-rm -f *.tab.c
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-acl3-xdr.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-changelog-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-cli1-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-glusterd1-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-glusterfs3-xdr.Plo@am__quote@
@@ -501,6 +538,14 @@ libgfxdr_la-mount3udp.lo: mount3udp.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='mount3udp.c' object='libgfxdr_la-mount3udp.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-mount3udp.lo `test -f 'mount3udp.c' || echo '$(srcdir)/'`mount3udp.c
+
+libgfxdr_la-changelog-xdr.lo: changelog-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-changelog-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-changelog-xdr.Tpo -c -o libgfxdr_la-changelog-xdr.lo `test -f 'changelog-xdr.c' || echo '$(srcdir)/'`changelog-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-changelog-xdr.Tpo $(DEPDIR)/libgfxdr_la-changelog-xdr.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='changelog-xdr.c' object='libgfxdr_la-changelog-xdr.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-changelog-xdr.lo `test -f 'changelog-xdr.c' || echo '$(srcdir)/'`changelog-xdr.c
 
 libgfxdr_la-xdr-generic.lo: xdr-generic.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-xdr-generic.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-xdr-generic.Tpo -c -o libgfxdr_la-xdr-generic.lo `test -f 'xdr-generic.c' || echo '$(srcdir)/'`xdr-generic.c
@@ -734,96 +779,65 @@ uninstall-am: uninstall-libLTLIBRARIES
 	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
 	tags uninstall uninstall-am uninstall-libLTLIBRARIES
 
-
 glusterfs3-xdr.c: glusterfs3-xdr.x glusterfs3-xdr.h
-	@if test -f $<; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 glusterfs3-xdr.h: glusterfs3-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 cli1-xdr.c: cli1-xdr.x cli1-xdr.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 cli1-xdr.h: cli1-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 nlm4-xdr.c: nlm4-xdr.x nlm4-xdr.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 nlm4-xdr.h: nlm4-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 nsm-xdr.c: nsm-xdr.x nsm-xdr.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 nsm-xdr.h: nsm-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 rpc-common-xdr.c: rpc-common-xdr.x rpc-common-xdr.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 rpc-common-xdr.h: rpc-common-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 glusterd1-xdr.c: glusterd1-xdr.x glusterd1-xdr.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 glusterd1-xdr.h: glusterd1-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 acl3-xdr.c: acl3-xdr.x acl3-xdr.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 acl3-xdr.h: acl3-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 portmap-xdr.c: portmap-xdr.x portmap-xdr.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 portmap-xdr.h: portmap-xdr.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 mount3udp.c: mount3udp.x mount3udp.h
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen source $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
 
 mount3udp.h: mount3udp.x
-	@if test -f $< ; then \
-		$(top_srcdir)/build-aux/xdrgen header $< ; \
-	fi
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
+
+changelog-xdr.c: changelog-xdr.x changelog-xdr.h
+	$(top_srcdir)/build-aux/xdrgen source $(xdrsrc)/`basename ${@:.c=.x}`
+
+changelog-xdr.h: changelog-xdr.x
+	$(top_srcdir)/build-aux/xdrgen header $(xdrsrc)/`basename ${@:.h=.x}`
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

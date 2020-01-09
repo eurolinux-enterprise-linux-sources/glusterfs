@@ -30,6 +30,12 @@
 #include "byte-order.h"
 #include "globals.h"
 #include "statedump.h"
+#include "libglusterfs-messages.h"
+
+struct dict_cmp {
+        dict_t *dict;
+        gf_boolean_t (*value_ignore) (char *k);
+};
 
 data_t *
 get_new_data ()
@@ -107,13 +113,13 @@ dict_new (void)
         return dict;
 }
 
-
 int32_t
 is_data_equal (data_t *one,
                data_t *two)
 {
         if (!one || !two || !one->data || !two->data) {
-		gf_log_callingfn ("dict", GF_LOG_ERROR,
+		gf_msg_callingfn ("dict", GF_LOG_ERROR, EINVAL,
+                                  LG_MSG_INVALID_ARG,
 				  "input arguments are provided "
 				  "with value data_t as NULL");
                 return -1;
@@ -132,6 +138,87 @@ is_data_equal (data_t *one,
                 return 1;
 
         return 0;
+}
+
+static int
+key_value_cmp (dict_t *one, char *key1, data_t *value1, void *data)
+{
+        struct dict_cmp *cmp = data;
+        dict_t *two = NULL;
+        data_t *value2 = NULL;
+
+        two = cmp->dict;
+        value2 = dict_get (two, key1);
+
+        if (value2) {
+                if (cmp->value_ignore && cmp->value_ignore (key1))
+                        return 0;
+
+                if (is_data_equal (value1, value2) == 1)
+                        return 0;
+        }
+
+        if (value2 == NULL) {
+                gf_msg_debug (THIS->name, 0, "'%s' found only on one dict",
+                              key1);
+        } else {
+                gf_msg_debug (THIS->name, 0, "'%s' is different in two dicts "
+                              "(%u, %u)", key1, value1->len, value2->len);
+        }
+
+        return -1;
+}
+
+/* If both dicts are NULL then equal. If one of the dicts is NULL but the
+ * other has only ignorable keys then also they are equal. If both dicts are
+ * non-null then check if for each non-ignorable key, values are same or
+ * not.  value_ignore function is used to skip comparing values for the keys
+ * which must be present in both the dictionaries but the value could be
+ * different.
+ */
+gf_boolean_t
+are_dicts_equal (dict_t *one, dict_t *two,
+                 gf_boolean_t (*match) (dict_t *d, char *k, data_t *v,
+                                        void *data),
+                 gf_boolean_t (*value_ignore) (char *k))
+{
+        int     num_matches1 = 0;
+        int     num_matches2 = 0;
+        struct  dict_cmp cmp = {0};
+
+        if (one == two)
+                return _gf_true;
+
+        if (!match)
+                match = dict_match_everything;
+
+        cmp.dict = two;
+        cmp.value_ignore = value_ignore;
+        if (!two) {
+                num_matches1 = dict_foreach_match (one, match, NULL,
+                                                   dict_null_foreach_fn, NULL);
+                goto done;
+        } else {
+                num_matches1 = dict_foreach_match (one, match, NULL,
+                                                   key_value_cmp, &cmp);
+        }
+
+        if (num_matches1 == -1)
+                return _gf_false;
+
+        if ((num_matches1 == one->count) && (one->count == two->count))
+                return _gf_true;
+
+        num_matches2 = dict_foreach_match (two, match, NULL,
+                                           dict_null_foreach_fn, NULL);
+done:
+        /* If the number of matches is same in 'two' then for all the
+         * valid-keys that exist in 'one' the value matched and no extra valid
+         * keys exist in 'two' alone. Otherwise there exists at least one extra
+         * valid-key in 'two' which doesn't exist in 'one' */
+        if (num_matches1 == num_matches2)
+                return _gf_true;
+        return _gf_false;
 }
 
 void
@@ -159,7 +246,7 @@ data_t *
 data_copy (data_t *old)
 {
         if (!old) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, 0, LG_MSG_NULL_PTR,
                                   "old is NULL");
                 return NULL;
         }
@@ -192,13 +279,20 @@ err_out:
 static data_pair_t *
 _dict_lookup (dict_t *this, char *key)
 {
+        int hashval = 0;
         if (!this || !key) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG,
                                   "!this || !key (%s)", key);
                 return NULL;
         }
 
-        int hashval = SuperFastHash (key, strlen (key)) % this->hash_size;
+        /* If the divisor is 1, the modulo is always 0,
+         * in such case avoid hash calculation.
+         */
+        if (this->hash_size != 1)
+                hashval = SuperFastHash (key, strlen (key)) % this->hash_size;
+
         data_pair_t *pair;
 
         for (pair = this->members[hashval]; pair != NULL; pair = pair->hash_next) {
@@ -213,8 +307,9 @@ int32_t
 dict_lookup (dict_t *this, char *key, data_t **data)
 {
         if (!this || !key || !data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "!this || !key || !data");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "!this || !key || "
+                                  "!data");
                 return -1;
         }
 
@@ -235,7 +330,7 @@ dict_lookup (dict_t *this, char *key, data_t **data)
 static int32_t
 _dict_set (dict_t *this, char *key, data_t *value, gf_boolean_t replace)
 {
-        int hashval;
+        int hashval = 0;
         data_pair_t *pair;
         char key_free = 0;
         int tmp = 0;
@@ -244,14 +339,18 @@ _dict_set (dict_t *this, char *key, data_t *value, gf_boolean_t replace)
         if (!key) {
                 ret = gf_asprintf (&key, "ref:%p", value);
                 if (-1 == ret) {
-                        gf_log ("dict", GF_LOG_WARNING, "asprintf failed %s", key);
                         return -1;
                 }
                 key_free = 1;
         }
 
-        tmp = SuperFastHash (key, strlen (key));
-        hashval = (tmp % this->hash_size);
+        /* If the divisor is 1, the modulo is always 0,
+         * in such case avoid hash calculation.
+         */
+        if (this->hash_size != 1) {
+                tmp = SuperFastHash (key, strlen (key));
+                hashval = (tmp % this->hash_size);
+        }
 
         /* Search for a existing key if 'replace' is asked for */
         if (replace) {
@@ -325,8 +424,9 @@ dict_set (dict_t *this,
         int32_t ret;
 
         if (!this || !value) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "!this || !value for key=%s", key);
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "!this || !value for "
+                                  "key=%s", key);
                 return -1;
         }
 
@@ -346,7 +446,8 @@ dict_add (dict_t *this, char *key, data_t *value)
         int32_t ret;
 
         if (!this || !value) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG,
                                   "!this || !value for key=%s", key);
                 return -1;
         }
@@ -367,7 +468,8 @@ dict_get (dict_t *this, char *key)
         data_pair_t *pair;
 
         if (!this || !key) {
-                gf_log_callingfn ("dict", GF_LOG_INFO,
+                gf_msg_callingfn ("dict", GF_LOG_INFO, EINVAL,
+                                  LG_MSG_INVALID_ARG,
                                   "!this || key=%s", (key) ? key : "()");
                 return NULL;
         }
@@ -387,15 +489,22 @@ dict_get (dict_t *this, char *key)
 void
 dict_del (dict_t *this, char *key)
 {
+        int hashval = 0;
+
         if (!this || !key) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "!this || key=%s", key);
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "!this || key=%s", key);
                 return;
         }
 
         LOCK (&this->lock);
 
-        int hashval = SuperFastHash (key, strlen (key)) % this->hash_size;
+        /* If the divisor is 1, the modulo is always 0,
+         * in such case avoid hash calculation.
+         */
+        if (this->hash_size != 1)
+                hashval = SuperFastHash (key, strlen (key)) % this->hash_size;
+
         data_pair_t *pair = this->members[hashval];
         data_pair_t *prev = NULL;
 
@@ -440,7 +549,8 @@ void
 dict_destroy (dict_t *this)
 {
         if (!this) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return;
         }
 
@@ -478,7 +588,8 @@ dict_unref (dict_t *this)
         int32_t ref;
 
         if (!this) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return;
         }
 
@@ -497,7 +608,8 @@ dict_t *
 dict_ref (dict_t *this)
 {
         if (!this) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return NULL;
         }
 
@@ -513,10 +625,12 @@ dict_ref (dict_t *this)
 void
 data_unref (data_t *this)
 {
+
         int32_t ref;
 
         if (!this) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return;
         }
 
@@ -535,7 +649,8 @@ data_t *
 data_ref (data_t *this)
 {
         if (!this) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return NULL;
         }
 
@@ -560,7 +675,7 @@ int_to_data (int64_t value)
 
         ret = gf_asprintf (&data->data, "%"PRId64, value);
         if (-1 == ret) {
-                gf_log ("dict", GF_LOG_DEBUG, "asprintf failed");
+                gf_msg_debug ("dict", 0, "asprintf failed");
                 return NULL;
         }
         data->len = strlen (data->data) + 1;
@@ -579,7 +694,7 @@ data_from_int64 (int64_t value)
         }
         ret = gf_asprintf (&data->data, "%"PRId64, value);
         if (-1 == ret) {
-                gf_log ("dict", GF_LOG_DEBUG, "asprintf failed");
+                gf_msg_debug ("dict", 0, "asprintf failed");
                 return NULL;
         }
         data->len = strlen (data->data) + 1;
@@ -598,7 +713,7 @@ data_from_int32 (int32_t value)
         }
         ret = gf_asprintf (&data->data, "%"PRId32, value);
         if (-1 == ret) {
-                gf_log ("dict", GF_LOG_DEBUG, "asprintf failed");
+                gf_msg_debug ("dict", 0, "asprintf failed");
                 return NULL;
         }
 
@@ -618,7 +733,7 @@ data_from_int16 (int16_t value)
         }
         ret = gf_asprintf (&data->data, "%"PRId16, value);
         if (-1 == ret) {
-                gf_log ("dict", GF_LOG_DEBUG, "asprintf failed");
+                gf_msg_debug ("dict", 0, "asprintf failed");
                 return NULL;
         }
 
@@ -638,7 +753,7 @@ data_from_int8 (int8_t value)
         }
         ret = gf_asprintf (&data->data, "%d", value);
         if (-1 == ret) {
-                gf_log ("dict", GF_LOG_DEBUG, "asprintf failed");
+                gf_msg_debug ("dict", 0, "asprintf failed");
                 return NULL;
         }
 
@@ -658,7 +773,7 @@ data_from_uint64 (uint64_t value)
         }
         ret = gf_asprintf (&data->data, "%"PRIu64, value);
         if (-1 == ret) {
-                gf_log ("dict", GF_LOG_DEBUG, "asprintf failed");
+                gf_msg_debug ("dict", 0, "asprintf failed");
                 return NULL;
         }
 
@@ -700,7 +815,7 @@ data_from_uint32 (uint32_t value)
         }
         ret = gf_asprintf (&data->data, "%"PRIu32, value);
         if (-1 == ret) {
-                gf_log ("dict", GF_LOG_DEBUG, "asprintf failed");
+                gf_msg_debug ("dict", 0, "asprintf failed");
                 return NULL;
         }
 
@@ -734,7 +849,8 @@ data_t *
 data_from_ptr (void *value)
 {
         if (!value) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "value is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "value is NULL");
                 return NULL;
         }
 
@@ -776,7 +892,8 @@ data_t *
 str_to_data (char *value)
 {
         if (!value) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "value is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "value is NULL");
                 return NULL;
         }
         data_t *data = get_new_data ();
@@ -796,7 +913,8 @@ data_t *
 data_from_dynstr (char *value)
 {
         if (!value) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "value is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "value is NULL");
                 return NULL;
         }
 
@@ -814,7 +932,8 @@ data_t *
 data_from_dynmstr (char *value)
 {
         if (!value) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "value is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "value is NULL");
                 return NULL;
         }
 
@@ -847,7 +966,8 @@ data_t *
 bin_to_data (void *value, int32_t len)
 {
         if (!value) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "value is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "value is NULL");
                 return NULL;
         }
 
@@ -867,7 +987,8 @@ int64_t
 data_to_int64 (data_t *data)
 {
         if (!data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return -1;
         }
 
@@ -884,7 +1005,8 @@ int32_t
 data_to_int32 (data_t *data)
 {
         if (!data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return -1;
         }
 
@@ -904,7 +1026,8 @@ data_to_int16 (data_t *data)
         int16_t value = 0;
 
         if (!data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return -1;
         }
 
@@ -920,9 +1043,9 @@ data_to_int16 (data_t *data)
 
         if ((value > SHRT_MAX) || (value < SHRT_MIN)) {
                 errno = ERANGE;
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "Error in data conversion: "
-                                  "detected overflow");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, errno,
+                                  LG_MSG_DATA_CONVERSION_ERROR, "Error in data"
+                                  " conversion: detected overflow");
                 return -1;
         }
 
@@ -936,7 +1059,8 @@ data_to_int8 (data_t *data)
         int8_t value = 0;
 
         if (!data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return -1;
         }
 
@@ -952,9 +1076,9 @@ data_to_int8 (data_t *data)
 
         if ((value > SCHAR_MAX) || (value < SCHAR_MIN)) {
                 errno = ERANGE;
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "Error in data conversion: "
-                                  "detected overflow");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, errno,
+                                  LG_MSG_DATA_CONVERSION_ERROR, "Error in data"
+                                  " conversion: detected overflow");
                 return -1;
         }
 
@@ -1013,7 +1137,8 @@ data_to_uint16 (data_t *data)
 
 	if ((USHRT_MAX - value) < 0) {
 		errno = ERANGE;
-		gf_log_callingfn ("dict", GF_LOG_WARNING,
+		gf_msg_callingfn ("dict", GF_LOG_WARNING, errno,
+                                  LG_MSG_DATA_CONVERSION_ERROR,
 				  "Error in data conversion: "
 				  "overflow detected");
 		return -1;
@@ -1028,7 +1153,8 @@ data_to_uint8 (data_t *data)
 	uint32_t value = 0;
 
         if (!data) {
-		gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+		gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return -1;
 	}
 
@@ -1044,9 +1170,9 @@ data_to_uint8 (data_t *data)
 
 	if ((UCHAR_MAX - (uint8_t)value) < 0) {
 		errno = ERANGE;
-		gf_log_callingfn ("dict", GF_LOG_WARNING,
-				  "data conversion overflow detected (%s)",
-				  strerror(errno));
+		gf_msg_callingfn ("dict", GF_LOG_WARNING, errno,
+                                  LG_MSG_DATA_CONVERSION_ERROR, "data "
+                                  "conversion overflow detected");
 		return -1;
 	}
 
@@ -1057,7 +1183,8 @@ char *
 data_to_str (data_t *data)
 {
         if (!data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return NULL;
         }
         return data->data;
@@ -1067,7 +1194,8 @@ void *
 data_to_ptr (data_t *data)
 {
         if (!data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return NULL;
         }
         return data->data;
@@ -1077,7 +1205,8 @@ void *
 data_to_bin (data_t *data)
 {
         if (!data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "data is NULL");
                 return NULL;
         }
         return data->data;
@@ -1095,13 +1224,20 @@ dict_remove_foreach_fn (dict_t *d, char *k,
                         data_t *v, void *_tmp)
 {
         if (!d || !k) {
-                gf_log ("glusterfs", GF_LOG_WARNING, "%s is NULL",
+                gf_msg ("glusterfs", GF_LOG_WARNING, EINVAL,
+                        LG_MSG_INVALID_ENTRY, "%s is NULL",
                         d?"key":"dictionary");
                 return -1;
         }
 
         dict_del (d, k);
         return 0;
+}
+
+gf_boolean_t
+dict_match_everything (dict_t *d, char *k, data_t *v, void *data)
+{
+        return _gf_true;
 }
 
 int
@@ -1112,26 +1248,14 @@ dict_foreach (dict_t *dict,
                         void *data),
               void *data)
 {
-        if (!dict) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "dict is NULL");
-                return -1;
-        }
+        int     ret = 0;
 
-        int          ret   = -1;
-        data_pair_t *pairs = NULL;
-        data_pair_t *next  = NULL;
+        ret = dict_foreach_match (dict, dict_match_everything, NULL, fn, data);
 
-        pairs = dict->members_list;
-        while (pairs) {
-                next = pairs->next;
-                ret = fn (dict, pairs->key, pairs->value, data);
-                if (ret < 0)
-                        return ret;
-                pairs = next;
-        }
+        if (ret > 0)
+                ret = 0;
 
-        return 0;
+        return ret;
 }
 
 /* return values:
@@ -1153,8 +1277,9 @@ dict_foreach_match (dict_t *dict,
               void *action_data)
 {
         if (!dict || !match || !action) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "dict|match|action is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict|match|action is "
+                                  "NULL");
                 return -1;
         }
 
@@ -1179,6 +1304,11 @@ dict_foreach_match (dict_t *dict,
         return count;
 }
 
+static gf_boolean_t
+dict_fnmatch (dict_t *d, char *k, data_t *val, void *match_data)
+{
+        return (fnmatch (match_data, k, 0) == 0);
+}
 /* return values:
    -1 = failure,
     0 = no matches found,
@@ -1192,30 +1322,7 @@ dict_foreach_fnmatch (dict_t *dict, char *pattern,
                                 void *data),
                       void *data)
 {
-        if (!dict) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
-                                  "dict is NULL");
-                return 0;
-        }
-
-        int          ret = -1;
-        int          count = 0;
-        data_pair_t *pairs = NULL;
-        data_pair_t *next  = NULL;
-
-        pairs = dict->members_list;
-        while (pairs) {
-                next = pairs->next;
-                if (!fnmatch (pattern, pairs->key, 0)) {
-                        ret = fn (dict, pairs->key, pairs->value, data);
-                        if (ret == -1)
-                                return -1;
-                        count++;
-                }
-                pairs = next;
-        }
-
-        return count;
+        return dict_foreach_match (dict, dict_fnmatch, pattern, fn, data);
 }
 
 
@@ -1269,23 +1376,13 @@ _copy (dict_t *unused,
         return dict_set ((dict_t *)newdict, key, (value));
 }
 
-static int
-_remove (dict_t *dict,
-         char *key,
-         data_t *value,
-         void *unused)
-{
-        dict_del ((dict_t *)dict, key);
-        return 0;
-}
-
-
 dict_t *
 dict_copy (dict_t *dict,
            dict_t *new)
 {
         if (!dict) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return NULL;
         }
 
@@ -1302,10 +1399,11 @@ dict_reset (dict_t *dict)
 {
         int32_t         ret = -1;
         if (!dict) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 goto out;
         }
-        dict_foreach (dict, _remove, NULL);
+        dict_foreach (dict, dict_remove_foreach_fn, NULL);
         ret = 0;
 out:
         return ret;
@@ -1349,7 +1447,8 @@ dict_get_with_ref (dict_t *this, char *key, data_t **data)
         int           ret  = -ENOENT;
 
         if (!this || !key || !data) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING,
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG,
                                   "dict OR key (%s) is NULL", key);
                 ret = -EINVAL;
                 goto err;
@@ -2173,6 +2272,32 @@ err:
         return ret;
 }
 
+int
+dict_add_dynstr_with_alloc (dict_t *this, char *key, char *str)
+{
+        data_t  *data = NULL;
+        int      ret  = 0;
+        char    *alloc_str = NULL;
+
+        alloc_str = gf_strdup (str);
+        if (!alloc_str)
+                goto out;
+
+        data = data_from_dynstr (alloc_str);
+        if (!data) {
+                GF_FREE (alloc_str);
+                ret = -EINVAL;
+                goto out;
+        }
+
+        ret = dict_add (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
+
+out:
+        return ret;
+}
+
 /*
   for malloced strings we should do a free instead of GF_FREE
 */
@@ -2378,7 +2503,8 @@ _dict_serialized_length (dict_t *this)
         count = this->count;
 
         if (count < 0) {
-                gf_log ("dict", GF_LOG_ERROR, "count (%d) < 0!", count);
+                gf_msg ("dict", GF_LOG_ERROR, EINVAL,
+                        LG_MSG_COUNT_LESS_THAN_ZERO, "count (%d) < 0!", count);
                 goto out;
         }
 
@@ -2386,7 +2512,8 @@ _dict_serialized_length (dict_t *this)
 
         while (count) {
                 if (!pair) {
-                        gf_log ("dict", GF_LOG_ERROR,
+                        gf_msg ("dict", GF_LOG_ERROR, EINVAL,
+                                LG_MSG_COUNT_LESS_THAN_DATA_PAIRS,
                                 "less than count data pairs found!");
                         goto out;
                 }
@@ -2394,22 +2521,23 @@ _dict_serialized_length (dict_t *this)
                 len += DICT_DATA_HDR_KEY_LEN + DICT_DATA_HDR_VAL_LEN;
 
                 if (!pair->key) {
-                        gf_log ("dict", GF_LOG_ERROR, "pair->key is null!");
+                        gf_msg ("dict", GF_LOG_ERROR, EINVAL,
+                                LG_MSG_NULL_PTR, "pair->key is null!");
                         goto out;
                 }
 
                 len += strlen (pair->key) + 1  /* for '\0' */;
 
                 if (!pair->value) {
-                        gf_log ("dict", GF_LOG_ERROR,
-                                "pair->value is null!");
+                        gf_msg ("dict", GF_LOG_ERROR, EINVAL,
+                                LG_MSG_NULL_PTR, "pair->value is null!");
                         goto out;
                 }
 
                 if (pair->value->len < 0) {
-                        gf_log ("dict", GF_LOG_ERROR,
-                                "value->len (%d) < 0",
-                                pair->value->len);
+                        gf_msg ("dict", GF_LOG_ERROR, EINVAL,
+                                LG_MSG_VALUE_LENGTH_LESS_THAN_ZERO,
+                                "value->len (%d) < 0", pair->value->len);
                         goto out;
                 }
 
@@ -2448,7 +2576,7 @@ _dict_serialize (dict_t *this, char *buf)
 
 
         if (!buf) {
-                gf_log ("dict", GF_LOG_ERROR,
+                gf_msg ("dict", GF_LOG_ERROR, EINVAL, LG_MSG_INVALID_ARG,
                         "buf is null!");
                 goto out;
         }
@@ -2456,7 +2584,8 @@ _dict_serialize (dict_t *this, char *buf)
 
         count = this->count;
         if (count < 0) {
-                gf_log ("dict", GF_LOG_ERROR, "count (%d) < 0!", count);
+                gf_msg ("dict", GF_LOG_ERROR, 0, LG_MSG_COUNT_LESS_THAN_ZERO,
+                        "count (%d) < 0!", count);
                 goto out;
         }
 
@@ -2467,13 +2596,14 @@ _dict_serialize (dict_t *this, char *buf)
 
         while (count) {
                 if (!pair) {
-                        gf_log ("dict", GF_LOG_ERROR,
+                        gf_msg ("dict", GF_LOG_ERROR, 0,
+                                LG_MSG_PAIRS_LESS_THAN_COUNT,
                                 "less than count data pairs found!");
                         goto out;
                 }
 
                 if (!pair->key) {
-                        gf_log ("dict", GF_LOG_ERROR,
+                        gf_msg ("dict", GF_LOG_ERROR, 0, LG_MSG_NULL_PTR,
                                 "pair->key is null!");
                         goto out;
                 }
@@ -2484,7 +2614,8 @@ _dict_serialize (dict_t *this, char *buf)
                 buf += DICT_DATA_HDR_KEY_LEN;
 
                 if (!pair->value) {
-                        gf_log ("dict", GF_LOG_ERROR,
+                        gf_msg ("dict", GF_LOG_ERROR, 0,
+                                LG_MSG_NULL_PTR,
                                 "pair->value is null!");
                         goto out;
                 }
@@ -2498,13 +2629,10 @@ _dict_serialize (dict_t *this, char *buf)
                 buf += keylen;
                 *buf++ = '\0';
 
-                if (!pair->value->data) {
-                        gf_log ("dict", GF_LOG_ERROR,
-                                "pair->value->data is null!");
-                        goto out;
+                if (pair->value->data) {
+                        memcpy (buf, pair->value->data, vallen);
+                        buf += vallen;
                 }
-                memcpy (buf, pair->value->data, vallen);
-                buf += vallen;
 
                 pair = pair->next;
                 count--;
@@ -2530,7 +2658,8 @@ dict_serialized_length (dict_t *this)
         int ret            = -EINVAL;
 
         if (!this) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is null!");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is null!");
                 goto out;
         }
 
@@ -2561,7 +2690,8 @@ dict_serialize (dict_t *this, char *buf)
         int           ret    = -1;
 
         if (!this || !buf) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is null!");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is null!");
                 goto out;
         }
 
@@ -2603,32 +2733,33 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
         buf = orig_buf;
 
         if (!buf) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "buf is null!");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "buf is null!");
                 goto out;
         }
 
         if (size == 0) {
-                gf_log_callingfn ("dict", GF_LOG_ERROR,
-                        "size is 0!");
+                gf_msg_callingfn ("dict", GF_LOG_ERROR, EINVAL,
+                                  LG_MSG_INVALID_ARG, "size is 0!");
                 goto out;
         }
 
         if (!fill) {
-                gf_log_callingfn ("dict", GF_LOG_ERROR,
-                        "fill is null!");
+                gf_msg_callingfn ("dict", GF_LOG_ERROR, EINVAL,
+                                  LG_MSG_INVALID_ARG, "fill is null!");
                 goto out;
         }
 
         if (!*fill) {
-                gf_log_callingfn ("dict", GF_LOG_ERROR,
-                        "*fill is null!");
+                gf_msg_callingfn ("dict", GF_LOG_ERROR, EINVAL,
+                                  LG_MSG_INVALID_ARG, "*fill is null!");
                 goto out;
         }
 
         if ((buf + DICT_HDR_LEN) > (orig_buf + size)) {
-                gf_log_callingfn ("dict", GF_LOG_ERROR,
-                                  "undersized buffer passed. "
-                                  "available (%lu) < required (%lu)",
+                gf_msg_callingfn ("dict", GF_LOG_ERROR, 0,
+                                  LG_MSG_UNDERSIZED_BUF, "undersized buffer "
+                                  "passed. available (%lu) < required (%lu)",
                                   (long)(orig_buf + size),
                                   (long)(buf + DICT_HDR_LEN));
                 goto out;
@@ -2639,7 +2770,7 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
         buf += DICT_HDR_LEN;
 
         if (count < 0) {
-                gf_log ("dict", GF_LOG_ERROR,
+                gf_msg ("dict", GF_LOG_ERROR, 0, LG_MSG_COUNT_LESS_THAN_ZERO,
                         "count (%d) <= 0", count);
                 goto out;
         }
@@ -2649,9 +2780,10 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
 
         for (i = 0; i < count; i++) {
                 if ((buf + DICT_DATA_HDR_KEY_LEN) > (orig_buf + size)) {
-                        gf_log_callingfn ("dict", GF_LOG_ERROR,
-                                          "undersized buffer passed. "
-                                          "available (%lu) < required (%lu)",
+                        gf_msg_callingfn ("dict", GF_LOG_ERROR, 0,
+                                          LG_MSG_UNDERSIZED_BUF, "undersized "
+                                          "buffer passed. available (%lu) < "
+                                          "required (%lu)",
                                           (long)(orig_buf + size),
                                           (long)(buf + DICT_DATA_HDR_KEY_LEN));
                         goto out;
@@ -2661,9 +2793,10 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
                 buf += DICT_DATA_HDR_KEY_LEN;
 
                 if ((buf + DICT_DATA_HDR_VAL_LEN) > (orig_buf + size)) {
-                        gf_log_callingfn ("dict", GF_LOG_ERROR,
-                                          "undersized buffer passed. "
-                                          "available (%lu) < required (%lu)",
+                        gf_msg_callingfn ("dict", GF_LOG_ERROR, 0,
+                                          LG_MSG_UNDERSIZED_BUF, "undersized "
+                                          "buffer passed. available (%lu) < "
+                                          "required (%lu)",
                                           (long)(orig_buf + size),
                                           (long)(buf + DICT_DATA_HDR_VAL_LEN));
                         goto out;
@@ -2673,7 +2806,8 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
                 buf += DICT_DATA_HDR_VAL_LEN;
 
                 if ((buf + keylen) > (orig_buf + size)) {
-                        gf_log_callingfn ("dict", GF_LOG_ERROR,
+                        gf_msg_callingfn ("dict", GF_LOG_ERROR, 0,
+                                          LG_MSG_UNDERSIZED_BUF,
                                           "undersized buffer passed. "
                                           "available (%lu) < required (%lu)",
                                           (long)(orig_buf + size),
@@ -2684,7 +2818,8 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
                 buf += keylen + 1;  /* for '\0' */
 
                 if ((buf + vallen) > (orig_buf + size)) {
-                        gf_log_callingfn ("dict", GF_LOG_ERROR,
+                        gf_msg_callingfn ("dict", GF_LOG_ERROR, 0,
+                                          LG_MSG_UNDERSIZED_BUF,
                                           "undersized buffer passed. "
                                           "available (%lu) < required (%lu)",
                                           (long)(orig_buf + size),
@@ -2693,7 +2828,7 @@ dict_unserialize (char *orig_buf, int32_t size, dict_t **fill)
                 }
                 value = get_new_data ();
                 value->len  = vallen;
-                value->data = memdup (buf, vallen);
+value->data = memdup (buf, vallen);
                 value->is_static = 0;
                 buf += vallen;
 
@@ -2724,8 +2859,7 @@ dict_allocate_and_serialize (dict_t *this, char **buf, u_int *length)
         ssize_t       len = 0;
 
         if (!this || !buf) {
-                gf_log_callingfn ("dict", GF_LOG_DEBUG,
-                                  "dict OR buf is NULL");
+                gf_msg_debug ("dict", 0, "dict OR buf is NULL");
                 goto out;
         }
 
@@ -2783,13 +2917,15 @@ _dict_serialize_value_with_delim (dict_t *this, char *buf, int32_t *serz_len,
         data_pair_t *pair      = NULL;
 
         if (!buf) {
-                gf_log ("dict", GF_LOG_ERROR, "buf is null");
+                gf_msg ("dict", GF_LOG_ERROR, EINVAL,
+                        LG_MSG_INVALID_ARG, "buf is null");
                 goto out;
         }
 
         count = this->count;
         if (count < 0) {
-                gf_log ("dict", GF_LOG_ERROR, "count (%d) < 0", count);
+                gf_msg ("dict", GF_LOG_ERROR, EINVAL, LG_MSG_INVALID_ARG,
+                        "count (%d) < 0", count);
                 goto out;
         }
 
@@ -2797,19 +2933,22 @@ _dict_serialize_value_with_delim (dict_t *this, char *buf, int32_t *serz_len,
 
         while (count) {
                 if (!pair) {
-                        gf_log ("dict", GF_LOG_ERROR,
+                        gf_msg ("dict", GF_LOG_ERROR, 0,
+                                LG_MSG_PAIRS_LESS_THAN_COUNT,
                                 "less than count data pairs found");
                         goto out;
                 }
 
                 if (!pair->key || !pair->value) {
-                        gf_log ("dict", GF_LOG_ERROR,
+                        gf_msg ("dict", GF_LOG_ERROR, 0,
+                                LG_MSG_KEY_OR_VALUE_NULL,
                                 "key or value is null");
                         goto out;
                 }
 
                 if (!pair->value->data) {
-                        gf_log ("dict", GF_LOG_ERROR,
+                        gf_msg ("dict", GF_LOG_ERROR, 0,
+                                LG_MSG_NULL_VALUE_IN_DICT,
                                 "null value found in dict");
                         goto out;
                 }
@@ -2843,7 +2982,8 @@ dict_serialize_value_with_delim (dict_t *this, char *buf, int32_t *serz_len,
         int           ret    = -1;
 
         if (!this || !buf) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is null!");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is null!");
                 goto out;
         }
 
@@ -2882,16 +3022,19 @@ dict_dump_to_log (dict_t *dict)
         char        *format                    = "(%s:%s)";
 
         if (!dict) {
-                gf_log_callingfn ("dict", GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn ("dict", GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return;
         }
 
         ret = dict_dump_to_str (dict, dump, sizeof(dump), format);
         if (ret) {
-                gf_log ("dict", GF_LOG_WARNING, "Failed to log dictionary");
+                gf_msg ("dict", GF_LOG_WARNING, 0, LG_MSG_FAILED_TO_LOG_DICT,
+                        "Failed to log dictionary");
                 return;
         }
-        gf_log_callingfn ("dict", GF_LOG_INFO, "dict=%p (%s)", dict, dump);
+        gf_msg_callingfn ("dict", GF_LOG_INFO, 0, LG_MSG_DICT_ERROR,
+                          "dict=%p (%s)", dict, dump);
 
         return;
 }
@@ -2905,18 +3048,38 @@ dict_dump_to_statedump (dict_t *dict, char *dict_name, char *domain)
         char        *format                    = "\n\t%s:%s";
 
         if (!dict) {
-                gf_log_callingfn (domain, GF_LOG_WARNING, "dict is NULL");
+                gf_msg_callingfn (domain, GF_LOG_WARNING, EINVAL,
+                                  LG_MSG_INVALID_ARG, "dict is NULL");
                 return;
         }
 
         ret = dict_dump_to_str (dict, dump, sizeof(dump), format);
         if (ret) {
-                gf_log (domain, GF_LOG_WARNING, "Failed to log dictionary %s",
-                        dict_name);
+                gf_msg (domain, GF_LOG_WARNING, 0, LG_MSG_FAILED_TO_LOG_DICT,
+                        "Failed to log dictionary %s", dict_name);
                 return;
         }
         gf_proc_dump_build_key (key, domain, dict_name);
         gf_proc_dump_write (key, "%s", dump);
 
         return;
+}
+
+dict_t *
+dict_for_key_value (const char *name, const char *value, size_t size)
+{
+	dict_t *xattr = NULL;
+	int     ret = 0;
+
+	xattr = dict_new ();
+	if (!xattr)
+		return NULL;
+
+	ret = dict_set_static_bin (xattr, (char *)name, (void *)value, size);
+	if (ret) {
+		dict_destroy (xattr);
+		xattr = NULL;
+	}
+
+	return xattr;
 }

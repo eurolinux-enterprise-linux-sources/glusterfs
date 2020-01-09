@@ -1,0 +1,73 @@
+From 70c9c948a6314ee7aab8dc01111490becb02ab45 Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Tue, 5 Jan 2016 17:50:09 +0530
+Subject: [PATCH 232/237] glusterd: register rpc notification for unix sockets
+
+This is a backport of http://review.gluster.org/#/c/13174/
+
+Previously only CLI was using unix socket to connect to glusterd,
+and there was no need to register rpc callback notifications.
+Now auxiliary mount process is started with unix socket option.
+
+So we need to register register rpc notifications for unix sockets as
+well.
+
+> Change-Id: I985839fc91c5c2674d85a7ec94ae24f47898c22d
+> BUG: 1295763
+> Signed-off-by: vmallika <vmallika@redhat.com>
+
+Change-Id: I4c02f54a4aab2078a852b92b00f967e4f6c3e90e
+BUG: 1294816
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/65065
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd.c |   17 ++---------------
+ 1 files changed, 2 insertions(+), 15 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd.c b/xlators/mgmt/glusterd/src/glusterd.c
+index 73e847a..8e13b41 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.c
++++ b/xlators/mgmt/glusterd/src/glusterd.c
+@@ -1033,17 +1033,6 @@ _install_mount_spec (dict_t *opts, char *key, data_t *value, void *data)
+ }
+ 
+ 
+-int
+-glusterd_uds_rpcsvc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
+-                            void *data)
+-{
+-        /* glusterd_rpcsvc_notify() does stuff that calls coming in from the
+-         * unix domain socket don't need. This is just an empty function to be
+-         * used for the uds listener. This will be used later if required.
+-         */
+-        return 0;
+-}
+-
+ /* The glusterd unix domain socket listener only listens for cli */
+ rpcsvc_t *
+ glusterd_init_uds_listener (xlator_t *this)
+@@ -1079,8 +1068,7 @@ glusterd_init_uds_listener (xlator_t *this)
+                 goto out;
+         }
+ 
+-        ret = rpcsvc_register_notify (rpc, glusterd_uds_rpcsvc_notify,
+-                                      this);
++        ret = rpcsvc_register_notify (rpc, glusterd_rpcsvc_notify, this);
+         if (ret) {
+                 gf_msg_debug (this->name, 0,
+                         "Failed to register notify function");
+@@ -1144,8 +1132,7 @@ glusterd_stop_uds_listener (xlator_t *this)
+         }
+ 
+         (void) rpcsvc_unregister_notify (conf->uds_rpc,
+-                                         glusterd_uds_rpcsvc_notify,
+-                                         this);
++                                         glusterd_rpcsvc_notify, this);
+ 
+         sock_data = dict_get (this->options, "glusterd-sockfile");
+         if (!sock_data) {
+-- 
+1.7.1
+

@@ -1,6 +1,7 @@
 #!/bin/bash
 
 . $(dirname $0)/../include.rc
+. $(dirname $0)/../volume.rc
 
 function execute()
 {
@@ -70,6 +71,16 @@ function volume_type()
         getfattr -n volume.type $M0/. --only-values --absolute-names -e text
 }
 
+case $OSTYPE in
+NetBSD)
+        echo "Skip test on LVM which is not available on NetBSD" >&2
+        SKIP_TESTS
+        exit 0
+        ;;
+*)      
+        ;;
+esac 
+
 TEST glusterd
 TEST pidof glusterd
 configure
@@ -82,7 +93,7 @@ EXPECT 'Created' volinfo_field $V0 'Status';
 TEST $CLI volume start $V0;
 EXPECT 'Started' volinfo_field $V0 'Status'
 
-TEST glusterfs --volfile-id=/$V0 --volfile-server=$H0 $M0
+TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
 EXPECT '1' volume_type
 
 ## Create posix file
@@ -106,7 +117,7 @@ TEST stat /dev/$V0/${gfid}
 sleep 1
 ## Check mounting
 TEST mount -o loop $M0/lv $M1
-umount $M1
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M1
 
 # Snapshot
 TEST touch $M0/lv_sn
@@ -123,7 +134,7 @@ TEST ! stat /dev/$V0/${gfid}
 
 rm $M0/* -f
 
-TEST umount $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 TEST $CLI volume stop ${V0}
 EXPECT 'Stopped' volinfo_field $V0 'Status';
 TEST $CLI volume delete ${V0}

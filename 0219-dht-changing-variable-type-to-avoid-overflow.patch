@@ -1,0 +1,83 @@
+From 7ae7d79a3ab9400c62575c81a40735b2e7ed4b1b Mon Sep 17 00:00:00 2001
+From: Sakshi Bansal <sabansal@redhat.com>
+Date: Tue, 17 Nov 2015 15:11:40 +0530
+Subject: [PATCH 219/224] dht : changing variable type to avoid overflow
+
+For layout computation we find total size of the cluster
+and store it in an unsigned 32 bit variable. For large
+clusters this value may overflow which leads to wrong
+computations and for some bricks the layout may overflow.
+Hence using unsigned 64 bit to handle large values.
+
+Backport of http://review.gluster.org/#/c/12597/
+
+Change-Id: I7c3ba26ea2c4158065ea9e74705a7ede1b6759c7
+BUG: 1281946
+Signed-off-by: Sakshi Bansal <sabansal@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64630
+Reviewed-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/cluster/dht/src/dht-selfheal.c |   16 +++++++++-------
+ 1 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-selfheal.c b/xlators/cluster/dht/src/dht-selfheal.c
+index f8d965c..65b38e3 100644
+--- a/xlators/cluster/dht/src/dht-selfheal.c
++++ b/xlators/cluster/dht/src/dht-selfheal.c
+@@ -1587,14 +1587,15 @@ dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
+                                    dht_layout_t *layout)
+ {
+         xlator_t    *this = NULL;
+-        uint32_t     chunk = 0;
++        double       chunk = 0;
+         int          i = 0;
+         uint32_t     start = 0;
+         int          bricks_to_use = 0;
+         int          err = 0;
+         int          start_subvol = 0;
+         uint32_t     curr_size;
+-        uint32_t     total_size = 0;
++        uint32_t     range_size;
++        uint64_t     total_size = 0;
+         int          real_i;
+         dht_conf_t   *priv;
+         gf_boolean_t weight_by_size;
+@@ -1627,9 +1628,9 @@ dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
+ 
+         if (weight_by_size && total_size) {
+                 /* We know total_size is not zero. */
+-                chunk = ((unsigned long) 0xffffffff) / total_size;
++                chunk = ((double) 0xffffffff) / ((double) total_size);
+                 gf_msg_debug (this->name, 0,
+-                              "chunk size = 0xffffffff / %u = 0x%x",
++                              "chunk size = 0xffffffff / %lu = %f",
+                               total_size, chunk);
+         }
+         else {
+@@ -1667,17 +1668,18 @@ dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
+                 else {
+                         curr_size = 1;
+                 }
++                range_size = chunk * curr_size;
+                 gf_msg_debug (this->name, 0,
+                               "assigning range size 0x%x to %s",
+-                              chunk * curr_size,
++                              range_size,
+                               layout->list[i].xlator->name);
+-                DHT_SET_LAYOUT_RANGE(layout, i, start, chunk * curr_size,
++                DHT_SET_LAYOUT_RANGE(layout, i, start, range_size,
+                                      loc->path);
+                 if (++bricks_used >= bricks_to_use) {
+                         layout->list[i].stop = 0xffffffff;
+                         goto done;
+                 }
+-                start += (chunk * curr_size);
++                start += range_size;
+         }
+ 
+ done:
+-- 
+1.7.1
+

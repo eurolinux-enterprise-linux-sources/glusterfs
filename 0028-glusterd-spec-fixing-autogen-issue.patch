@@ -1,0 +1,41 @@
+From 4f0dcb3eb3df311d7531555aeccb96045473013d Mon Sep 17 00:00:00 2001
+From: anand <anekkunt@redhat.com>
+Date: Thu, 15 Oct 2015 17:13:39 +0530
+Subject: [PATCH 28/28] glusterd/spec: fixing autogen issue
+
+Because of the incorrect build section, autogen.sh wasn't re-run during the rpm build process.
+
+The `extras/Makefile.in` was not regenerated with the changes made to `extras/Makefile.am` in the firewalld patch.
+This meant that `extras/Makefile` was generated without the firewalld changes.
+
+So the firewalld config wasn't installed during `make install` and rpmbuild later failed when it failed to
+find `/usr/lib/firewalld/glusterfs.xml`
+
+Change-Id: Ieaaac4ed83258a269ee45f28ed062254bcb094ba
+BUG:  1271752
+Signed-off-by: anand <anekkunt@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59463
+Reviewed-by: Krishnan Parthasarathi <kparthas@redhat.com>
+Tested-by: Krishnan Parthasarathi <kparthas@redhat.com>
+---
+ glusterfs.spec.in |    4 ----
+ 1 files changed, 0 insertions(+), 4 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index cd093d9..536c7a8 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -591,10 +591,6 @@ This package provides the translators needed on any GlusterFS client.
+ %setup -q -n %{name}-%{version}%{?prereltag}
+ 
+ %build
+-# For whatever reason, install-sh is sometimes missing. When this gets fixed,
+-# there is no need to run ./autogen or have a BuildRequires for automake.
+-[ -e 'install-sh' -o -e 'install.sh' ] || ./autogen.sh
+-%configure \
+ ./autogen.sh && %configure \
+         %{?_with_cmocka} \
+         %{?_with_tmpfilesdir} \
+-- 
+1.7.1
+

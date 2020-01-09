@@ -1,0 +1,299 @@
+From 8e54f23f8e517ea58b853cf551308a117b840d24 Mon Sep 17 00:00:00 2001
+From: Nithya Balachandran <nbalacha@redhat.com>
+Date: Fri, 4 Dec 2015 10:59:14 +0530
+Subject: [PATCH 163/168] cluster/tier: fix loading tier.so into glusterd
+
+glusterd occasionally loads shared libraries of translators. This
+failed for tiering due to a reference to dht_methods which is defined
+as a global variable which is not necessary.
+The global variable has been removed and this is now a member of
+dht_conf and is now initialised in the *_init calls.
+
+Upstream : http://review.gluster.org/#/c/12863/
+
+Change-Id: I5ab25c45ea01a9c3e75ad8c2a208b137c6e7ddac
+BUG: 1278798
+Signed-off-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63006
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ tests/basic/tier/file_with_spaces.t     |    4 +-
+ xlators/cluster/dht/src/dht-common.c    |   20 ++++----------
+ xlators/cluster/dht/src/dht-common.h    |    2 +-
+ xlators/cluster/dht/src/dht-helper.c    |    3 +-
+ xlators/cluster/dht/src/dht-rebalance.c |   11 +------
+ xlators/cluster/dht/src/dht-shared.c    |   29 ++++++++++++++++++++-
+ xlators/cluster/dht/src/dht.c           |    6 ----
+ xlators/cluster/dht/src/tier.c          |   42 +++++++++++++++++++++++++------
+ 8 files changed, 74 insertions(+), 43 deletions(-)
+
+diff --git a/tests/basic/tier/file_with_spaces.t b/tests/basic/tier/file_with_spaces.t
+index 7492804..3e3c34d 100755
+--- a/tests/basic/tier/file_with_spaces.t
++++ b/tests/basic/tier/file_with_spaces.t
+@@ -26,8 +26,8 @@ function create_dist_tier_vol () {
+         TEST $CLI volume attach-tier $V0 $H0:$B0/hot/${V0}{0..$1}
+         TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
+         TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
+-        TEST $CLI volume set $V0 cluster.read-freq-threshold 50
+-        TEST $CLI volume set $V0 cluster.write-freq-threshold 50
++        TEST $CLI volume set $V0 cluster.read-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.write-freq-threshold 0
+         TEST $CLI volume set $V0 cluster.tier-mode test
+ }
+ 
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index e664b57..6a71767 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -3708,8 +3708,7 @@ dht_setxattr (call_frame_t *frame, xlator_t *this,
+         conf   = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, conf, err);
+ 
+-        methods = conf->methods;
+-        GF_VALIDATE_OR_GOTO (this->name, conf->methods, err);
++        methods = &(conf->methods);
+ 
+         /* Rebalance daemon is allowed to set internal keys */
+         if (!conf->defrag)
+@@ -4594,8 +4593,7 @@ dht_readdirp_cbk (call_frame_t *frame, void *cookie, xlator_t *this, int op_ret,
+         conf  = this->private;
+         GF_VALIDATE_OR_GOTO(this->name, conf, unwind);
+ 
+-        methods = conf->methods;
+-        GF_VALIDATE_OR_GOTO(this->name, conf->methods, done);
++        methods = &(conf->methods);
+ 
+         if (op_ret < 0)
+                 goto done;
+@@ -4815,8 +4813,7 @@ dht_readdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         conf = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, conf, done);
+ 
+-        methods = conf->methods;
+-        GF_VALIDATE_OR_GOTO (this->name, conf->methods, done);
++        methods = &(conf->methods);
+ 
+         if (op_ret < 0)
+                 goto done;
+@@ -5280,9 +5277,7 @@ dht_mknod_do (call_frame_t *frame)
+ 
+         GF_VALIDATE_OR_GOTO (this->name, conf, err);
+ 
+-        methods = conf->methods;
+-
+-        GF_VALIDATE_OR_GOTO (this->name, conf->methods, err);
++        methods = &(conf->methods);
+ 
+         /* We don't need parent_loc anymore */
+         loc_wipe (&local->loc);
+@@ -6231,9 +6226,7 @@ dht_create_do (call_frame_t *frame)
+ 
+         GF_VALIDATE_OR_GOTO (this->name, conf, err);
+ 
+-        methods = conf->methods;
+-
+-        GF_VALIDATE_OR_GOTO (this->name, conf->methods, err);
++        methods = &(conf->methods);
+ 
+         /* We don't need parent_loc anymore */
+         loc_wipe (&local->loc);
+@@ -7664,8 +7657,7 @@ dht_notify (xlator_t *this, int event, void *data, ...)
+         conf = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, conf, out);
+ 
+-        methods = conf->methods;
+-        GF_VALIDATE_OR_GOTO (this->name, methods, out);
++        methods = &(conf->methods);
+ 
+         /* had all subvolumes reported status once till now? */
+         had_heard_from_all = 1;
+diff --git a/xlators/cluster/dht/src/dht-common.h b/xlators/cluster/dht/src/dht-common.h
+index 79a7e98..4e185c7 100644
+--- a/xlators/cluster/dht/src/dht-common.h
++++ b/xlators/cluster/dht/src/dht-common.h
+@@ -487,7 +487,7 @@ struct dht_conf {
+         gf_boolean_t    randomize_by_gfid;
+         char           *dthrottle;
+ 
+-        dht_methods_t  *methods;
++        dht_methods_t   methods;
+ 
+         struct mem_pool *lock_pool;
+ 
+diff --git a/xlators/cluster/dht/src/dht-helper.c b/xlators/cluster/dht/src/dht-helper.c
+index 96e58c4..ca427a0 100644
+--- a/xlators/cluster/dht/src/dht-helper.c
++++ b/xlators/cluster/dht/src/dht-helper.c
+@@ -587,8 +587,7 @@ dht_subvol_get_hashed (xlator_t *this, loc_t *loc)
+         conf = this->private;
+         GF_VALIDATE_OR_GOTO (this->name, conf, out);
+ 
+-        methods = conf->methods;
+-        GF_VALIDATE_OR_GOTO (this->name, conf->methods, out);
++        methods = &(conf->methods);
+ 
+         if (__is_root_gfid (loc->gfid)) {
+                 subvol = dht_first_up_subvol (this);
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index a9d78f8..9c8958d 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -3365,15 +3365,8 @@ gf_defrag_start_crawl (void *data)
+         }
+ 
+         if (defrag->cmd == GF_DEFRAG_CMD_START_TIER) {
+-                methods = conf->methods;
+-                if (!methods) {
+-                        gf_msg (this->name, GF_LOG_ERROR, 0,
+-                                DHT_MSG_LOG_TIER_ERROR,
+-                                "Methods invalid for translator.");
+-                        defrag->defrag_status = GF_DEFRAG_STATUS_FAILED;
+-                        ret = -1;
+-                        goto out;
+-                }
++                methods = &(conf->methods);
++
+                 methods->migration_other(this, defrag);
+                 if (defrag->cmd == GF_DEFRAG_CMD_START_DETACH_TIER) {
+ 
+diff --git a/xlators/cluster/dht/src/dht-shared.c b/xlators/cluster/dht/src/dht-shared.c
+index 75957d5..9d869e3 100644
+--- a/xlators/cluster/dht/src/dht-shared.c
++++ b/xlators/cluster/dht/src/dht-shared.c
+@@ -569,6 +569,32 @@ out:
+         return ret;
+ }
+ 
++
++
++int
++dht_init_methods (xlator_t *this)
++{
++        int ret                  = -1;
++        dht_conf_t      *conf    = NULL;
++        dht_methods_t   *methods = NULL;
++
++        GF_VALIDATE_OR_GOTO ("dht", this, err);
++
++        conf = this->private;
++        methods = &(conf->methods);
++
++        methods->migration_get_dst_subvol = dht_migration_get_dst_subvol;
++        methods->migration_needed = dht_migration_needed;
++        methods->migration_other  = NULL;
++        methods->layout_search    = dht_layout_search;
++
++        ret = 0;
++err:
++        return ret;
++}
++
++
++
+ int
+ dht_init (xlator_t *this)
+ {
+@@ -808,7 +834,8 @@ dht_init (xlator_t *this)
+         if (dht_set_subvol_range(this))
+                 goto err;
+ 
+-        conf->methods = &dht_methods;
++        if (dht_init_methods (this))
++                goto err;
+ 
+         return 0;
+ 
+diff --git a/xlators/cluster/dht/src/dht.c b/xlators/cluster/dht/src/dht.c
+index 3934df5..c67172c 100644
+--- a/xlators/cluster/dht/src/dht.c
++++ b/xlators/cluster/dht/src/dht.c
+@@ -17,12 +17,6 @@
+ #include "statedump.h"
+ #include "dht-common.h"
+ 
+-dht_methods_t dht_methods = {
+-        .migration_get_dst_subvol = dht_migration_get_dst_subvol,
+-        .migration_needed = dht_migration_needed,
+-        .layout_search   = dht_layout_search,
+-};
+-
+ class_methods_t class_methods = {
+         .init           = dht_init,
+         .fini           = dht_fini,
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index 6417ba0..fafa4a5 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -1573,12 +1573,6 @@ tier_search (xlator_t *this, dht_layout_t *layout, const char *name)
+         return subvol;
+ }
+ 
+-dht_methods_t tier_methods = {
+-        .migration_get_dst_subvol = tier_migration_get_dst,
+-        .migration_other = tier_start,
+-        .migration_needed = tier_migration_needed,
+-        .layout_search   = tier_search,
+-};
+ 
+ static int
+ tier_load_externals (xlator_t *this)
+@@ -1632,6 +1626,32 @@ int tier_validate_mode (char *mode)
+         return ret;
+ }
+ 
++
++int
++tier_init_methods (xlator_t *this)
++{
++        int ret                  = -1;
++        dht_conf_t      *conf    = NULL;
++        dht_methods_t   *methods = NULL;
++
++        GF_VALIDATE_OR_GOTO ("tier", this, err);
++
++        conf = this->private;
++
++        methods = &(conf->methods);
++
++        methods->migration_get_dst_subvol = tier_migration_get_dst;
++        methods->migration_other   = tier_start;
++        methods->migration_needed  = tier_migration_needed;
++        methods->layout_search     = tier_search;
++
++        ret = 0;
++err:
++        return ret;
++}
++
++
++
+ int
+ tier_init (xlator_t *this)
+ {
+@@ -1647,13 +1667,19 @@ tier_init (xlator_t *this)
+         if (ret) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_LOG_TIER_ERROR,
+-                       "dht_init failed");
++                       "tier_init failed");
+                 goto out;
+         }
+ 
+         conf = this->private;
+ 
+-        conf->methods = &tier_methods;
++        ret = tier_init_methods (this);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                       DHT_MSG_LOG_TIER_ERROR,
++                       "tier_init_methods failed");
++                goto out;
++        }
+ 
+         if (conf->subvolume_cnt != 2) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+-- 
+1.7.1
+

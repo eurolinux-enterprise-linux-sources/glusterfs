@@ -1,0 +1,175 @@
+From 952356d423107b2b6b2baf4af1ea234f6f43c011 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Tue, 1 Dec 2015 09:11:01 +0000
+Subject: [PATCH 178/178] tier/glusterd: Check before starting tier daemon during volume start
+
+We start tier daemon when volume is started without looking into the
+previous status. The problem with that if detach-tier is started
+and then volume force start is actually starting tier daemon.
+
+This is also fixes a problem where tier daemon is not starting
+after detach stop.
+
+backport of >
+>Change-Id: I15b56a711e12f0e24f5ab123561258bd448621f7
+>BUG: 1286974
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12833
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I9adc31d8d5544b3854d0684709158694e24578fb
+BUG: 1284387
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63464
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ tests/bugs/tier/bug-1286974.t                   |   72 +++++++++++++++++++++++
+ xlators/mgmt/glusterd/src/glusterd-mgmt.c       |    4 +-
+ xlators/mgmt/glusterd/src/glusterd-rebalance.c  |    9 +++
+ xlators/mgmt/glusterd/src/glusterd-volume-ops.c |   10 ++-
+ 4 files changed, 90 insertions(+), 5 deletions(-)
+ create mode 100644 tests/bugs/tier/bug-1286974.t
+
+diff --git a/tests/bugs/tier/bug-1286974.t b/tests/bugs/tier/bug-1286974.t
+new file mode 100644
+index 0000000..a2d8131
+--- /dev/null
++++ b/tests/bugs/tier/bug-1286974.t
+@@ -0,0 +1,72 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../tier.rc
++
++
++NUM_BRICKS=3
++DEMOTE_FREQ=5
++PROMOTE_FREQ=5
++
++
++
++# Creates a tiered volume with pure distribute hot and cold tiers
++# Both hot and cold tiers will have an equal number of bricks.
++
++function create_dist_tier_vol () {
++        mkdir $B0/cold
++        mkdir $B0/hot
++        TEST $CLI volume create $V0 disperse 6 disperse-data 4 $H0:$B0/cold/${V0}{1..12}
++        TEST $CLI volume set $V0 performance.quick-read off
++        TEST $CLI volume set $V0 performance.io-cache off
++        TEST $CLI volume set $V0 features.ctr-enabled on
++        TEST $CLI volume start $V0
++        TEST $CLI volume attach-tier $V0 replica 2 $H0:$B0/hot/${V0}{0..$1}
++        TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.read-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.write-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.tier-mode test
++}
++
++function tier_task_name () {
++        local task_name=$1;
++        $CLI volume status $V0 task | grep "$task_name";
++        echo $?;
++}
++
++cleanup;
++
++#Basic checks
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume info
++
++
++#Create and start a tiered volume
++create_dist_tier_vol $NUM_BRICKS
++
++# Mount FUSE
++TEST glusterfs -s $H0 --volfile-id $V0 $M0
++
++TEST touch /mnt/glusterfs/0/file{1..100};
++
++EXPECT "0" tier_task_name "Tier migration";
++
++TEST $CLI volume tier $V0 detach start
++
++EXPECT "0" tier_task_name "Detach tier";
++
++TEST $CLI volume stop $V0 force;
++
++TEST $CLI volume start $V0 force;
++
++EXPECT "0" tier_task_name "Detach tier";
++
++TEST $CLI volume tier $V0 detach stop
++
++EXPECT "0" tier_task_name "Tier migration";
++
++cleanup;
++
+diff --git a/xlators/mgmt/glusterd/src/glusterd-mgmt.c b/xlators/mgmt/glusterd/src/glusterd-mgmt.c
+index 286007e..c5e9422 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-mgmt.c
++++ b/xlators/mgmt/glusterd/src/glusterd-mgmt.c
+@@ -400,10 +400,12 @@ gd_mgmt_v3_post_validate_fn (glusterd_op_t op, int32_t op_ret, dict_t *dict,
+                         }
+ 
+                         if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+-                                glusterd_defrag_info_set (volinfo, dict,
++                                if (volinfo->rebal.op != GD_OP_REMOVE_BRICK) {
++                                        glusterd_defrag_info_set (volinfo, dict,
+                                                   GF_DEFRAG_CMD_START_TIER,
+                                                   GF_DEFRAG_CMD_START,
+                                                   GD_OP_REBALANCE);
++                                }
+                                 glusterd_restart_rebalance_for_volume (volinfo);
+                         }
+                         break;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-rebalance.c b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+index 82dd6ee..51ab841 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-rebalance.c
++++ b/xlators/mgmt/glusterd/src/glusterd-rebalance.c
+@@ -928,6 +928,15 @@ glusterd_op_rebalance (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
+                         goto out;
+                 }
+ 
++                if (volinfo->type == GF_CLUSTER_TYPE_TIER &&
++                    cmd == GF_OP_CMD_STOP_DETACH_TIER) {
++                        glusterd_defrag_info_set (volinfo, dict,
++                                  GF_DEFRAG_CMD_START_TIER,
++                                  GF_DEFRAG_CMD_START,
++                                  GD_OP_REBALANCE);
++                        glusterd_restart_rebalance_for_volume (volinfo);
++                }
++
+                 ret = 0;
+                 break;
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+index d912401..efdf957 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-ops.c
+@@ -2533,10 +2533,12 @@ glusterd_op_start_volume (dict_t *dict, char **op_errstr)
+                  * Please upgrade to version greater than GD_OP_VERSION_3_7_3
+                  */
+                 if (volinfo->type == GF_CLUSTER_TYPE_TIER) {
+-                        glusterd_defrag_info_set (volinfo, dict,
+-                                                  GF_DEFRAG_CMD_START_TIER,
+-                                                  GF_DEFRAG_CMD_START,
+-                                                  GD_OP_REBALANCE);
++                        if (volinfo->rebal.op != GD_OP_REMOVE_BRICK) {
++                                glusterd_defrag_info_set (volinfo, dict,
++                                          GF_DEFRAG_CMD_START_TIER,
++                                          GF_DEFRAG_CMD_START,
++                                          GD_OP_REBALANCE);
++                        }
+                         glusterd_restart_rebalance_for_volume (volinfo);
+                 }
+         } else {
+-- 
+1.7.1
+

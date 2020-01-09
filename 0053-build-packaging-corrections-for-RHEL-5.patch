@@ -1,0 +1,80 @@
+From 89179675dea05755c9a9cf35959b1c94afe9c9db Mon Sep 17 00:00:00 2001
+From: Niels de Vos <ndevos@redhat.com>
+Date: Wed, 10 Jun 2015 16:16:47 +0200
+Subject: [PATCH 53/67] build: packaging corrections for RHEL-5
+
+Because the RHEL-5 version of these packages do not contain the -server
+bits, some additional changes for the .spec are needed. These changes
+are not applicable upstream.
+
+Label: DOWNSTREAM ONLY
+
+BUG: 1230114
+Change-Id: I3c4237bd986617f42b725efd75d1128a69e5dbe3
+Signed-off-by: Niels de Vos <ndevos@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/50447
+Reviewed-by: Balamurugan Arumugam <barumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60136
+Tested-by: Milind Changire <mchangir@redhat.com>
+---
+ glusterfs.spec.in |   18 ++++++++++--------
+ 1 files changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/glusterfs.spec.in b/glusterfs.spec.in
+index 9cee5d4..b9027d5 100644
+--- a/glusterfs.spec.in
++++ b/glusterfs.spec.in
+@@ -89,6 +89,7 @@
+ %global _build_server 1
+ %else
+ %global _build_server 0
++%global _without_georeplication --disable-georeplication
+ %endif
+ 
+ %global _without_extra_xlators 1
+@@ -997,17 +998,14 @@ fi
+ %exclude %{_sysconfdir}/ganesha/*
+ %exclude %{_libexecdir}/ganesha/*
+ %exclude %{_prefix}/lib/ocf/*
+-# exclude geo-replication files
+-%exclude %{_sysconfdir}/logrotate.d/glusterfs-georep
++# exclude incrementalapi
+ %exclude %{_libexecdir}/glusterfs/*
+ %exclude %{_sbindir}/gfind_missing_files
+-%exclude %{_datadir}/glusterfs/scripts/get-gfid.sh
+-%exclude %{_datadir}/glusterfs/scripts/slave-upgrade.sh
+-%exclude %{_datadir}/glusterfs/scripts/gsync-upgrade.sh
+-%exclude %{_datadir}/glusterfs/scripts/generate-gfid-file.sh
+-%exclude %{_datadir}/glusterfs/scripts/gsync-sync-gfid
+-%exclude %{_sharedstatedir}/glusterd/*
++%exclude %{_libexecdir}/glusterfs/glusterfind
++%exclude %{_bindir}/glusterfind
++%exclude %{_libexecdir}/glusterfs/peer_add_secret_pub
+ # exclude server files
++%exclude %{_sharedstatedir}/glusterd/*
+ %exclude %{_sysconfdir}/glusterfs
+ %exclude %{_sysconfdir}/glusterfs/glusterd.vol
+ %exclude %{_sysconfdir}/glusterfs/glusterfs-georep-logrotate
+@@ -1023,7 +1021,9 @@ fi
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/arbiter.so
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/bit-rot.so
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/bitrot-stub.so
++%if ( 0%{!?_without_tiering:1} )
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/changetimerecorder.so
++%endif
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/index.so
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/locks.so
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/posix*
+@@ -1036,7 +1036,9 @@ fi
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs*
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/protocol/server*
+ %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/storage*
++%if ( 0%{!?_without_tiering:1} )
+ %exclude %{_libdir}/libgfdb.so.*
++%endif
+ %exclude %{_sbindir}/gcron.py
+ %exclude %{_sbindir}/glfsheal
+ %exclude %{_sbindir}/glusterd
+-- 
+1.7.1
+

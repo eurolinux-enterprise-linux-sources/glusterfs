@@ -1,0 +1,81 @@
+From 4612573d3e81bd6e9f999d4f87a25f7387d53e38 Mon Sep 17 00:00:00 2001
+From: Anuradha Talur <atalur@redhat.com>
+Date: Wed, 21 Oct 2015 16:49:49 +0530
+Subject: [PATCH 157/162] glusterd/afr : Readdirp performance improvement
+
+Add xlator options to index xlator with xattrs that
+it needs to keep track of.
+
+        >Change-Id: If818673be5e626f77e65cc3a340f8cdd624179c2
+        >BUG: 1250803
+        >Signed-off-by: Anuradha Talur <atalur@redhat.com>
+        >Reviewed-on: http://review.gluster.org/12467
+        >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+        >Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+        >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+        >Reviewed-by: Ravishankar N <ravishankar@redhat.com>
+        >Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+
+Change-Id: I2c14471214973b59eff9891ee4fea7ccabc2c5a0
+BUG: 1250241
+Signed-off-by: Anuradha Talur <atalur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62895
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ libglusterfs/src/glusterfs.h                |    2 ++
+ xlators/mgmt/glusterd/src/glusterd-volgen.c |   17 +++++++++++++++++
+ 2 files changed, 19 insertions(+), 0 deletions(-)
+
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index 1988c33..d518991 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -167,6 +167,8 @@
+ /* Index xlator related */
+ #define GF_XATTROP_INDEX_GFID "glusterfs.xattrop_index_gfid"
+ #define GF_XATTROP_INDEX_COUNT "glusterfs.xattrop_index_count"
++#define GF_XATTROP_DIRTY_GFID "glusterfs.xattrop_dirty_gfid"
++#define GF_XATTROP_DIRTY_COUNT "glusterfs.xattrop_dirty_count"
+ 
+ #define GF_HEAL_INFO "glusterfs.heal-info"
+ #define GF_AFR_HEAL_SBRAIN "glusterfs.heal-sbrain"
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volgen.c b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+index 3d33559..0a8f4c5 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volgen.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volgen.c
+@@ -1834,6 +1834,7 @@ brick_graph_add_index (volgen_graph_t *graph, glusterd_volinfo_t *volinfo,
+                         dict_t *set_dict, glusterd_brickinfo_t *brickinfo)
+ {
+         xlator_t        *xl = NULL;
++        char            *pending_xattr = NULL;
+         char            index_basepath[PATH_MAX]   = {0};
+         int             ret = -1;
+ 
+@@ -1855,7 +1856,23 @@ brick_graph_add_index (volgen_graph_t *graph, glusterd_volinfo_t *volinfo,
+                 if (ret)
+                         goto out;
+         }
++        if ((volinfo->type == GF_CLUSTER_TYPE_STRIPE_REPLICATE ||
++            volinfo->type == GF_CLUSTER_TYPE_REPLICATE)) {
++                ret = xlator_set_option (xl, "xattrop-dirty-watchlist",
++                                         "trusted.afr.dirty");
++                if (ret)
++                        goto out;
++                ret = gf_asprintf (&pending_xattr, "trusted.afr.%s-",
++                                   volinfo->volname);
++                if (ret < 0)
++                        goto out;
++                ret = xlator_set_option (xl, "xattrop-pending-watchlist",
++                                         pending_xattr);
++                if (ret)
++                        goto out;
++        }
+ out:
++        GF_FREE (pending_xattr);
+         return ret;
+ }
+ 
+-- 
+1.7.1
+

@@ -1,0 +1,73 @@
+From ec519b0337bc077a6d85370c7454539d6d984852 Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Tue, 15 Dec 2015 14:39:25 +0530
+Subject: [PATCH 185/191] tier/glusterd: Only positive values for freq-thresholds
+
+Fixed error handling for validation for freq-thresholds
+
+Backport of http://review.gluster.org/12970
+
+> Change-Id: Ibe3a9752ac0b525b0c8c0d6c4b4e4d694bd91b88
+> BUG: 1291603
+> Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+> Reviewed-on: http://review.gluster.org/12970
+> Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Tested-by: Dan Lambright <dlambrig@redhat.com>
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+
+Change-Id: Ia40e57e2febb5781cefb7de730577681c633944b
+BUG: 1291052
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64029
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ tests/basic/tier/tier.t                         |    4 ++++
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |    2 ++
+ 2 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/tests/basic/tier/tier.t b/tests/basic/tier/tier.t
+index a197d6e..c7c9569 100755
+--- a/tests/basic/tier/tier.t
++++ b/tests/basic/tier/tier.t
+@@ -110,6 +110,9 @@ TEST $CLI volume set $V0 cluster.tier-max-mb 1000
+ TEST $CLI volume set $V0 cluster.tier-max-files 1000
+ TEST ! $CLI volume set $V0 cluster.tier-max-files -3
+ TEST ! $CLI volume set $V0 cluster.watermark-low 90
++TEST ! $CLI volume set $V0 cluster.read-freq-threshold -12
++TEST ! $CLI volume set $V0 cluster.write-freq-threshold -12
++
+ 
+ # stop the volume and restart it. The rebalance daemon should restart.
+ cd /tmp
+@@ -128,6 +131,7 @@ TEST ! $CLI volume set $V0 cluster.tier-promote-frequency -1
+ #Tier options expect non-negative value
+ TEST ! $CLI volume set $V0 cluster.read-freq-threshold qwerty
+ 
++
+ TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
+ TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
+ TEST $CLI volume set $V0 cluster.read-freq-threshold 0
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 2e0ae64..71af98a 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -181,6 +181,7 @@ validate_tier_thresholds (glusterd_volinfo_t    *volinfo,
+         if (ret) {
+                 snprintf (errstr, sizeof (errstr), "%s is not a compatible "
+                           "value. %s expects an integer value.", value, key);
++                ret = -1;
+                 goto out;
+         }
+ 
+@@ -188,6 +189,7 @@ validate_tier_thresholds (glusterd_volinfo_t    *volinfo,
+                 snprintf (errstr, sizeof (errstr), "%s is not a "
+                           "compatible value. %s expects a positive"
+                           "integer value.", value, key);
++                ret = -1;
+                 goto out;
+         }
+ 
+-- 
+1.7.1
+

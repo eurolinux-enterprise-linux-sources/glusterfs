@@ -582,6 +582,11 @@ rpcsvc_auth_unix_auxgids (rpcsvc_request_t *req, int *arrlen);
 extern char *
 rpcsvc_volume_allowed (dict_t *options, char *volname);
 
+int rpcsvc_request_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
+                           rpcsvc_cbk_program_t *prog, int procnum,
+                           void *req, glusterfs_ctx_t *ctx,
+                           xdrproc_t xdrproc);
+
 int rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
                             rpcsvc_cbk_program_t *prog, int procnum,
                             struct iovec *proghdr, int proghdrcount);
@@ -599,9 +604,19 @@ int
 rpcsvc_set_root_squash (rpcsvc_t *svc, dict_t *options);
 int
 rpcsvc_set_outstanding_rpc_limit (rpcsvc_t *svc, dict_t *options, int defvalue);
+
+int
+rpcsvc_set_throttle_on (rpcsvc_t *svc);
+
+int
+rpcsvc_set_throttle_off (rpcsvc_t *svc);
+
+gf_boolean_t
+rpcsvc_get_throttle (rpcsvc_t *svc);
+
 int
 rpcsvc_auth_array (rpcsvc_t *svc, char *volname, int *autharr, int arrlen);
 rpcsvc_vector_sizer
 rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
-                                 uint32_t progver, uint32_t procnum);
+                                 uint32_t progver, int procnum);
 #endif

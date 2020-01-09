@@ -1,0 +1,35 @@
+From c97aeaa1afe13e74f0a92211b0b6b592129eb3a9 Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Tue, 10 Nov 2015 09:58:26 +0530
+Subject: [PATCH 98/98] tier/ctr: resolving redefination of get_db_path_key_t
+
+get_db_path_key_t was defined twice in gfdb_data_store.h
+line 210 and 283
+
+Change-Id: I6c098aa2e6d6c27e88dfc03f1d20ea8ff19f2bf5
+BUG: 1277359
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61131
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ libglusterfs/src/gfdb/gfdb_data_store.h |    3 ---
+ 1 files changed, 0 insertions(+), 3 deletions(-)
+
+diff --git a/libglusterfs/src/gfdb/gfdb_data_store.h b/libglusterfs/src/gfdb/gfdb_data_store.h
+index 5e11ec1..b1dd070 100644
+--- a/libglusterfs/src/gfdb/gfdb_data_store.h
++++ b/libglusterfs/src/gfdb/gfdb_data_store.h
+@@ -206,9 +206,6 @@ typedef int (*find_recently_changed_files_t) (gfdb_conn_node_t *_conn_node,
+                                               gfdb_time_t *from_time);
+ 
+ 
+-typedef const
+-char * (*get_db_path_key_t) ();
+-
+ /*Libgfdb API Function: Query records/files that have not changed/accessed
+  *                      from a time in past to current time, with
+  *                      a desired frequency
+-- 
+1.7.1
+

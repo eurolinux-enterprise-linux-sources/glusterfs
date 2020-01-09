@@ -1,0 +1,42 @@
+From dca5f02b3293693ad71b231283f9c4ce6ded7f1a Mon Sep 17 00:00:00 2001
+From: hari gowtham <hgowtham@redhat.com>
+Date: Mon, 5 Oct 2015 17:13:44 +0530
+Subject: [PATCH 20/23] Tier/cli: number of bricks remains the same in v info --xml
+
+The number of bricks count remains one for the cold type.
+
+Actual result:
+<numberOfBricks>1 x 2 = 2</numberOfBricks>
+
+Expected result:
+<numberOfBricks>3 x 2 = 6</numberOfBricks>
+
+Change-Id: I31480a7808b248ef9ea805cb64f7663d44647ddf
+BUG: 1271648
+Reviewed-on: http://review.gluster.org/12303
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Signed-off-by: Hari Gowtham <hgowtham@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59376
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-xml-output.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/cli/src/cli-xml-output.c b/cli/src/cli-xml-output.c
+index 026e9e0..9fa13c8 100644
+--- a/cli/src/cli-xml-output.c
++++ b/cli/src/cli-xml-output.c
+@@ -2795,7 +2795,7 @@ cli_xml_output_vol_info (cli_local_t *local, dict_t *dict)
+                         }
+ 
+                         tier_vol_type = value[HOT_TYPE];
+-                        value[hot_dist_count] = (value[HOT_REPLICA_COUNT] ?
++                        hot_dist_count = (value[HOT_REPLICA_COUNT] ?
+                                           value[HOT_REPLICA_COUNT] : 1);
+                         if ((value[HOT_TYPE] != GF_CLUSTER_TYPE_TIER) &&
+                             (value[HOT_TYPE] > 0) &&
+-- 
+1.7.1
+

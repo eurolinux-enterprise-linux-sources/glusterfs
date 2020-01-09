@@ -1,0 +1,87 @@
+From 9f7e31ccd19fa496a2b36acad0bfc603bb8998f9 Mon Sep 17 00:00:00 2001
+From: Avra Sengupta <asengupt@redhat.com>
+Date: Wed, 28 Oct 2015 15:18:07 +0530
+Subject: [PATCH 106/131] snapshot: Don't display snapshot's hard-limit and soft-limit in vol info
+
+    Backport of http://review.gluster.org/#/c/12443/
+
+The snap-max-hard-limit being displayed in the volume info
+currently is propagated from system's snap-max-hard-limit as
+that is a global option common for all volumes, and hence ends
+up showing the system's snap-max-hard-limit.
+
+We should not be displaying snap-max-hard-limit and
+snap-max-soft-limit in the volume info at all, as these are
+snap config options and should be set and displayed via snap
+config command.
+
+Modified bug-1113476.t to test the same behaviour.
+
+Change-Id: I90891f0cf7fb39fd686787297c7f7cd8c1e7daa1
+BUG: 1275521
+Signed-off-by: Avra Sengupta <asengupt@redhat.com>
+Reviewed-on: http://review.gluster.org/12443
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: mohammed rafi  kc <rkavunga@redhat.com>
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+(cherry picked from commit 2e56bde3ea952beabd27cdf8a3a10da563a00bcc)
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60678
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ tests/bugs/cli/bug-1113476.t                 |   11 ++++++-----
+ xlators/mgmt/glusterd/src/glusterd-handler.c |    9 +++++++++
+ 2 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/tests/bugs/cli/bug-1113476.t b/tests/bugs/cli/bug-1113476.t
+index 119846d..fc7dbca 100644
+--- a/tests/bugs/cli/bug-1113476.t
++++ b/tests/bugs/cli/bug-1113476.t
+@@ -25,18 +25,19 @@ EXPECT '' volinfo_validate 'snap-max-soft-limit'
+ EXPECT '' volinfo_validate 'auto-delete'
+ 
+ TEST $CLI snapshot config snap-max-hard-limit 100
+-EXPECT '100' volinfo_validate 'snap-max-hard-limit'
++TEST $CLI snapshot config $V0 snap-max-hard-limit 50
++EXPECT '' volinfo_validate 'snap-max-hard-limit'
+ EXPECT '' volinfo_validate 'snap-max-soft-limit'
+ EXPECT '' volinfo_validate 'auto-delete'
+ 
+ TEST $CLI snapshot config snap-max-soft-limit 50
+-EXPECT '100' volinfo_validate 'snap-max-hard-limit'
+-EXPECT '50' volinfo_validate 'snap-max-soft-limit'
++EXPECT '' volinfo_validate 'snap-max-hard-limit'
++EXPECT '' volinfo_validate 'snap-max-soft-limit'
+ EXPECT '' volinfo_validate 'auto-delete'
+ 
+ TEST $CLI snapshot config auto-delete enable
+-EXPECT '100' volinfo_validate 'snap-max-hard-limit'
+-EXPECT '50' volinfo_validate 'snap-max-soft-limit'
++EXPECT '' volinfo_validate 'snap-max-hard-limit'
++EXPECT '' volinfo_validate 'snap-max-soft-limit'
+ EXPECT 'enable' volinfo_validate 'auto-delete'
+ 
+ cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handler.c b/xlators/mgmt/glusterd/src/glusterd-handler.c
+index 899c3ed..d4288cd 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handler.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handler.c
+@@ -311,6 +311,15 @@ _build_option_key (dict_t *d, char *k, data_t *v, void *tmp)
+                     (strcmp (k, "features.soft-limit") == 0))
+                         return 0;
+         }
++
++        /* snap-max-hard-limit and snap-max-soft-limit are system   *
++         * options set and managed by snapshot config option. Hence *
++         * they should not be displayed in gluster volume info.     *
++         */
++        if ((strcmp (k, "snap-max-hard-limit") == 0) ||
++            (strcmp (k, "snap-max-soft-limit") == 0))
++                return 0;
++
+         snprintf (reconfig_key, 256, "volume%d.option.%s",
+                   pack->vol_count, k);
+         ret = dict_set_str (pack->dict, reconfig_key, v->data);
+-- 
+1.7.1
+

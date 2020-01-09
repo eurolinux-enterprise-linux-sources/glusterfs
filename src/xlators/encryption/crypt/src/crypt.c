@@ -48,7 +48,7 @@ static crypt_local_t *crypt_alloc_local(call_frame_t *frame, xlator_t *this,
 {
 	crypt_local_t *local = NULL;
 
-	local = mem_get0(this->local_pool);
+	local = GF_CALLOC (1, sizeof (*local), gf_crypt_mt_local);
 	if (!local) {
 		gf_log(this->name, GF_LOG_ERROR, "out of memory");
 		return NULL;
@@ -1701,7 +1701,7 @@ static int32_t crypt_ftruncate_finodelk_cbk(call_frame_t *frame,
 
 /*
  * ftruncate is performed in 2 steps:
- * . recieve file size;
+ * . receive file size;
  * . expand or prune file.
  */
 static int32_t crypt_ftruncate(call_frame_t *frame,
@@ -1833,7 +1833,9 @@ static int32_t truncate_begin(call_frame_t *frame,
 				    op_ret,
 				    op_errno, NULL, NULL, NULL);
 		return 0;
-	}
+	} else {
+	        fd_bind (fd);
+        }
 	/*
 	 * crypt_truncate() is implemented via crypt_ftruncate(),
 	 * so the crypt xlator does STACK_WIND to itself here
@@ -3095,7 +3097,7 @@ static int32_t do_linkop(call_frame_t *frame,
 		   &lock,
 		   NULL);
 	return 0;
- error:		
+ error:
 	unwind_fn(frame);
 	return 0;
 }
@@ -3120,20 +3122,19 @@ static int32_t linkop_begin(call_frame_t *frame,
 	uint32_t new_mtd_size;
 	uint64_t value = 0;
 	void (*unwind_fn)(call_frame_t *frame);
-	void (*wind_fn)(call_frame_t *frame, xlator_t *this);
 	mtd_op_t mop;
 
-	wind_fn = linkop_wind_dispatch(local->fop);
 	unwind_fn = linkop_unwind_dispatch(local->fop);
 	mop = linkop_mtdop_dispatch(local->fop);
 
-	if (local->fd->inode->ia_type == IA_IFLNK)
-		goto wind;
-	if (op_ret < 0)
+	if (op_ret < 0) {
 		/*
 		 * verification failed
 		 */
 		goto error;
+        } else {
+                fd_bind (fd);
+        }
 
 	old_mtd = dict_get(xdata, CRYPTO_FORMAT_PREFIX);
 	if (!old_mtd) {
@@ -3229,9 +3230,6 @@ static int32_t linkop_begin(call_frame_t *frame,
 		   local->xattr,
 		   0,
 		   NULL);
-	return 0;
- wind:
-	wind_fn(frame, this);
 	return 0;
  error:
 	local->op_ret = -1;
@@ -3332,13 +3330,19 @@ static int32_t linkop(call_frame_t *frame,
 	dict_t *dict;
 	crypt_local_t *local;
 	void (*unwind_fn)(call_frame_t *frame);
+        void (*wind_fn)(call_frame_t *frame, xlator_t *this);
 
+        wind_fn = linkop_wind_dispatch(op);
 	unwind_fn = linkop_unwind_dispatch(op);
 
 	ret = linkop_grab_local(frame, this, oldloc, newloc, flags, xdata, op);
 	local = frame->local;
 	if (ret)
 		goto error;
+
+        if (local->fd->inode->ia_type == IA_IFLNK)
+                goto wind;
+
 	dict = dict_new();
 	if (!dict) {
 		gf_log(this->name, GF_LOG_ERROR, "Can not create dict");
@@ -3375,7 +3379,12 @@ static int32_t linkop(call_frame_t *frame,
 		   dict);
 	dict_unref(dict);
 	return 0;
- error:
+
+wind:
+        wind_fn(frame, this);
+        return 0;
+
+error:
 	local->op_ret = -1;
 	local->op_errno = ret;
 	unwind_fn(frame);
@@ -4010,7 +4019,7 @@ static int32_t crypt_lookup_cbk(call_frame_t *frame,
 	local->postbuf = *postparent;
 	if (xdata)
 		local->xdata = dict_ref(xdata);
-	uuid_copy(local->loc->gfid, buf->ia_gfid);
+	gf_uuid_copy(local->loc->gfid, buf->ia_gfid);
 
 	STACK_WIND(frame,
 		   load_file_size,

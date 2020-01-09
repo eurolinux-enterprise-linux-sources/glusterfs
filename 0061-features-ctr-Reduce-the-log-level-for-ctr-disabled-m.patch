@@ -1,0 +1,45 @@
+From d80ee69f79a5253cf44c6e2002755976126812ab Mon Sep 17 00:00:00 2001
+From: Anoop C S <anoopcs@redhat.com>
+Date: Thu, 9 Jul 2015 11:06:01 +0530
+Subject: [PATCH 61/67] features/ctr: Reduce the log-level for ctr-disabled message
+
+     Backport of http://review.gluster.org/#/c/12424/
+
+Since by default CTR translator is disabled, the following
+log message is being displayed in brick logs.
+
+[ctr-helper.c:256:extract_ctr_options] 0-gfdbdatastore: CTR Xlator is disabled.
+
+Therefore this change is to reduce the log-level to INFO.
+
+Change-Id: I16f493e60d63c4e8831603b76a9e46dc2fa15e8d
+BUG: 1275515
+Signed-off-by: Anoop C S <anoopcs@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60328
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ .../features/changetimerecorder/src/ctr-helper.c   |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/features/changetimerecorder/src/ctr-helper.c b/xlators/features/changetimerecorder/src/ctr-helper.c
+index f5d4c47..047abd9 100644
+--- a/xlators/features/changetimerecorder/src/ctr-helper.c
++++ b/xlators/features/changetimerecorder/src/ctr-helper.c
+@@ -247,11 +247,11 @@ int extract_ctr_options (xlator_t *this, gf_ctr_private_t *_priv) {
+         GF_ASSERT (this);
+         GF_ASSERT (_priv);
+ 
+-        /*Checking if the CTR Translator is enabled. By Default its enabled*/
++        /*Checking if the CTR Translator is enabled. By default its disabled*/
+         _priv->enabled = _gf_false;
+         GF_OPTION_INIT ("ctr-enabled", _priv->enabled, bool, out);
+         if (!_priv->enabled) {
+-                gf_msg (GFDB_DATA_STORE, GF_LOG_ERROR, 0,
++                gf_msg (GFDB_DATA_STORE, GF_LOG_INFO, 0,
+                         CTR_MSG_XLATOR_DISABLED,
+                         "CTR Xlator is disabled.");
+                 ret = 0;
+-- 
+1.7.1
+

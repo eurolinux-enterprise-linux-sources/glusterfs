@@ -1,0 +1,47 @@
+From ace0e819fff3f7cd9ad48505eaf3cdf8cd1f4159 Mon Sep 17 00:00:00 2001
+From: Susant Palai <spalai@redhat.com>
+Date: Wed, 2 Dec 2015 04:59:55 -0500
+Subject: [PATCH 228/237] cluster/dht: Handle failure in getxattr
+
+Problem: Currently even if we have received xattrs from any one of
+the subvolume, we unwind with error in case the last subvol (which
+unwinds) received a negative response.
+
+To handle the case check if any of the subvolume has received
+a response and pass it down.
+
+BUG: 1285167
+Change-Id: Ice5527d5d2de0f3eb637be4815867d4ea243128d
+Signed-off-by: Susant Palai <spalai@redhat.com>
+Reviewed-on: http://review.gluster.org/12845
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Raghavendra G <rgowdapp@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64943
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/cluster/dht/src/dht-common.c |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index fa02b9a..687fc65 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -3005,6 +3005,13 @@ unlock:
+         this_call_cnt = dht_frame_return (frame);
+ out:
+         if (is_last_call (this_call_cnt)) {
++
++                /* If we have a valid xattr received from any one of the
++                 * subvolume, let's return it */
++                if (local->xattr) {
++                        local->op_ret = 0;
++                }
++
+                 DHT_STACK_UNWIND (getxattr, frame, local->op_ret, op_errno,
+                                   local->xattr, NULL);
+         }
+-- 
+1.7.1
+

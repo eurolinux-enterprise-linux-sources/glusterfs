@@ -1,0 +1,1095 @@
+From 0eace77edfa098780abe6986ced41b8bbfd70873 Mon Sep 17 00:00:00 2001
+From: Raghavendra G <rgowdapp@redhat.com>
+Date: Tue, 17 Nov 2015 12:57:54 +0530
+Subject: [PATCH 205/214] performance/write-behind: retry "failed syncs to backend"
+
+1. When sync fails, the cached-write is still preserved unless there
+   is a flush/fsync waiting on it.
+
+2. When a sync fails and there is a flush/fsync waiting on the
+   cached-write, the cache is thrown away and no further retries will
+   be made. In other words flush/fsync act as barriers for all the
+   previous writes. The behaviour of fsync acting as a barrier is
+   controlled by an option (see below for details). All previous
+   writes are either successfully synced to backend or forgotten in
+   case of an error. Without such barrier fop (especially flush which
+   is issued prior to a close), we end up retrying for ever even after
+   fd is closed.
+
+3. If a fop is waiting on cached-write and syncing to backend fails,
+   the waiting fop is failed.
+
+4. sync failures when no fop is waiting are ignored and are not
+   propagated to application. For eg.,
+   a. first attempt of sync of a cached-write w1 fails
+   b. second attempt of sync of w1 succeeds
+
+   If there are no fops dependent on w1 are issued b/w a and b,
+   application won't know about failure encountered in a.
+
+5. The effect of repeated sync failures is that, there will be no
+   cache for future writes and they cannot be written behind.
+
+fsync as a barrier and resync of cached writes post fsync failure:
+==================================================================
+Whether to keep retrying failed syncs post fsync is controlled by an
+option "resync-failed-syncs-after-fsync". By default, this option is
+set to "off".
+
+If sync of "cached-writes issued before fsync" (to backend) fails,
+this option configures whether to retry syncing them after fsync or
+forget them. If set to on, cached-writes are retried till a "flush"
+fop (or a successful sync) on sync failures. fsync itself is failed
+irrespective of the value of this option, when there is a sync failure
+of any cached-writes issued before fsync.
+
+Change-Id: I6097c9257bfb9ee5b15616fbe6a0576ae9af369a
+Signed-off-by: Raghavendra G <rgowdapp@redhat.com>
+BUG: 1219794
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64324
+---
+ libglusterfs/src/common-utils.h                    |    6 +-
+ tests/bugs/rdma/bug-765473.t                       |   35 --
+ tests/bugs/write-behind/bug-1279730.c              |  131 ++++++
+ tests/bugs/write-behind/bug-1279730.t              |   31 ++
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c    |   14 +
+ xlators/mount/fuse/src/fuse-bridge.c               |    7 +-
+ .../performance/write-behind/src/write-behind.c    |  480 +++++++++++++++-----
+ 7 files changed, 562 insertions(+), 142 deletions(-)
+ delete mode 100755 tests/bugs/rdma/bug-765473.t
+ create mode 100644 tests/bugs/write-behind/bug-1279730.c
+ create mode 100755 tests/bugs/write-behind/bug-1279730.t
+
+diff --git a/libglusterfs/src/common-utils.h b/libglusterfs/src/common-utils.h
+index 145a55f..445e7c2 100644
+--- a/libglusterfs/src/common-utils.h
++++ b/libglusterfs/src/common-utils.h
+@@ -411,10 +411,12 @@ iov_subset (struct iovec *orig, int orig_count,
+ 	int    i;
+ 	off_t  offset = 0;
+ 	size_t start_offset = 0;
+-	size_t end_offset = 0;
++	size_t end_offset = 0, origin_iov_len = 0;
+ 
+ 
+ 	for (i = 0; i < orig_count; i++) {
++                origin_iov_len = orig[i].iov_len;
++
+ 		if ((offset + orig[i].iov_len < src_offset)
+ 		    || (offset > dst_offset)) {
+ 			goto not_subset;
+@@ -442,7 +444,7 @@ iov_subset (struct iovec *orig, int orig_count,
+ 		new_count++;
+ 
+ 	not_subset:
+-		offset += orig[i].iov_len;
++		offset += origin_iov_len;
+ 	}
+ 
+ 	return new_count;
+diff --git a/tests/bugs/rdma/bug-765473.t b/tests/bugs/rdma/bug-765473.t
+deleted file mode 100755
+index 9f595a1..0000000
+--- a/tests/bugs/rdma/bug-765473.t
++++ /dev/null
+@@ -1,35 +0,0 @@
+-#!/bin/bash
+-
+-. $(dirname $0)/../../include.rc
+-. $(dirname $0)/../../volume.rc
+-. $(dirname $0)/../../fileio.rc
+-
+-cleanup;
+-
+-function clients_connected()
+-{
+-    volname=$1
+-    gluster volume status $volname clients | grep -i 'Clients connected' | sed -e 's/[^0-9]*\(.*\)/\1/g'
+-}
+-
+-## Start and create a volume
+-TEST glusterd;
+-TEST pidof glusterd;
+-TEST $CLI volume create $V0 $H0:$B0/${V0}1
+-TEST $CLI volume start $V0;
+-
+-TEST glusterfs --direct-io-mode=yes --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id $V0 $M0;
+-
+-TEST fd=`fd_available`
+-TEST fd_open $fd 'w' "$M0/testfile"
+-TEST fd_write $fd "content"
+-TEST $CLI volume stop $V0
+-# write some content which will result in marking fd bad
+-fd_write $fd "more content"
+-sync $V0
+-TEST $CLI volume start $V0
+-EXPECT 'Started' volinfo_field $V0 'Status';
+-EXPECT_WITHIN $PROCESS_UP_TIMEOUT 2 clients_connected $V0
+-TEST ! fd_write $fd "still more content"
+-
+-cleanup
+diff --git a/tests/bugs/write-behind/bug-1279730.c b/tests/bugs/write-behind/bug-1279730.c
+new file mode 100644
+index 0000000..535d289
+--- /dev/null
++++ b/tests/bugs/write-behind/bug-1279730.c
+@@ -0,0 +1,131 @@
++#include <stdio.h>
++#include <string.h>
++#include <errno.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <assert.h>
++
++int
++main (int argc, char *argv[])
++{
++        int          fd                = -1, ret = -1, len = 0;
++        char        *path              = NULL, buf[128] = {0, }, *cmd = NULL;
++        struct stat  stbuf             = {0, };
++        int          write_to_child[2] = {0, }, write_to_parent[2] = {0, };
++
++        path = argv[1];
++        cmd = argv[2];
++
++        assert (argc == 3);
++
++        ret = pipe (write_to_child);
++        if (ret < 0) {
++                fprintf (stderr, "creation of write-to-child pipe failed "
++                         "(%s)\n", strerror (errno));
++                goto out;
++        }
++
++        ret = pipe (write_to_parent);
++        if (ret < 0) {
++                fprintf (stderr, "creation of write-to-parent pipe failed "
++                         "(%s)\n", strerror (errno));
++                goto out;
++        }
++
++        ret = fork ();
++        switch (ret) {
++        case 0:
++                close (write_to_child[1]);
++                close (write_to_parent[0]);
++
++                /* child, wait for instructions to execute command */
++                ret = read (write_to_child[0], buf, 128);
++                if (ret < 0) {
++                        fprintf (stderr, "child: read on pipe failed (%s)\n",
++                                 strerror (errno));
++                        goto out;
++                }
++
++                system (cmd);
++
++                ret = write (write_to_parent[1], "1", 2);
++                if (ret < 0) {
++                        fprintf (stderr, "child: write to pipe failed (%s)\n",
++                                 strerror (errno));
++                        goto out;
++                }
++                break;
++
++        case -1:
++                fprintf (stderr, "fork failed (%s)\n", strerror (errno));
++                goto out;
++
++        default:
++                close (write_to_parent[1]);
++                close (write_to_child[0]);
++
++                fd = open (path, O_CREAT | O_RDWR | O_APPEND, S_IRWXU);
++                if (fd < 0) {
++                        fprintf (stderr, "open failed (%s)\n",
++                                 strerror (errno));
++                        goto out;
++                }
++
++                len = strlen ("test-content") + 1;
++                ret = write (fd, "test-content", len);
++
++                if (ret < len) {
++                        fprintf (stderr, "write failed %d (%s)\n", ret,
++                                 strerror (errno));
++                }
++
++                ret = pread (fd, buf, 128, 0);
++                if ((ret == len) && (strcmp (buf, "test-content") == 0)) {
++                        fprintf (stderr, "read should've failed as previous "
++                                 "write would've failed with EDQUOT, but its "
++                                 "successful");
++                        ret = -1;
++                        goto out;
++                }
++
++                ret = write (write_to_child[1], "1", 2);
++                if (ret < 0) {
++                        fprintf (stderr, "parent: write to pipe failed (%s)\n",
++                                 strerror (errno));
++                        goto out;
++                }
++
++                ret = read (write_to_parent[0], buf, 128);
++                if (ret < 0) {
++                        fprintf (stderr, "parent: read from pipe failed (%s)\n",
++                                 strerror (errno));
++                        goto out;
++                }
++
++                /* this will force a sync on cached-write and now that quota
++                   limit is increased, sync will be successful. ignore return
++                   value as fstat would fail with EDQUOT (picked up from
++                   cached-write because of previous sync failure.
++                */
++                fstat (fd, &stbuf);
++
++                ret = pread (fd, buf, 128, 0);
++                if (ret != len) {
++                        fprintf (stderr, "post cmd read failed %d (data:%s) "
++                                 "(error:%s)\n", ret, buf, strerror (errno));
++                        goto out;
++                }
++
++                if (strcmp (buf, "test-content")) {
++                        fprintf (stderr, "wrong data (%s)\n", buf);
++                        goto out;
++                }
++        }
++
++        ret = 0;
++
++out:
++        return ret;
++}
+diff --git a/tests/bugs/write-behind/bug-1279730.t b/tests/bugs/write-behind/bug-1279730.t
+new file mode 100755
+index 0000000..38e564b
+--- /dev/null
++++ b/tests/bugs/write-behind/bug-1279730.t
+@@ -0,0 +1,31 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../fileio.rc
++
++cleanup;
++
++## Start and create a volume
++TEST glusterd;
++TEST pidof glusterd;
++TEST $CLI volume info;
++
++TEST $CLI volume create $V0 $H0:$B0/$V0;
++TEST $CLI volume start $V0;
++TEST $CLI volume quota $V0 enable
++TEST $CLI volume quota $V0 limit-usage / 4
++
++TEST glusterfs --entry-timeout=0 --attribute-timeout=0 -s $H0 --volfile-id $V0 $M0
++
++# compile the test program and run it
++TEST $CC -O0 -g3 $(dirname $0)/bug-1279730.c -o $(dirname $0)/bug-1279730
++
++TEST $(dirname $0)/bug-1279730 $M0/file "\"$CLI volume quota $V0 limit-usage / 1024\""
++
++EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
++
++TEST $CLI volume stop $V0;
++TEST $CLI volume delete $V0;
++
++cleanup;
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 8b35225..ed654d4 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -1168,6 +1168,20 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .op_version = 1,
+           .flags      = OPT_FLAG_CLIENT_OPT
+         },
++        { .key        = "performance.resync-failed-syncs-after-fsync",
++          .voltype    = "performance/write-behind",
++          .option     = "resync-failed-syncs-after-fsync",
++          .op_version = GD_OP_VERSION_3_7_6,
++          .flags      = OPT_FLAG_CLIENT_OPT,
++          .description = "If sync of \"cached-writes issued before fsync\" "
++                         "(to backend) fails, this option configures whether "
++                         "to retry syncing them after fsync or forget them. "
++                         "If set to on, cached-writes are retried "
++                         "till a \"flush\" fop (or a successful sync) on sync "
++                         "failures. "
++                         "fsync itself is failed irrespective of the value of "
++                         "this option. ",
++        },
+         { .key        = "performance.nfs.write-behind-window-size",
+           .voltype    = "performance/write-behind",
+           .option     = "cache-size",
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 9675b38..81aebac 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -4965,11 +4965,16 @@ fuse_thread_proc (void *data)
+ int32_t
+ fuse_itable_dump (xlator_t  *this)
+ {
++        fuse_private_t *priv = NULL;
++
+         if (!this)
+                  return -1;
+ 
++        priv = this->private;
++
+         gf_proc_dump_add_section("xlator.mount.fuse.itable");
+-        inode_table_dump(this->itable, "xlator.mount.fuse.itable");
++        inode_table_dump(priv->active_subvol->itable,
++                         "xlator.mount.fuse.itable");
+ 
+         return 0;
+ }
+diff --git a/xlators/performance/write-behind/src/write-behind.c b/xlators/performance/write-behind/src/write-behind.c
+index 84e444d..94f8285 100644
+--- a/xlators/performance/write-behind/src/write-behind.c
++++ b/xlators/performance/write-behind/src/write-behind.c
+@@ -112,6 +112,14 @@ typedef struct wb_inode {
+ 	size_t       size; /* Size of the file to catch write after EOF. */
+         gf_lock_t    lock;
+         xlator_t    *this;
++        int          dontsync; /* If positive, dont pick lies for
++                                * winding. This is needed to break infinite
++                                * recursion during invocation of
++                                * wb_process_queue from
++                                * wb_fulfill_cbk in case of an
++                                * error during fulfill.
++                                */
++
+ } wb_inode_t;
+ 
+ 
+@@ -149,6 +157,8 @@ typedef struct wb_request {
+ 				       request arrival */
+ 
+ 	fd_t                 *fd;
++        int                   wind_count;    /* number of sync-attempts. Only
++                                                for debug purposes */
+ 	struct {
+ 		size_t        size;          /* 0 size == till infinity */
+ 		off_t         off;
+@@ -169,6 +179,7 @@ typedef struct wb_conf {
+         gf_boolean_t     trickling_writes;
+ 	gf_boolean_t     strict_write_ordering;
+ 	gf_boolean_t     strict_O_DIRECT;
++        gf_boolean_t     resync_after_fsync;
+ } wb_conf_t;
+ 
+ 
+@@ -207,26 +218,6 @@ out:
+ }
+ 
+ 
+-gf_boolean_t
+-wb_fd_err (fd_t *fd, xlator_t *this, int32_t *op_errno)
+-{
+-        gf_boolean_t err   = _gf_false;
+-        uint64_t     value = 0;
+-        int32_t      tmp   = 0;
+-
+-	if (fd_ctx_get (fd, this, &value) == 0) {
+-                if (op_errno) {
+-                        tmp = value;
+-                        *op_errno = tmp;
+-                }
+-
+-                err = _gf_true;
+-        }
+-
+-        return err;
+-}
+-
+-
+ /*
+   Below is a succinct explanation of the code deciding whether two regions
+   overlap, from Pavan <tcp@gluster.com>.
+@@ -310,17 +301,17 @@ wb_requests_conflict (wb_request_t *lie, wb_request_t *req)
+ }
+ 
+ 
+-gf_boolean_t
++wb_request_t *
+ wb_liability_has_conflict (wb_inode_t *wb_inode, wb_request_t *req)
+ {
+         wb_request_t *each     = NULL;
+ 
+         list_for_each_entry (each, &wb_inode->liability, lie) {
+ 		if (wb_requests_conflict (each, req))
+-			return _gf_true;
++			return each;
+         }
+ 
+-        return _gf_false;
++        return NULL;
+ }
+ 
+ 
+@@ -557,6 +548,9 @@ wb_enqueue_common (wb_inode_t *wb_inode, call_stub_t *stub, int tempted)
+ 
+ 		break;
+ 	default:
++                if (stub && stub->args.fd)
++                        req->fd = fd_ref (stub->args.fd);
++
+ 		break;
+ 	}
+ 
+@@ -684,6 +678,88 @@ __wb_fulfill_request (wb_request_t *req)
+ }
+ 
+ 
++/* get a flush/fsync waiting on req */
++wb_request_t *
++__wb_request_waiting_on (wb_request_t *req)
++{
++        wb_inode_t   *wb_inode = NULL;
++        wb_request_t *trav     = NULL;
++
++        wb_inode = req->wb_inode;
++
++        list_for_each_entry (trav, &wb_inode->todo, todo) {
++                if ((trav->fd == req->fd)
++                    && ((trav->stub->fop == GF_FOP_FLUSH)
++                        || (trav->stub->fop == GF_FOP_FSYNC))
++                    && (trav->gen >= req->gen))
++                        return trav;
++        }
++
++        return NULL;
++}
++
++
++void
++__wb_fulfill_request_err (wb_request_t *req, int32_t op_errno)
++{
++	wb_inode_t   *wb_inode = NULL;
++        wb_request_t *waiter   = NULL;
++        wb_conf_t    *conf     = NULL;
++
++        wb_inode = req->wb_inode;
++
++        conf = wb_inode->this->private;
++
++        req->op_ret = -1;
++        req->op_errno = op_errno;
++
++        if (req->ordering.lied)
++                waiter = __wb_request_waiting_on (req);
++
++        if (!req->ordering.lied || waiter) {
++                if (!req->ordering.lied) {
++                        /* response to app is still pending, send failure in
++                         * response.
++                         */
++                } else {
++                        /* response was sent, store the error in a
++                         * waiter (either an fsync or flush).
++                         */
++                        waiter->op_ret = -1;
++                        waiter->op_errno = op_errno;
++                }
++
++                if (!req->ordering.lied
++                    || (waiter->stub->fop == GF_FOP_FLUSH)
++                    || ((waiter->stub->fop == GF_FOP_FSYNC)
++                        && !conf->resync_after_fsync)) {
++                        /* No retry needed, forget the request */
++                        __wb_fulfill_request (req);
++                        return;
++                }
++        }
++
++        /* response was unwound and no waiter waiting on this request, retry
++           till a flush or fsync (subject to conf->resync_after_fsync).
++        */
++	wb_inode->transit -= req->total_size;
++
++        req->total_size = 0;
++
++        list_del_init (&req->winds);
++        list_del_init (&req->todo);
++        list_del_init (&req->wip);
++
++        /* sanitize ordering flags to retry */
++        req->ordering.go = 0;
++
++        /* Add back to todo list to retry */
++        list_add (&req->todo, &wb_inode->todo);
++
++        return;
++}
++
++
+ void
+ wb_head_done (wb_request_t *head)
+ {
+@@ -698,6 +774,7 @@ wb_head_done (wb_request_t *head)
+ 		list_for_each_entry_safe (req, tmp, &head->winds, winds) {
+ 			__wb_fulfill_request (req);
+ 		}
++
+ 		__wb_fulfill_request (head);
+ 	}
+ 	UNLOCK (&wb_inode->lock);
+@@ -705,29 +782,130 @@ wb_head_done (wb_request_t *head)
+ 
+ 
+ void
++__wb_fulfill_err (wb_request_t *head, int op_errno)
++{
++	wb_request_t *req      = NULL, *tmp = NULL;
++
++        if (!head)
++                goto out;
++
++        head->wb_inode->dontsync++;
++
++        list_for_each_entry_safe_reverse (req, tmp, &head->winds,
++                                          winds) {
++                __wb_fulfill_request_err (req, op_errno);
++        }
++
++        __wb_fulfill_request_err (head, op_errno);
++
++out:
++        return;
++}
++
++
++void
+ wb_fulfill_err (wb_request_t *head, int op_errno)
+ {
+-	wb_inode_t *wb_inode;
+-	wb_request_t *req;
++	wb_inode_t   *wb_inode = NULL;
+ 
+ 	wb_inode = head->wb_inode;
+ 
+-	/* for all future requests yet to arrive */
+-	fd_ctx_set (head->fd, THIS, op_errno);
+-
+ 	LOCK (&wb_inode->lock);
+ 	{
+-		/* for all requests already arrived */
+-		list_for_each_entry (req, &wb_inode->all, all) {
+-			if (req->fd != head->fd)
+-				continue;
+-			req->op_ret = -1;
+-			req->op_errno = op_errno;
+-		}
++                __wb_fulfill_err (head, op_errno);
++
+ 	}
+ 	UNLOCK (&wb_inode->lock);
+ }
+ 
++inline void
++__wb_modify_write_request (wb_request_t *req, int synced_size,
++                           int head_total_size)
++{
++        struct iovec *vector = NULL;
++        int           count  = 0;
++
++        if (!req || synced_size == 0)
++                goto out;
++
++        req->write_size -= synced_size;
++        req->stub->args.offset += synced_size;
++        req->total_size = head_total_size;
++
++        vector = req->stub->args.vector;
++        count = req->stub->args.count;
++
++        req->stub->args.count = iov_subset (vector, count, synced_size,
++                                            iov_length (vector, count), vector);
++
++out:
++        return;
++}
++
++int
++__wb_fulfill_short_write (wb_request_t *req, int size, int total_size)
++{
++        int accounted_size = 0;
++
++        if (req == NULL)
++                goto out;
++
++        if (req->write_size <= size) {
++                accounted_size = req->write_size;
++                __wb_fulfill_request (req);
++        } else {
++                accounted_size = size;
++                __wb_modify_write_request (req, size, total_size);
++        }
++
++out:
++        return accounted_size;
++}
++
++void
++wb_fulfill_short_write (wb_request_t *head, int size)
++{
++        wb_inode_t   *wb_inode   = NULL;
++        wb_request_t *req        = NULL, *tmp = NULL;
++        int           total_size = 0, accounted_size = 0;
++
++        if (!head)
++                goto out;
++
++        wb_inode = head->wb_inode;
++
++        total_size = head->total_size - size;
++        head->total_size = size;
++
++        req = head;
++
++        LOCK (&wb_inode->lock);
++        {
++                accounted_size = __wb_fulfill_short_write (head, size,
++                                                           total_size);
++
++                size -= accounted_size;
++
++                if (size == 0)
++                        goto done;
++
++                list_for_each_entry_safe (req, tmp, &head->winds, winds) {
++                        accounted_size = __wb_fulfill_short_write (req, size,
++                                                                   total_size);
++                        size -= accounted_size;
++
++                        if (size == 0)
++                                break;
++
++                }
++        }
++done:
++        UNLOCK (&wb_inode->lock);
++
++        wb_fulfill_err (req, EIO);
++out:
++        return;
++}
+ 
+ int
+ wb_fulfill_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+@@ -745,18 +923,10 @@ wb_fulfill_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 	if (op_ret == -1) {
+ 		wb_fulfill_err (head, op_errno);
+ 	} else if (op_ret < head->total_size) {
+-		/*
+-		 * We've encountered a short write, for whatever reason.
+-		 * Set an EIO error for the next fop. This should be
+-		 * valid for writev or flush (close).
+-		 *
+-		 * TODO: Retry the write so we can potentially capture
+-		 * a real error condition (i.e., ENOSPC).
+-		 */
+-		wb_fulfill_err (head, EIO);
+-	}
+-
+-	wb_head_done (head);
++		wb_fulfill_short_write (head, op_ret);
++	} else {
++                wb_head_done (head);
++        }
+ 
+         wb_process_queue (wb_inode);
+ 
+@@ -781,10 +951,6 @@ wb_fulfill_head (wb_inode_t *wb_inode, wb_request_t *head)
+ 	int           count    = 0;
+ 	wb_request_t *req      = NULL;
+ 	call_frame_t *frame    = NULL;
+-        gf_boolean_t  fderr    = _gf_false;
+-        xlator_t     *this     = NULL;
+-
+-        this = THIS;
+ 
+         /* make sure head->total_size is updated before we run into any
+          * errors
+@@ -800,11 +966,6 @@ wb_fulfill_head (wb_inode_t *wb_inode, wb_request_t *head)
+ 			goto err;
+ 	}
+ 
+-        if (wb_fd_err (head->fd, this, NULL)) {
+-                fderr = _gf_true;
+-                goto err;
+-        }
+-
+ 	frame = create_frame (wb_inode->this, wb_inode->this->ctx->pool);
+ 	if (!frame)
+ 		goto err;
+@@ -827,26 +988,21 @@ wb_fulfill_head (wb_inode_t *wb_inode, wb_request_t *head)
+ 
+ 	return 0;
+ err:
+-        if (!fderr) {
+-                /* frame creation failure */
+-                fderr = ENOMEM;
+-                wb_fulfill_err (head, fderr);
+-        }
+-
+-	wb_head_done (head);
++        /* frame creation failure */
++        wb_fulfill_err (head, ENOMEM);
+ 
+-	return fderr;
++	return ENOMEM;
+ }
+ 
+ 
+-#define NEXT_HEAD(head, req) do {					\
+-		if (head)						\
+-			ret |= wb_fulfill_head (wb_inode, head);	\
+-		head = req;						\
+-		expected_offset = req->stub->args.offset +		\
+-			req->write_size;				\
+-		curr_aggregate = 0;					\
+-		vector_count = 0;					\
++#define NEXT_HEAD(head, req) do {                                       \
++		if (head)                                               \
++			ret |= wb_fulfill_head (wb_inode, head);        \
++		head = req;                                             \
++		expected_offset = req->stub->args.offset +              \
++			req->write_size;                                \
++		curr_aggregate = 0;                                     \
++		vector_count = 0;                                       \
+ 	} while (0)
+ 
+ 
+@@ -1058,6 +1214,17 @@ __wb_preprocess_winds (wb_inode_t *wb_inode)
+ 	conf = wb_inode->this->private;
+ 
+         list_for_each_entry_safe (req, tmp, &wb_inode->todo, todo) {
++                if (wb_inode->dontsync && req->ordering.lied) {
++                        /* sync has failed. Don't pick lies _again_ for winding
++                         * as winding these lies again will trigger an infinite
++                         * recursion of wb_process_queue being called from a
++                         * failed fulfill. However, pick non-lied requests for
++                         * winding so that application wont block indefinitely
++                         * waiting for write result.
++                         */
++                        continue;
++                }
++
+ 		if (!req->ordering.tempted) {
+ 			if (holder) {
+ 				if (wb_requests_conflict (holder, req))
+@@ -1129,20 +1296,96 @@ __wb_preprocess_winds (wb_inode_t *wb_inode)
+ 	if (conf->trickling_writes && !wb_inode->transit && holder)
+ 		holder->ordering.go = 1;
+ 
++        if (wb_inode->dontsync > 0)
++                wb_inode->dontsync--;
++
+         return;
+ }
+ 
++int
++__wb_handle_failed_conflict (wb_request_t *req, wb_request_t *conflict,
++                             list_head_t *tasks)
++{
++        wb_conf_t *conf = NULL;
++
++        conf = req->wb_inode->this->private;
++
++        if ((req->stub->fop != GF_FOP_FLUSH)
++            && ((req->stub->fop != GF_FOP_FSYNC) || conf->resync_after_fsync)) {
++                if (!req->ordering.lied && list_empty (&conflict->wip)) {
++                        /* If request itself is in liability queue,
++                         * 1. We cannot unwind as the response has already been
++                         *    sent.
++                         * 2. We cannot wind till conflict clears up.
++                         * 3. So, skip the request for now.
++                         * 4. Otherwise, resume (unwind) it with error.
++                         */
++                        req->op_ret = -1;
++                        req->op_errno = conflict->op_errno;
++
++                        list_del_init (&req->todo);
++                        list_add_tail (&req->winds, tasks);
++                }
++        } else {
++                /* flush and fsync (without conf->resync_after_fsync) act as
++                   barriers. We cannot unwind them out of
++                   order, when there are earlier generation writes just because
++                   there is a conflicting liability with an error. So, wait for
++                   our turn till there are no conflicting liabilities.
++
++                   This situation can arise when there liabilities spread across
++                   multiple generations. For eg., consider two writes with
++                   following characterstics:
++
++                   1. they belong to different generations gen1, gen2 and
++                      (gen1 > gen2).
++                   2. they overlap.
++                   3. both are liabilities.
++                   4. gen1 write was attempted to sync, but the attempt failed.
++                   5. there was no attempt to sync gen2 write yet.
++                   6. A flush (as part of close) is issued and gets a gen no
++                      gen3.
++
++                   In the above scenario, if flush is unwound without waiting
++                   for gen1 and gen2 writes either to be successfully synced or
++                   purged, we end up with these two writes in wb_inode->todo
++                   list forever as there will be no attempt to process the queue
++                   as flush is the last operation.
++                */
++        }
++
++        return 0;
++}
++
+ 
+-void
++int
+ __wb_pick_winds (wb_inode_t *wb_inode, list_head_t *tasks,
+ 		 list_head_t *liabilities)
+ {
+-	wb_request_t *req = NULL;
+-	wb_request_t *tmp = NULL;
++	wb_request_t *req                 = NULL;
++	wb_request_t *tmp                 = NULL;
++        wb_request_t *conflict            = NULL;
+ 
+ 	list_for_each_entry_safe (req, tmp, &wb_inode->todo, todo) {
+-		if (wb_liability_has_conflict (wb_inode, req))
+-			continue;
++                conflict = wb_liability_has_conflict (wb_inode, req);
++                if (conflict) {
++                        if (conflict->op_ret == -1) {
++                                /* There is a conflicting liability which failed
++                                 * to sync in previous attempts, resume the req
++                                 * and fail, unless its an fsync/flush.
++                                 */
++
++                                __wb_handle_failed_conflict (req, conflict,
++                                                             tasks);
++                        } else {
++                                /* There is a conflicting liability which was
++                                 * not attempted to sync even once. Wait till
++                                 * atleast one attempt to sync is made.
++                                 */
++                        }
++
++                        continue;
++                }
+ 
+ 		if (req->ordering.tempted && !req->ordering.go)
+ 			/* wait some more */
+@@ -1153,6 +1396,7 @@ __wb_pick_winds (wb_inode_t *wb_inode, list_head_t *tasks,
+ 				continue;
+ 
+ 			list_add_tail (&req->wip, &wb_inode->wip);
++                        req->wind_count++;
+ 
+ 			if (!req->ordering.tempted)
+ 				/* unrefed in wb_writev_cbk */
+@@ -1167,6 +1411,8 @@ __wb_pick_winds (wb_inode_t *wb_inode, list_head_t *tasks,
+ 		else
+ 			list_add_tail (&req->winds, tasks);
+ 	}
++
++        return 0;
+ }
+ 
+ 
+@@ -1179,7 +1425,12 @@ wb_do_winds (wb_inode_t *wb_inode, list_head_t *tasks)
+ 	list_for_each_entry_safe (req, tmp, tasks, winds) {
+ 		list_del_init (&req->winds);
+ 
+-		call_resume (req->stub);
++                if (req->op_ret == -1) {
++                        call_unwind_error (req->stub, req->op_ret,
++                                           req->op_errno);
++                } else {
++                        call_resume (req->stub);
++                }
+ 
+ 		wb_request_unref (req);
+ 	}
+@@ -1189,10 +1440,10 @@ wb_do_winds (wb_inode_t *wb_inode, list_head_t *tasks)
+ void
+ wb_process_queue (wb_inode_t *wb_inode)
+ {
+-        list_head_t tasks  = {0, };
+-	list_head_t lies = {0, };
+-	list_head_t liabilities = {0, };
+-        int         retry       = 0;
++        list_head_t tasks        = {0, };
++	list_head_t lies         = {0, };
++	list_head_t liabilities  = {0, };
++        int         wind_failure = 0;
+ 
+         INIT_LIST_HEAD (&tasks);
+         INIT_LIST_HEAD (&lies);
+@@ -1214,13 +1465,12 @@ wb_process_queue (wb_inode_t *wb_inode)
+ 
+                 wb_do_winds (wb_inode, &tasks);
+ 
+-                /* fd might've been marked bad due to previous errors.
+-                 * Since, caller of wb_process_queue might be the last fop on
+-                 * inode, make sure we keep processing request queue, till there
+-                 * are no requests left.
++                /* If there is an error in wb_fulfill before winding write
++                 * requests, we would miss invocation of wb_process_queue
++                 * from wb_fulfill_cbk. So, retry processing again.
+                  */
+-                retry = wb_fulfill (wb_inode, &liabilities);
+-        } while (retry);
++                wind_failure = wb_fulfill (wb_inode, &liabilities);
++        } while (wind_failure);
+ 
+         return;
+ }
+@@ -1290,10 +1540,6 @@ wb_writev (call_frame_t *frame, xlator_t *this, fd_t *fd, struct iovec *vector,
+ 
+ 	conf = this->private;
+ 
+-        if (wb_fd_err (fd, this, &op_errno)) {
+-                goto unwind;
+-        }
+-
+         wb_inode = wb_inode_create (this, fd->inode);
+ 	if (!wb_inode) {
+ 		op_errno = ENOMEM;
+@@ -1314,7 +1560,7 @@ wb_writev (call_frame_t *frame, xlator_t *this, fd_t *fd, struct iovec *vector,
+ 					count, offset, flags, iobref, xdata);
+ 	else
+ 		stub = fop_writev_stub (frame, NULL, fd, vector, count, offset,
+-					flags, iobref, xdata);
++                                        flags, iobref, xdata);
+         if (!stub) {
+                 op_errno = ENOMEM;
+                 goto unwind;
+@@ -1418,10 +1664,6 @@ wb_flush_helper (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *xdata)
+ 		goto unwind;
+ 	}
+ 
+-	if (wb_fd_err (fd, this, &op_errno)) {
+-		op_ret = -1;
+-		goto unwind;
+-	}
+ 
+         if (conf->flush_behind)
+ 		goto flushbehind;
+@@ -1500,9 +1742,6 @@ wb_fsync (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t datasync,
+         call_stub_t  *stub         = NULL;
+ 	int32_t       op_errno     = EINVAL;
+ 
+-	if (wb_fd_err (fd, this, &op_errno))
+-		goto unwind;
+-
+         wb_inode = wb_inode_ctx_get (this, fd->inode);
+ 	if (!wb_inode)
+ 		goto noqueue;
+@@ -1725,9 +1964,6 @@ wb_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+ 		goto unwind;
+         }
+ 
+-	if (wb_fd_err (fd, this, &op_errno))
+-		goto unwind;
+-
+ 	frame->local = wb_inode;
+ 
+ 	stub = fop_ftruncate_stub (frame, wb_ftruncate_helper, fd,
+@@ -2008,7 +2244,18 @@ __wb_dump_requests (struct list_head *head, char *prefix)
+ 		else
+ 			gf_proc_dump_write ("wound", "no");
+ 
++                gf_proc_dump_write ("generation-number", "%d", req->gen);
++
++                gf_proc_dump_write ("req->op_ret", "%d", req->op_ret);
++                gf_proc_dump_write ("req->op_errno", "%d", req->op_errno);
++                gf_proc_dump_write ("sync-attempts", "%d", req->wind_count);
++
+                 if (req->fop == GF_FOP_WRITE) {
++                        if (list_empty (&req->wip))
++                                gf_proc_dump_write ("sync-in-progress", "no");
++                        else
++                                gf_proc_dump_write ("sync-in-progress", "yes");
++
+                         gf_proc_dump_write ("size", "%"GF_PRI_SIZET,
+                                             req->write_size);
+ 
+@@ -2026,6 +2273,7 @@ __wb_dump_requests (struct list_head *head, char *prefix)
+ 
+                         flag = req->ordering.go;
+                         gf_proc_dump_write ("go", "%d", flag);
++
+                 }
+         }
+ }
+@@ -2071,6 +2319,11 @@ wb_inode_dump (xlator_t *this, inode_t *inode)
+                             wb_inode->window_current);
+ 
+ 
++        gf_proc_dump_write ("transit-size", "%"GF_PRI_SIZET,
++                            wb_inode->transit);
++
++        gf_proc_dump_write ("dontsync", "%d", wb_inode->dontsync);
++
+         ret = TRY_LOCK (&wb_inode->lock);
+         if (!ret)
+         {
+@@ -2122,7 +2375,8 @@ reconfigure (xlator_t *this, dict_t *options)
+ 
+         conf = this->private;
+ 
+-        GF_OPTION_RECONF ("cache-size", conf->window_size, options, size_uint64, out);
++        GF_OPTION_RECONF ("cache-size", conf->window_size, options, size_uint64,
++                          out);
+ 
+         GF_OPTION_RECONF ("flush-behind", conf->flush_behind, options, bool,
+                           out);
+@@ -2135,6 +2389,9 @@ reconfigure (xlator_t *this, dict_t *options)
+ 
+         GF_OPTION_RECONF ("strict-write-ordering", conf->strict_write_ordering,
+ 			  options, bool, out);
++        GF_OPTION_RECONF ("resync-failed-syncs-after-fsync",
++                          conf->resync_after_fsync, options, bool, out);
++
+         ret = 0;
+ out:
+         return ret;
+@@ -2201,6 +2458,9 @@ init (xlator_t *this)
+         GF_OPTION_INIT ("strict-write-ordering", conf->strict_write_ordering,
+ 			bool, out);
+ 
++        GF_OPTION_INIT ("resync-failed-syncs-after-fsync",
++                        conf->resync_after_fsync, bool, out);
++
+         this->private = conf;
+         ret = 0;
+ 
+@@ -2292,5 +2552,17 @@ struct volume_options options[] = {
+ 	  .description = "Do not let later writes overtake earlier writes even "
+ 	                  "if they do not overlap",
+         },
++        { .key = {"resync-failed-syncs-after-fsync"},
++          .type = GF_OPTION_TYPE_BOOL,
++          .default_value = "off",
++          .description = "If sync of \"cached-writes issued before fsync\" "
++                         "(to backend) fails, this option configures whether "
++                         "to retry syncing them after fsync or forget them. "
++                         "If set to on, cached-writes are retried "
++                         "till a \"flush\" fop (or a successful sync) on sync "
++                         "failures. "
++                         "fsync itself is failed irrespective of the value of "
++                         "this option. ",
++        },
+         { .key = {NULL} },
+ };
+-- 
+1.7.1
+

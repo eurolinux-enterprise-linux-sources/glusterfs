@@ -15,6 +15,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <stdarg.h>
 #include <getopt.h>
 #include <sys/types.h>
@@ -28,6 +29,8 @@
 #include "common-utils.h"
 #include "iatt.h"
 #include "inode.h"
+#include "run.h"
+#include "libglusterfs-messages.h"
 
 #ifdef GF_SOLARIS_HOST_OS
 int
@@ -44,9 +47,9 @@ solaris_fsetxattr(int fd, const char* key, const char *value, size_t size,
                 close (attrfd);
         } else {
                 if (errno != ENOENT)
-                        gf_log ("libglusterfs", GF_LOG_ERROR,
-                                "Couldn't set extended attribute for %d (%d)",
-                                fd, errno);
+                        gf_msg ("libglusterfs", GF_LOG_ERROR, errno,
+                                LG_MSG_SET_ATTRIBUTE_FAILED, "Couldn't set "
+                                "extended attribute for %d", fd);
                 return -1;
         }
 
@@ -72,9 +75,9 @@ solaris_fgetxattr(int fd, const char* key, char *value, size_t size)
                 close (attrfd);
         } else {
                 if (errno != ENOENT)
-                        gf_log ("libglusterfs", GF_LOG_INFO,
-                                "Couldn't read extended attribute for the file %d (%d)",
-                                fd, errno);
+                        gf_msg ("libglusterfs", GF_LOG_INFO, errno,
+                                LG_MSG_READ_ATTRIBUTE_FAILED, "Couldn't read "
+                                "extended attribute for the file %d", fd);
                 if (errno == ENOENT)
                         errno = ENODATA;
                 return -1;
@@ -171,7 +174,7 @@ solaris_xattr_resolve_path (const char *real_path, char **path)
                 if (lstat (export_path, &statbuf)) {
                         ret = mkdir (export_path, 0777);
                         if (ret && (errno != EEXIST)) {
-                                gf_log (THIS->name, GF_LOG_DEBUG, "mkdir failed,"
+                                gf_msg_debug (THIS->name, 0, "mkdir failed,"
                                         " errno: %d", errno);
                                 goto out;
                         }
@@ -185,9 +188,9 @@ solaris_xattr_resolve_path (const char *real_path, char **path)
                 if (ret) {
                         ret = mknod (xattr_path, S_IFREG|O_WRONLY, 0);
                         if (ret && (errno != EEXIST)) {
-                                gf_log (THIS->name, GF_LOG_WARNING,"Failed to create "
-                                        "mapped file %s, error %d", xattr_path,
-                                        errno);
+                                gf_msg (THIS->name, GF_LOG_WARNING, errno,
+                                        LG_MSG_FILE_OP_FAILED, "Failed to "
+                                        "create mapped file %s", xattr_path);
                                 goto out;
                         }
                 }
@@ -223,9 +226,9 @@ solaris_setxattr(const char *path, const char* key, const char *value,
                 ret = 0;
         } else {
                 if (errno != ENOENT)
-                        gf_log ("libglusterfs", GF_LOG_ERROR,
-                                "Couldn't set extended attribute for %s (%d)",
-                                path, errno);
+                        gf_msg ("libglusterfs", GF_LOG_ERROR, errno,
+                                LG_MSG_SET_ATTRIBUTE_FAILED, "Couldn't set "
+                                "extended attribute for %s", path);
                 ret = -1;
         }
         GF_FREE (mapped_path);
@@ -409,9 +412,9 @@ solaris_getxattr(const char *path,
                 close (attrfd);
         } else {
                 if (errno != ENOENT)
-                        gf_log ("libglusterfs", GF_LOG_INFO,
-                                "Couldn't read extended attribute for the file %s (%s)",
-                                path, strerror (errno));
+                        gf_msg ("libglusterfs", GF_LOG_INFO, errno,
+                                LG_MSG_READ_ATTRIBUTE_FAILED, "Couldn't read "
+                                "extended attribute for the file %s", path);
                 if (errno == ENOENT)
                         errno = ENODATA;
                 ret = -1;
@@ -475,14 +478,16 @@ int solaris_unlink (const char *path)
 
         if (!ret && mapped_path) {
                 if (lstat(path, &stbuf)) {
-                        gf_log (THIS->name, GF_LOG_WARNING, "Stat failed on mapped"
-                                " file %s with error %d", mapped_path, errno);
+                        gf_msg (THIS->name, GF_LOG_WARNING, errno,
+                                LG_MSG_FILE_OP_FAILED, "Stat failed on "
+                                "mapped file %s", mapped_path);
                         goto out;
                 }
                 if (stbuf.st_nlink == 1) {
                         if(remove (mapped_path))
-                                gf_log (THIS->name, GF_LOG_WARNING, "Failed to remove mapped "
-                                        "file %s. Errno %d", mapped_path, errno);
+                                gf_msg (THIS->name, GF_LOG_WARNING, errno,
+                                        LG_MSG_FILE_OP_FAILED, "Failed to "
+                                        "remove mapped file %s", mapped_path);
                 }
 
         }
@@ -504,8 +509,9 @@ solaris_rename (const char *old_path, const char *new_path)
 
         if (!ret && mapped_path) {
                 if (!remove (mapped_path))
-                        gf_log (THIS->name, GF_LOG_WARNING, "Failed to remove mapped "
-                                "file %s. Errno %d", mapped_path, errno);
+                        gf_msg (THIS->name, GF_LOG_WARNING, errno,
+                                LG_MSG_FILE_OP_FAILED, "Failed to remove "
+                                "mapped file %s.", mapped_path);
                 GF_FREE (mapped_path);
         }
 
@@ -543,3 +549,38 @@ strnlen(const char *string, size_t maxlen)
         return len;
 }
 #endif /* STRNLEN */
+
+int
+gf_umount_lazy (char *xlname, char *path, int rmdir_flag)
+{
+        int                   ret               = -1;
+        runner_t              runner            = {0,};
+
+        runinit (&runner);
+#ifdef GF_LINUX_HOST_OS
+        runner_add_args (&runner, _PATH_UMOUNT, "-l", path, NULL);
+#else
+        if (rmdir_flag)
+                runner_add_args (&runner, SBIN_DIR "/umountd",
+                                 "-r", path, NULL);
+        else
+                runner_add_args (&runner, SBIN_DIR "/umountd",
+                                 path, NULL);
+#endif
+        ret = runner_run (&runner);
+        if (ret) {
+                gf_msg (xlname, GF_LOG_ERROR, errno, LG_MSG_UNMOUNT_FAILED,
+                        "Lazy unmount of %s", path);
+        }
+
+#ifdef GF_LINUX_HOST_OS
+        if (!ret && rmdir_flag) {
+                ret = rmdir (path);
+                if (ret)
+                        gf_msg (xlname, GF_LOG_WARNING, errno,
+                                LG_MSG_DIR_OP_FAILED, "rmdir %s", path);
+        }
+#endif
+
+        return ret;
+}

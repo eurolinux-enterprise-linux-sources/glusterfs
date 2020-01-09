@@ -1,0 +1,39 @@
+From bfe92a8460875e3ea63529a68767eea75014c0a2 Mon Sep 17 00:00:00 2001
+From: Michael Adam <obnox@samba.org>
+Date: Wed, 9 Dec 2015 09:59:40 +0100
+Subject: [PATCH 173/178] glusterd: fix the build
+
+This is a backport of http://review.gluster.org/#/c/12918/
+
+Fix the build broken in 6e9f88cfd4c80c6af7260e5e6537cb76b6c0
+
+> Change-Id: I0c5cedff980688cb47f3f0e9f4968c23d2f507d3
+> BUG: 1289869
+> Signed-off-by: Michael Adam <obnox@samba.org>
+
+Change-Id: Id887fd60cf32bbf3fd83de883df45fe1ef8ad8e3
+BUG: 1287997
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63386
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-utils.c |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-utils.c b/xlators/mgmt/glusterd/src/glusterd-utils.c
+index a042207..7226e70 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-utils.c
++++ b/xlators/mgmt/glusterd/src/glusterd-utils.c
+@@ -630,7 +630,7 @@ glusterd_volinfo_dup (glusterd_volinfo_t *volinfo,
+         new_volinfo->brick_count = volinfo->brick_count;
+         new_volinfo->tier_info = volinfo->tier_info;
+         new_volinfo->quota_conf_version = volinfo->quota_conf_version;
+-        new_volinfo->quota_version = volinfo->quota_version;
++        new_volinfo->quota_xattr_version = volinfo->quota_xattr_version;
+         new_volinfo->snap_max_hard_limit = volinfo->snap_max_hard_limit;
+ 
+         dict_copy (volinfo->dict, new_volinfo->dict);
+-- 
+1.7.1
+

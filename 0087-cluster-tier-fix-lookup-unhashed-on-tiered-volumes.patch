@@ -1,0 +1,42 @@
+From e916623ac9fefc7095952829382fac207ab5a989 Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Fri, 6 Nov 2015 11:28:02 -0500
+Subject: [PATCH 87/98] cluster/tier: fix lookup-unhashed on tiered volumes
+
+During attach tier the commit hash must be copied to the hot tier.
+
+This is a backport of 12498.
+
+> Change-Id: I91b92fd8e98696993433856e1436409b657c439d
+> BUG: 1277716
+> Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+> Reviewed-on: http://review.gluster.org/12498
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+
+Change-Id: I776147784e7f1c3e5545b541fd9e39085ac0a1c8
+BUG: 1277316
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60989
+---
+ xlators/cluster/dht/src/dht-rebalance.c |    3 +--
+ 1 files changed, 1 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 8a9a46d..5e701b3 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -2719,8 +2719,7 @@ gf_defrag_settle_hash (xlator_t *this, gf_defrag_info_t *defrag,
+          * rebalance is complete.
+          */
+         if (defrag->cmd == GF_DEFRAG_CMD_START_LAYOUT_FIX
+-            || defrag->cmd == GF_DEFRAG_CMD_START_DETACH_TIER
+-            || defrag->cmd == GF_DEFRAG_CMD_START_TIER) {
++            || defrag->cmd == GF_DEFRAG_CMD_START_DETACH_TIER) {
+                 return 0;
+         }
+ 
+-- 
+1.7.1
+

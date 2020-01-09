@@ -61,7 +61,7 @@ rpcsvc_notify (rpc_transport_t *trans, void *mydata,
                rpc_transport_event_t event, void *data, ...);
 
 static int
-match_subnet_v4 (const char *addrtok, const char *ipaddr);
+rpcsvc_match_subnet_v4 (const char *addrtok, const char *ipaddr);
 
 rpcsvc_notify_wrapper_t *
 rpcsvc_notify_wrapper_alloc (void)
@@ -107,7 +107,7 @@ out:
 
 rpcsvc_vector_sizer
 rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
-                                 uint32_t progver, uint32_t procnum)
+                                 uint32_t progver, int procnum)
 {
         rpcsvc_program_t        *program = NULL;
         char                    found    = 0;
@@ -179,13 +179,25 @@ rpcsvc_can_outstanding_req_be_ignored (rpcsvc_request_t *req)
 int
 rpcsvc_request_outstanding (rpcsvc_request_t *req, int delta)
 {
-        int ret = 0;
-        int old_count = 0;
-        int new_count = 0;
-        int limit = 0;
+        int             ret = -1;
+        int             old_count = 0;
+        int             new_count = 0;
+        int             limit = 0;
+        gf_boolean_t    throttle = _gf_false;
 
-        if (rpcsvc_can_outstanding_req_be_ignored (req))
-                return 0;
+        if (!req)
+                goto out;
+
+        throttle = rpcsvc_get_throttle (req->svc);
+        if (!throttle) {
+                ret = 0;
+                goto out;
+        }
+
+        if (rpcsvc_can_outstanding_req_be_ignored (req)) {
+                ret = 0;
+                goto out;
+        }
 
         pthread_mutex_lock (&req->trans->lock);
         {
@@ -206,6 +218,7 @@ rpcsvc_request_outstanding (rpcsvc_request_t *req, int delta)
 unlock:
         pthread_mutex_unlock (&req->trans->lock);
 
+out:
         return ret;
 }
 
@@ -222,11 +235,13 @@ rpcsvc_program_actor (rpcsvc_request_t *req)
         rpcsvc_actor_t          *actor   = NULL;
         rpcsvc_t                *svc     = NULL;
         char                    found    = 0;
+        char                    *peername = NULL;
 
         if (!req)
                 goto err;
 
         svc = req->svc;
+        peername = req->trans->peerinfo.identifier;
         pthread_mutex_lock (&svc->rpclock);
         {
                 list_for_each_entry (program, &svc->programs, program) {
@@ -250,30 +265,34 @@ rpcsvc_program_actor (rpcsvc_request_t *req)
                          */
                         gf_log (GF_RPCSVC, (req->prognum == ACL_PROGRAM) ?
                                 GF_LOG_DEBUG : GF_LOG_WARNING,
-                                "RPC program not available (req %u %u)",
-                                req->prognum, req->progver);
+                                "RPC program not available (req %u %u) for %s",
+                                req->prognum, req->progver,
+                                peername);
                         err = PROG_UNAVAIL;
                         goto err;
                 }
 
                 gf_log (GF_RPCSVC, GF_LOG_WARNING,
-                        "RPC program version not available (req %u %u)",
-                        req->prognum, req->progver);
+                        "RPC program version not available (req %u %u) for %s",
+                        req->prognum, req->progver,
+                        peername);
                 goto err;
         }
         req->prog = program;
         if (!program->actors) {
                 gf_log (GF_RPCSVC, GF_LOG_WARNING,
-                        "RPC Actor not found for program %s %d",
-                        program->progname, program->prognum);
+                        "RPC Actor not found for program %s %d for %s",
+                        program->progname, program->prognum,
+                        peername);
                 err = SYSTEM_ERR;
                 goto err;
         }
 
         if ((req->procnum < 0) || (req->procnum >= program->numactors)) {
                 gf_log (GF_RPCSVC, GF_LOG_ERROR, "RPC Program procedure not"
-                        " available for procedure %d in %s", req->procnum,
-                        program->progname);
+                        " available for procedure %d in %s for  %s",
+                        req->procnum, program->progname,
+                        peername);
                 err = PROC_UNAVAIL;
                 goto err;
         }
@@ -281,8 +300,9 @@ rpcsvc_program_actor (rpcsvc_request_t *req)
         actor = &program->actors[req->procnum];
         if (!actor->actor) {
                 gf_log (GF_RPCSVC, GF_LOG_ERROR, "RPC Program procedure not"
-                        " available for procedure %d in %s", req->procnum,
-                        program->progname);
+                        " available for procedure %d in %s for %s",
+                        req->procnum, program->progname,
+                        peername);
                 err = PROC_UNAVAIL;
                 actor = NULL;
                 goto err;
@@ -291,8 +311,9 @@ rpcsvc_program_actor (rpcsvc_request_t *req)
         req->synctask = program->synctask;
 
         err = SUCCESS;
-        gf_log (GF_RPCSVC, GF_LOG_TRACE, "Actor found: %s - %s",
-                program->progname, actor->procname);
+        gf_log (GF_RPCSVC, GF_LOG_TRACE, "Actor found: %s - %s for %s",
+                program->progname, actor->procname,
+                peername);
 err:
         if (req)
                 req->rpc_err = err;
@@ -595,7 +616,7 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
 
                 gf_log ("rpcsvc", GF_LOG_TRACE, "Client port: %d", (int)port);
 
-                if (port > 1024)
+                if (port >= 1024)
                         unprivileged = _gf_true;
         }
 
@@ -612,11 +633,13 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
 
         if (0 == svc->allow_insecure && unprivileged && !actor->unprivileged) {
                         /* Non-privileged user, fail request */
-                        gf_log ("glusterd", GF_LOG_ERROR,
+                        gf_log (GF_RPCSVC, GF_LOG_ERROR,
                                 "Request received from non-"
                                 "privileged port. Failing request");
-                        rpcsvc_request_destroy (req);
-                        return -1;
+                        req->rpc_status = MSG_DENIED;
+                        req->rpc_err = AUTH_ERROR;
+                        req->auth_err = RPCSVC_AUTH_REJECT;
+                        goto err_reply;
         }
 
         /* DRC */
@@ -624,37 +647,39 @@ rpcsvc_handle_rpc_call (rpcsvc_t *svc, rpc_transport_t *trans,
                 drc = req->svc->drc;
 
                 LOCK (&drc->lock);
-                reply = rpcsvc_drc_lookup (req);
+                {
+                        reply = rpcsvc_drc_lookup (req);
 
-                /* retransmission of completed request, send cached reply */
-                if (reply && reply->state == DRC_OP_CACHED) {
-                        gf_log (GF_RPCSVC, GF_LOG_INFO, "duplicate request:"
-                                " XID: 0x%x", req->xid);
-                        ret = rpcsvc_send_cached_reply (req, reply);
-                        drc->cache_hits++;
-                        UNLOCK (&drc->lock);
-                        goto out;
+                        /* retransmission of completed request, send cached reply */
+                        if (reply && reply->state == DRC_OP_CACHED) {
+                                gf_log (GF_RPCSVC, GF_LOG_INFO, "duplicate request:"
+                                        " XID: 0x%x", req->xid);
+                                ret = rpcsvc_send_cached_reply (req, reply);
+                                drc->cache_hits++;
+                                UNLOCK (&drc->lock);
+                                goto out;
 
-                } /* retransmitted request, original op in transit, drop it */
-                else if (reply && reply->state == DRC_OP_IN_TRANSIT) {
-                        gf_log (GF_RPCSVC, GF_LOG_INFO, "op in transit,"
-                                " discarding. XID: 0x%x", req->xid);
-                        ret = 0;
-                        drc->intransit_hits++;
-                        rpcsvc_request_destroy (req);
-                        UNLOCK (&drc->lock);
-                        goto out;
+                        } /* retransmitted request, original op in transit, drop it */
+                        else if (reply && reply->state == DRC_OP_IN_TRANSIT) {
+                                gf_log (GF_RPCSVC, GF_LOG_INFO, "op in transit,"
+                                        " discarding. XID: 0x%x", req->xid);
+                                ret = 0;
+                                drc->intransit_hits++;
+                                rpcsvc_request_destroy (req);
+                                UNLOCK (&drc->lock);
+                                goto out;
 
-                } /* fresh request, cache it as in-transit and proceed */
-                else {
-                        ret = rpcsvc_cache_request (req);
+                        } /* fresh request, cache it as in-transit and proceed */
+                        else {
+                                ret = rpcsvc_cache_request (req);
+                        }
                 }
                 UNLOCK (&drc->lock);
         }
 
         if (req->rpc_err == SUCCESS) {
                 /* Before going to xlator code, set the THIS properly */
-                THIS = svc->mydata;
+                THIS = svc->xl;
 
                 actor_fn = actor->actor;
 
@@ -973,6 +998,48 @@ rpcsvc_callback_build_record (rpcsvc_t *rpc, int prognum, int progver,
 
 out:
         return request_iob;
+}
+
+int rpcsvc_request_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
+                           rpcsvc_cbk_program_t *prog, int procnum,
+                           void *req, glusterfs_ctx_t *ctx,
+                           xdrproc_t xdrproc)
+{
+        int                     ret         = -1;
+        int                     count       = 0;
+        struct iovec            iov         = {0, };
+        struct iobuf            *iobuf      = NULL;
+        ssize_t                 xdr_size    = 0;
+
+        if (!req)
+                goto out;
+
+        xdr_size = xdr_sizeof (xdrproc, req);
+
+        iobuf = iobuf_get2 (ctx->iobuf_pool, xdr_size);
+        if (!iobuf)
+                goto out;
+
+        iov.iov_base = iobuf->ptr;
+        iov.iov_len  = iobuf_pagesize (iobuf);
+
+        ret = xdr_serialize_generic (iov, req, xdrproc);
+        if (ret == -1) {
+                gf_log (THIS->name, GF_LOG_WARNING,
+                        "failed to create XDR payload");
+                goto out;
+        }
+        iov.iov_len = ret;
+        count = 1;
+
+        ret = rpcsvc_callback_submit (rpc, trans, prog, procnum,
+                                      &iov, count);
+
+out:
+        if (iobuf)
+                iobuf_unref (iobuf);
+
+        return ret;
 }
 
 int
@@ -1479,9 +1546,15 @@ rpcsvc_program_unregister (rpcsvc_t *svc, rpcsvc_program_t *program)
         ret = 0;
 out:
         if (ret == -1) {
-                gf_log (GF_RPCSVC, GF_LOG_ERROR, "Program unregistration failed"
-                        ": %s, Num: %d, Ver: %d, Port: %d", program->progname,
-                        program->prognum, program->progver, program->progport);
+                if (program) {
+                        gf_log (GF_RPCSVC, GF_LOG_ERROR, "Program "
+                                "unregistration failed"
+                                ": %s, Num: %d, Ver: %d, Port: %d",
+                                program->progname, program->prognum,
+                                program->progver, program->progport);
+                } else {
+                        gf_log (GF_RPCSVC, GF_LOG_ERROR, "Program not found");
+                }
         }
 
         return ret;
@@ -1731,7 +1804,7 @@ rpcsvc_register_notify (rpcsvc_t *svc, rpcsvc_notify_t notify, void *mydata)
         if (!wrapper) {
                 goto out;
         }
-        svc->mydata   = mydata;  /* this_xlator */
+        svc->mydata   = mydata;
         wrapper->data = mydata;
         wrapper->notify = notify;
 
@@ -1974,7 +2047,7 @@ rpcsvc_reconfigure_options (rpcsvc_t *svc, dict_t *options)
                 return (-1);
 
         /* Fetch the xlator from svc */
-        xlator = (xlator_t *) svc->mydata;
+        xlator = svc->xl;
         if (!xlator)
                 return (-1);
 
@@ -2145,6 +2218,52 @@ rpcsvc_set_outstanding_rpc_limit (rpcsvc_t *svc, dict_t *options, int defvalue)
         return (0);
 }
 
+/*
+ * Enable throttling for rpcsvc_t svc.
+ * Returns 0 on success, -1 otherwise.
+ */
+int
+rpcsvc_set_throttle_on (rpcsvc_t *svc)
+{
+
+        if (!svc)
+                return -1;
+
+        svc->throttle = _gf_true;
+
+        return 0;
+}
+
+/*
+ * Disable throttling for rpcsvc_t svc.
+ * Returns 0 on success, -1 otherwise.
+ */
+int
+rpcsvc_set_throttle_off (rpcsvc_t *svc)
+{
+
+        if (!svc)
+                return -1;
+
+        svc->throttle = _gf_false;
+
+        return 0;
+}
+
+/*
+ * Get throttle state for rpcsvc_t svc.
+ * Returns value of attribute throttle on success, _gf_false otherwise.
+ */
+gf_boolean_t
+rpcsvc_get_throttle (rpcsvc_t *svc)
+{
+
+        if (!svc)
+                return _gf_false;
+
+        return svc->throttle;
+}
+
 /* The global RPC service initializer.
  */
 rpcsvc_t *
@@ -2194,7 +2313,7 @@ rpcsvc_init (xlator_t *xl, glusterfs_ctx_t *ctx, dict_t *options,
         ret = -1;
         svc->options = options;
         svc->ctx = ctx;
-        svc->mydata = xl;
+        svc->xl = xl;
         gf_log (GF_RPCSVC, GF_LOG_DEBUG, "RPC service inited.");
 
         gluster_dump_prog.options = options;
@@ -2265,9 +2384,9 @@ rpcsvc_transport_peer_check_search (dict_t *options, char *pattern,
                                 goto err;
                 }
 
-                /* Compare IPv4 subnetwork */
+                /* Compare IPv4 subnetwork, TODO: IPv6 subnet support */
                 if (strchr (addrtok, '/')) {
-                        ret = match_subnet_v4 (addrtok, ip);
+                        ret = rpcsvc_match_subnet_v4 (addrtok, ip);
                         if (ret == 0)
                                 goto err;
                 }
@@ -2535,9 +2654,9 @@ out:
 }
 
 /*
- * match_subnet_v4() takes subnetwork address pattern and checks
- * if the target IPv4 address has the same network address with
- * the help of network mask.
+ * rpcsvc_match_subnet_v4() takes subnetwork address pattern and checks
+ * if the target IPv4 address has the same network address with the help
+ * of network mask.
  *
  * Returns 0 for SUCCESS and -1 otherwise.
  *
@@ -2545,12 +2664,12 @@ out:
  *     as it's already being done at the time of CLI SET.
  */
 static int
-match_subnet_v4 (const char *addrtok, const char *ipaddr)
+rpcsvc_match_subnet_v4 (const char *addrtok, const char *ipaddr)
 {
         char                 *slash     = NULL;
         char                 *netaddr   = NULL;
-        long                  prefixlen = -1;
         int                   ret       = -1;
+        uint32_t              prefixlen = 0;
         uint32_t              shift     = 0;
         struct sockaddr_in    sin1      = {0, };
         struct sockaddr_in    sin2      = {0, };
@@ -2572,28 +2691,19 @@ match_subnet_v4 (const char *addrtok, const char *ipaddr)
                 goto out;
 
         /*
-         * Find the network mask in network byte order.
-         * NB: 32 : Max len of IPv4 address.
+         * Find the IPv4 network mask in network byte order.
+         * IMP: String slash+1 is already validated, it cant have value
+         * more than IPv4_ADDR_SIZE (32).
          */
-        prefixlen = atoi (slash + 1);
-        shift = 32 - (uint32_t)prefixlen;
+        prefixlen = (uint32_t) atoi (slash + 1);
+        shift = IPv4_ADDR_SIZE - prefixlen;
         mask.sin_addr.s_addr = htonl ((uint32_t)~0 << shift);
 
-        /*
-         * Check if both have same network address.
-         * Extract the network address from the IP addr by applying the
-         * network mask. If they match, return SUCCESS. i.e.
-         *
-         * (x == y) <=> (x ^ y == 0)
-         * (x & y) ^ (x & z) <=> x & (y ^ z)
-         *
-         * ((ip1 & mask) == (ip2 & mask)) <=> ((mask & (ip1 ^ ip2)) == 0)
-         */
-        if (((mask.sin_addr.s_addr) &
-             (sin1.sin_addr.s_addr ^ sin2.sin_addr.s_addr)) != 0)
-                goto out;
-
-        ret = 0; /* SUCCESS */
+        if (mask_match (sin1.sin_addr.s_addr,
+                        sin2.sin_addr.s_addr,
+                        mask.sin_addr.s_addr)) {
+                ret = 0; /* SUCCESS */
+        }
 out:
         GF_FREE (netaddr);
         return ret;

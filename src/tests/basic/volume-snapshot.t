@@ -19,14 +19,24 @@ function create_volumes() {
 }
 
 function create_snapshots() {
-        $CLI_1 snapshot create ${V0}_snap ${V0}&
+        $CLI_1 snapshot create ${V0}_snap ${V0} no-timestamp &
         PID_1=$!
 
-        $CLI_1 snapshot create ${V1}_snap ${V1}&
+        $CLI_1 snapshot create ${V1}_snap ${V1} no-timestamp &
         PID_2=$!
 
         wait $PID_1 $PID_2
 }
+
+function create_snapshots_with_timestamp() {
+        $CLI_1 snapshot create ${V0}_snap1 ${V0}&
+        PID_1=$!
+        $CLI_1 snapshot create ${V1}_snap1 ${V1}&
+        PID_2=$!
+
+        wait $PID_1 $PID_2
+}
+
 
 function activate_snapshots() {
         $CLI_1 snapshot activate ${V0}_snap &
@@ -49,10 +59,10 @@ function deactivate_snapshots() {
 }
 
 function delete_snapshots() {
-        $CLI_1 snapshot delete ${V0}_snap &
+        $CLI_1 snapshot delete $1 &
         PID_1=$!
 
-        $CLI_1 snapshot delete ${V1}_snap &
+        $CLI_1 snapshot delete $2 &
         PID_2=$!
 
         wait $PID_1 $PID_2
@@ -76,7 +86,7 @@ TEST setup_lvm 3
 
 TEST $CLI_1 peer probe $H2;
 TEST $CLI_1 peer probe $H3;
-EXPECT_WITHIN 20 2 peer_count;
+EXPECT_WITHIN $PROBE_TIMEOUT 2 peer_count;
 
 create_volumes
 EXPECT 'Created' volinfo_field $V0 'Status';
@@ -104,17 +114,27 @@ activate_snapshots
 EXPECT 'Started' snapshot_status ${V0}_snap;
 EXPECT 'Started' snapshot_status ${V1}_snap;
 
+deactivate_snapshots
+activate_snapshots
+
 TEST snapshot_exists 1 ${V0}_snap
 TEST snapshot_exists 1 ${V1}_snap
 TEST $CLI_1 snapshot config $V0 snap-max-hard-limit 100
 TEST $CLI_1 snapshot config $V1 snap-max-hard-limit 100
 
 TEST glusterfs -s $H1 --volfile-id=/snaps/${V0}_snap/${V0} $M0
-sleep 2
-TEST umount -f $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
 TEST glusterfs -s $H2 --volfile-id=/snaps/${V1}_snap/${V1} $M0
-sleep 2
-TEST umount -f $M0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0
+
+#create timestamp appended snaps
+create_snapshots_with_timestamp;
+new_name1=`$CLI_1 snapshot list ${V0} | grep ${V0}_snap1`;
+new_name2=`$CLI_1 snapshot list ${V1} | grep ${V1}_snap1`;
+
+EXPECT_NOT "{V0}_snap1" echo $new_name1;
+EXPECT_NOT "{V1}_snap1" echo $new_name1;
+delete_snapshots $new_name1 $new_name2;
 
 #Clean up
 stop_force_volumes 2
@@ -126,7 +146,7 @@ TEST ! snapshot_exists 1 ${V0}_snap
 TEST ! snapshot_exists 1 ${V1}_snap
 
 delete_volumes 2
-TEST ! volume_exists $V0
-TEST ! volume_exists $V1
+EXPECT_WITHIN $CONFIG_UPDATE_TIMEOUT "N" volume_exists $V0
+EXPECT_WITHIN $CONFIG_UPDATE_TIMEOUT "N" volume_exists $V1
 
 cleanup;

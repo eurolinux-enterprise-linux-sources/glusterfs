@@ -14,8 +14,15 @@
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
+#if !defined(__clang__)
+#if !defined(__NetBSD__)
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+#else
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #endif
 #endif
 
@@ -83,6 +90,21 @@ struct gf_iatt {
 	u_int ia_ctime_nsec;
 };
 typedef struct gf_iatt gf_iatt;
+
+struct gfs3_cbk_cache_invalidation_req {
+	char *gfid;
+	u_int event_type;
+	u_int flags;
+	u_int expire_time_attr;
+	struct gf_iatt stat;
+	struct gf_iatt parent_stat;
+	struct gf_iatt oldparent_stat;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_cbk_cache_invalidation_req gfs3_cbk_cache_invalidation_req;
 
 struct gfs3_stat_req {
 	char gfid[16];
@@ -988,6 +1010,25 @@ struct gfs3_rchecksum_rsp {
 };
 typedef struct gfs3_rchecksum_rsp gfs3_rchecksum_rsp;
 
+struct gfs3_ipc_req {
+	int op;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_ipc_req gfs3_ipc_req;
+
+struct gfs3_ipc_rsp {
+	int op_ret;
+	int op_errno;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_ipc_rsp gfs3_ipc_rsp;
+
 struct gf_setvolume_req {
 	struct {
 		u_int dict_len;
@@ -1218,6 +1259,7 @@ typedef struct gf_getsnap_name_uuid_rsp gf_getsnap_name_uuid_rsp;
 extern  bool_t xdr_gf_statfs (XDR *, gf_statfs*);
 extern  bool_t xdr_gf_proto_flock (XDR *, gf_proto_flock*);
 extern  bool_t xdr_gf_iatt (XDR *, gf_iatt*);
+extern  bool_t xdr_gfs3_cbk_cache_invalidation_req (XDR *, gfs3_cbk_cache_invalidation_req*);
 extern  bool_t xdr_gfs3_stat_req (XDR *, gfs3_stat_req*);
 extern  bool_t xdr_gfs3_stat_rsp (XDR *, gfs3_stat_rsp*);
 extern  bool_t xdr_gfs3_readlink_req (XDR *, gfs3_readlink_req*);
@@ -1293,6 +1335,8 @@ extern  bool_t xdr_gfs3_zerofill_req (XDR *, gfs3_zerofill_req*);
 extern  bool_t xdr_gfs3_zerofill_rsp (XDR *, gfs3_zerofill_rsp*);
 extern  bool_t xdr_gfs3_rchecksum_req (XDR *, gfs3_rchecksum_req*);
 extern  bool_t xdr_gfs3_rchecksum_rsp (XDR *, gfs3_rchecksum_rsp*);
+extern  bool_t xdr_gfs3_ipc_req (XDR *, gfs3_ipc_req*);
+extern  bool_t xdr_gfs3_ipc_rsp (XDR *, gfs3_ipc_rsp*);
 extern  bool_t xdr_gf_setvolume_req (XDR *, gf_setvolume_req*);
 extern  bool_t xdr_gf_setvolume_rsp (XDR *, gf_setvolume_rsp*);
 extern  bool_t xdr_gf_getspec_req (XDR *, gf_getspec_req*);
@@ -1321,6 +1365,7 @@ extern  bool_t xdr_gf_getsnap_name_uuid_rsp (XDR *, gf_getsnap_name_uuid_rsp*);
 extern bool_t xdr_gf_statfs ();
 extern bool_t xdr_gf_proto_flock ();
 extern bool_t xdr_gf_iatt ();
+extern bool_t xdr_gfs3_cbk_cache_invalidation_req ();
 extern bool_t xdr_gfs3_stat_req ();
 extern bool_t xdr_gfs3_stat_rsp ();
 extern bool_t xdr_gfs3_readlink_req ();
@@ -1396,6 +1441,8 @@ extern bool_t xdr_gfs3_zerofill_req ();
 extern bool_t xdr_gfs3_zerofill_rsp ();
 extern bool_t xdr_gfs3_rchecksum_req ();
 extern bool_t xdr_gfs3_rchecksum_rsp ();
+extern bool_t xdr_gfs3_ipc_req ();
+extern bool_t xdr_gfs3_ipc_rsp ();
 extern bool_t xdr_gf_setvolume_req ();
 extern bool_t xdr_gf_setvolume_rsp ();
 extern bool_t xdr_gf_getspec_req ();

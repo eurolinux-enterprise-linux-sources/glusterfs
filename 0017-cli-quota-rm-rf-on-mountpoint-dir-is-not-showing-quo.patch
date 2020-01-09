@@ -1,0 +1,92 @@
+From d66dc8cfd11106005dc9204612515b7a74541fc7 Mon Sep 17 00:00:00 2001
+From: Manikandan Selvaganesh <mselvaga@redhat.com>
+Date: Tue, 13 Oct 2015 14:28:03 +0530
+Subject: [PATCH 17/23] cli/quota : rm -rf on /<mountpoint>/<dir> is not showing quota header
+
+Currently, when 'gluster v quota <VOLNAME> list' command is issued
+after an rm -rf on /run/gluster/vol/<directory>, quota output header is
+not shown. It is because the list_count was properly calculated with
+'gluster v quota <VOLNAME> remove /path' and not with an rm -rf. The patch
+fixes this issue.
+
+> Change-Id: I5266a8b0b9322b7db1b9e1d6b0327065931f4bcb
+> BUG: 1269375
+> Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+> Reviewed-on: http://review.gluster.org/12345
+> Reviewed-by: Vijaikumar Mallikarjuna <vmallika@redhat.com>
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Kaushal M <kaushal@redhat.com>
+
+Change-Id: I5266a8b0b9322b7db1b9e1d6b0327065931f4bcb
+BUG: 1271178
+Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59380
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-rpc-ops.c |   27 +++++++++++++++++++++++----
+ 1 files changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index b9fdb59..81ba6f8 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -3237,8 +3237,7 @@ out:
+ }
+ 
+ int
+-print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
+-                              int32_t list_count)
++print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict)
+ {
+         char             *path          = NULL;
+         char             *default_sl    = NULL;
+@@ -3249,6 +3248,7 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
+         quota_limits_t   limits         = {0, };
+         quota_limits_t  *size_limits    = NULL;
+         int32_t          type           = 0;
++        int32_t          success_count  = 0;
+ 
+         GF_ASSERT (frame);
+ 
+@@ -3312,7 +3312,25 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict,
+                 goto out;
+         }
+ 
+-        if (list_count == 0) {
++        LOCK (&local->lock);
++        {
++                ret = dict_get_int32 (gd_rsp_dict, "quota-list-success-count",
++                                      &success_count);
++                if (ret)
++                        success_count = 0;
++
++                ret = dict_set_int32 (gd_rsp_dict,
++                                      "quota-list-success-count",
++                                      success_count + 1);
++        }
++        UNLOCK (&local->lock);
++        if (ret) {
++                gf_log ("cli", GF_LOG_ERROR, "Failed to set "
++                        "quota-list-success-count in dict");
++                goto out;
++        }
++
++        if (success_count == 0) {
+                 if (!(global_state->mode & GLUSTER_MODE_XML)) {
+                         print_quota_list_header (type);
+                 } else {
+@@ -3417,7 +3435,8 @@ cli_quotad_getlimit_cbk (struct rpc_req *req, struct iovec *iov,
+                                 "unserialize req-buffer to dictionary");
+                         goto out;
+                 }
+-                print_quota_list_from_quotad (frame, dict, list_count);
++
++                print_quota_list_from_quotad (frame, dict);
+         }
+ 
+ out:
+-- 
+1.7.1
+

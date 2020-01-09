@@ -20,18 +20,18 @@ size_t
 gf_changelog_write (int fd, char *buffer, size_t len)
 {
         ssize_t size = 0;
-        size_t writen = 0;
+        size_t written = 0;
 
-        while (writen < len) {
+        while (written < len) {
                 size = write (fd,
-                              buffer + writen, len - writen);
+                              buffer + written, len - written);
                 if (size <= 0)
                         break;
 
-                writen += size;
+                written += size;
         }
 
-        return writen;
+        return written;
 }
 
 void
@@ -177,4 +177,36 @@ gf_ftruncate (int fd, off_t length)
         tsd->rl_bufptr = tsd->rl_buf;
 
         return 0;
+}
+
+int
+gf_thread_cleanup (xlator_t *this, pthread_t thread)
+{
+        int ret = 0;
+        void *res = NULL;
+
+        ret = pthread_cancel (thread);
+        if (ret != 0) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "Failed to send cancellation to thread");
+                goto error_return;
+        }
+
+        ret = pthread_join (thread, &res);
+        if (ret != 0) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "failed to join thread");
+                goto error_return;
+        }
+
+        if (res != PTHREAD_CANCELED) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "Thread could not be cleaned up");
+                goto error_return;
+        }
+
+        return 0;
+
+ error_return:
+        return -1;
 }

@@ -1,0 +1,184 @@
+From 3f7adf8a211642b47a5d6ee971b63cbe13f44b99 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Tue, 12 Jan 2016 12:04:59 +0530
+Subject: [PATCH 240/245] nfs: send lookup if inode_ctx is not set
+
+Backportof http://review.gluster.org/#/c/13224/
+
+During resolving of an entry or inode, if inode ctx
+was not set, we will send a lookup.
+
+This patch also make sure that inode_ctx will be created
+after every inode_link.
+
+Change-Id: Ic2e1c86289ec5413b2bf0694e11cefe160e504ce
+BUG: 1296048
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/65466
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/nfs/server/src/mount3.c       |   19 +++++++++++++------
+ xlators/nfs/server/src/nfs-common.c   |   11 ++++++-----
+ xlators/nfs/server/src/nfs-common.h   |    4 ++--
+ xlators/nfs/server/src/nfs3-helpers.c |    9 +++++++--
+ 4 files changed, 28 insertions(+), 15 deletions(-)
+
+diff --git a/xlators/nfs/server/src/mount3.c b/xlators/nfs/server/src/mount3.c
+index 8197cb1..ad4cd74 100644
+--- a/xlators/nfs/server/src/mount3.c
++++ b/xlators/nfs/server/src/mount3.c
+@@ -1062,8 +1062,9 @@ __mnt3_resolve_export_subdir_comp (mnt3_resolve_t *mres)
+         /* Wipe the contents of the previous component */
+         gf_uuid_copy (gfid, mres->resolveloc.inode->gfid);
+         nfs_loc_wipe (&mres->resolveloc);
+-        ret = nfs_entry_loc_fill (mres->exp->vol->itable, gfid, nextcomp,
+-                                  &mres->resolveloc, NFS_RESOLVE_CREATE);
++        ret = nfs_entry_loc_fill (mres->mstate->nfsx, mres->exp->vol->itable,
++                                  gfid, nextcomp, &mres->resolveloc,
++                                  NFS_RESOLVE_CREATE);
+         if ((ret < 0) && (ret != -2)) {
+                 gf_msg (GF_MNT, GF_LOG_ERROR, EFAULT,
+                         NFS_MSG_RESOLVE_INODE_FAIL, "Failed to resolve and "
+@@ -1108,6 +1109,7 @@ mnt3_resolve_subdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         int                     authcode = 0;
+         char                    *authorized_host = NULL;
+         char                    *authorized_path = NULL;
++        inode_t                 *linked_inode = NULL;
+ 
+         mres = frame->local;
+         ms = mres->mstate;
+@@ -1120,8 +1122,12 @@ mnt3_resolve_subdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 goto err;
+         }
+ 
+-        inode_link (mres->resolveloc.inode, mres->resolveloc.parent,
+-                    mres->resolveloc.name, buf);
++        linked_inode = inode_link (mres->resolveloc.inode,
++                                   mres->resolveloc.parent,
++                                   mres->resolveloc.name, buf);
++
++        if (linked_inode)
++                nfs_fix_generation (this, linked_inode);
+ 
+         nfs3_fh_build_child_fh (&mres->parentfh, buf, &fh);
+         if (strlen (mres->remainingdir) <= 0) {
+@@ -1352,8 +1358,9 @@ __mnt3_resolve_subdir (mnt3_resolve_t *mres)
+                 goto err;
+ 
+         rootgfid[15] = 1;
+-        ret = nfs_entry_loc_fill (mres->exp->vol->itable, rootgfid, firstcomp,
+-                                  &mres->resolveloc, NFS_RESOLVE_CREATE);
++        ret = nfs_entry_loc_fill (mres->mstate->nfsx, mres->exp->vol->itable,
++                                  rootgfid, firstcomp, &mres->resolveloc,
++                                  NFS_RESOLVE_CREATE);
+         if ((ret < 0) && (ret != -2)) {
+                 gf_msg (GF_MNT, GF_LOG_ERROR, EFAULT,
+                         NFS_MSG_RESOLVE_INODE_FAIL, "Failed to resolve and "
+diff --git a/xlators/nfs/server/src/nfs-common.c b/xlators/nfs/server/src/nfs-common.c
+index b679156..cfb0edd 100644
+--- a/xlators/nfs/server/src/nfs-common.c
++++ b/xlators/nfs/server/src/nfs-common.c
+@@ -331,8 +331,8 @@ err:
+  * On other errors, return -3. 0 on success.
+  */
+ int
+-nfs_entry_loc_fill (inode_table_t *itable, uuid_t pargfid, char *entry,
+-                    loc_t *loc, int how)
++nfs_entry_loc_fill (xlator_t *this, inode_table_t *itable, uuid_t pargfid,
++                    char *entry, loc_t *loc, int how)
+ {
+         inode_t         *parent = NULL;
+         inode_t         *entryinode = NULL;
+@@ -347,21 +347,22 @@ nfs_entry_loc_fill (inode_table_t *itable, uuid_t pargfid, char *entry,
+ 
+         ret = -1;
+         /* Will need hard resolution now */
+-        if (!parent)
++        if (!parent || inode_ctx_get (parent, this, NULL))
+                 goto err;
+ 
+         gf_uuid_copy (loc->pargfid, pargfid);
+ 
+         ret = -2;
+         entryinode = inode_grep (itable, parent, entry);
+-        if (!entryinode) {
++        if (!entryinode || inode_ctx_get (entryinode, this, NULL)) {
+                 if (how == NFS_RESOLVE_CREATE) {
+                         /* Even though we'll create the inode and the loc for
+                          * a missing inode, we still need to return -2 so
+                          * that the caller can use the filled loc to call
+                          * lookup.
+                          */
+-                        entryinode = inode_new (itable);
++                        if (!entryinode)
++                                entryinode = inode_new (itable);
+                         /* Cannot change ret because that must
+                          * continue to have -2.
+                          */
+diff --git a/xlators/nfs/server/src/nfs-common.h b/xlators/nfs/server/src/nfs-common.h
+index 401484c..01b49c1 100644
+--- a/xlators/nfs/server/src/nfs-common.h
++++ b/xlators/nfs/server/src/nfs-common.h
+@@ -64,8 +64,8 @@ extern int
+ nfs_ino_loc_fill (inode_table_t *itable, uuid_t gfid, loc_t *l);
+ 
+ extern int
+-nfs_entry_loc_fill (inode_table_t *itable, uuid_t pargfid, char *entry,
+-                    loc_t *loc, int how);
++nfs_entry_loc_fill (xlator_t *this, inode_table_t *itable, uuid_t pargfid,
++                    char *entry, loc_t *loc, int how);
+ 
+ extern int
+ nfs_root_loc_fill (inode_table_t *itable, loc_t *loc);
+diff --git a/xlators/nfs/server/src/nfs3-helpers.c b/xlators/nfs/server/src/nfs3-helpers.c
+index f2219d2..369c9bd 100644
+--- a/xlators/nfs/server/src/nfs3-helpers.c
++++ b/xlators/nfs/server/src/nfs3-helpers.c
+@@ -3660,6 +3660,7 @@ nfs3_fh_resolve_entry_lookup_cbk (call_frame_t *frame, void *cookie,
+         linked_inode = inode_link (inode, cs->resolvedloc.parent,
+                         cs->resolvedloc.name, buf);
+         if (linked_inode) {
++                nfs_fix_generation (this, linked_inode);
+                 inode_lookup (linked_inode);
+                 inode_unref (cs->resolvedloc.inode);
+                 cs->resolvedloc.inode = linked_inode;
+@@ -3702,6 +3703,7 @@ nfs3_fh_resolve_inode_lookup_cbk (call_frame_t *frame, void *cookie,
+         linked_inode = inode_link (inode, cs->resolvedloc.parent,
+                                    cs->resolvedloc.name, buf);
+         if (linked_inode) {
++                nfs_fix_generation (this, linked_inode);
+                 inode_lookup (linked_inode);
+ 		inode_unref (cs->resolvedloc.inode);
+ 		cs->resolvedloc.inode = linked_inode;
+@@ -3771,7 +3773,7 @@ nfs3_fh_resolve_entry_hard (nfs3_call_state_t *cs)
+                       ", entry: %s", uuid_utoa (cs->resolvefh.gfid),
+                       cs->resolventry);
+ 
+-        ret = nfs_entry_loc_fill (cs->vol->itable, cs->resolvefh.gfid,
++        ret = nfs_entry_loc_fill (cs->nfsx, cs->vol->itable, cs->resolvefh.gfid,
+                                   cs->resolventry, &cs->resolvedloc,
+                                   NFS_RESOLVE_CREATE);
+ 
+@@ -3812,14 +3814,17 @@ nfs3_fh_resolve_inode (nfs3_call_state_t *cs)
+ {
+         inode_t         *inode = NULL;
+         int             ret = -EFAULT;
++        xlator_t        *this = NULL;
+ 
+         if (!cs)
+                 return ret;
+ 
++        this = cs->nfsx;
+         gf_msg_trace (GF_NFS3, 0, "FH needs inode resolution");
+         gf_uuid_copy (cs->resolvedloc.gfid, cs->resolvefh.gfid);
++
+         inode = inode_find (cs->vol->itable, cs->resolvefh.gfid);
+-        if (!inode)
++        if (!inode || inode_ctx_get (inode, this, NULL))
+                 ret = nfs3_fh_resolve_inode_hard (cs);
+         else
+                 ret = nfs3_fh_resolve_inode_done (cs, inode);
+-- 
+1.7.1
+

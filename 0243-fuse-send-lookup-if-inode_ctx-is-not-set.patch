@@ -1,0 +1,224 @@
+From 6614405b9de600b70a9c81d382c952f43298502e Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Tue, 12 Jan 2016 12:54:42 +0530
+Subject: [PATCH 243/245] fuse: send lookup if inode_ctx is not set
+
+Backportof>http://review.gluster.org/#/c/13225/
+
+During resolving of an entry or inode, if inode ctx
+was not set, we will send a lookup.
+
+This patch also make sure that inode_ctx will be created
+after every inode_link
+
+Change-Id: Id7dcc16898b82db1f90c1aa3b1a0addb629a66e4
+BUG: 1296048
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/65468
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ libglusterfs/src/inode.c              |   18 ++++++++++++++----
+ libglusterfs/src/inode.h              |    3 +++
+ xlators/mount/fuse/src/fuse-bridge.c  |   17 +++++++++++++----
+ xlators/mount/fuse/src/fuse-resolve.c |   11 +++++++++--
+ 4 files changed, 39 insertions(+), 10 deletions(-)
+
+diff --git a/libglusterfs/src/inode.c b/libglusterfs/src/inode.c
+index 7f71753..6c3d6e1 100644
+--- a/libglusterfs/src/inode.c
++++ b/libglusterfs/src/inode.c
+@@ -1850,7 +1850,7 @@ out:
+ void
+ inode_set_need_lookup (inode_t *inode, xlator_t *this)
+ {
+-        uint64_t  need_lookup = 1;
++        uint64_t  need_lookup = LOOKUP_NEEDED;
+ 
+         if (!inode | !this)
+                 return;
+@@ -1860,19 +1860,29 @@ inode_set_need_lookup (inode_t *inode, xlator_t *this)
+         return;
+ }
+ 
++/* Function behaviour:
++ * Function return true if inode_ctx is not present,
++ * or value stored in inode_ctx is LOOKUP_NEEDED.
++ * If inode_ctx value is LOOKUP_NOT_NEEDED, which means
++ * inode_ctx is present for xlator this, but no lookup
++ * needed.
++ */
+ gf_boolean_t
+ inode_needs_lookup (inode_t *inode, xlator_t *this)
+ {
+         uint64_t     need_lookup = 0;
+         gf_boolean_t ret         = _gf_false;
++        int          op_ret      = -1;
+ 
+         if (!inode || !this)
+                 return ret;
+ 
+-        inode_ctx_get (inode, this, &need_lookup);
+-        if (need_lookup) {
++        op_ret = inode_ctx_get (inode, this, &need_lookup);
++        if (op_ret == -1) {
++                ret = _gf_true;
++        } else if (need_lookup == LOOKUP_NEEDED) {
+                 ret = _gf_true;
+-                need_lookup = 0;
++                need_lookup = LOOKUP_NOT_NEEDED;
+                 inode_ctx_set (inode, this, &need_lookup);
+         }
+ 
+diff --git a/libglusterfs/src/inode.h b/libglusterfs/src/inode.h
+index 96025b9..1a714c6 100644
+--- a/libglusterfs/src/inode.h
++++ b/libglusterfs/src/inode.h
+@@ -19,6 +19,9 @@
+ #include <stdint.h>
+ #include <sys/types.h>
+ 
++#define LOOKUP_NEEDED 1
++#define LOOKUP_NOT_NEEDED 2
++
+ #define DEFAULT_INODE_MEMPOOL_ENTRIES   32 * 1024
+ #define INODE_PATH_FMT "<gfid:%s>"
+ struct _inode_table;
+diff --git a/xlators/mount/fuse/src/fuse-bridge.c b/xlators/mount/fuse/src/fuse-bridge.c
+index 81aebac..25c0705 100644
+--- a/xlators/mount/fuse/src/fuse-bridge.c
++++ b/xlators/mount/fuse/src/fuse-bridge.c
+@@ -379,6 +379,7 @@ fuse_entry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         struct fuse_entry_out  feo          = {0, };
+         fuse_private_t        *priv         = NULL;
+         inode_t               *linked_inode = NULL;
++        uint64_t               ctx_value    = LOOKUP_NOT_NEEDED;
+ 
+         priv = this->private;
+         state = frame->root->state;
+@@ -428,7 +429,8 @@ fuse_entry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                 linked_inode = inode_link (inode, state->loc.parent,
+                                            state->loc.name, buf);
+ 
+-                if (linked_inode != inode) {
++                if (linked_inode == inode) {
++                        inode_ctx_set (linked_inode, this, &ctx_value);
+                 }
+ 
+                 inode_lookup (linked_inode);
+@@ -1914,6 +1916,7 @@ fuse_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         struct fuse_open_out    foo          = {0, };
+         struct iovec            iov_out[3];
+         inode_t                *linked_inode = NULL;
++        uint64_t                ctx_value    = LOOKUP_NOT_NEEDED;
+ 
+         state    = frame->root->state;
+         priv     = this->private;
+@@ -1949,6 +1952,8 @@ fuse_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                         */
+                         inode_unref (fd->inode);
+                         fd->inode = inode_ref (linked_inode);
++                } else {
++                        inode_ctx_set (linked_inode, this, &ctx_value);
+                 }
+ 
+                 inode_lookup (linked_inode);
+@@ -4165,12 +4170,13 @@ fuse_first_lookup (xlator_t *this)
+ 
+ 
+ int
+-fuse_nameless_lookup (xlator_t *xl, uuid_t gfid, loc_t *loc)
++fuse_nameless_lookup (xlator_t *this, xlator_t *xl, uuid_t gfid, loc_t *loc)
+ {
+         int          ret          = -1;
+         dict_t      *xattr_req    = NULL;
+         struct iatt  iatt         = {0, };
+         inode_t     *linked_inode = NULL;
++        uint64_t     ctx_value    = LOOKUP_NOT_NEEDED;
+ 
+         if ((loc == NULL) || (xl == NULL)) {
+                 ret = -EINVAL;
+@@ -4198,6 +4204,9 @@ fuse_nameless_lookup (xlator_t *xl, uuid_t gfid, loc_t *loc)
+                 goto out;
+ 
+         linked_inode = inode_link (loc->inode, NULL, NULL, &iatt);
++        if (linked_inode == loc->inode)
++                inode_ctx_set (linked_inode, this, &ctx_value);
++
+         inode_unref (loc->inode);
+         loc->inode = linked_inode;
+ 
+@@ -4237,8 +4246,8 @@ fuse_migrate_fd_open (xlator_t *this, fd_t *basefd, fd_t *oldfd,
+         loc.inode = inode_find (new_subvol->itable, basefd->inode->gfid);
+ 
+         if (loc.inode == NULL) {
+-                ret = fuse_nameless_lookup (new_subvol, basefd->inode->gfid,
+-                                            &loc);
++                ret = fuse_nameless_lookup (this, new_subvol,
++                                            basefd->inode->gfid, &loc);
+                 if (ret < 0) {
+                         gf_log ("glusterfs-fuse", GF_LOG_WARNING,
+                                 "name-less lookup of gfid (%s) failed (%s)"
+diff --git a/xlators/mount/fuse/src/fuse-resolve.c b/xlators/mount/fuse/src/fuse-resolve.c
+index 3267d37..072a4e8 100644
+--- a/xlators/mount/fuse/src/fuse-resolve.c
++++ b/xlators/mount/fuse/src/fuse-resolve.c
+@@ -50,6 +50,7 @@ fuse_resolve_entry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         fuse_resolve_t *resolve    = NULL;
+         inode_t        *link_inode = NULL;
+         loc_t          *resolve_loc   = NULL;
++        uint64_t        ctx_value  = LOOKUP_NOT_NEEDED;
+ 
+         state = frame->root->state;
+         resolve = state->resolve_now;
+@@ -70,7 +71,8 @@ fuse_resolve_entry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+         link_inode = inode_link (inode, resolve_loc->parent,
+                                  resolve_loc->name, buf);
+-
++        if (link_inode == inode)
++                inode_ctx_set (link_inode, this, &ctx_value);
+ 	state->loc_now->inode = link_inode;
+ 
+ out:
+@@ -119,6 +121,7 @@ fuse_resolve_gfid_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         inode_t        *link_inode = NULL;
+         loc_t          *loc_now    = NULL;
+         inode_t        *tmp_inode  = NULL;
++        uint64_t        ctx_value  = LOOKUP_NOT_NEEDED;
+ 
+         state = frame->root->state;
+         resolve = state->resolve_now;
+@@ -151,6 +154,8 @@ fuse_resolve_gfid_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         }
+ 
+         link_inode = inode_link (inode, NULL, NULL, buf);
++        if (link_inode == inode)
++                inode_ctx_set (link_inode, this, &ctx_value);
+ 
+         loc_wipe (&resolve->resolve_loc);
+ 
+@@ -231,9 +236,11 @@ fuse_resolve_parent_simple (fuse_state_t *state)
+ 	loc_t          *loc       = NULL;
+         inode_t        *parent    = NULL;
+         inode_t        *inode     = NULL;
++        xlator_t       *this      = NULL;
+ 
+         resolve = state->resolve_now;
+ 	loc = state->loc_now;
++        this = state->this;
+ 
+ 	loc->name = resolve->bname;
+ 
+@@ -281,7 +288,7 @@ fuse_resolve_parent_simple (fuse_state_t *state)
+         gf_uuid_copy (loc->pargfid, resolve->pargfid);
+ 
+ 	inode = inode_grep (state->itable, parent, loc->name);
+-	if (inode) {
++	if (inode && !inode_needs_lookup (inode, this)) {
+ 		loc->inode = inode;
+ 		/* decisive result - resolution success */
+ 		return 0;
+-- 
+1.7.1
+

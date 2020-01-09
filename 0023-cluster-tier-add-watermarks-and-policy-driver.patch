@@ -1,0 +1,1369 @@
+From 871adeb59e2e60c785b5eeaab39c3c9d03ace939 Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Fri, 18 Sep 2015 00:49:06 -0400
+Subject: [PATCH 23/23] cluster/tier: add watermarks and policy driver
+
+Backport fix 12039
+
+This fix introduces infrastructure to support different
+policies for promotion and demotion.
+
+Currently the tier feature automatically promotes and demotes
+files periodically based on access. This is good for testing
+but too stringent for most real workloads. It makes it
+difficult to fully utilize a hot tier- data will be demoted
+before it is touched- its unlikely a 100GB hot SSD will have
+all its data touched in a window of time.
+
+A new parameter "mode" allows the user to pick promotion/demotion
+polcies.
+
+The "test mode" will be used for *.t and other general testing.
+This is the current mechanism.
+
+The "cache mode" introduces watermarks. The watermarks
+represent levels of data residing on the hot tier.
+
+"cache mode" policy:
+
+The % the hot tier is full is called P.
+
+Do not promote or demote more than D MB or F files.
+
+A random number [0-100] is called R.
+
+Rules for migration:
+
+if (P < watermark_low) don't demote, always promote.
+
+if (P >= watermark_low) && (P < watermark_hi) demote if R < P; promote if R > P.
+
+if (P > watermark_hi) always demote, don't promote.
+
+gluster volume set {vol} cluster.watermark-hi %
+gluster volume set {vol} cluster.watermark-low %
+gluster volume set {vol} cluster.tier-max-mb {D}
+gluster volume set {vol} cluster.tier-max-files {F}
+gluster volume set {vol} cluster.tier-mode {test|cache}
+
+> Change-Id: I157f19667ec95aa1d53406041c1e3b073be127c2
+> BUG: 1257911
+> Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+> Reviewed-on: http://review.gluster.org/12039
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+
+Conflicts:
+	xlators/cluster/dht/src/dht-rebalance.c
+	xlators/cluster/dht/src/tier.c
+
+Change-Id: Ibfe6b89563ceab98708325cf5d5ab0997c64816c
+BUG: 1271757
+Reviewed-on: http://review.gluster.org/12330
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59426
+---
+ libglusterfs/src/globals.h                      |    4 +-
+ tests/basic/tier/tier.t                         |   11 +
+ tests/volume.rc                                 |   12 +
+ xlators/cluster/dht/src/dht-common.h            |   28 ++-
+ xlators/cluster/dht/src/dht-rebalance.c         |    9 +
+ xlators/cluster/dht/src/dht-shared.c            |   25 +-
+ xlators/cluster/dht/src/tier.c                  |  481 +++++++++++++++++++----
+ xlators/cluster/dht/src/tier.h                  |   24 +-
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |  135 ++++++-
+ 9 files changed, 618 insertions(+), 111 deletions(-)
+
+diff --git a/libglusterfs/src/globals.h b/libglusterfs/src/globals.h
+index 96889de..6983837 100644
+--- a/libglusterfs/src/globals.h
++++ b/libglusterfs/src/globals.h
+@@ -37,7 +37,7 @@
+  */
+ #define GD_OP_VERSION_MIN  1 /* MIN is the fresh start op-version, mostly
+                                 should not change */
+-#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_7_5 /* MAX VERSION is the maximum
++#define GD_OP_VERSION_MAX  GD_OP_VERSION_3_7_6 /* MAX VERSION is the maximum
+                                                   count in VME table, should
+                                                   keep changing with
+                                                   introduction of newer
+@@ -57,6 +57,8 @@
+ 
+ #define GD_OP_VERSION_3_7_5    30705 /* Op-version for GlusterFS 3.7.5 */
+ 
++#define GD_OP_VERSION_3_7_6    30706 /* Op-version for GlusterFS 3.7.6 */
++
+ #define GD_OP_VER_PERSISTENT_AFR_XATTRS GD_OP_VERSION_3_6_0
+ 
+ #include "xlator.h"
+diff --git a/tests/basic/tier/tier.t b/tests/basic/tier/tier.t
+index 80c31ea..55f6696 100755
+--- a/tests/basic/tier/tier.t
++++ b/tests/basic/tier/tier.t
+@@ -150,12 +150,23 @@ TEST ! $CLI volume set $V0 cluster.tier-demote-frequency 4
+ TEST ! $CLI volume tier $V0 detach commit force
+ 
+ TEST $CLI volume tier $V0 attach replica 2 $H0:$B0/${V0}$CACHE_BRICK_FIRST $H0:$B0/${V0}$CACHE_BRICK_LAST
++
++TEST $CLI volume set $V0 cluster.tier-mode test
++
+ # create a file, make sure it can be deleted after attach tier.
+ TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
+ cd $M0
+ TEST touch delete_me.txt
+ TEST rm -f delete_me.txt
+ 
++# confirm watermark CLI works
++TEST $CLI volume set $V0 cluster.watermark-hi 85
++TEST $CLI volume set $V0 cluster.watermark-low 75
++TEST $CLI volume set $V0 cluster.tier-max-mb 1000
++TEST $CLI volume set $V0 cluster.tier-max-files 1000
++TEST ! $CLI volume set $V0 cluster.tier-max-files -3
++TEST ! $CLI volume set $V0 cluster.watermark-low 90
++
+ # stop the volume and restart it. The rebalance daemon should restart.
+ TEST $CLI volume stop $V0
+ TEST $CLI volume start $V0
+diff --git a/tests/volume.rc b/tests/volume.rc
+index 0000567..e647dc3 100644
+--- a/tests/volume.rc
++++ b/tests/volume.rc
+@@ -569,6 +569,18 @@ function get_snapd_count {
+         ps auxww | grep glusterfs | grep snapd.pid | grep -v grep | wc -l
+ }
+ 
++function drop_cache() {
++	case $OSTYPE in
++	Linux)
++		echo 3 > /proc/sys/vm/drop_caches
++		;;
++	*)
++		# fail but flush caches
++		( cd $1 && umount $1 2>/dev/null )
++		;;
++	esac
++}
++
+ function quota_list_field () {
+         local QUOTA_PATH=$1
+         local FIELD=$2
+diff --git a/xlators/cluster/dht/src/dht-common.h b/xlators/cluster/dht/src/dht-common.h
+index b1d12c8..26cf27a 100644
+--- a/xlators/cluster/dht/src/dht-common.h
++++ b/xlators/cluster/dht/src/dht-common.h
+@@ -337,6 +337,29 @@ struct dht_container {
+         dict_t          *migrate_data;
+ };
+ 
++typedef enum tier_mode_ {
++        TIER_MODE_NONE = 0,
++        TIER_MODE_TEST,
++        TIER_MODE_WM
++} tier_mode_t;
++
++typedef struct gf_tier_conf {
++        int                          is_tier;
++        int                          watermark_hi;
++        int                          watermark_low;
++        int                          watermark_last;
++        fsblkcnt_t                   blocks_total;
++        fsblkcnt_t                   blocks_used;
++        int                          percent_full;
++        uint64_t                     max_migrate_bytes;
++        int                          max_migrate_files;
++        tier_mode_t                  mode;
++        int                          tier_promote_frequency;
++        int                          tier_demote_frequency;
++        uint64_t                     st_last_promoted_size;
++        uint64_t                     st_last_demoted_size;
++} gf_tier_conf_t;
++
+ struct gf_defrag_info_ {
+         uint64_t                     total_files;
+         uint64_t                     total_data;
+@@ -357,8 +380,7 @@ struct gf_defrag_info_ {
+         gf_boolean_t                 stats;
+         uint32_t                     new_commit_hash;
+         gf_defrag_pattern_list_t    *defrag_pattern;
+-        int                          tier_promote_frequency;
+-        int                          tier_demote_frequency;
++        gf_tier_conf_t               tier_conf;
+ 
+         /*Data Tiering params for scanner*/
+         uint64_t                     total_files_promoted;
+@@ -1093,5 +1115,7 @@ int32_t dht_set_local_rebalance (xlator_t *this, dht_local_t *local,
+                                  struct iatt *stbuf,
+                                  struct iatt *prebuf,
+                                  struct iatt *postbuf, dict_t *xdata);
++void
++dht_build_root_loc (inode_t *inode, loc_t *loc);
+ 
+ #endif/* _DHT_H */
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 425c40f..9c45cd7 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -1331,6 +1331,15 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+                 }
+         }
+ 
++        /* store size of previous migrated file  */
++        if (defrag->tier_conf.is_tier) {
++                if (from == conf->subvolumes[0]) {
++                        defrag->tier_conf.st_last_promoted_size = stbuf.ia_size;
++                } else {
++                        defrag->tier_conf.st_last_demoted_size = stbuf.ia_size;
++                }
++        }
++
+         /* The src file is being unlinked after this so we don't need
+            to clean it up */
+         clean_src = _gf_false;
+diff --git a/xlators/cluster/dht/src/dht-shared.c b/xlators/cluster/dht/src/dht-shared.c
+index 5fff3e8..dc5211a 100644
+--- a/xlators/cluster/dht/src/dht-shared.c
++++ b/xlators/cluster/dht/src/dht-shared.c
+@@ -983,17 +983,32 @@ struct volume_options options[] = {
+         { .key  = {"write-freq-threshold"},
+           .type = GF_OPTION_TYPE_INT,
+           .default_value = "0",
+-          .description = "Defines the write fequency "
+-                        "that would be considered hot"
+         },
+ 
+         { .key  = {"read-freq-threshold"},
+           .type = GF_OPTION_TYPE_INT,
+           .default_value = "0",
+-          .description = "Defines the read fequency "
+-                        "that would be considered hot"
+         },
+-
++        { .key         = {"watermark-hi"},
++          .type = GF_OPTION_TYPE_PERCENT,
++          .default_value = "90",
++        },
++        { .key         = {"watermark-low"},
++          .type = GF_OPTION_TYPE_PERCENT,
++          .default_value = "75",
++        },
++        { .key         = {"tier-mode"},
++          .type = GF_OPTION_TYPE_STR,
++          .default_value = "test",
++        },
++        { .key         = {"tier-max-mb"},
++          .type = GF_OPTION_TYPE_INT,
++          .default_value = "1000",
++        },
++        { .key         = {"tier-max-files"},
++          .type = GF_OPTION_TYPE_INT,
++          .default_value = "5000",
++        },
+         /* switch option */
+         { .key  = {"pattern.switch.case"},
+           .type = GF_OPTION_TYPE_ANY
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index a592382..4a1f361 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -118,6 +118,120 @@ out:
+         return ret;
+ }
+ 
++int
++tier_do_migration (xlator_t *this, int promote)
++{
++        gf_defrag_info_t       *defrag = NULL;
++        dht_conf_t             *conf   = NULL;
++        long                    rand = 0;
++        int                     migrate = 0;
++        gf_tier_conf_t         *tier_conf = NULL;
++
++        conf = this->private;
++        if (!conf)
++                goto exit;
++
++        defrag = conf->defrag;
++        if (!defrag)
++                goto exit;
++
++        if (defrag->tier_conf.mode != TIER_MODE_WM) {
++                migrate = 1;
++                goto exit;
++        }
++
++        tier_conf = &defrag->tier_conf;
++
++        switch (tier_conf->watermark_last) {
++        case TIER_WM_LOW:
++                migrate = promote ? 1 : 0;
++                break;
++        case TIER_WM_HI:
++                migrate = promote ? 0 : 1;
++                break;
++        case TIER_WM_MID:
++                rand = random() % 100;
++                if (promote) {
++                        migrate = (rand > tier_conf->percent_full);
++                } else {
++                        migrate = (rand <= tier_conf->percent_full);
++                }
++                break;
++        }
++
++exit:
++        return migrate;
++}
++
++int
++tier_check_watermark (xlator_t *this, loc_t *root_loc)
++{
++        tier_watermark_op_t     wm = TIER_WM_NONE;
++        int                     ret = -1;
++        gf_defrag_info_t       *defrag = NULL;
++        dht_conf_t             *conf   = NULL;
++        dict_t                 *xdata  = NULL;
++        struct statvfs          statfs = {0, };
++        gf_tier_conf_t         *tier_conf = NULL;
++
++        conf = this->private;
++        if (!conf)
++                goto exit;
++
++        defrag = conf->defrag;
++        if (!defrag)
++                goto exit;
++
++        tier_conf = &defrag->tier_conf;
++
++        if (tier_conf->mode != TIER_MODE_WM) {
++                ret = 0;
++                goto exit;
++        }
++
++        /* Find how much free space is on the hot subvolume. Then see if that value */
++        /* is less than or greater than user defined watermarks. Stash results in */
++        /* the tier_conf data structure. */
++        ret = syncop_statfs (conf->subvolumes[1], root_loc, &statfs,
++                             xdata, NULL);
++        if (ret) {
++                gf_msg (this->name, GF_LOG_ERROR, -ret,
++                        DHT_MSG_LOG_TIER_STATUS,
++                        "Unable to obtain statfs.");
++                goto exit;
++        }
++
++        pthread_mutex_lock (&dm_stat_mutex);
++
++        tier_conf->blocks_total = statfs.f_blocks;
++        tier_conf->blocks_used = statfs.f_blocks - statfs.f_bfree;
++
++        tier_conf->percent_full = (100 * tier_conf->blocks_used) /
++                statfs.f_blocks;
++        pthread_mutex_unlock (&dm_stat_mutex);
++
++        if (tier_conf->percent_full < tier_conf->watermark_low) {
++                wm = TIER_WM_LOW;
++
++        } else if (tier_conf->percent_full < tier_conf->watermark_hi) {
++                wm = TIER_WM_MID;
++
++        } else {
++                wm = TIER_WM_HI;
++        }
++
++        if (wm != tier_conf->watermark_last) {
++
++                tier_conf->watermark_last = wm;
++                gf_msg (this->name, GF_LOG_INFO, 0,
++                        DHT_MSG_LOG_TIER_STATUS,
++                        "Tier watermark now %d", wm);
++        }
++
++exit:
++        return ret;
++}
++
+ static int
+ tier_migrate_using_query_file (void *_args)
+ {
+@@ -145,6 +259,8 @@ tier_migrate_using_query_file (void *_args)
+         char *link_str                          = NULL;
+         xlator_t *src_subvol                    = NULL;
+         dht_conf_t   *conf                      = NULL;
++        uint64_t total_migrated_bytes           = 0;
++        int total_files                         = 0;
+ 
+         GF_VALIDATE_OR_GOTO ("tier", query_cbk_args, out);
+         GF_VALIDATE_OR_GOTO ("tier", query_cbk_args->this, out);
+@@ -159,14 +275,20 @@ tier_migrate_using_query_file (void *_args)
+ 
+         queryFILE = query_cbk_args->queryFILE;
+ 
+-        query_record = gfdb_query_record_init();
++        query_record = gfdb_query_record_init ();
+         if (!query_record) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        DHT_MSG_LOG_TIER_ERROR,
++                        "Call to gfdb_query_record_init() failed.");
+                 goto out;
+         }
+ 
+         query_record->_link_info_str = GF_CALLOC (1, DB_QUERY_RECORD_SIZE,
+                                                   gf_common_mt_char);
+         if (!query_record->_link_info_str) {
++                gf_msg (this->name, GF_LOG_ERROR, 0,
++                        DHT_MSG_LOG_TIER_ERROR,
++                        "Allocating query record link info string failed.");
+                 goto out;
+         }
+         link_buffer = query_record->_link_info_str;
+@@ -195,13 +317,14 @@ tier_migrate_using_query_file (void *_args)
+                         continue;
+                 }
+ 
++                if (!tier_do_migration (this, query_cbk_args->is_promotion))
++                        continue;
++
+                 gf_uuid_parse (gfid_str, query_record->gfid);
+ 
+-                if (dict_get(migrate_data, GF_XATTR_FILE_MIGRATE_KEY))
+-                        dict_del(migrate_data, GF_XATTR_FILE_MIGRATE_KEY);
++                dict_del (migrate_data, GF_XATTR_FILE_MIGRATE_KEY);
+ 
+-                if (dict_get(migrate_data, "from.migrator"))
+-                        dict_del(migrate_data, "from.migrator");
++                dict_del (migrate_data, "from.migrator");
+ 
+                 token_str = strtok (link_buffer, delimiter);
+                 if (token_str != NULL) {
+@@ -239,6 +362,7 @@ tier_migrate_using_query_file (void *_args)
+ 
+                 }
+                 per_link_status = 0;
++
+                 /* Per link of file */
+                 while (token_str != NULL) {
+ 
+@@ -274,9 +398,9 @@ tier_migrate_using_query_file (void *_args)
+                         ret = syncop_lookup (this, &p_loc, &par_stbuf, NULL,
+                                              NULL, NULL);
+                         if (ret) {
+-                                gf_msg (this->name, GF_LOG_ERROR, 0,
++                                gf_msg (this->name, GF_LOG_ERROR, -ret,
+                                         DHT_MSG_LOG_TIER_ERROR,
+-                                        " ERROR in parent lookup\n");
++                                        " Error in parent lookup\n");
+                                 per_link_status = -1;
+                                 goto abort;
+                         }
+@@ -288,7 +412,7 @@ tier_migrate_using_query_file (void *_args)
+                         gf_uuid_copy (loc.gfid, query_record->gfid);
+                         loc.inode = inode_new (defrag->root_inode->table);
+                         gf_uuid_copy (loc.pargfid, link_info->pargfid);
+-                        loc.parent = inode_ref(p_loc.inode);
++                        loc.parent = inode_ref (p_loc.inode);
+ 
+                         loc.name = gf_strdup (link_info->file_name);
+                         if (!loc.name) {
+@@ -329,7 +453,10 @@ tier_migrate_using_query_file (void *_args)
+                          * should be. It means another brick moved the file
+                          * so is not an error.
+                          */
+-                        src_subvol = dht_subvol_get_cached(this, loc.inode);
++                        src_subvol = dht_subvol_get_cached (this, loc.inode);
++
++                        if (src_subvol == NULL)
++                                goto abort;
+ 
+                         if (query_cbk_args->is_promotion &&
+                              src_subvol == conf->subvolumes[1]) {
+@@ -367,18 +494,48 @@ tier_migrate_using_query_file (void *_args)
+                                 goto abort;
+                         }
+ 
+-                        if (query_cbk_args->is_promotion)
++                        if (query_cbk_args->is_promotion) {
+                                 defrag->total_files_promoted++;
+-                        else
++                                total_migrated_bytes +=
++                                        defrag->tier_conf.st_last_promoted_size;
++                                pthread_mutex_lock (&dm_stat_mutex);
++                                defrag->tier_conf.blocks_used +=
++                                        defrag->tier_conf.st_last_promoted_size;
++                                pthread_mutex_unlock (&dm_stat_mutex);
++                        } else {
+                                 defrag->total_files_demoted++;
++                                total_migrated_bytes +=
++                                        defrag->tier_conf.st_last_demoted_size;
++                                pthread_mutex_lock (&dm_stat_mutex);
++                                defrag->tier_conf.blocks_used -=
++                                        defrag->tier_conf.st_last_demoted_size;
++                                pthread_mutex_unlock (&dm_stat_mutex);
++                        }
++                        if (defrag->tier_conf.blocks_total) {
++                                pthread_mutex_lock (&dm_stat_mutex);
++                                defrag->tier_conf.percent_full =
++                                        (100 * defrag->tier_conf.blocks_used) /
++                                        defrag->tier_conf.blocks_total;
++                                pthread_mutex_unlock (&dm_stat_mutex);
++                        }
+ abort:
+-
+                         loc_wipe(&loc);
+                         loc_wipe(&p_loc);
+ 
+                         token_str = NULL;
+                         token_str = strtok (NULL, delimiter);
+                         GF_FREE (link_str);
++
++                        if ((++total_files > defrag->tier_conf.max_migrate_files) ||
++                            (total_migrated_bytes > defrag->tier_conf.max_migrate_bytes)) {
++                                gf_msg (this->name, GF_LOG_INFO, 0,
++                                        DHT_MSG_LOG_TIER_STATUS,
++                                        "Reached cycle migration limit."
++                                        "migrated bytes %"PRId64" files %d",
++                                        total_migrated_bytes,
++                                        total_files);
++                                goto out;
++                        }
+                 }
+                 per_file_status = per_link_status;
+ per_file_out:
+@@ -421,7 +578,7 @@ tier_gf_query_callback (gfdb_query_record_t *gfdb_query_record,
+         GF_VALIDATE_OR_GOTO ("tier", query_cbk_args->queryFILE, out);
+ 
+         gf_uuid_unparse (gfdb_query_record->gfid, gfid_str);
+-        fprintf (query_cbk_args->queryFILE, "%s|%s|%ld\n", gfid_str,
++        fprintf (query_cbk_args->queryFILE, "%s|%s|%zd\n", gfid_str,
+                  gfdb_query_record->_link_info_str,
+                  gfdb_query_record->link_info_size);
+ 
+@@ -439,7 +596,7 @@ out:
+ 
+ /*Create query file in tier process*/
+ static int
+-tier_process_self_query (brick_list_t *local_brick, void *args)
++tier_process_self_query (tier_brick_list_t *local_brick, void *args)
+ {
+         int ret                                         = -1;
+         char *db_path                                   = NULL;
+@@ -480,7 +637,7 @@ tier_process_self_query (brick_list_t *local_brick, void *args)
+                                 db_path, ret, out);
+ 
+         /*Get the db connection*/
+-        conn_node = gfdb_methods.init_db((void *)params_dict, dht_tier_db_type);
++        conn_node = gfdb_methods.init_db ((void *)params_dict, dht_tier_db_type);
+         if (!conn_node) {
+                 gf_msg (this->name, GF_LOG_ERROR, 0,
+                         DHT_MSG_LOG_TIER_ERROR,
+@@ -489,8 +646,8 @@ tier_process_self_query (brick_list_t *local_brick, void *args)
+         }
+ 
+         /*Query for eligible files from db*/
+-        query_cbk_args->queryFILE = fopen(GET_QFILE_PATH
+-                                (gfdb_brick_dict_info->_gfdb_promote), "a+");
++        query_cbk_args->queryFILE = fopen (
++                GET_QFILE_PATH (gfdb_brick_dict_info->_gfdb_promote), "a+");
+         if (!query_cbk_args->queryFILE) {
+                 gf_msg (this->name, GF_LOG_ERROR, errno,
+                         DHT_MSG_LOG_TIER_ERROR,
+@@ -595,7 +752,7 @@ out:
+ 
+ /*Ask CTR to create the query file*/
+ static int
+-tier_process_ctr_query (brick_list_t *local_brick, void *args)
++tier_process_ctr_query (tier_brick_list_t *local_brick, void *args)
+ {
+         int ret                                         = -1;
+         query_cbk_args_t *query_cbk_args                = NULL;
+@@ -723,7 +880,7 @@ out:
+  * It picks up each bricks db and queries for eligible files for migration.
+  * The list of eligible files are populated in appropriate query files*/
+ static int
+-tier_process_brick (brick_list_t *local_brick, void *args) {
++tier_process_brick (tier_brick_list_t *local_brick, void *args) {
+         int ret = -1;
+         dict_t *ctr_ipc_in_dict = NULL;
+         dict_t *ctr_ipc_out_dict = NULL;
+@@ -837,7 +994,7 @@ tier_build_migration_qfile (demotion_args_t *args,
+         _gfdb_brick_dict_info_t         gfdb_brick_dict_info;
+         gfdb_time_t                     time_in_past;
+         int                             ret = -1;
+-        brick_list_t                    *local_brick = NULL;
++        tier_brick_list_t                    *local_brick = NULL;
+ 
+         /*
+          *  The first time this function is called, query file will
+@@ -932,8 +1089,8 @@ tier_demote (void *args)
+         query_cbk_args.is_promotion = 0;
+ 
+         /*Build the query file using bricklist*/
+-        ret = tier_build_migration_qfile(demotion_args, &query_cbk_args,
+-                                    _gf_false);
++        ret = tier_build_migration_qfile (demotion_args, &query_cbk_args,
++                                          _gf_false);
+         if (ret)
+                 goto out;
+ 
+@@ -970,8 +1127,8 @@ static void
+         query_cbk_args.is_promotion = 1;
+ 
+         /*Build the query file using bricklist*/
+-        ret = tier_build_migration_qfile(promotion_args, &query_cbk_args,
+-                                         _gf_true);
++        ret = tier_build_migration_qfile (promotion_args, &query_cbk_args,
++                                          _gf_true);
+         if (ret)
+                 goto out;
+ 
+@@ -997,7 +1154,7 @@ tier_get_bricklist (xlator_t *xl, struct list_head *local_bricklist_head)
+         char           *brickname = NULL;
+         char            db_name[PATH_MAX] = "";
+         int             ret = 0;
+-        brick_list_t    *local_brick = NULL;
++        tier_brick_list_t    *local_brick = NULL;
+ 
+         GF_VALIDATE_OR_GOTO ("tier", xl, out);
+         GF_VALIDATE_OR_GOTO ("tier", local_bricklist_head, out);
+@@ -1009,19 +1166,19 @@ tier_get_bricklist (xlator_t *xl, struct list_head *local_bricklist_head)
+          * those running on the same node as the tier daemon.
+          */
+         if (strcmp(xl->type, "protocol/client") == 0) {
+-                ret = dict_get_str(xl->options, "remote-host", &rh);
++                ret = dict_get_str (xl->options, "remote-host", &rh);
+                 if (ret < 0)
+                         goto out;
+ 
+-               if (gf_is_local_addr (rh)) {
++                if (gf_is_local_addr (rh)) {
+ 
+-                       local_brick = GF_CALLOC (1, sizeof(brick_list_t),
++                       local_brick = GF_CALLOC (1, sizeof(tier_brick_list_t),
+                                                 gf_tier_mt_bricklist_t);
+                         if (!local_brick) {
+                                 goto out;
+                         }
+ 
+-                        ret = dict_get_str(xl->options, "remote-subvolume",
++                        ret = dict_get_str (xl->options, "remote-subvolume",
+                                            &rv);
+                         if (ret < 0)
+                                 goto out;
+@@ -1054,7 +1211,7 @@ tier_get_bricklist (xlator_t *xl, struct list_head *local_bricklist_head)
+         }
+ 
+         for (child = xl->children; child; child = child->next) {
+-                ret = tier_get_bricklist(child->xlator, local_bricklist_head);
++                ret = tier_get_bricklist (child->xlator, local_bricklist_head);
+                 if (ret) {
+                         goto out;
+                 }
+@@ -1073,11 +1230,50 @@ out:
+         return ret;
+ }
+ 
++int
++tier_get_freq_demote (gf_tier_conf_t *tier_conf)
++{
++        if ((tier_conf->mode == TIER_MODE_WM) &&
++            (tier_conf->watermark_last == TIER_WM_HI))
++                return DEFAULT_DEMOTE_DEGRADED;
++        else
++                return tier_conf->tier_demote_frequency;
++}
++
++int
++tier_get_freq_promote (gf_tier_conf_t *tier_conf)
++{
++        return tier_conf->tier_promote_frequency;
++}
++
++static int
++tier_check_demote (gfdb_time_t  current_time,
++                   int freq_demote)
++{
++        return ((current_time.tv_sec % freq_demote) == 0) ?
++                _gf_true : _gf_false;
++}
++
++static gf_boolean_t
++tier_check_promote (gf_tier_conf_t   *tier_conf,
++                    gfdb_time_t  current_time,
++                    int freq_promote)
++{
++        if ((tier_conf->mode == TIER_MODE_WM) &&
++            (tier_conf->watermark_last == TIER_WM_HI))
++                return _gf_false;
++
++        else
++                return ((current_time.tv_sec % freq_promote) == 0) ?
++                        _gf_true : _gf_false;
++}
++
++
+ void
+ clear_bricklist (struct list_head *brick_list)
+ {
+-        brick_list_t  *local_brick      = NULL;
+-        brick_list_t  *temp             = NULL;
++        tier_brick_list_t  *local_brick      = NULL;
++        tier_brick_list_t  *temp             = NULL;
+ 
+         if (list_empty(brick_list)) {
+                 return;
+@@ -1108,7 +1304,11 @@ tier_start (xlator_t *this, gf_defrag_info_t *defrag)
+         pthread_t promote_thread;
+         pthread_t demote_thread;
+         gf_boolean_t  is_promotion_triggered = _gf_false;
+-        gf_boolean_t  is_demotion_triggered = _gf_false;
++        gf_boolean_t  is_demotion_triggered  = _gf_false;
++        xlator_t                *any         = NULL;
++        xlator_t                *xlator      = NULL;
++        gf_tier_conf_t    *tier_conf   = NULL;
++        loc_t      root_loc = { 0 };
+ 
+         conf   = this->private;
+ 
+@@ -1123,9 +1323,26 @@ tier_start (xlator_t *this, gf_defrag_info_t *defrag)
+                         " demote %d", freq_promote, freq_demote);
+ 
+         defrag->defrag_status = GF_DEFRAG_STATUS_STARTED;
++        tier_conf = &defrag->tier_conf;
++
++        dht_build_root_loc (defrag->root_inode, &root_loc);
+ 
+         while (1) {
+ 
++                /*
++                 * Check if a graph switch occured. If so, stop migration
++                 * thread. It will need to be restarted manually.
++                 */
++                any = THIS->ctx->active->first;
++                xlator = xlator_search_by_name (any, this->name);
++
++                if (xlator != this) {
++                        gf_msg (this->name, GF_LOG_INFO, 0,
++                                DHT_MSG_LOG_TIER_STATUS,
++                                "Detected graph switch. Exiting migration daemon.");
++                        goto out;
++                }
++
+                 sleep(1);
+ 
+                 if (defrag->defrag_status != GF_DEFRAG_STATUS_STARTED) {
+@@ -1148,10 +1365,6 @@ tier_start (xlator_t *this, gf_defrag_info_t *defrag)
+                         goto out;
+                 }
+ 
+-                freq_promote = defrag->tier_promote_frequency;
+-                freq_demote  = defrag->tier_demote_frequency;
+-
+-
+                 /* To have proper synchronization amongst all
+                  * brick holding nodes, so that promotion and demotions
+                  * start atomicly w.r.t promotion/demotion frequency
+@@ -1166,18 +1379,29 @@ tier_start (xlator_t *this, gf_defrag_info_t *defrag)
+                         goto out;
+                 }
+ 
+-                is_demotion_triggered = ((current_time.tv_sec %
+-                                        freq_demote) == 0) ? _gf_true :
+-                                        _gf_false;
+-                is_promotion_triggered = ((current_time.tv_sec %
+-                                        freq_promote) == 0) ? _gf_true :
+-                                        _gf_false;
++                freq_demote = tier_get_freq_demote (tier_conf);
++
++                is_demotion_triggered = tier_check_demote (current_time,
++                                                           freq_demote);
++
++                freq_promote = tier_get_freq_promote(tier_conf);
++
++                is_promotion_triggered = tier_check_promote (tier_conf,
++                                                             current_time,
++                                                             freq_promote);
+ 
+                 /* If no promotion and no demotion is
+-                 * scheduled/triggered skip a iteration */
++                 * scheduled/triggered skip an iteration */
+                 if (!is_promotion_triggered && !is_demotion_triggered)
+                         continue;
+ 
++                ret = tier_check_watermark (this, &root_loc);
++                if (ret != 0) {
++                        gf_msg (this->name, GF_LOG_CRITICAL, errno,
++                                DHT_MSG_LOG_TIER_ERROR,
++                                "Failed to get watermark");
++                        goto out;
++                }
+ 
+                 ret_promotion = -1;
+                 ret_demotion = -1;
+@@ -1285,8 +1509,8 @@ tier_migration_get_dst (xlator_t *this, dht_local_t *local)
+         int32_t                  ret = -1;
+         gf_defrag_info_t        *defrag = NULL;
+ 
+-        GF_VALIDATE_OR_GOTO("tier", this, out);
+-        GF_VALIDATE_OR_GOTO(this->name, this->private, out);
++        GF_VALIDATE_OR_GOTO ("tier", this, out);
++        GF_VALIDATE_OR_GOTO (this->name, this->private, out);
+ 
+         conf = this->private;
+ 
+@@ -1320,10 +1544,10 @@ tier_search (xlator_t *this, dht_layout_t *layout, const char *name)
+         int                      layout_cold = 0;
+         int                      layout_hot = 1;
+ 
+-        GF_VALIDATE_OR_GOTO("tier", this, out);
+-        GF_VALIDATE_OR_GOTO(this->name, layout, out);
+-        GF_VALIDATE_OR_GOTO(this->name, name, out);
+-        GF_VALIDATE_OR_GOTO(this->name, this->private, out);
++        GF_VALIDATE_OR_GOTO ("tier", this, out);
++        GF_VALIDATE_OR_GOTO (this->name, layout, out);
++        GF_VALIDATE_OR_GOTO (this->name, name, out);
++        GF_VALIDATE_OR_GOTO (this->name, this->private, out);
+ 
+         conf = this->private;
+ 
+@@ -1377,7 +1601,7 @@ tier_load_externals (xlator_t *this)
+         char *libpathfull = (LIBDIR "/libgfdb.so.0");
+         get_gfdb_methods_t get_gfdb_methods;
+ 
+-        GF_VALIDATE_OR_GOTO("this", this, out);
++        GF_VALIDATE_OR_GOTO ("this", this, out);
+ 
+         libhandle = dlopen (libpathfull, RTLD_NOW);
+         if (!libhandle) {
+@@ -1408,6 +1632,20 @@ out:
+         return ret;
+ }
+ 
++static
++int tier_validate_mode (char *mode)
++{
++        int ret = -1;
++
++        if (strcmp (mode, "test") == 0) {
++                ret = TIER_MODE_TEST;
++        } else {
++                ret = TIER_MODE_WM;
++        }
++
++        return ret;
++}
++
+ int
+ tier_init (xlator_t *this)
+ {
+@@ -1416,10 +1654,11 @@ tier_init (xlator_t *this)
+         dht_conf_t       *conf           = NULL;
+         gf_defrag_info_t *defrag         = NULL;
+         char             *voldir         = NULL;
++        char             *mode           = NULL;
+ 
+-        ret = dht_init(this);
++        ret = dht_init (this);
+         if (ret) {
+-                gf_msg(this->name, GF_LOG_ERROR, 0,
++                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_LOG_TIER_ERROR,
+                        "dht_init failed");
+                 goto out;
+@@ -1430,7 +1669,7 @@ tier_init (xlator_t *this)
+         conf->methods = &tier_methods;
+ 
+         if (conf->subvolume_cnt != 2) {
+-                gf_msg(this->name, GF_LOG_ERROR, 0,
++                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_LOG_TIER_ERROR,
+                        "Invalid number of subvolumes %d", conf->subvolume_cnt);
+                 goto out;
+@@ -1443,7 +1682,7 @@ tier_init (xlator_t *this)
+         }
+ 
+         /* if instatiated from server side, load db libraries */
+-        ret = tier_load_externals(this);
++        ret = tier_load_externals (this);
+         if (ret) {
+                 gf_msg(this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_LOG_TIER_ERROR,
+@@ -1453,13 +1692,15 @@ tier_init (xlator_t *this)
+ 
+         defrag = conf->defrag;
+ 
++        defrag->tier_conf.is_tier = 1;
++
+         ret = dict_get_int32 (this->options,
+                               "tier-promote-frequency", &freq);
+         if (ret) {
+                 freq = DEFAULT_PROMOTE_FREQ_SEC;
+         }
+ 
+-        defrag->tier_promote_frequency = freq;
++        defrag->tier_conf.tier_promote_frequency = freq;
+ 
+         ret = dict_get_int32 (this->options,
+                               "tier-demote-frequency", &freq);
+@@ -1467,7 +1708,23 @@ tier_init (xlator_t *this)
+                 freq = DEFAULT_DEMOTE_FREQ_SEC;
+         }
+ 
+-        defrag->tier_demote_frequency = freq;
++        defrag->tier_conf.tier_demote_frequency = freq;
++
++        ret = dict_get_int32 (this->options,
++                              "watermark-hi", &freq);
++        if (ret) {
++                freq = DEFAULT_WM_HI;
++        }
++
++        defrag->tier_conf.watermark_hi = freq;
++
++        ret = dict_get_int32 (this->options,
++                              "watermark-low", &freq);
++        if (ret) {
++                freq = DEFAULT_WM_LOW;
++        }
++
++        defrag->tier_conf.watermark_low = freq;
+ 
+         ret = dict_get_int32 (this->options,
+                               "write-freq-threshold", &freq);
+@@ -1485,7 +1742,38 @@ tier_init (xlator_t *this)
+ 
+         defrag->read_freq_threshold = freq;
+ 
+-        ret = gf_asprintf(&voldir, "%s/%s",
++        ret = dict_get_int32 (this->options,
++                              "tier-max-mb", &freq);
++        if (ret) {
++                freq = DEFAULT_TIER_MAX_MIGRATE_MB;
++        }
++
++        defrag->tier_conf.max_migrate_bytes = freq * 1024 * 1024;
++
++        ret = dict_get_int32 (this->options,
++                              "tier-max-files", &freq);
++        if (ret) {
++                freq = DEFAULT_TIER_MAX_MIGRATE_FILES;
++        }
++
++        defrag->tier_conf.max_migrate_files = freq;
++
++        ret = dict_get_str (this->options,
++                            "tier-mode", &mode);
++        if (ret) {
++                defrag->tier_conf.mode = DEFAULT_TIER_MODE;
++        } else {
++                ret = tier_validate_mode (mode);
++                if (ret < 0) {
++                        gf_msg(this->name, GF_LOG_ERROR, 0,
++                               DHT_MSG_LOG_TIER_ERROR,
++                               "tier_init failed - invalid mode");
++                        goto out;
++                }
++                defrag->tier_conf.mode = ret;
++        }
++
++        ret = gf_asprintf (&voldir, "%s/%s",
+                           DEFAULT_VAR_RUN_DIRECTORY,
+                           this->name);
+         if (ret < 0)
+@@ -1493,7 +1781,7 @@ tier_init (xlator_t *this)
+ 
+         ret = mkdir_p(voldir, 0777, _gf_true);
+         if (ret == -1 && errno != EEXIST) {
+-                gf_msg(this->name, GF_LOG_ERROR, 0,
++                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_LOG_TIER_ERROR,
+                        "tier_init failed");
+ 
+@@ -1503,37 +1791,37 @@ tier_init (xlator_t *this)
+ 
+         GF_FREE(voldir);
+ 
+-        ret = gf_asprintf(&promotion_qfile, "%s/%s/%s-%s",
+-                          DEFAULT_VAR_RUN_DIRECTORY,
+-                          this->name,
+-                          PROMOTION_QFILE,
+-                          this->name);
++        ret = gf_asprintf (&promotion_qfile, "%s/%s/%s-%s",
++                           DEFAULT_VAR_RUN_DIRECTORY,
++                           this->name,
++                           PROMOTION_QFILE,
++                           this->name);
+         if (ret < 0)
+                 goto out;
+ 
+-        ret = gf_asprintf(&demotion_qfile, "%s/%s/%s-%s",
+-                          DEFAULT_VAR_RUN_DIRECTORY,
+-                          this->name,
+-                          DEMOTION_QFILE,
+-                          this->name);
++        ret = gf_asprintf (&demotion_qfile, "%s/%s/%s-%s",
++                           DEFAULT_VAR_RUN_DIRECTORY,
++                           this->name,
++                           DEMOTION_QFILE,
++                           this->name);
+         if (ret < 0) {
+-                GF_FREE(promotion_qfile);
++                GF_FREE (promotion_qfile);
+                 goto out;
+         }
+ 
+-        unlink(promotion_qfile);
+-        unlink(demotion_qfile);
++        unlink (promotion_qfile);
++        unlink (demotion_qfile);
+ 
+-        gf_msg(this->name, GF_LOG_INFO, 0,
+-               DHT_MSG_LOG_TIER_STATUS,
++        gf_msg (this->name, GF_LOG_INFO, 0,
++                DHT_MSG_LOG_TIER_STATUS,
+                "Promote/demote frequency %d/%d "
+                "Write/Read freq thresholds %d/%d",
+-               defrag->tier_promote_frequency,
+-               defrag->tier_demote_frequency,
++               defrag->tier_conf.tier_promote_frequency,
++               defrag->tier_conf.tier_demote_frequency,
+                defrag->write_freq_threshold,
+                defrag->read_freq_threshold);
+ 
+-        gf_msg(this->name, GF_LOG_INFO, 0,
++        gf_msg (this->name, GF_LOG_INFO, 0,
+                DHT_MSG_LOG_TIER_STATUS,
+                "Promote file %s demote file %s",
+                promotion_qfile, demotion_qfile);
+@@ -1551,18 +1839,19 @@ tier_reconfigure (xlator_t *this, dict_t *options)
+ {
+         dht_conf_t       *conf           = NULL;
+         gf_defrag_info_t *defrag         = NULL;
+-
++        char             *mode           = NULL;
++        int               migrate_mb     = 0;
+         conf = this->private;
+ 
+         if (conf->defrag) {
+                 defrag = conf->defrag;
+                 GF_OPTION_RECONF ("tier-promote-frequency",
+-                                  defrag->tier_promote_frequency, options,
+-                                  int32, out);
++                                  defrag->tier_conf.tier_promote_frequency,
++                                  options, int32, out);
+ 
+                 GF_OPTION_RECONF ("tier-demote-frequency",
+-                                  defrag->tier_demote_frequency, options,
+-                                  int32, out);
++                                  defrag->tier_conf.tier_demote_frequency,
++                                  options, int32, out);
+ 
+                 GF_OPTION_RECONF ("write-freq-threshold",
+                                   defrag->write_freq_threshold, options,
+@@ -1571,6 +1860,28 @@ tier_reconfigure (xlator_t *this, dict_t *options)
+                 GF_OPTION_RECONF ("read-freq-threshold",
+                                   defrag->read_freq_threshold, options,
+                                   int32, out);
++
++                GF_OPTION_RECONF ("watermark-hi",
++                                  defrag->tier_conf.watermark_hi, options,
++                                  int32, out);
++
++                GF_OPTION_RECONF ("watermark-low",
++                                  defrag->tier_conf.watermark_low, options,
++                                  int32, out);
++
++                GF_OPTION_RECONF ("tier-mode",
++                                  mode, options,
++                                  str, out);
++                defrag->tier_conf.mode = tier_validate_mode (mode);
++
++                GF_OPTION_RECONF ("tier-max-mb",
++                                  migrate_mb, options,
++                                  int32, out);
++                defrag->tier_conf.max_migrate_bytes = migrate_mb*1024*1024;
++
++                GF_OPTION_RECONF ("tier-max-files",
++                                  defrag->tier_conf.max_migrate_files, options,
++                                  int32, out);
+         }
+ 
+ out:
+@@ -1581,10 +1892,10 @@ void
+ tier_fini (xlator_t *this)
+ {
+         if (libhandle)
+-                dlclose(libhandle);
++                dlclose (libhandle);
+ 
+-        GF_FREE(demotion_qfile);
+-        GF_FREE(promotion_qfile);
++        GF_FREE (demotion_qfile);
++        GF_FREE (promotion_qfile);
+ 
+         dht_fini(this);
+ }
+diff --git a/xlators/cluster/dht/src/tier.h b/xlators/cluster/dht/src/tier.h
+index d5fbba6..b840f33 100644
+--- a/xlators/cluster/dht/src/tier.h
++++ b/xlators/cluster/dht/src/tier.h
+@@ -25,10 +25,6 @@
+ #include <fnmatch.h>
+ #include <signal.h>
+ 
+-#define DEFAULT_PROMOTE_FREQ_SEC 120
+-#define DEFAULT_DEMOTE_FREQ_SEC  120
+-#define DEFAULT_WRITE_FREQ_SEC 0
+-#define DEFAULT_READ_FREQ_SEC 0
+ /*
+  * Size of timer wheel. We would not promote or demote less
+  * frequently than this number.
+@@ -65,7 +61,7 @@ typedef struct brick_list {
+         xlator_t          *xlator;
+         char              *brick_db_path;
+         struct list_head  list;
+-} brick_list_t;
++} tier_brick_list_t;
+ 
+ typedef struct _dm_thread_args {
+         xlator_t                *this;
+@@ -75,4 +71,22 @@ typedef struct _dm_thread_args {
+         int                     return_value;
+ } promotion_args_t, demotion_args_t;
+ 
++typedef enum tier_watermark_op_ {
++        TIER_WM_NONE = 0,
++        TIER_WM_LOW,
++        TIER_WM_HI,
++        TIER_WM_MID
++} tier_watermark_op_t;
++
++#define DEFAULT_PROMOTE_FREQ_SEC       120
++#define DEFAULT_DEMOTE_FREQ_SEC        120
++#define DEFAULT_DEMOTE_DEGRADED        10
++#define DEFAULT_WRITE_FREQ_SEC         0
++#define DEFAULT_READ_FREQ_SEC          0
++#define DEFAULT_WM_LOW                 75
++#define DEFAULT_WM_HI                  90
++#define DEFAULT_TIER_MODE              TIER_MODE_TEST
++#define DEFAULT_TIER_MAX_MIGRATE_MB    1000
++#define DEFAULT_TIER_MAX_MIGRATE_FILES 5000
++
+ #endif
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 8d37b8f..8bfdfe2 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -24,6 +24,10 @@ validate_tier (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
+         int                  ret           = 0;
+         xlator_t            *this          = NULL;
+         int                  origin_val    = -1;
++        char                *current_wm_hi = NULL;
++        char                *current_wm_low = NULL;
++        uint64_t             wm_hi = 0;
++        uint64_t             wm_low = 0;
+ 
+         this = THIS;
+         GF_ASSERT (this);
+@@ -39,12 +43,20 @@ validate_tier (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
+                 goto out;
+         }
+ 
++        if (strstr (key, "cluster.tier-mode")) {
++                if (strcmp(value, "test") &&
++                    strcmp(value, "cache")) {
++                        ret = -1;
++                        goto out;
++                }
++                goto out;
++        }
++
+         /*
+-         * All the volume set options for tier are expecting a positive
++         * Rest of the volume set options for tier are expecting a positive
+          * Integer. Change the function accordingly if this constraint is
+          * changed.
+          */
+-
+         ret = gf_string2int (value, &origin_val);
+         if (ret) {
+                 snprintf (errstr, sizeof (errstr), "%s is not a compatible "
+@@ -56,13 +68,55 @@ validate_tier (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
+                 ret = -1;
+                 goto out;
+         }
++        if (strstr (key, "watermark-hi") ||
++            strstr (key, "watermark-low")) {
++                if ((origin_val < 1) || (origin_val > 99)) {
++                        snprintf (errstr, sizeof (errstr), "%s is not a compatible"
++                                  "value. %s expects a percentage from 1-99.",
++                                  value, key);
++                        gf_msg (this->name, GF_LOG_ERROR, EINVAL,
++                                GD_MSG_INCOMPATIBLE_VALUE, "%s", errstr);
++                        *op_errstr = gf_strdup (errstr);
++                        ret = -1;
++                        goto out;
++                }
++
++                if (strstr (key, "watermark-hi")) {
++                        wm_hi = origin_val;
++                } else {
++                        glusterd_volinfo_get (volinfo,
++                                              "cluster.watermark-hi",
++                                              &current_wm_hi);
++                        gf_string2bytesize_uint64 (current_wm_hi,
++                                                   &wm_hi);
++                }
+ 
+-        if (strstr ("cluster.tier-promote-frequency", key) ||
+-            strstr ("cluster.tier-demote-frequency", key)) {
++                if (strstr (key, "watermark-low")) {
++                        wm_low = origin_val;
++                } else {
++                        glusterd_volinfo_get (volinfo,
++                                              "cluster.watermark-low",
++                                              &current_wm_low);
++                        gf_string2bytesize_uint64 (current_wm_low,
++                                                   &wm_low);
++                }
++                if (wm_low > wm_hi) {
++                        snprintf (errstr, sizeof (errstr), "lower watermark"
++                                  " cannot exceed upper watermark.");
++                        gf_msg (this->name, GF_LOG_ERROR, EINVAL,
++                                GD_MSG_INCOMPATIBLE_VALUE, "%s", errstr);
++                        *op_errstr = gf_strdup (errstr);
++                        ret = -1;
++                        goto out;
++                }
++        } else if (strstr (key, "tier-promote-frequency") ||
++                   strstr (key, "tier-max-mb") ||
++                   strstr (key, "tier-max-files") ||
++                   strstr (key, "tier-demote-frequency")) {
+                 if (origin_val < 1) {
+                         snprintf (errstr, sizeof (errstr), "%s is not a "
+-                                  "compatible value. %s expects a positive "
+-                                  "integer value.",
++                                  " compatible value. %s expects a positive "
++                                  "integer value greater than 0.",
+                                   value, key);
+                         gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+                                 GD_MSG_INCOMPATIBLE_VALUE, "%s", errstr);
+@@ -70,10 +124,12 @@ validate_tier (glusterd_volinfo_t *volinfo, dict_t *dict, char *key,
+                         ret = -1;
+                         goto out;
+                 }
++
+         } else {
++                /* check write-freq-threshold and read-freq-threshold. */
+                 if (origin_val < 0) {
+                         snprintf (errstr, sizeof (errstr), "%s is not a "
+-                                   "compatible value. %s expects a non-negative"
++                                   "compatible value. %s expects a positive"
+                                    " integer value.",
+                                    value, key);
+                          gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+@@ -1882,6 +1938,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         /* tier translator - global tunables */
+         { .key         = "cluster.write-freq-threshold",
+           .voltype     = "cluster/tier",
++          .value       = "0",
+           .option      = "write-freq-threshold",
+           .op_version  = GD_OP_VERSION_3_7_0,
+           .flags       = OPT_FLAG_CLIENT_OPT,
+@@ -1893,6 +1950,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key         = "cluster.read-freq-threshold",
+           .voltype     = "cluster/tier",
++          .value       = "0",
+           .option      = "read-freq-threshold",
+           .op_version  = GD_OP_VERSION_3_7_0,
+           .flags       = OPT_FLAG_CLIENT_OPT,
+@@ -1904,23 +1962,74 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         },
+         { .key         = "cluster.tier-promote-frequency",
+           .voltype     = "cluster/tier",
++          .value       = "120",
+           .option      = "tier-promote-frequency",
+           .op_version  = GD_OP_VERSION_3_7_0,
+           .flags       = OPT_FLAG_CLIENT_OPT,
+           .validate_fn = validate_tier,
+-          .description = "Defines how often the promotion should be triggered "
+-                         "i.e. periodicity of promotion cycles. The value is in "
+-                         "secs."
+         },
+         { .key         = "cluster.tier-demote-frequency",
+           .voltype     = "cluster/tier",
++          .value       = "120",
+           .option      = "tier-demote-frequency",
+           .op_version  = GD_OP_VERSION_3_7_0,
+           .flags       = OPT_FLAG_CLIENT_OPT,
+           .validate_fn = validate_tier,
+-          .description = "Defines how often the demotion should be triggered "
+-                         "i.e. periodicity of demotion cycles. The value is in "
+-                         "secs."
++        },
++        { .key         = "cluster.watermark-hi",
++          .voltype     = "cluster/tier",
++          .value       = "90",
++          .option      = "watermark-hi",
++          .op_version  = GD_OP_VERSION_3_7_6,
++          .flags       = OPT_FLAG_CLIENT_OPT,
++          .validate_fn = validate_tier,
++          .description = "Upper % watermark for promotion. If hot tier fills"
++          " above this percentage, no promotion will happen and demotion will "
++          "happen with high probability."
++        },
++        { .key         = "cluster.watermark-low",
++          .voltype     = "cluster/tier",
++          .value       = "75",
++          .option      = "watermark-low",
++          .op_version  = GD_OP_VERSION_3_7_6,
++          .flags       = OPT_FLAG_CLIENT_OPT,
++          .validate_fn = validate_tier,
++          .description = "Lower % watermark. If hot tier is less "
++          "full than this, promotion will happen and demotion will not happen. "
++          "If greater than this, promotion/demotion will happen at a probability "
++          "relative to how full the hot tier is."
++        },
++        { .key         = "cluster.tier-mode",
++          .voltype     = "cluster/tier",
++          .option      = "tier-mode",
++          .value       = "test",
++          .op_version  = GD_OP_VERSION_3_7_6,
++          .flags       = OPT_FLAG_CLIENT_OPT,
++          .validate_fn = validate_tier,
++          .description = "Either 'test' or 'cache'. Test mode periodically"
++          " demotes or promotes files automatically based on access."
++          " Cache mode does so based on whether the cache is full or not,"
++          " as specified with watermarks."
++        },
++        { .key         = "cluster.tier-max-mb",
++          .voltype     = "cluster/tier",
++          .option      = "tier-max-mb",
++          .value       = "1000",
++          .op_version  = GD_OP_VERSION_3_7_6,
++          .flags       = OPT_FLAG_CLIENT_OPT,
++          .validate_fn = validate_tier,
++          .description = "The maximum number of MB that may be migrated"
++          " in any direction in a given cycle."
++        },
++        { .key         = "cluster.tier-max-files",
++          .voltype     = "cluster/tier",
++          .option      = "tier-max-files",
++          .value       = "5000",
++          .op_version  = GD_OP_VERSION_3_7_6,
++          .flags       = OPT_FLAG_CLIENT_OPT,
++          .validate_fn = validate_tier,
++          .description = "The maximum number of files that may be migrated"
++          " in any direction in a given cycle."
+         },
+         { .key         = "features.ctr-enabled",
+           .voltype     = "features/changetimerecorder",
+-- 
+1.7.1
+

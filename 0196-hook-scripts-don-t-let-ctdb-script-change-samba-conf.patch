@@ -1,0 +1,149 @@
+From d77db65a30dbb5f7dac5cea33567b6c484514bf3 Mon Sep 17 00:00:00 2001
+From: Michael Adam <obnox@samba.org>
+Date: Wed, 9 Dec 2015 18:57:59 +0100
+Subject: [PATCH 196/214] hook-scripts: don't let ctdb script change samba config
+
+There are several reasons why the behaviour in
+the hook scripts was bad:
+
+1. A samba installation is clustered or non-clustered.
+   That does not change because of the availability
+   of the CTDB lock-volume. If the lock-volume is not
+   available (and hence CTDB is not available or not
+   healthy), then Samba won't be operational. But turning
+   it into a non-clustered Samba-installation can in
+   the worst case lead to data corruption if clients
+   manage to access the same files (on share volumes).
+   Hence 'clustering = yes/no' in Samba's config should
+   not be touched.
+
+   In particular, Samba should not be stopped/started by
+   the hook script. If needed, then ctdb will take care
+   of it.
+
+2. Changing the idmap configuration is potentially
+   dangerous as well. In particular the used tdb2
+   backend is legacy nowadays and should not be used
+   any more in new installs. (I stems from the times
+   when ctdb could not host persistent databases.)
+   Changing the idmap can result in loss of access
+   to files or in giving access to files where it is
+   not intended.
+
+3. The pattern used for detecting need for change is
+   fragile. It may or may not play well possible
+   manual changes to smb.conf.
+
+This change removes the parts that change the smb.conf
+file and start or stop Samba from the S29CTDB* hook scripts.
+
+Change-Id: I72f7aabafa8f089da4531fca2572a72c22825bcc
+BUG: 1292751
+Signed-off-by: Michael Adam <obnox@samba.org>
+Reviewed-on: http://review.gluster.org/12930
+Reviewed-on: http://review.gluster.org/12986
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Raghavendra Talur <rtalur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64210
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ extras/hook-scripts/start/post/S29CTDBsetup.sh   |   14 ------------
+ extras/hook-scripts/stop/pre/S29CTDB-teardown.sh |   24 ----------------------
+ 2 files changed, 0 insertions(+), 38 deletions(-)
+
+diff --git a/extras/hook-scripts/start/post/S29CTDBsetup.sh b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+index cbb7676..5229ad5 100755
+--- a/extras/hook-scripts/start/post/S29CTDBsetup.sh
++++ b/extras/hook-scripts/start/post/S29CTDBsetup.sh
+@@ -6,7 +6,6 @@
+ #   restarts smb service.
+ # - P.S: There are other 'tasks' that need to be done outside this script
+ #   to get CTDB based failover up and running.
+-SMB_CONF=/etc/samba/smb.conf
+ 
+ CTDB_MNT=/gluster/lock
+ PING_TIMEOUT_SECS=10
+@@ -45,16 +44,6 @@ function parse_args () {
+         done
+ }
+ 
+-function add_glusterfs_ctdb_options () {
+-        PAT="Share Definitions"
+-        GLUSTER_CTDB_CONFIG="# ctdb config for glusterfs\n\tclustering = yes\n\tidmap backend = tdb2\n"
+-        exists=`grep "clustering = yes" "$SMB_CONF"`
+-        if [ "$exists" == "" ]
+-        then
+-            sed -i /"$PAT"/i\ "$GLUSTER_CTDB_CONFIG" "$SMB_CONF"
+-        fi
+-}
+-
+ function add_fstab_entry () {
+         volname=$1
+         mntpt=$2
+@@ -71,9 +60,6 @@ function add_fstab_entry () {
+ parse_args $@
+ if [ "$META" = "$VOL" ]
+ then
+-        # expects ctdb service to manage smb
+-        service smb stop
+-        add_glusterfs_ctdb_options
+         mkdir -p $CTDB_MNT
+         sleep 5
+         # Make sure ping-timeout is not default for CTDB volume
+diff --git a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+index 9125030..9ba8a1c 100755
+--- a/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
++++ b/extras/hook-scripts/stop/pre/S29CTDB-teardown.sh
+@@ -1,6 +1,5 @@
+ #! /bin/bash
+ #non-portable - RHS-2.0 only
+-SMB_CONF=/etc/samba/smb.conf
+ 
+ CTDB_MNT=/gluster/lock
+ PROGNAME="ctdb"
+@@ -13,16 +12,6 @@ VOL=
+ # User needs to set META to the volume that serves CTDB lockfile.
+ META="all"
+ 
+-function sighup_samba () {
+-        pid=`cat /var/run/smbd.pid`
+-        if [ "$pid" != "" ]
+-        then
+-                kill -HUP $pid;
+-        else
+-                /etc/init.d/smb start
+-        fi
+-}
+-
+ function parse_args () {
+         ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
+         eval set -- "$ARGS"
+@@ -46,17 +35,6 @@ function parse_args () {
+ }
+ 
+ 
+-function remove_ctdb_options () {
+-        IFS=$'\n'
+-        GLUSTER_CTDB_CONFIG=$'# ctdb config for glusterfs\n\tclustering = yes\n\tidmap backend = tdb2\n'
+-
+-        for line in $GLUSTER_CTDB_CONFIG
+-        do
+-                sed -i /"$line"/d $SMB_CONF
+-        done
+-        unset IFS
+-}
+-
+ function remove_fstab_entry () {
+         mntpt=$1
+         fstab="/etc/fstab"
+@@ -80,6 +58,4 @@ then
+         umount "$CTDB_MNT"
+         chkconfig ctdb off
+         remove_fstab_entry $CTDB_MNT
+-        remove_ctdb_options
+-        sighup_samba
+ fi
+-- 
+1.7.1
+

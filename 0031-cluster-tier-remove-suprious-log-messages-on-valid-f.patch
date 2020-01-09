@@ -1,0 +1,59 @@
+From 26ffe1ffb1ab180f0618fe109ecb25cb9747a7c4 Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Sat, 17 Oct 2015 10:31:29 -0400
+Subject: [PATCH 31/67] cluster/tier remove suprious log messages on valid failed migration
+
+On a write to a replica volume, we record in all brick's databases an entry.
+When the tier daemon runs, it will only move the file if it is the true
+owner of the file as defined by the XATTR_NODE_UUID_KEY.
+
+Change-Id: I57fb74f036cdbda9dc9deefd330a56d4faab63b8
+BUG: 1272409
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59588
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ xlators/cluster/dht/src/tier.c |   12 ++++++++++--
+ 1 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index 4a1f361..8b5184b 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -72,6 +72,11 @@ out:
+         return ret;
+ }
+ 
++/*
++ * return 0 if the same node.
++ * return 1 if not the same node, but no errors.
++ * return -1 if errors.xs
++ */
+ static int
+ tier_check_same_node (xlator_t *this, loc_t *loc, gf_defrag_info_t *defrag)
+ {
+@@ -107,6 +112,7 @@ tier_check_same_node (xlator_t *this, loc_t *loc, gf_defrag_info_t *defrag)
+         if (gf_uuid_compare (node_uuid, defrag->node_uuid)) {
+                 gf_msg (this->name, GF_LOG_INFO, 0, DHT_MSG_LOG_TIER_STATUS,
+                         "%s does not belong to this node", loc->path);
++                ret = 1;
+                 goto out;
+         }
+ 
+@@ -475,8 +481,10 @@ tier_migrate_using_query_file (void *_args)
+                                 src_subvol->name,
+                                 loc.name);
+ 
+-                        if (tier_check_same_node (this, &loc, defrag)) {
+-                                per_link_status = -1;
++                        ret = tier_check_same_node (this, &loc, defrag);
++                        if (ret) {
++                                if (ret < 0)
++                                        per_link_status = -1;
+                                 goto abort;
+                         }
+ 
+-- 
+1.7.1
+

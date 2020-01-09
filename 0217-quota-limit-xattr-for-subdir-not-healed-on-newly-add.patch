@@ -1,0 +1,116 @@
+From 0ae1a475c9833ac3d7c9c348b228f600f3d179ce Mon Sep 17 00:00:00 2001
+From: vmallika <vmallika@redhat.com>
+Date: Mon, 28 Dec 2015 17:33:26 +0530
+Subject: [PATCH 217/224] quota: limit xattr for subdir not healed on newly added bricks
+
+This is a backport of http://review.gluster.org/#/c/13100/
+
+DHT after creating missing directory, tries to heal the
+xattrs. This xattrs operation fails as INTERNAL FOP key was not set
+
+> Change-Id: I819d373cf7073da014143d9ada908228ddcd140c
+> BUG: 1294479
+> Signed-off-by: vmallika <vmallika@redhat.com>
+
+Change-Id: Ib2220b38a697e6357441aa67bb08275127eab98e
+BUG: 1294478
+Signed-off-by: vmallika <vmallika@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64638
+Reviewed-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+Tested-by: Raghavendra Gowdappa <rgowdapp@redhat.com>
+---
+ xlators/cluster/dht/src/dht-selfheal.c |   20 +++++++++++++++++++-
+ xlators/features/quota/src/quota.c     |   10 +++++++---
+ 2 files changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-selfheal.c b/xlators/cluster/dht/src/dht-selfheal.c
+index 515069a..f8d965c 100644
+--- a/xlators/cluster/dht/src/dht-selfheal.c
++++ b/xlators/cluster/dht/src/dht-selfheal.c
+@@ -651,6 +651,7 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
+ {
+         xlator_t          *subvol = NULL;
+         dict_t            *xattr = NULL;
++        dict_t            *xdata = NULL;
+         int                ret = 0;
+         xlator_t          *this = NULL;
+         int32_t           *disk_layout = NULL;
+@@ -679,6 +680,19 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
+                 goto err;
+         }
+ 
++        xdata = dict_new ();
++        if (!xdata)
++                goto err;
++
++        ret = dict_set_str (xdata, GLUSTERFS_INTERNAL_FOP_KEY, "yes");
++        if (ret < 0) {
++                gf_msg (this->name, GF_LOG_WARNING, 0, DHT_MSG_DICT_SET_FAILED,
++                        "%s: Failed to set dictionary value: key = %s,"
++                        " gfid = %s", loc->path,
++                        GLUSTERFS_INTERNAL_FOP_KEY, gfid);
++                goto err;
++        }
++
+         gf_uuid_unparse(loc->inode->gfid, gfid);
+ 
+         ret = dht_disk_layout_extract (this, layout, i, &disk_layout);
+@@ -727,9 +741,10 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
+ 
+         STACK_WIND (frame, dht_selfheal_dir_xattr_cbk,
+                     subvol, subvol->fops->setxattr,
+-                    loc, xattr, 0, NULL);
++                    loc, xattr, 0, xdata);
+ 
+         dict_unref (xattr);
++        dict_unref (xdata);
+ 
+         return 0;
+ 
+@@ -737,6 +752,9 @@ err:
+         if (xattr)
+                 dict_destroy (xattr);
+ 
++        if (xdata)
++                dict_unref (xdata);
++
+         GF_FREE (disk_layout);
+ 
+         dht_selfheal_dir_xattr_cbk (frame, subvol, frame->this,
+diff --git a/xlators/features/quota/src/quota.c b/xlators/features/quota/src/quota.c
+index 940baea..9040b74 100644
+--- a/xlators/features/quota/src/quota.c
++++ b/xlators/features/quota/src/quota.c
+@@ -3979,14 +3979,15 @@ int
+ quota_setxattr (call_frame_t *frame, xlator_t *this,
+                 loc_t *loc, dict_t *dict, int flags, dict_t *xdata)
+ {
+-        quota_priv_t    *priv                   = NULL;
++        quota_priv_t   *priv                    = NULL;
+         int             op_errno                = EINVAL;
+         int             op_ret                  = -1;
+         int64_t         hard_lim                = -1;
+         int64_t         soft_lim                = -1;
+         int64_t         object_hard_limit       = -1;
+         int64_t         object_soft_limit       = -1;
+-        quota_local_t   *local                  = NULL;
++        quota_local_t  *local                   = NULL;
++        gf_boolean_t    internal_fop            = _gf_false;
+ 
+         priv = this->private;
+ 
+@@ -3996,7 +3997,10 @@ quota_setxattr (call_frame_t *frame, xlator_t *this,
+         VALIDATE_OR_GOTO (this, err);
+         VALIDATE_OR_GOTO (loc, err);
+ 
+-        if (frame->root->pid >= 0) {
++        if (xdata && dict_get (xdata, GLUSTERFS_INTERNAL_FOP_KEY))
++                internal_fop = _gf_true;
++
++        if (frame->root->pid >= 0 && internal_fop == _gf_false) {
+                 GF_IF_INTERNAL_XATTR_GOTO ("trusted.glusterfs.quota*", dict,
+                                            op_errno, err);
+                 GF_IF_INTERNAL_XATTR_GOTO ("trusted.pgfid*", dict, op_errno,
+-- 
+1.7.1
+

@@ -1,0 +1,49 @@
+From e454c35886035c18c080904baf7d580762c90367 Mon Sep 17 00:00:00 2001
+From: Pranith Kumar K <pkarampu@redhat.com>
+Date: Wed, 25 Nov 2015 12:31:25 +0530
+Subject: [PATCH 133/138] cluster/afr: Remember flags sent by create fop
+
+Problem:
+In create fop, afr doesn't remember the flags. When afr has to perform
+fixing of the fd that needs to be opened on other bricks because the brick
+was down at the time of create, the flags with which it needs to send open
+are not present.
+
+Fix:
+Remember the flags in the fd_ctx.
+
+Thanks to Nitya for showing us the problem in re-open with the flags.
+
+ >Change-Id: I8ce1eb50c35fc0722cfc25cb4b6d234ef56180e5
+ >BUG: 1285173
+ >Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+ >Reviewed-on: http://review.gluster.org/12739
+ >Reviewed-by: Krutika Dhananjay <kdhananj@redhat.com>
+ >Reviewed-by: Ravishankar N <ravishankar@redhat.com>
+ >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+ >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+ >3.7 patch: http://review.gluster.com/12740
+
+BUG: 1285783
+Change-Id: I4fe9036d46947a01e429b7ac21b462a7554519b1
+Signed-off-by: Pranith Kumar K <pkarampu@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62488
+---
+ xlators/cluster/afr/src/afr-dir-write.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-dir-write.c b/xlators/cluster/afr/src/afr-dir-write.c
+index 2891f36..3d586dd 100644
+--- a/xlators/cluster/afr/src/afr-dir-write.c
++++ b/xlators/cluster/afr/src/afr-dir-write.c
+@@ -461,6 +461,7 @@ afr_create (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
+ 
+         local->op                = GF_FOP_CREATE;
+         local->cont.create.flags = flags;
++        local->fd_ctx->flags     = flags;
+         local->cont.create.mode  = mode;
+         local->cont.create.fd    = fd_ref (fd);
+         local->umask  = umask;
+-- 
+1.7.1
+

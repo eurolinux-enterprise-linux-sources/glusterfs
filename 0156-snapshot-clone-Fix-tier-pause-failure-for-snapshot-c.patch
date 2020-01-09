@@ -1,0 +1,140 @@
+From 9dfad81b6c48c4df4257c0fead1d9d8f97d7d338 Mon Sep 17 00:00:00 2001
+From: Avra Sengupta <asengupt@redhat.com>
+Date: Mon, 9 Nov 2015 13:37:53 +0530
+Subject: [PATCH 156/162] snapshot/clone : Fix tier pause failure for snapshot clone
+
+    Backport of http://review.gluster.org/#/c/12548
+
+On a tiered volume, snapshot clone fails while trying to
+pause tier, as we pass volname(snap) to the brick_op_phase module,
+which tries to look for the snap volume amongst regular
+volumes, and obviously doesn't find it and fail.
+
+Well as snapshot volumes are read only volume, and will not
+have tiering daemon acting upon them, there is really no need
+to pause tiereing while taking clone of snapshot volumes. Hence
+removing the code to pause and resume tiering during clone create.
+
+Change-Id: I2266aba589a830a13a806c0d8a56fd8855143ccd
+BUG: 1278254
+Signed-off-by: Avra Sengupta <asengupt@redhat.com>
+Reviewed-on: http://review.gluster.org/12846
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Rajesh Joseph <rjoseph@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62894
+Tested-by: Rajesh Joseph <rjoseph@redhat.com>
+---
+ tests/bugs/snapshot/bug-1275616.t             |    7 -----
+ tests/bugs/snapshot/bug-1279327.t             |   30 +++++++++++++++++++++++++
+ tests/snapshot.rc                             |    7 +++++
+ xlators/mgmt/glusterd/src/glusterd-snapshot.c |   13 ----------
+ 4 files changed, 37 insertions(+), 20 deletions(-)
+ create mode 100644 tests/bugs/snapshot/bug-1279327.t
+
+diff --git a/tests/bugs/snapshot/bug-1275616.t b/tests/bugs/snapshot/bug-1275616.t
+index cef07d6..dcaeae3 100755
+--- a/tests/bugs/snapshot/bug-1275616.t
++++ b/tests/bugs/snapshot/bug-1275616.t
+@@ -3,13 +3,6 @@
+ . $(dirname $0)/../../include.rc
+ . $(dirname $0)/../../snapshot.rc
+ 
+-function get_snap_brick_status()
+-{
+-    local snap=$1;
+-
+-    $CLI snapshot status $snap | grep "Brick Running" | sed 's/.*: //';
+-}
+-
+ cleanup;
+ TEST verify_lvm_version;
+ TEST glusterd;
+diff --git a/tests/bugs/snapshot/bug-1279327.t b/tests/bugs/snapshot/bug-1279327.t
+new file mode 100644
+index 0000000..fd5fec2
+--- /dev/null
++++ b/tests/bugs/snapshot/bug-1279327.t
+@@ -0,0 +1,30 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../snapshot.rc
++. $(dirname $0)/../../volume.rc
++
++cleanup;
++TEST verify_lvm_version;
++TEST glusterd;
++TEST pidof glusterd;
++
++TEST init_n_bricks 3
++TEST setup_lvm 3
++
++TEST $CLI volume create $V0 $H0:$L1
++TEST $CLI volume start $V0
++TEST $CLI volume quota $V0 enable
++TEST $CLI volume attach-tier $V0 replica 2 $H0:$L2 $H0:$L3
++
++TEST $CLI snapshot create snap1 $V0 no-timestamp
++TEST $CLI snapshot activate snap1
++
++EXPECT_WITHIN $PROCESS_UP_TIMEOUT "Yes" get_snap_brick_status snap1
++
++#Take a clone and verify it inherits snapshot's snap-max-hard-limit
++TEST $CLI snapshot clone clone1 snap1
++TEST $CLI volume start clone1
++EXPECT 'Started' volinfo_field clone1 'Status';
++
++cleanup;
+diff --git a/tests/snapshot.rc b/tests/snapshot.rc
+index 52ad86a..9304fda 100644
+--- a/tests/snapshot.rc
++++ b/tests/snapshot.rc
+@@ -461,6 +461,13 @@ function get-cmd-field-xml()
+         $cli $COMMAND --xml | xmllint --format - | grep $PATTERN
+ }
+ 
++function get_snap_brick_status()
++{
++    local snap=$1;
++
++    $CLI snapshot status $snap | grep "Brick Running" | sed 's/.*: //';
++}
++
+ case $OSTYPE in
+ NetBSD)
+         echo "Skip test on LVM which is not available on NetBSD" >&2
+diff --git a/xlators/mgmt/glusterd/src/glusterd-snapshot.c b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+index c244d4f..cab5240 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-snapshot.c
++++ b/xlators/mgmt/glusterd/src/glusterd-snapshot.c
+@@ -2390,12 +2390,6 @@ glusterd_snapshot_clone_prevalidate (dict_t *dict, char **op_errstr,
+                 goto out;
+         }
+ 
+-        ret = glusterd_snapshot_pause_tier (this, snap_vol);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                        GD_MSG_SNAP_PAUSE_TIER_FAIL,
+-                        "Failed to pause tier in clone prevalidate.");
+-        }
+ out:
+ 
+         if (ret && err_str[0] != '\0') {
+@@ -7983,13 +7977,6 @@ glusterd_snapshot_clone_postvalidate (dict_t *dict, int32_t op_ret,
+         }
+         snap_vol->snapshot = NULL;
+ 
+-        ret = glusterd_snapshot_resume_tier (this, dict);
+-        if (ret) {
+-                gf_msg (this->name, GF_LOG_ERROR, 0,
+-                        GD_MSG_SNAP_RESUME_TIER_FAIL,
+-                        "Failed to resume tier in clone postvalidate.");
+-        }
+-
+ out:
+         return ret;
+ }
+-- 
+1.7.1
+

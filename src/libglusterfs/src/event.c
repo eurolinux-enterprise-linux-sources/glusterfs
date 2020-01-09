@@ -20,6 +20,7 @@
 #include "event.h"
 #include "mem-pool.h"
 #include "common-utils.h"
+#include "libglusterfs-messages.h"
 
 #ifndef _CONFIG_H
 #define _CONFIG_H
@@ -42,7 +43,7 @@ event_pool_new (int count, int eventthreadcount)
         if (event_pool) {
                 event_pool->ops = &event_ops_epoll;
         } else {
-                gf_log ("event", GF_LOG_WARNING,
+                gf_msg ("event", GF_LOG_WARNING, 0, LG_MSG_FALLBACK_TO_POLL,
                         "falling back to poll based event handling");
         }
 #endif
@@ -250,10 +251,14 @@ event_dispatch_destroy (struct event_pool *event_pool)
         pthread_mutex_lock (&event_pool->mutex);
         {
                 /* Write to pipe(fd[1]) and then wait for 1 second or until
-                 * a poller thread that is dying, broadcasts.
+                 * a poller thread that is dying, broadcasts. Make sure we
+                 * do not loop forever by limiting to 10 retries
                  */
-                while (event_pool->activethreadcount > 0) {
-                        write (fd[1], "dummy", 6);
+                int retry = 0;
+
+                while (event_pool->activethreadcount > 0 && retry++ < 10) {
+                        if (write (fd[1], "dummy", 6) == -1)
+                                break;
                         sleep_till.tv_sec = time (NULL) + 1;
                         ret = pthread_cond_timedwait (&event_pool->cond,
                                                       &event_pool->mutex,

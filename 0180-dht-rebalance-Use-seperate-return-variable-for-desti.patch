@@ -1,0 +1,50 @@
+From 13820130673c93b39c147d6603e1b8d21d4fa6ea Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Sat, 12 Dec 2015 15:21:06 +0530
+Subject: [PATCH 180/191] dht/rebalance: Use seperate return variable for destination cleanup
+
+Use seperate local return variable for destination cleanup,
+without messing with the function return variable.
+
+Backport to http://review.gluster.org/12956
+
+> Change-Id: Iaea9ed2927234fdb888aef7a31ec362090e98196
+> BUG: 1290975
+> Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+> Reviewed-on: http://review.gluster.org/12956
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: N Balachandran <nbalacha@redhat.com>
+> Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+> Tested-by: Dan Lambright <dlambrig@redhat.com>
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+
+Change-Id: I4a82541c091bac0c84ab7d4c90c3c88fb235ef89
+BUG: 1290401
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63603
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ xlators/cluster/dht/src/dht-rebalance.c |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 9c8958d..0c6594b 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -1583,9 +1583,9 @@ out:
+ 
+         /* reset the destination back to 0 */
+         if (clean_dst) {
+-                ret = syncop_ftruncate (to, dst_fd, 0, NULL, NULL);
+-                if (ret) {
+-                        gf_msg (this->name, GF_LOG_ERROR, -ret,
++                lk_ret = syncop_ftruncate (to, dst_fd, 0, NULL, NULL);
++                if (lk_ret) {
++                        gf_msg (this->name, GF_LOG_ERROR, -lk_ret,
+                                 DHT_MSG_MIGRATE_FILE_FAILED,
+                                 "Migrate file failed: "
+                                 "%s: failed to reset target size back to 0",
+-- 
+1.7.1
+

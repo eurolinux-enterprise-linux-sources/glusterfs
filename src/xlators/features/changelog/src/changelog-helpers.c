@@ -24,29 +24,8 @@
 #include "changelog-mem-types.h"
 
 #include "changelog-encoders.h"
+#include "changelog-rpc-common.h"
 #include <pthread.h>
-
-inline void
-__mask_cancellation (xlator_t *this)
-{
-        int ret = 0;
-
-        ret = pthread_setcancelstate (PTHREAD_CANCEL_DISABLE, NULL);
-        if (ret)
-                gf_log (this->name, GF_LOG_WARNING,
-                        "failed to disable thread cancellation");
-}
-
-inline void
-__unmask_cancellation (xlator_t *this)
-{
-        int ret = 0;
-
-        ret = pthread_setcancelstate (PTHREAD_CANCEL_ENABLE, NULL);
-        if (ret)
-                gf_log (this->name, GF_LOG_WARNING,
-                        "failed to enable thread cancellation");
-}
 
 static void
 changelog_cleanup_free_mutex (void *arg_mutex)
@@ -57,7 +36,7 @@ changelog_cleanup_free_mutex (void *arg_mutex)
             pthread_mutex_unlock(p_mutex);
 }
 
-void
+int
 changelog_thread_cleanup (xlator_t *this, pthread_t thr_id)
 {
         int   ret    = 0;
@@ -65,7 +44,7 @@ changelog_thread_cleanup (xlator_t *this, pthread_t thr_id)
 
         /* send a cancel request to the thread */
         ret = pthread_cancel (thr_id);
-        if (ret) {
+        if (ret != 0) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "could not cancel thread (reason: %s)",
                         strerror (errno));
@@ -73,14 +52,14 @@ changelog_thread_cleanup (xlator_t *this, pthread_t thr_id)
         }
 
         ret = pthread_join (thr_id, &retval);
-        if (ret || (retval != PTHREAD_CANCELED)) {
+        if ((ret != 0) || (retval != PTHREAD_CANCELED)) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "cancel request not adhered as expected"
                         " (reason: %s)", strerror (errno));
         }
 
  out:
-        return;
+        return ret;
 }
 
 inline void *
@@ -96,6 +75,145 @@ changelog_get_usable_buffer (changelog_local_t *local)
                 return NULL;
 
         return cld->cld_iobuf->ptr;
+}
+
+static inline int
+changelog_selector_index (unsigned int selector)
+{
+        return (ffs (selector) - 1);
+}
+
+int
+changelog_ev_selected (xlator_t *this,
+                       changelog_ev_selector_t *selection,
+                       unsigned int selector)
+{
+        int idx = 0;
+
+        idx = changelog_selector_index (selector);
+        gf_log (this->name, GF_LOG_DEBUG,
+                "selector ref count for %d (idx: %d): %d",
+                selector, idx, selection->ref[idx]);
+        /* this can be lockless */
+        return (idx < CHANGELOG_EV_SELECTION_RANGE
+                 && (selection->ref[idx] > 0));
+}
+
+void
+changelog_select_event (xlator_t *this,
+                        changelog_ev_selector_t *selection,
+                        unsigned int selector)
+{
+        int idx = 0;
+
+        LOCK (&selection->reflock);
+        {
+                while (selector) {
+                        idx = changelog_selector_index (selector);
+                        if (idx < CHANGELOG_EV_SELECTION_RANGE) {
+                                selection->ref[idx]++;
+                                gf_log (this->name, GF_LOG_DEBUG,
+                                        "selecting event %d", idx);
+                        }
+                        selector &= ~(1 << idx);
+                }
+        }
+        UNLOCK (&selection->reflock);
+}
+
+void
+changelog_deselect_event (xlator_t *this,
+                          changelog_ev_selector_t *selection,
+                          unsigned int selector)
+{
+        int idx = 0;
+
+        LOCK (&selection->reflock);
+        {
+                while (selector) {
+                        idx = changelog_selector_index (selector);
+                        if (idx < CHANGELOG_EV_SELECTION_RANGE) {
+                                selection->ref[idx]--;
+                                gf_log (this->name, GF_LOG_DEBUG,
+                                        "de-selecting event %d", idx);
+                        }
+                        selector &= ~(1 << idx);
+                }
+        }
+        UNLOCK (&selection->reflock);
+}
+
+int
+changelog_init_event_selection (xlator_t *this,
+                                changelog_ev_selector_t *selection)
+{
+        int ret = 0;
+        int j = CHANGELOG_EV_SELECTION_RANGE;
+
+        ret = LOCK_INIT (&selection->reflock);
+        if (ret != 0)
+                return -1;
+
+        LOCK (&selection->reflock);
+        {
+                while (j--) {
+                        selection->ref[j] = 0;
+                }
+        }
+        UNLOCK (&selection->reflock);
+
+        return 0;
+}
+
+int
+changelog_cleanup_event_selection (xlator_t *this,
+                                   changelog_ev_selector_t *selection)
+{
+        int ret = 0;
+        int j = CHANGELOG_EV_SELECTION_RANGE;
+
+        LOCK (&selection->reflock);
+        {
+                while (j--) {
+                        if (selection->ref[j] > 0)
+                                gf_log (this->name, GF_LOG_WARNING,
+                                        "changelog event selection cleaning up "
+                                        " on active references");
+                }
+        }
+        UNLOCK (&selection->reflock);
+
+        return LOCK_DESTROY (&selection->reflock);
+}
+
+static inline void
+changelog_perform_dispatch (xlator_t *this,
+                            changelog_priv_t *priv, void *mem, size_t size)
+{
+        char *buf    = NULL;
+        void *opaque = NULL;
+
+        buf = rbuf_reserve_write_area (priv->rbuf, size, &opaque);
+        if (!buf) {
+                gf_log_callingfn (this->name,
+                                  GF_LOG_WARNING, "failed to dispatch event");
+                return;
+        }
+
+        memcpy (buf, mem, size);
+        rbuf_write_complete (opaque);
+}
+
+void
+changelog_dispatch_event (xlator_t *this,
+                          changelog_priv_t *priv, changelog_event_t *ev)
+{
+        changelog_ev_selector_t *selection = NULL;
+
+        selection = &priv->ev_selection;
+        if (changelog_ev_selected (this, selection, ev->ev_type)) {
+                changelog_perform_dispatch (this, priv, ev, CHANGELOG_EV_SIZE);
+        }
 }
 
 inline void
@@ -142,18 +260,18 @@ inline int
 changelog_write (int fd, char *buffer, size_t len)
 {
         ssize_t size = 0;
-        size_t writen = 0;
+        size_t written = 0;
 
-        while (writen < len) {
+        while (written < len) {
                 size = write (fd,
-                              buffer + writen, len - writen);
+                              buffer + written, len - written);
                 if (size <= 0)
                         break;
 
-                writen += size;
+                written += size;
         }
 
-        return (writen != len);
+        return (written != len);
 }
 
 int
@@ -173,7 +291,7 @@ htime_update (xlator_t *this,
                 ret = -1;
                 goto out;
         }
-        strcpy (changelog_path, buffer);
+        strncpy (changelog_path, buffer, PATH_MAX);
         len = strlen (changelog_path);
         changelog_path[len] = '\0'; /* redundant */
 
@@ -187,11 +305,21 @@ htime_update (xlator_t *this,
         sprintf (x_value,"%lu:%d",ts, priv->rollover_count);
 
         if (sys_fsetxattr (priv->htime_fd, HTIME_KEY, x_value,
-                       strlen (x_value),  XATTR_REPLACE)) {
+                           strlen (x_value), XATTR_REPLACE)) {
                 gf_log (this->name, GF_LOG_ERROR,
-                        "Htime xattr updation failed, "
-                        "reason (%s)",strerror (errno));
-                goto out;
+                        "Htime xattr updation failed with XATTR_REPLACE "
+                        "Changelog: %s Reason (%s)", changelog_path,
+                        strerror (errno));
+
+                if (sys_fsetxattr (priv->htime_fd, HTIME_KEY, x_value,
+                                   strlen (x_value), 0)) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Htime xattr updation failed "
+                                "Changelog: %s Reason (%s)", changelog_path,
+                                strerror (errno));
+                        ret = -1;
+                        goto out;
+                }
         }
 
         priv->rollover_count +=1;
@@ -200,15 +328,94 @@ out:
         return ret;
 }
 
+/*
+ * Description: Check if the changelog to rollover is empty or not.
+ * It is assumed that fd passed is already verified.
+ *
+ * Returns:
+ * 1 : If found empty, changed path from "CHANGELOG.<TS>" to "changelog.<TS>"
+ * 0 : If NOT empty, proceed usual.
+ */
+int
+cl_is_empty (xlator_t *this, int fd)
+{
+        int             ret             = -1;
+        size_t          elen            = 0;
+        int             encoding        = -1;
+        char            buffer[1024]    = {0,};
+        struct stat     stbuf           = {0,};
+        int             major_version   = -1;
+        int             minor_version   = -1;
+
+        ret = fstat (fd, &stbuf);
+        if (ret) {
+                gf_log (this->name, GF_LOG_ERROR,
+                                "Could not stat (CHANGELOG)");
+                goto out;
+        }
+
+        ret = lseek (fd, 0, SEEK_SET);
+        if (ret == -1) {
+                gf_log (this->name, GF_LOG_ERROR,
+                                "Could not lseek (CHANGELOG)");
+                goto out;
+        }
+
+        CHANGELOG_GET_HEADER_INFO (fd, buffer, 1024, encoding,
+                                   major_version, minor_version, elen);
+
+        if (elen == stbuf.st_size) {
+                ret = 1;
+        } else {
+                ret = 0;
+        }
+
+out:
+        return ret;
+}
+
+/*
+ * Description: Updates "CHANGELOG" to "changelog" for writing changelog path
+ * to htime file.
+ *
+ * Returns:
+ * 0  : Success
+ * -1 : Error
+ */
+int
+update_path (xlator_t *this, char *cl_path)
+{
+        char low_cl[]     = "changelog";
+        char up_cl[]      = "CHANGELOG";
+        char *found       = NULL;
+        int  iter         = 0;
+        int  ret          = -1;
+
+        found = strstr(cl_path, up_cl);
+
+        if (found == NULL) {
+                gf_log (this->name, GF_LOG_ERROR,
+                                "Could not find CHANGELOG in changelog path");
+                goto out;
+        } else {
+                strncpy(found, low_cl, strlen(low_cl));
+        }
+
+        ret = 0;
+out:
+        return ret;
+}
+
 static int
 changelog_rollover_changelog (xlator_t *this,
                               changelog_priv_t *priv, unsigned long ts)
 {
-        int   ret            = -1;
-        int   notify         = 0;
-        char *bname          = NULL;
-        char ofile[PATH_MAX] = {0,};
-        char nfile[PATH_MAX] = {0,};
+        int   ret             = -1;
+        int   notify          = 0;
+        int   cl_empty_flag   = 0;
+        char  ofile[PATH_MAX] = {0,};
+        char  nfile[PATH_MAX] = {0,};
+        changelog_event_t ev  = {0,};
 
         if (priv->changelog_fd != -1) {
                 ret = fsync (priv->changelog_fd);
@@ -216,6 +423,14 @@ changelog_rollover_changelog (xlator_t *this,
                         gf_log (this->name, GF_LOG_ERROR,
                                 "fsync failed (reason: %s)",
                                 strerror (errno));
+                }
+                ret = cl_is_empty (this, priv->changelog_fd);
+                if (ret == 1) {
+                        cl_empty_flag = 1;
+                } else if (ret == -1) {
+                        /* Log error but proceed as usual */
+                        gf_log (this->name, GF_LOG_WARNING,
+                                        "Error detecting empty changelog");
                 }
                 close (priv->changelog_fd);
                 priv->changelog_fd = -1;
@@ -227,22 +442,38 @@ changelog_rollover_changelog (xlator_t *this,
                          "%s/"CHANGELOG_FILE_NAME".%lu",
                          priv->changelog_dir, ts);
 
-        ret = rename (ofile, nfile);
-        if (!ret)
-                notify = 1;
+        if (cl_empty_flag == 1) {
+                ret = unlink (ofile);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                     "error unlinking(empty cl) %s (reason %s)",
+                                     ofile, strerror(errno));
+                        ret = 0;  /* Error in unlinking empty changelog should
+                                     not break further changelog operation, so
+                                     reset return value to 0*/
+                }
+        } else {
+                ret = rename (ofile, nfile);
 
-        if (ret && (errno == ENOENT)) {
-                ret = 0;
-                goto out;
+                if (ret && (errno == ENOENT)) {
+                        ret = 0;
+                        goto out;
+                }
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "error renaming %s -> %s (reason %s)",
+                                ofile, nfile, strerror (errno));
+                }
         }
 
-        if (ret) {
-                gf_log (this->name, GF_LOG_ERROR,
-                        "error renaming %s -> %s (reason %s)",
-                        ofile, nfile, strerror (errno));
+        if (!ret && (cl_empty_flag == 0)) {
+                        notify = 1;
         }
 
         if (!ret) {
+                if (cl_empty_flag) {
+                        update_path (this, nfile);
+                }
                 ret = htime_update (this, priv, ts, nfile);
                 if (ret == -1) {
                         gf_log (this->name, GF_LOG_ERROR,
@@ -252,41 +483,198 @@ changelog_rollover_changelog (xlator_t *this,
         }
 
         if (notify) {
-                bname = basename (nfile);
-                gf_log (this->name, GF_LOG_DEBUG, "notifying: %s", bname);
-                ret = changelog_write (priv->wfd, bname, strlen (bname) + 1);
-                if (ret) {
-                        gf_log (this->name, GF_LOG_ERROR,
-                                "Failed to send file name to notify thread"
-                                " (reason: %s)", strerror (errno));
-                } else {
-                        /* If this is explicit rollover initiated by snapshot,
-                         * wakeup reconfigure thread waiting for changelog to
-                         * rollover
-                         */
-                        if (priv->explicit_rollover) {
-                                priv->explicit_rollover = _gf_false;
-                                ret = pthread_mutex_lock (
-                                                   &priv->bn.bnotify_mutex);
-                                CHANGELOG_PTHREAD_ERROR_HANDLE_0 (ret, out);
-                                {
-                                         priv->bn.bnotify = _gf_false;
-                                         ret = pthread_cond_signal (
-                                                        &priv->bn.bnotify_cond);
-                                         CHANGELOG_PTHREAD_ERROR_HANDLE_0 (ret,
-                                                                           out);
-                                         gf_log (this->name, GF_LOG_INFO,
-                                                 "Changelog published: %s and"
-                                                 " signalled bnotify", bname);
-                                }
-                                ret = pthread_mutex_unlock (
-                                                       &priv->bn.bnotify_mutex);
-                                CHANGELOG_PTHREAD_ERROR_HANDLE_0 (ret, out);
+                ev.ev_type = CHANGELOG_OP_TYPE_JOURNAL;
+                memcpy (ev.u.journal.path, nfile, strlen (nfile) + 1);
+                changelog_dispatch_event (this, priv, &ev);
+        }
+ out:
+        /* If this is explicit rollover initiated by snapshot,
+         * wakeup reconfigure thread waiting for changelog to
+         * rollover. This should happen even in failure cases as
+         * well otherwise snapshot will timeout and fail. Hence
+         * moved under out.
+         */
+        if (priv->explicit_rollover) {
+                priv->explicit_rollover = _gf_false;
+
+                pthread_mutex_lock (&priv->bn.bnotify_mutex);
+                {
+                        if (ret) {
+                                priv->bn.bnotify_error = _gf_true;
+                                gf_log (this->name, GF_LOG_ERROR, "Fail "
+                                        "snapshot because of previous errors");
+                        } else {
+                                gf_log (this->name, GF_LOG_INFO, "Explicit "
+                                        "rollover changelog: %s signaling "
+                                        "bnotify", nfile);
                         }
+                        priv->bn.bnotify = _gf_false;
+                        pthread_cond_signal (&priv->bn.bnotify_cond);
+                }
+                pthread_mutex_unlock (&priv->bn.bnotify_mutex);
+        }
+        return ret;
+}
+
+int
+filter_cur_par_dirs (const struct dirent *entry)
+{
+        if (entry == NULL)
+                return 0;
+
+        if ((strcmp(entry->d_name, ".") == 0) ||
+            (strcmp(entry->d_name, "..") == 0))
+                return 0;
+        else
+                return 1;
+}
+
+/*
+ * find_current_htime:
+ *       It finds the latest htime file and sets the HTIME_CURRENT
+ *       xattr.
+ *       RETURN VALUE:
+ *           -1 : Error
+ *           ret: Number of directory entries;
+ */
+
+int
+find_current_htime (int ht_dir_fd, const char *ht_dir_path, char *ht_file_bname)
+{
+        struct dirent       **namelist = NULL;
+        int                   ret      = 0;
+        int                   cnt      = 0;
+        int                   i        = 0;
+        xlator_t             *this     = NULL;
+
+        this = THIS;
+        GF_ASSERT (this);
+        GF_ASSERT (ht_dir_path);
+
+        cnt = scandir (ht_dir_path, &namelist, filter_cur_par_dirs, alphasort);
+        if (cnt < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "scandir failed: %s", strerror (errno));
+        } else if (cnt > 0) {
+                strncpy (ht_file_bname, namelist[cnt - 1]->d_name, NAME_MAX);
+                ht_file_bname[NAME_MAX - 1] = 0;
+
+                if (sys_fsetxattr (ht_dir_fd, HTIME_CURRENT, ht_file_bname,
+                    strlen (ht_file_bname), 0)) {
+                        gf_log (this->name, GF_LOG_ERROR, "fsetxattr failed:"
+                                " HTIME_CURRENT: %s", strerror (errno));
+                        ret = -1;
+                        goto out;
+                }
+
+                if (fsync (ht_dir_fd) < 0) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "fsync failed (reason: %s)", strerror (errno));
+                        ret = -1;
+                        goto out;
                 }
         }
 
  out:
+        for (i = 0; i < cnt; i++)
+                free (namelist[i]);
+        free (namelist);
+
+        if (ret)
+                cnt = ret;
+
+        return cnt;
+}
+
+/* Returns 0 on successful open of htime file
+ * returns -1 on failure or error
+ */
+int
+htime_open (xlator_t *this,
+              changelog_priv_t *priv, unsigned long ts)
+{
+        int ht_file_fd                  = -1;
+        int ht_dir_fd                   = -1;
+        int ret                         = 0;
+        int cnt                         = 0;
+        char ht_dir_path[PATH_MAX]      = {0,};
+        char ht_file_path[PATH_MAX]     = {0,};
+        char ht_file_bname[NAME_MAX]    = {0,};
+        char x_value[NAME_MAX]          = {0,};
+        int flags                       = 0;
+        unsigned long min_ts            = 0;
+        unsigned long max_ts            = 0;
+        unsigned long total             = 0;
+        ssize_t size                    = 0;
+
+        CHANGELOG_FILL_HTIME_DIR(priv->changelog_dir, ht_dir_path);
+
+        /* Open htime directory to get HTIME_CURRENT */
+        ht_dir_fd = open (ht_dir_path, O_RDONLY);
+        if (ht_dir_fd == -1) {
+                gf_log (this->name, GF_LOG_ERROR, "open failed: %s : %s",
+                        ht_dir_path, strerror (errno));
+                ret = -1;
+                goto out;
+        }
+
+        size = sys_fgetxattr (ht_dir_fd, HTIME_CURRENT, ht_file_bname,
+                             sizeof (ht_file_bname));
+        if (size < 0) {
+                /* If upgrade scenario, find the latest HTIME.TSTAMP file
+                 * and use the same. If error, create a new HTIME.TSTAMP
+                 * file.
+                 */
+                cnt = find_current_htime (ht_dir_fd, ht_dir_path,
+                                           ht_file_bname);
+                if (cnt <= 0) {
+                        gf_log (this->name, GF_LOG_INFO,
+                                "HTIME_CURRENT not found: %s. Changelog enabled"
+                                " before init", strerror (errno));
+                        return htime_create (this, priv, ts);
+                }
+
+                gf_log (this->name, GF_LOG_ERROR, "Error extracting"
+                        " HTIME_CURRENT: %s.", strerror (errno));
+        }
+
+        gf_log (this->name, GF_LOG_INFO, "HTIME_CURRENT: %s", ht_file_bname);
+        (void) snprintf (ht_file_path, PATH_MAX, "%s/%s",
+                         ht_dir_path, ht_file_bname);
+
+        /* Open in append mode as existing htime file is used */
+        flags |= (O_RDWR | O_SYNC | O_APPEND);
+        ht_file_fd = open (ht_file_path, flags,
+                        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        if (ht_file_fd < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "unable to open htime file: %s"
+                        "(reason: %s)", ht_file_path, strerror (errno));
+                ret = -1;
+                goto out;
+        }
+
+        /* save this htime_fd in priv->htime_fd */
+        priv->htime_fd = ht_file_fd;
+
+        /* Initialize rollover-number in priv to current number */
+        size = sys_fgetxattr (ht_file_fd, HTIME_KEY, x_value, sizeof (x_value));
+        if (size < 0) {
+                gf_log (this->name, GF_LOG_ERROR, "error extracting max"
+                        " timstamp from htime file %s (reason %s)",
+                        ht_file_path, strerror (errno));
+                ret = -1;
+                goto out;
+        }
+
+        sscanf (x_value, "%lu:%lu", &max_ts, &total);
+        gf_log (this->name, GF_LOG_INFO, "INIT CASE: MIN: %lu, MAX: %lu,"
+                " TOTAL CHANGELOGS: %lu", min_ts, max_ts, total);
+        priv->rollover_count = total + 1;
+
+out:
+        if (ht_dir_fd != -1)
+                close (ht_dir_fd);
         return ret;
 }
 
@@ -294,14 +682,19 @@ changelog_rollover_changelog (xlator_t *this,
  * returns -1 on failure or error
  */
 int
-htime_open (xlator_t *this,
-            changelog_priv_t * priv, unsigned long ts)
+htime_create (xlator_t *this,
+              changelog_priv_t *priv, unsigned long ts)
 {
-        int fd                          = -1;
-        int ret                         = 0;
-        char ht_dir_path[PATH_MAX]      = {0,};
-        char ht_file_path[PATH_MAX]     = {0,};
-        int flags                       = 0;
+        int ht_file_fd                      = -1;
+        int ht_dir_fd                       = -1;
+        int ret                             = 0;
+        char ht_dir_path[PATH_MAX]          = {0,};
+        char ht_file_path[PATH_MAX]         = {0,};
+        char ht_file_bname[NAME_MAX + 1]    = {0,};
+        int flags                           = 0;
+
+        gf_log (this->name, GF_LOG_INFO, "Changelog enable: Creating new "
+                "HTIME.%lu file", ts);
 
         CHANGELOG_FILL_HTIME_DIR(priv->changelog_dir, ht_dir_path);
 
@@ -310,18 +703,17 @@ htime_open (xlator_t *this,
                         HTIME_FILE_NAME, ts);
 
         flags |= (O_CREAT | O_RDWR | O_SYNC);
-        fd = open (ht_file_path, flags,
+        ht_file_fd = open (ht_file_path, flags,
                         S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-        if (fd < 0) {
+        if (ht_file_fd < 0) {
                 gf_log (this->name, GF_LOG_ERROR,
-                        "unable to open/create htime file: %s"
+                        "unable to create htime file: %s"
                         "(reason: %s)", ht_file_path, strerror (errno));
                 ret = -1;
                 goto out;
-
         }
 
-        if (sys_fsetxattr (fd, HTIME_KEY, HTIME_INITIAL_VALUE,
+        if (sys_fsetxattr (ht_file_fd, HTIME_KEY, HTIME_INITIAL_VALUE,
                        sizeof (HTIME_INITIAL_VALUE)-1,  0)) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "Htime xattr initialization failed");
@@ -329,12 +721,47 @@ htime_open (xlator_t *this,
                 goto out;
         }
 
+        ret = fsync (ht_file_fd);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_ERROR, "fsync failed (reason: %s)",
+                        strerror (errno));
+                goto out;
+        }
+
+        /* Set xattr HTIME_CURRENT on htime directory to htime filename */
+        ht_dir_fd = open (ht_dir_path, O_RDONLY);
+        if (ht_dir_fd == -1) {
+                gf_log (this->name, GF_LOG_ERROR, "open of %s failed: %s",
+                        ht_dir_path, strerror (errno));
+                ret = -1;
+                goto out;
+        }
+
+        (void) snprintf (ht_file_bname, sizeof (ht_file_bname), "%s.%lu",
+                         HTIME_FILE_NAME, ts);
+        if (sys_fsetxattr (ht_dir_fd, HTIME_CURRENT, ht_file_bname,
+            strlen (ht_file_bname), 0)) {
+                gf_log (this->name, GF_LOG_ERROR, "fsetxattr failed:"
+                        " HTIME_CURRENT: %s", strerror (errno));
+                ret = -1;
+                goto out;
+        }
+
+        ret = fsync (ht_dir_fd);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_ERROR, "fsync failed (reason: %s)",
+                        strerror (errno));
+                goto out;
+        }
+
         /* save this htime_fd in priv->htime_fd */
-        priv->htime_fd = fd;
+        priv->htime_fd = ht_file_fd;
         /* initialize rollover-number in priv to 1 */
         priv->rollover_count = 1;
 
 out:
+        if (ht_dir_fd != -1)
+                close (ht_dir_fd);
         return ret;
 }
 
@@ -434,8 +861,8 @@ changelog_snap_logging_stop (xlator_t *this,
 }
 
 int
-changelog_open (xlator_t *this,
-                changelog_priv_t *priv)
+changelog_open_journal (xlator_t *this,
+                        changelog_priv_t *priv)
 {
         int fd                        = 0;
         int ret                       = -1;
@@ -490,7 +917,7 @@ changelog_start_next_change (xlator_t *this,
         ret = changelog_rollover_changelog (this, priv, ts);
 
         if (!ret && !finale)
-                ret = changelog_open (this, priv);
+                ret = changelog_open_journal (this, priv);
 
         return ret;
 }
@@ -578,7 +1005,6 @@ changelog_snap_handle_ascii_change (xlator_t *this,
         if (ret < 0) {
                 gf_log (this->name, GF_LOG_ERROR,
                                 "error writing csnap to disk");
-                goto out;
         }
         gf_log (this->name, GF_LOG_INFO,
                         "Successfully wrote to csnap");
@@ -665,7 +1091,7 @@ changelog_local_init (xlator_t *this, inode_t *inode,
 
         local->update_no_check = update_flag;
 
-        uuid_copy (local->cld.cld_gfid, gfid);
+        gf_uuid_copy (local->cld.cld_gfid, gfid);
 
         local->cld.cld_iobuf = iobuf;
         local->cld.cld_xtra_records = 0; /* set by the caller */
@@ -890,7 +1316,7 @@ changelog_rollover (void *data)
                         continue;
                 }
 
-                __mask_cancellation (this);
+                _mask_cancellation ();
 
                 LOCK (&priv->lock);
                 {
@@ -900,7 +1326,7 @@ changelog_rollover (void *data)
                 }
                 UNLOCK (&priv->lock);
 
-                __unmask_cancellation (this);
+                _unmask_cancellation ();
         }
 
         return NULL;
@@ -928,14 +1354,14 @@ changelog_fsync_thread (void *data)
                 if (ret)
                         continue;
 
-                __mask_cancellation (this);
+                _mask_cancellation ();
 
                 ret = changelog_inject_single_event (this, priv, &cld);
                 if (ret)
                         gf_log (this->name, GF_LOG_ERROR,
                                 "failed to inject fsync event");
 
-                __unmask_cancellation (this);
+                _unmask_cancellation ();
         }
 
         return NULL;
@@ -976,7 +1402,7 @@ __changelog_inode_ctx_set (xlator_t *this,
  * one shot routine to get the address and the value of a inode version
  * for a particular type.
  */
-static changelog_inode_ctx_t *
+changelog_inode_ctx_t *
 __changelog_inode_ctx_get (xlator_t *this,
                            inode_t *inode, unsigned long **iver,
                            unsigned long *version, changelog_log_type type)
@@ -1409,4 +1835,89 @@ err:
         if (parent)
                 inode_unref (parent);
         return -1;
+}
+
+/*
+ * resolve_pargfid_to_path:
+ *      It converts given pargfid to path by doing recursive readlinks at the
+ * backend. If bname is given, it suffixes bname to pargfid to form the
+ * complete path else it doesn't. It allocates memory for the path and is
+ * caller's responsibility to free the same. If bname is NULL and pargfid
+ * is ROOT, then it returns "."
+ */
+
+int
+resolve_pargfid_to_path (xlator_t *this, uuid_t pargfid,
+                         char **path, char *bname)
+{
+        char             *linkname                  = NULL;
+        char             *dir_handle                = NULL;
+        char             *pgfidstr                  = NULL;
+        char             *saveptr                   = NULL;
+        ssize_t           len                       = 0;
+        int               ret                       = 0;
+        uuid_t            tmp_gfid                  = {0, };
+        changelog_priv_t *priv                      = NULL;
+        char              gpath[PATH_MAX]           = {0,};
+        char              result[PATH_MAX]          = {0,};
+        char             *dir_name                  = NULL;
+        char              pre_dir_name[PATH_MAX]    = {0,};
+
+        GF_ASSERT (this);
+        priv = this->private;
+        GF_ASSERT (priv);
+
+        if (!path || gf_uuid_is_null (pargfid)) {
+                ret = -1;
+                goto out;
+        }
+
+        if (__is_root_gfid (pargfid)) {
+                if (bname)
+                        *path = gf_strdup (bname);
+                else
+                        *path = gf_strdup (".");
+                return ret;
+        }
+
+        dir_handle = alloca (PATH_MAX);
+        linkname   = alloca (PATH_MAX);
+        (void) snprintf (gpath, PATH_MAX, "%s/.glusterfs/",
+                         priv->changelog_brick);
+
+        while (!(__is_root_gfid (pargfid))) {
+                snprintf (dir_handle, PATH_MAX, "%s/%02x/%02x/%s", gpath,
+                          pargfid[0], pargfid[1], uuid_utoa (pargfid));
+
+                len = readlink (dir_handle, linkname, PATH_MAX);
+                if (len < 0) {
+                        gf_log (this->name, GF_LOG_ERROR, "could not read the "
+                                "link from the gfid handle %s (%s)", dir_handle,
+                                strerror (errno));
+                        ret = -1;
+                        goto out;
+                }
+
+                linkname[len] = '\0';
+
+                pgfidstr = strtok_r (linkname + strlen("../../00/00/"), "/",
+                                     &saveptr);
+                dir_name = strtok_r (NULL, "/", &saveptr);
+
+                strncpy (result, dir_name, PATH_MAX);
+                strncat (result, "/", 1);
+                strncat (result, pre_dir_name, PATH_MAX);
+                strncpy (pre_dir_name, result, PATH_MAX);
+
+                gf_uuid_parse (pgfidstr, tmp_gfid);
+                gf_uuid_copy (pargfid, tmp_gfid);
+        }
+
+        if (bname)
+                strncat (result, bname, PATH_MAX);
+
+        *path = gf_strdup (result);
+
+out:
+        return ret;
 }

@@ -6,6 +6,7 @@
 ###
 
 . $(dirname $0)/../include.rc
+. $(dirname $0)/../volume.rc
 
 cleanup;
 
@@ -16,12 +17,12 @@ TEST $CLI volume start $V0
 
 TEST $CLI volume set $V0 readdir-ahead on
 
-TEST glusterfs --volfile-id=$V0 --volfile-server=$H0 $M0
+TEST $GFS --volfile-id=$V0 --volfile-server=$H0 $M0
 
 TEST mkdir $M0/test
 for i in $(seq 0 99)
 do
-	touch $M0/test/$i
+        touch $M0/test/$i
 done
 
 count=`ls -1 $M0/test | wc -l`
@@ -37,7 +38,7 @@ TEST [ $count -eq 0 ]
 
 TEST rmdir $M0/test
 
-TEST umount -l $M0;
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $M0;
 TEST $CLI volume stop $V0
 TEST $CLI volume delete $V0
 

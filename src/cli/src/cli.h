@@ -19,6 +19,7 @@
 #include "glusterfs.h"
 #include "protocol-common.h"
 #include "logging.h"
+#include "quota-common-utils.h"
 
 #include "cli1-xdr.h"
 
@@ -37,10 +38,27 @@
 #define CLI_TAB_LENGTH                         8
 #define CLI_BRICK_STATUS_LINE_LEN             78
 
+/* Geo-rep command positional arguments' index  */
+#define GEO_REP_CMD_INDEX                      1
+#define GEO_REP_CMD_CONFIG_INDEX               4
+
 enum argp_option_keys {
 	ARGP_DEBUG_KEY = 133,
 	ARGP_PORT_KEY = 'p',
 };
+
+typedef enum {
+        COLD_BRICK_COUNT,
+        COLD_TYPE,
+        COLD_DIST_COUNT,
+        COLD_REPLICA_COUNT,
+        COLD_DISPERSE_COUNT,
+        COLD_REDUNDANCY_COUNT,
+        HOT_BRICK_COUNT,
+        HOT_TYPE,
+        HOT_REPLICA_COUNT,
+        MAX
+} values;
 
 #define GLUSTER_MODE_SCRIPT    (1 << 0)
 #define GLUSTER_MODE_ERR_FATAL (1 << 1)
@@ -146,6 +164,7 @@ struct cli_local {
         xmlDocPtr               doc;
         int                     vol_count;
 #endif
+        gf_lock_t               lock;
 };
 
 struct cli_volume_status {
@@ -224,8 +243,8 @@ cli_submit_request (struct rpc_clnt *rpc, void *req, call_frame_t *frame,
                     xlator_t *this, fop_cbk_fn_t cbkfn, xdrproc_t xdrproc);
 
 int32_t
-cli_cmd_volume_create_parse (const char **words, int wordcount,
-                             dict_t **options);
+cli_cmd_volume_create_parse (struct cli_state *state, const char **words,
+                             int wordcount, dict_t **options);
 
 int32_t
 cli_cmd_volume_reset_parse (const char **words, int wordcount, dict_t **opt);
@@ -237,12 +256,29 @@ int32_t
 cli_cmd_quota_parse (const char **words, int wordcount, dict_t **opt);
 
 int32_t
-cli_cmd_volume_set_parse (const char **words, int wordcount,
-                          dict_t **options, char **op_errstr);
+cli_cmd_inode_quota_parse (const char **words, int wordcount, dict_t **opt);
+
+int32_t
+cli_cmd_bitrot_parse (const char **words, int wordcount, dict_t **opt);
+
+int32_t
+cli_cmd_volume_set_parse (struct cli_state *state, const char **words,
+                          int wordcount, dict_t **options, char **op_errstr);
+int32_t
+cli_cmd_ganesha_parse (struct cli_state *state, const char **words,
+                       int wordcount, dict_t **options, char **op_errstr);
 
 int32_t
 cli_cmd_volume_add_brick_parse (const char **words, int wordcount,
-                                dict_t **options);
+                                dict_t **options, int *type);
+
+int32_t
+cli_cmd_volume_detach_tier_parse (const char **words, int wordcount,
+                                  dict_t **options);
+
+int32_t
+cli_cmd_volume_tier_parse (const char **words, int wordcount,
+                           dict_t **options);
 
 int32_t
 cli_cmd_volume_remove_brick_parse (const char **words, int wordcount,
@@ -367,9 +403,15 @@ cli_quota_list_xml_error (cli_local_t *local, char *path,
                           char *errstr);
 
 int
-cli_quota_xml_output (cli_local_t *local, char *path, char *hl_str,
-                      char *sl_final, void *used, void *avail,
-                      char *sl, char *hl);
+cli_quota_xml_output (cli_local_t *local, char *path, int64_t hl_str,
+                      char *sl_final, int64_t sl_num, int64_t used,
+                      int64_t avail, char *sl, char *hl);
+
+int
+cli_quota_object_xml_output (cli_local_t *local, char *path, char *sl_str,
+                             int64_t sl_val, quota_limits_t *limits,
+                             quota_meta_t *used_space, int64_t avail,
+                             char *sl, char *hl);
 
 int
 cli_xml_output_peer_status (dict_t *dict, int op_ret, int op_errno,
@@ -380,12 +422,14 @@ cli_xml_output_vol_rebalance (gf_cli_defrag_type op, dict_t *dict, int op_ret,
                               int op_errno, char *op_errstr);
 
 int
-cli_xml_output_vol_remove_brick (gf_boolean_t status_op, dict_t *dict,
-                                 int op_ret, int op_errno, char *op_errstr);
+cli_xml_output_vol_remove_brick_detach_tier (gf_boolean_t status_op,
+                                             dict_t *dict, int op_ret,
+                                             int op_errno, char *op_errstr,
+                                             const char *op);
 
 int
-cli_xml_output_vol_replace_brick (gf1_cli_replace_op op, dict_t *dict,
-                                  int op_ret, int op_errno, char *op_errstr);
+cli_xml_output_vol_replace_brick (char *op, dict_t *dict, int op_ret,
+                                  int op_errno, char *op_errstr);
 
 int
 cli_xml_output_vol_create (dict_t *dict, int op_ret, int op_errno,
@@ -401,11 +445,53 @@ cli_xml_output_vol_gsync (dict_t *dict, int op_ret, int op_errno,
 int
 cli_xml_output_vol_status_tasks_detail (cli_local_t *local, dict_t *dict);
 
+int
+cli_xml_output_common (xmlTextWriterPtr writer, int op_ret, int op_errno,
+                       char *op_errstr);
+int
+cli_xml_snapshot_delete (xmlTextWriterPtr writer, xmlDocPtr doc, dict_t *dict,
+                        gf_cli_rsp *rsp);
+int
+cli_xml_snapshot_begin_composite_op (cli_local_t *local);
+
+int
+cli_xml_snapshot_end_composite_op (cli_local_t *local);
+
+int
+cli_xml_output_snap_delete_begin (cli_local_t *local, int op_ret, int op_errno,
+                                  char *op_errstr);
+int
+cli_xml_output_snap_delete_end (cli_local_t *local);
+
+int
+cli_xml_output_snap_status_begin (cli_local_t *local, int op_ret, int op_errno,
+                                  char *op_errstr);
+int
+cli_xml_output_snap_status_end (cli_local_t *local);
+int
+cli_xml_output_snapshot (int cmd_type, dict_t *dict, int op_ret,
+                         int op_errno, char *op_errstr);
+int
+cli_xml_snapshot_status_single_snap (cli_local_t *local, dict_t *dict,
+                                     char *key);
 char *
 is_server_debug_xlator (void *myframe);
 
 int32_t
 cli_cmd_snapshot_parse (const char **words, int wordcount, dict_t **options,
                         struct cli_state *state);
+
+int
+cli_xml_output_vol_getopts (dict_t *dict, int op_ret, int op_errno,
+                             char *op_errstr);
+
+void
+print_quota_list_header (int type);
+
+void
+print_quota_list_empty (char *path, int type);
+
+int
+gf_gsync_status_t_comparator (const void *p, const void *q);
 
 #endif /* __CLI_H__ */

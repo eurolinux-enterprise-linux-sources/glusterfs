@@ -1,0 +1,107 @@
+From 13ce11826fe936e61c6479aede43fb70956647ce Mon Sep 17 00:00:00 2001
+From: Ashish Pandey <aspandey@redhat.com>
+Date: Mon, 21 Dec 2015 16:04:20 +0530
+Subject: [PATCH 212/214] cluster/ec: Get size and config for invalid inode
+
+Problem:
+After creating an inode and before linking it
+to inode table, if there is a request to setattr
+for that file, it fails and leads to crash.
+Before linking inode to inode table ia_type is IA_INVAL
+which will casue have_size and have_config as zero.
+
+Solution:
+Check and get size and config if an inode is invalid
+
+master -
+http://review.gluster.org/#/c/13039/
+
+release 3.7-
+http://review.gluster.org/#/c/13066/
+
+Change-Id: I0c0e564940b1b9f351369a76ab14f6b4aa81f23b
+BUG: 1293228
+Signed-off-by: Ashish Pandey <aspandey@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64342
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/cluster/ec/src/ec-common.c |   31 ++++++++++++++++++++-----------
+ 1 files changed, 20 insertions(+), 11 deletions(-)
+
+diff --git a/xlators/cluster/ec/src/ec-common.c b/xlators/cluster/ec/src/ec-common.c
+index 242ba73..e27bbc1 100644
+--- a/xlators/cluster/ec/src/ec-common.c
++++ b/xlators/cluster/ec/src/ec-common.c
+@@ -895,6 +895,7 @@ ec_prepare_update_cbk (call_frame_t *frame, void *cookie,
+     ec_lock_link_t *link = fop->data;
+     ec_lock_t *lock = NULL;
+     ec_inode_t *ctx;
++    ec_config_t config = {0,};
+ 
+     lock = link->lock;
+     parent = link->fop;
+@@ -924,7 +925,8 @@ ec_prepare_update_cbk (call_frame_t *frame, void *cookie,
+ 
+     ctx->have_version = _gf_true;
+ 
+-    if (lock->loc.inode->ia_type == IA_IFREG) {
++    if (lock->loc.inode->ia_type == IA_IFREG ||
++        lock->loc.inode->ia_type == IA_INVAL) {
+         op_errno = -ec_dict_del_number(dict, EC_XATTR_SIZE, &ctx->pre_size);
+         if (op_errno != 0) {
+             gf_msg (this->name, GF_LOG_ERROR, op_errno,
+@@ -944,17 +946,21 @@ ec_prepare_update_cbk (call_frame_t *frame, void *cookie,
+ 
+             goto unlock;
+         }
+-        if (!ec_config_check(parent, &ctx->config)) {
+-            gf_msg (this->name, GF_LOG_ERROR, EINVAL,
+-                    EC_MSG_CONFIG_XATTR_INVALID,
+-                    "Invalid config xattr");
++        if (!(lock->loc.inode->ia_type == IA_INVAL &&
++            !memcmp(&config, &ctx->config, sizeof(config)))) {
+ 
+-            op_errno = EINVAL;
++                if (!ec_config_check(parent, &ctx->config)) {
++                        gf_msg (this->name, GF_LOG_ERROR, EINVAL,
++                                EC_MSG_CONFIG_XATTR_INVALID,
++                                "Invalid config xattr");
+ 
+-            goto unlock;
+-        }
++                        op_errno = EINVAL;
+ 
+-        ctx->have_config = _gf_true;
++                        goto unlock;
++                }
++                ctx->have_config = _gf_true;
++
++        }
+     }
+ 
+     ctx->have_info = _gf_true;
+@@ -1006,7 +1012,9 @@ void ec_get_size_version(ec_lock_link_t *link)
+ 
+     /* Determine if there's something we need to retrieve for the current
+      * operation. */
+-    if (!lock->query && (lock->loc.inode->ia_type != IA_IFREG)) {
++    if (!lock->query &&
++        (lock->loc.inode->ia_type != IA_IFREG) &&
++        (lock->loc.inode->ia_type != IA_INVAL)) {
+         return;
+     }
+ 
+@@ -1029,7 +1037,8 @@ void ec_get_size_version(ec_lock_link_t *link)
+         goto out;
+     }
+ 
+-    if (lock->loc.inode->ia_type == IA_IFREG) {
++    if (lock->loc.inode->ia_type == IA_IFREG ||
++        lock->loc.inode->ia_type == IA_INVAL) {
+         error = ec_dict_set_number(dict, EC_XATTR_SIZE, 0);
+         if (error == 0) {
+             error = ec_dict_set_number(dict, EC_XATTR_CONFIG, 0);
+-- 
+1.7.1
+

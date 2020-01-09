@@ -1,0 +1,50 @@
+From 43983e03fda4445ac38ec85ce699f2780c5f1ef2 Mon Sep 17 00:00:00 2001
+From: Hari Gowtham <hgowtham@redhat.com>
+Date: Tue, 3 Nov 2015 18:23:56 +0530
+Subject: [PATCH 83/98] v info for disperse count fails while upgrading
+
+The upgrade from 3.7.5-3 to 3.7.5-5 causes the type and number
+of bricks for the cold tier to be printed wrong.
+
+Change-Id: Ia45b97c35fef88f9c66e15e5bdb93fd30cb342af
+BUG: 1277043
+Signed-off-by: Hari Gowtham <hgowtham@redhat.com>
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+Signed-off-by: hari <hgowtham@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60885
+---
+ xlators/mgmt/glusterd/src/glusterd-store.c |   16 ++++++++++++----
+ 1 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-store.c b/xlators/mgmt/glusterd/src/glusterd-store.c
+index 7329fc1..83b6a96 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-store.c
++++ b/xlators/mgmt/glusterd/src/glusterd-store.c
+@@ -2768,10 +2768,18 @@ glusterd_store_update_volinfo (glusterd_volinfo_t *volinfo)
+                         break;
+ 
+                         case GF_CLUSTER_TYPE_TIER:
+-                                volinfo->tier_info.cold_dist_leaf_count =
+-                                        glusterd_calc_dist_leaf_count (
+-                                                volinfo->tier_info.cold_replica_count, 1);
+-                                break;
++                        if (volinfo->tier_info.cold_type ==
++                                        GF_CLUSTER_TYPE_DISPERSE)
++                                volinfo->tier_info.cold_dist_leaf_count
++                                        = volinfo->disperse_count;
++                        else
++                                volinfo->tier_info.cold_dist_leaf_count
++                                        = glusterd_calc_dist_leaf_count (
++                                                        volinfo->tier_info.
++                                                        cold_replica_count,
++                                                        1);
++
++                        break;
+ 
+                         default:
+                                 GF_ASSERT (0);
+-- 
+1.7.1
+

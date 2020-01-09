@@ -21,6 +21,7 @@
 #include <pthread.h>
 
 #include "common-utils.h"
+#include "libglusterfs-messages.h"
 
 typedef struct _data data_t;
 typedef struct _dict dict_t;
@@ -35,7 +36,8 @@ typedef struct _data_pair data_pair_t;
                                                                         \
                 ret = dict_allocate_and_serialize (from_dict, to, &len);\
                 if (ret < 0) {                                          \
-                        gf_log (this->name, GF_LOG_WARNING,             \
+                        gf_msg (this->name, GF_LOG_WARNING, 0,          \
+                                LG_MSG_DICT_SERIAL_FAILED,            \
                                 "failed to get serialized dict (%s)",   \
                                 (#from_dict));                          \
                         ope = EINVAL;                                   \
@@ -50,9 +52,10 @@ typedef struct _data_pair data_pair_t;
                 to = dict_new();                                        \
                 GF_VALIDATE_OR_GOTO (xl->name, to, labl);               \
                                                                         \
-                ret = dict_unserialize (buff, len, &to);                 \
+                ret = dict_unserialize (buff, len, &to);                \
                 if (ret < 0) {                                          \
-                        gf_log (xl->name, GF_LOG_WARNING,               \
+                        gf_msg (xl->name, GF_LOG_WARNING, 0,            \
+                                LG_MSG_DICT_UNSERIAL_FAILED,            \
                                 "failed to unserialize dictionary (%s)", \
                                 (#to));                                 \
                                                                         \
@@ -95,6 +98,8 @@ struct _dict {
         gf_boolean_t    free_pair_in_use;
 };
 
+typedef gf_boolean_t (*dict_match_t) (dict_t *d, char *k, data_t *v,
+                                      void *data);
 
 int32_t is_data_equal (data_t *one, data_t *two);
 void data_destroy (data_t *data);
@@ -122,7 +127,7 @@ void data_unref (data_t *data);
 
 int32_t dict_lookup  (dict_t *this, char *key, data_t **data);
 /*
-   TODO: provide converts for differnt byte sizes, signedness, and void *
+   TODO: provide converts for different byte sizes, signedness, and void *
  */
 data_t *int_to_data (int64_t value);
 data_t *str_to_data (char *value);
@@ -242,6 +247,7 @@ GF_MUST_CHECK int dict_set_str (dict_t *this, char *key, char *str);
 GF_MUST_CHECK int dict_set_dynmstr (dict_t *this, char *key, char *str);
 GF_MUST_CHECK int dict_set_dynstr (dict_t *this, char *key, char *str);
 GF_MUST_CHECK int dict_set_dynstr_with_alloc (dict_t *this, char *key, const char *str);
+GF_MUST_CHECK int dict_add_dynstr_with_alloc (dict_t *this, char *key, char *str);
 GF_MUST_CHECK int dict_get_str (dict_t *this, char *key, char **str);
 
 GF_MUST_CHECK int dict_get_str_boolean (dict_t *this, char *key, int default_val);
@@ -249,8 +255,21 @@ GF_MUST_CHECK int dict_serialize_value_with_delim (dict_t *this, char *buf, int3
                                                     char delimiter);
 void
 dict_dump_to_statedump (dict_t *dict, char *dict_name, char *domain);
+
 void
 dict_dump_to_log (dict_t *dict);
+
 int
 dict_dump_to_str (dict_t *dict, char *dump, int dumpsize, char *format);
+gf_boolean_t
+dict_match_everything (dict_t *d, char *k, data_t *v, void *data);
+
+dict_t *
+dict_for_key_value (const char *name, const char *value, size_t size);
+
+gf_boolean_t
+are_dicts_equal (dict_t *one, dict_t *two,
+                 gf_boolean_t (*match) (dict_t *d, char *k, data_t *v,
+                                        void *data),
+                 gf_boolean_t (*value_ignore) (char *k));
 #endif

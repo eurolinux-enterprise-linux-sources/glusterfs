@@ -44,18 +44,6 @@
 #include <windows.h>
 #define UUID MYUUID
 #endif
-
-#ifdef __APPLE__
-#define PRI_TIME "ld"
-#define PRI_TIME_USEC "d"
-#define SCAN_TIME "lu"
-#else
-#define PRI_TIME "lu"
-#define PRI_TIME_USEC "lu"
-#define SCAN_TIME "ld"
-#endif
-
-
 #include <stdio.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -366,7 +354,8 @@ static int get_clock(uint32_t *clock_high, uint32_t *clock_low,
 		unsigned int cl;
 		unsigned long tv1, tv2;
 		int a;
-		if (fscanf(state_f, "clock: %04x tv: %" SCAN_TIME " %" SCAN_TIME " adj: %d\n",
+
+		if (fscanf(state_f, "clock: %04x tv: %lu %lu adj: %d\n",
 			   &cl, &tv1, &tv2, &a) == 4) {
 			clock_seq = cl & 0x3FFF;
 			last.tv_sec = tv1;
@@ -415,7 +404,7 @@ try_again:
 	if (state_fd > 0) {
 		rewind(state_f);
 		len = fprintf(state_f, 
-			      "clock: %04x tv: %016" PRI_TIME "%08" PRI_TIME_USEC "adj: %08d\n",
+			      "clock: %04x tv: %016lu %08lu adj: %08d\n",
 			      clock_seq, last.tv_sec, last.tv_usec, adjustment);
 		fflush(state_f);
 		if (ftruncate(state_fd, len) < 0) {
@@ -465,6 +454,12 @@ static ssize_t read_all(int fd, char *buf, size_t count)
 #if defined(USE_UUIDD) && defined(HAVE_SYS_UN_H)
 static void close_all_fds(void)
 {
+#ifdef F_CLOSEM
+	(void)fcntl(0, F_CLOSEM);
+	(void)open("/dev/null", O_RDWR); /* stdin */
+	(void)open("/dev/null", O_RDWR); /* stdout */
+	(void)open("/dev/null", O_RDWR); /* stderr */
+#else /* F_CLOSEM */
 	int i, max;
 
 #if defined(HAVE_SYSCONF) && defined(_SC_OPEN_MAX)
@@ -485,6 +480,7 @@ static void close_all_fds(void)
 		if (i <= 2)
 			open("/dev/null", O_RDWR);
 	}
+#endif /* F_CLOSEM */
 }
 #endif
 
@@ -599,7 +595,7 @@ void uuid__generate_time(uuid_t out, int *num)
 	uuid_pack(&uu, out);
 }
 
-void uuid_generate_time(uuid_t out)
+void gf_uuid_generate_time(uuid_t out)
 {
 #ifdef TLS
 	THREAD_LOCAL int		num = 0;
@@ -666,7 +662,7 @@ void uuid__generate_random(uuid_t out, int *num)
 	}
 }
 
-void uuid_generate_random(uuid_t out)
+void gf_uuid_generate_random(uuid_t out)
 {
 	int	num = 1;
 	/* No real reason to use the daemon for random uuid's -- yet */
@@ -676,15 +672,15 @@ void uuid_generate_random(uuid_t out)
 
 
 /*
- * This is the generic front-end to uuid_generate_random and
- * uuid_generate_time.  It uses uuid_generate_random only if
+ * This is the generic front-end to gf_uuid_generate_random and
+ * gf_uuid_generate_time.  It uses gf_uuid_generate_random only if
  * /dev/urandom is available, since otherwise we won't have
  * high-quality randomness.
  */
-void uuid_generate(uuid_t out)
+void gf_uuid_generate(uuid_t out)
 {
 	if (get_random_fd() >= 0)
-		uuid_generate_random(out);
+		gf_uuid_generate_random(out);
 	else
-		uuid_generate_time(out);
+		gf_uuid_generate_time(out);
 }

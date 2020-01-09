@@ -1,0 +1,32 @@
+From 6ebc24f066555086db3bbc6b015ea5844d829ea1 Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Wed, 14 Oct 2015 20:04:02 -0400
+Subject: [PATCH 21/23] Accidentally merged before proper ACKs in bug.
+
+Revert "cli : freeing the allocated memory"
+
+This reverts commit 5b341a4c9a1dcf79bd5bc531f24d1c79545f0c87.
+
+Change-Id: Ic78e4e381b0db6f8567681ff8f05f5ef76f7da7a
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59421
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-rpc-ops.c |    1 -
+ 1 files changed, 0 insertions(+), 1 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index d2372ef..81ba6f8 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -2967,7 +2967,6 @@ out:
+         GF_FREE (hl_str);
+         GF_FREE (used_str);
+         GF_FREE (avail_str);
+-        GF_FREE (sl_val);
+ 
+         return ret;
+ }
+-- 
+1.7.1
+

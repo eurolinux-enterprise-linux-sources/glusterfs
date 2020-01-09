@@ -1,0 +1,48 @@
+From e941abe6b6fc80d3c6d4e9609ee2e29a7b2a2fb2 Mon Sep 17 00:00:00 2001
+From: Manikandan Selvaganesh <mselvaga@redhat.com>
+Date: Thu, 26 Nov 2015 12:32:10 +0530
+Subject: [PATCH 141/162] glusterd: glusterfsd to support volfile-server-transport type "unix"
+
+If glusterfsd uses transport type "unix", 'addrstr' can be empty. So,
+it may fail to fetch the trusted volfile in this case. This patch allows
+to fetch volfile even if addrstr is empty.
+
+> Change-Id: I831c5cd0b07b90ae843ec63f0fad9241d9407f6b
+> BUG: 1279484
+> Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+> Signed-off-by: Mohamed Ashiq <mliyazud@redhat.com>
+> Reviewed-on: http://review.gluster.org/12757
+> Reviewed-by: Vijaikumar Mallikarjuna <vmallika@redhat.com>
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Niels de Vos <ndevos@redhat.com>
+> Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I604256a77910dcc34c8140b73677e72fb30e9a55
+BUG: 1286604
+Signed-off-by: Manikandan Selvaganesh <mselvaga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62758
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd-handshake.c |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-handshake.c b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+index fac2747..6579f62 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-handshake.c
++++ b/xlators/mgmt/glusterd/src/glusterd-handshake.c
+@@ -790,8 +790,9 @@ __server_getspec (rpcsvc_request_t *req)
+          * server, self-heal daemon etc., so that they are not inadvertently
+          * blocked by a auth.{allow,reject} setting. The trusted volfile is not
+          * meant for external users.
++         * For unix domain socket, address will be empty.
+          */
+-        if (strlen (addrstr) && gf_is_local_addr (addrstr)) {
++        if (strlen (addrstr) == 0 || gf_is_local_addr (addrstr)) {
+ 
+                 ret = build_volfile_path (volume, filename,
+                                           sizeof (filename),
+-- 
+1.7.1
+

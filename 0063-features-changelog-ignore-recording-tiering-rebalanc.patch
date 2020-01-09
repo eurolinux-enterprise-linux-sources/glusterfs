@@ -1,0 +1,49 @@
+From 94be2161bbee0a7bdac4afea5651497fec445dd4 Mon Sep 17 00:00:00 2001
+From: Saravanakumar Arumugam <sarumuga@redhat.com>
+Date: Mon, 28 Sep 2015 16:31:54 +0530
+Subject: [PATCH 63/67] features/changelog: ignore recording tiering rebalance fops
+
+Recording of tiering rebalance process's fops like Creation
+and Deletion of file must be avoided.
+Ignore the fops using corresponding pid.
+
+Change-Id: Ifdc7765598d04d033f93e6339e9b188f7566cb65
+BUG: 1267185
+Reviewed-on: http://review.gluster.org/12239
+Reviewed-on: http://review.gluster.org/12425
+Signed-off-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60158
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/features/changelog/src/changelog-helpers.h |   13 +++++++------
+ 1 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/xlators/features/changelog/src/changelog-helpers.h b/xlators/features/changelog/src/changelog-helpers.h
+index 6219d8d..d88dbaa 100644
+--- a/xlators/features/changelog/src/changelog-helpers.h
++++ b/xlators/features/changelog/src/changelog-helpers.h
+@@ -599,12 +599,13 @@ resolve_pargfid_to_path (xlator_t *this, uuid_t gfid, char **path, char *bname);
+ #define CHANGELOG_INIT_NOCHECK(this, local, inode, gfid, xrec)          \
+         local = changelog_local_init (this, inode, gfid, xrec, _gf_true)
+ 
+-#define CHANGELOG_NOT_ACTIVE_THEN_GOTO(frame, priv, label) do { \
+-                if (!priv->active)                              \
+-                        goto label;                             \
+-                /* ignore rebalance process's activity. */      \
+-                if (frame->root->pid == GF_CLIENT_PID_DEFRAG)   \
+-                        goto label;                             \
++#define CHANGELOG_NOT_ACTIVE_THEN_GOTO(frame, priv, label) do {      \
++                if (!priv->active)                                   \
++                        goto label;                                  \
++                /* ignore rebalance process's activity. */           \
++                if ((frame->root->pid == GF_CLIENT_PID_DEFRAG) ||    \
++                    (frame->root->pid == GF_CLIENT_PID_TIER_DEFRAG)) \
++                        goto label;                                  \
+         } while (0)
+ 
+ /* If it is a METADATA entry and fop num being GF_FOP_NULL, don't
+-- 
+1.7.1
+

@@ -1,0 +1,59 @@
+From ed89fb87725bbb651382e8cf6a7699d153a589dd Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Thu, 5 Nov 2015 14:59:54 +0530
+Subject: [PATCH 90/98] tier/ctr: Ignore bitrot related fops
+
+Ignore bitrot related fops since they are internal fops.
+
+Backport of http://review.gluster.org/#/c/12512/
+
+> Change-Id: I5db8cf4e3fa1b186a6987eed54287bc0e964fbd4
+> BUG: 1278326
+> Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+> Reviewed-on: http://review.gluster.org/12512
+> Reviewed-by: N Balachandran <nbalacha@redhat.com>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+> Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: I9d399a5c4c64fa4179d984a96f7b1f311644d976
+BUG: 1277126
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60999
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ .../features/changetimerecorder/src/ctr-helper.h   |   10 ++++++++++
+ 1 files changed, 10 insertions(+), 0 deletions(-)
+
+diff --git a/xlators/features/changetimerecorder/src/ctr-helper.h b/xlators/features/changetimerecorder/src/ctr-helper.h
+index c707911..e833c87 100644
+--- a/xlators/features/changetimerecorder/src/ctr-helper.h
++++ b/xlators/features/changetimerecorder/src/ctr-helper.h
+@@ -257,6 +257,13 @@ do {\
+  * ****************************************************************************/
+ 
+ /*
++ * If a bitrot fop
++ * */
++#define BITROT_FOP(frame)\
++        (frame->root->pid == GF_CLIENT_PID_BITD)
++
++
++/*
+  * If a rebalancer fop
+  * */
+ #define REBALANCE_FOP(frame)\
+@@ -299,6 +306,9 @@ gf_boolean_t is_internal_fop (call_frame_t *frame,
+         if (AFR_SELF_HEAL_FOP (frame)) {
+                 ret = _gf_true;
+         }
++        if (BITROT_FOP (frame)) {
++                ret = _gf_true;
++        }
+         if (REBALANCE_FOP (frame) || TIER_REBALANCE_FOP (frame)) {
+                 ret = _gf_true;
+                 if (xdata && dict_get (xdata, CTR_ATTACH_TIER_LOOKUP)) {
+-- 
+1.7.1
+

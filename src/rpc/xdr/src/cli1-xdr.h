@@ -14,8 +14,15 @@
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
+#if !defined(__clang__)
+#if !defined(__NetBSD__)
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+#else
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #endif
 #endif
 
@@ -41,6 +48,10 @@ enum gf_cli_defrag_type {
 	GF_DEFRAG_CMD_STATUS = 1 + 2,
 	GF_DEFRAG_CMD_START_LAYOUT_FIX = 1 + 3,
 	GF_DEFRAG_CMD_START_FORCE = 1 + 4,
+	GF_DEFRAG_CMD_START_TIER = 1 + 5,
+	GF_DEFRAG_CMD_STATUS_TIER = 1 + 6,
+	GF_DEFRAG_CMD_START_DETACH_TIER = 1 + 7,
+	GF_DEFRAG_CMD_STOP_DETACH_TIER = 1 + 8,
 };
 typedef enum gf_cli_defrag_type gf_cli_defrag_type;
 
@@ -63,19 +74,23 @@ enum gf1_cluster_type {
 	GF_CLUSTER_TYPE_STRIPE = 0 + 1,
 	GF_CLUSTER_TYPE_REPLICATE = 0 + 2,
 	GF_CLUSTER_TYPE_STRIPE_REPLICATE = 0 + 3,
+	GF_CLUSTER_TYPE_DISPERSE = 0 + 4,
+	GF_CLUSTER_TYPE_TIER = 0 + 5,
+	GF_CLUSTER_TYPE_MAX = 0 + 6,
 };
 typedef enum gf1_cluster_type gf1_cluster_type;
 
-enum gf1_cli_replace_op {
-	GF_REPLACE_OP_NONE = 0,
-	GF_REPLACE_OP_START = 0 + 1,
-	GF_REPLACE_OP_COMMIT = 0 + 2,
-	GF_REPLACE_OP_PAUSE = 0 + 3,
-	GF_REPLACE_OP_ABORT = 0 + 4,
-	GF_REPLACE_OP_STATUS = 0 + 5,
-	GF_REPLACE_OP_COMMIT_FORCE = 0 + 6,
+enum gf_bitrot_type {
+	GF_BITROT_OPTION_TYPE_NONE = 0,
+	GF_BITROT_OPTION_TYPE_ENABLE = 0 + 1,
+	GF_BITROT_OPTION_TYPE_DISABLE = 0 + 2,
+	GF_BITROT_OPTION_TYPE_SCRUB_THROTTLE = 0 + 3,
+	GF_BITROT_OPTION_TYPE_SCRUB_FREQ = 0 + 4,
+	GF_BITROT_OPTION_TYPE_SCRUB = 0 + 5,
+	GF_BITROT_OPTION_TYPE_EXPIRY_TIME = 0 + 6,
+	GF_BITROT_OPTION_TYPE_MAX = 0 + 7,
 };
-typedef enum gf1_cli_replace_op gf1_cli_replace_op;
+typedef enum gf_bitrot_type gf_bitrot_type;
 
 enum gf1_op_commands {
 	GF_OP_CMD_NONE = 0,
@@ -84,6 +99,10 @@ enum gf1_op_commands {
 	GF_OP_CMD_STOP = 0 + 3,
 	GF_OP_CMD_STATUS = 0 + 4,
 	GF_OP_CMD_COMMIT_FORCE = 0 + 5,
+	GF_OP_CMD_DETACH_START = 0 + 6,
+	GF_OP_CMD_DETACH_COMMIT = 0 + 7,
+	GF_OP_CMD_DETACH_COMMIT_FORCE = 0 + 8,
+	GF_OP_CMD_STOP_DETACH_TIER = 0 + 9,
 };
 typedef enum gf1_op_commands gf1_op_commands;
 
@@ -99,6 +118,12 @@ enum gf_quota_type {
 	GF_QUOTA_OPTION_TYPE_SOFT_TIMEOUT = 0 + 8,
 	GF_QUOTA_OPTION_TYPE_HARD_TIMEOUT = 0 + 9,
 	GF_QUOTA_OPTION_TYPE_DEFAULT_SOFT_LIMIT = 0 + 10,
+	GF_QUOTA_OPTION_TYPE_VERSION_OBJECTS = 0 + 11,
+	GF_QUOTA_OPTION_TYPE_LIMIT_OBJECTS = 0 + 12,
+	GF_QUOTA_OPTION_TYPE_LIST_OBJECTS = 0 + 13,
+	GF_QUOTA_OPTION_TYPE_REMOVE_OBJECTS = 0 + 14,
+	GF_QUOTA_OPTION_TYPE_ENABLE_OBJECTS = 0 + 15,
+	GF_QUOTA_OPTION_TYPE_MAX = 0 + 16,
 };
 typedef enum gf_quota_type gf_quota_type;
 
@@ -170,22 +195,24 @@ enum gf1_cli_top_op {
 typedef enum gf1_cli_top_op gf1_cli_top_op;
 
 enum gf_cli_status_type {
-	GF_CLI_STATUS_NONE = 0x0000,
-	GF_CLI_STATUS_MEM = 0x0001,
-	GF_CLI_STATUS_CLIENTS = 0x0002,
-	GF_CLI_STATUS_INODE = 0x0004,
-	GF_CLI_STATUS_FD = 0x0008,
-	GF_CLI_STATUS_CALLPOOL = 0x0010,
-	GF_CLI_STATUS_DETAIL = 0x0020,
-	GF_CLI_STATUS_TASKS = 0x0040,
-	GF_CLI_STATUS_MASK = 0x00FF,
-	GF_CLI_STATUS_VOL = 0x0100,
-	GF_CLI_STATUS_ALL = 0x0200,
-	GF_CLI_STATUS_BRICK = 0x0400,
-	GF_CLI_STATUS_NFS = 0x0800,
-	GF_CLI_STATUS_SHD = 0x1000,
-	GF_CLI_STATUS_QUOTAD = 0x2000,
-	GF_CLI_STATUS_SNAPD = 0x4000,
+	GF_CLI_STATUS_NONE = 0x000000,
+	GF_CLI_STATUS_MEM = 0x000001,
+	GF_CLI_STATUS_CLIENTS = 0x000002,
+	GF_CLI_STATUS_INODE = 0x000004,
+	GF_CLI_STATUS_FD = 0x000008,
+	GF_CLI_STATUS_CALLPOOL = 0x000010,
+	GF_CLI_STATUS_DETAIL = 0x000020,
+	GF_CLI_STATUS_TASKS = 0x000040,
+	GF_CLI_STATUS_MASK = 0x0000FF,
+	GF_CLI_STATUS_VOL = 0x000100,
+	GF_CLI_STATUS_ALL = 0x000200,
+	GF_CLI_STATUS_BRICK = 0x000400,
+	GF_CLI_STATUS_NFS = 0x000800,
+	GF_CLI_STATUS_SHD = 0x001000,
+	GF_CLI_STATUS_QUOTAD = 0x002000,
+	GF_CLI_STATUS_SNAPD = 0x004000,
+	GF_CLI_STATUS_BITD = 0x008000,
+	GF_CLI_STATUS_SCRUB = 0x010000,
 };
 typedef enum gf_cli_status_type gf_cli_status_type;
 
@@ -199,7 +226,8 @@ enum gf1_cli_snapshot {
 	GF_SNAP_OPTION_TYPE_LIST = 0 + 6,
 	GF_SNAP_OPTION_TYPE_STATUS = 0 + 7,
 	GF_SNAP_OPTION_TYPE_CONFIG = 0 + 8,
-	GF_SNAP_OPTION_TYPE_INFO = 0 + 9,
+	GF_SNAP_OPTION_TYPE_CLONE = 0 + 9,
+	GF_SNAP_OPTION_TYPE_INFO = 0 + 10,
 };
 typedef enum gf1_cli_snapshot gf1_cli_snapshot;
 
@@ -221,8 +249,17 @@ enum gf1_cli_snapshot_status {
 	GF_SNAP_STATUS_TYPE_ALL = 0,
 	GF_SNAP_STATUS_TYPE_SNAP = 0 + 1,
 	GF_SNAP_STATUS_TYPE_VOL = 0 + 2,
+	GF_SNAP_STATUS_TYPE_ITER = 0 + 3,
 };
 typedef enum gf1_cli_snapshot_status gf1_cli_snapshot_status;
+
+enum gf1_cli_snapshot_delete {
+	GF_SNAP_DELETE_TYPE_ALL = 0,
+	GF_SNAP_DELETE_TYPE_SNAP = 1,
+	GF_SNAP_DELETE_TYPE_VOL = 2,
+	GF_SNAP_DELETE_TYPE_ITER = 3,
+};
+typedef enum gf1_cli_snapshot_delete gf1_cli_snapshot_delete;
 
 struct gf_cli_req {
 	struct {
@@ -324,7 +361,7 @@ typedef struct gf1_cli_umount_rsp gf1_cli_umount_rsp;
 extern  bool_t xdr_gf_cli_defrag_type (XDR *, gf_cli_defrag_type*);
 extern  bool_t xdr_gf_defrag_status_t (XDR *, gf_defrag_status_t*);
 extern  bool_t xdr_gf1_cluster_type (XDR *, gf1_cluster_type*);
-extern  bool_t xdr_gf1_cli_replace_op (XDR *, gf1_cli_replace_op*);
+extern  bool_t xdr_gf_bitrot_type (XDR *, gf_bitrot_type*);
 extern  bool_t xdr_gf1_op_commands (XDR *, gf1_op_commands*);
 extern  bool_t xdr_gf_quota_type (XDR *, gf_quota_type*);
 extern  bool_t xdr_gf1_cli_friends_list (XDR *, gf1_cli_friends_list*);
@@ -340,6 +377,7 @@ extern  bool_t xdr_gf1_cli_snapshot (XDR *, gf1_cli_snapshot*);
 extern  bool_t xdr_gf1_cli_snapshot_info (XDR *, gf1_cli_snapshot_info*);
 extern  bool_t xdr_gf1_cli_snapshot_config (XDR *, gf1_cli_snapshot_config*);
 extern  bool_t xdr_gf1_cli_snapshot_status (XDR *, gf1_cli_snapshot_status*);
+extern  bool_t xdr_gf1_cli_snapshot_delete (XDR *, gf1_cli_snapshot_delete*);
 extern  bool_t xdr_gf_cli_req (XDR *, gf_cli_req*);
 extern  bool_t xdr_gf_cli_rsp (XDR *, gf_cli_rsp*);
 extern  bool_t xdr_gf1_cli_peer_list_req (XDR *, gf1_cli_peer_list_req*);
@@ -357,7 +395,7 @@ extern  bool_t xdr_gf1_cli_umount_rsp (XDR *, gf1_cli_umount_rsp*);
 extern bool_t xdr_gf_cli_defrag_type ();
 extern bool_t xdr_gf_defrag_status_t ();
 extern bool_t xdr_gf1_cluster_type ();
-extern bool_t xdr_gf1_cli_replace_op ();
+extern bool_t xdr_gf_bitrot_type ();
 extern bool_t xdr_gf1_op_commands ();
 extern bool_t xdr_gf_quota_type ();
 extern bool_t xdr_gf1_cli_friends_list ();
@@ -373,6 +411,7 @@ extern bool_t xdr_gf1_cli_snapshot ();
 extern bool_t xdr_gf1_cli_snapshot_info ();
 extern bool_t xdr_gf1_cli_snapshot_config ();
 extern bool_t xdr_gf1_cli_snapshot_status ();
+extern bool_t xdr_gf1_cli_snapshot_delete ();
 extern bool_t xdr_gf_cli_req ();
 extern bool_t xdr_gf_cli_rsp ();
 extern bool_t xdr_gf1_cli_peer_list_req ();

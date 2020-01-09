@@ -23,7 +23,7 @@
  * see the commit log and per-function comments.
  */
 
-#ifndef __NetBSD__
+#ifdef GF_LINUX_HOST_OS
 /* FUSE: cherry-picked bd99f9cf */
 static int
 mtab_needs_update (const char *mnt)
@@ -69,9 +69,9 @@ mtab_needs_update (const char *mnt)
 
         return 1;
 }
-#else /* __NetBSD__ */
+#else /* GF_LINUX_HOST_OS */
 #define mtab_needs_update(x) 1
-#endif /* __NetBSD__ */
+#endif /* GF_LINUX_HOST_OS */
 
 /* FUSE: called add_mount_legacy(); R.I.P. as of cbd3a2a8 */
 int
@@ -105,7 +105,11 @@ fuse_mnt_add_mount (const char *progname, const char *fsname,
                 char *tmp;
 
                 sigprocmask (SIG_SETMASK, &oldmask, NULL);
-                setuid (geteuid ());
+                res = setuid (geteuid ());
+                if (res != 0) {
+                        GFFUSE_LOGERR ("%s: setuid: %s", progname, strerror (errno));
+                        exit (1);
+                }
 
                 /*
                  * hide in a directory, where mount isn't able to resolve
@@ -245,11 +249,24 @@ fuse_mnt_umount (const char *progname, const char *abs_mnt,
         }
         if (res == 0) {
                 sigprocmask (SIG_SETMASK, &oldmask, NULL);
-                setuid (geteuid ());
+                res = setuid (geteuid ());
+                if (res != 0) {
+                        GFFUSE_LOGERR ("%s: setuid: %s", progname, strerror (errno));
+                        exit (1);
+                }
+#ifdef GF_LINUX_HOST_OS
                 execl ("/bin/umount", "/bin/umount", "-i", rel_mnt,
-                      lazy ? "-l" : NULL, NULL);
+                       lazy ? "-l" : NULL, NULL);
                 GFFUSE_LOGERR ("%s: failed to execute /bin/umount: %s",
                                progname, strerror (errno));
+#elif __NetBSD__
+                /* exitting the filesystem causes the umount */
+                exit (0);
+#else
+                execl ("/sbin/umount", "/sbin/umount", "-f", rel_mnt, NULL);
+                GFFUSE_LOGERR ("%s: failed to execute /sbin/umount: %s",
+                               progname, strerror (errno));
+#endif /* GF_LINUX_HOST_OS */
                 exit (1);
         }
         res = waitpid (res, &status, 0);

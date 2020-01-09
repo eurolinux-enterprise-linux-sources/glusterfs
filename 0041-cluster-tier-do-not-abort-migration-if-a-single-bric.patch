@@ -1,0 +1,94 @@
+From 77f760a151f2a82abbab6c22e407a9966476ca84 Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Mon, 19 Oct 2015 20:42:56 -0400
+Subject: [PATCH 41/67] cluster/tier do not abort migration if a single brick is down
+
+backport fix 12397
+
+When a bricks are down, promotion/demotion should still be possible.
+For example, if an EC brick is down, the other bricks are able to
+recover the data and migrate it.
+
+> Change-Id: I8e650c640bce22a3ad23d75c363fbb9fd027d705
+> BUG: 1273215
+> Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+> Reviewed-on: http://review.gluster.org/12397
+> Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: Joseph Fernandes
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+
+Change-Id: I6688757eaf97426c8e1ea1038c598b34bf6b8ccc
+BUG: 1272341
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59866
+---
+ xlators/cluster/dht/src/tier.c |   24 ++++++++++++------------
+ 1 files changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index 8b5184b..f0e7474 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -913,8 +913,8 @@ tier_process_brick (tier_brick_list_t *local_brick, void *args) {
+                                                 GFDB_IPC_CTR_GET_DB_PARAM_OPS);
+                 if (ret) {
+                         gf_msg ("tier", GF_LOG_ERROR, 0,\
+-                                LG_MSG_SET_PARAM_FAILED, "Failed setting %s "\
+-                                "to params dictionary", GFDB_IPC_CTR_KEY);\
++                                LG_MSG_SET_PARAM_FAILED, "Failed setting %s "
++                                "to params dictionary", GFDB_IPC_CTR_KEY);
+                         goto out;
+                 }
+ 
+@@ -922,17 +922,17 @@ tier_process_brick (tier_brick_list_t *local_brick, void *args) {
+                                 GFDB_IPC_CTR_GET_DB_PARAM_OPS, "");
+                 if (ret) {
+                         gf_msg ("tier", GF_LOG_ERROR, 0,\
+-                                LG_MSG_SET_PARAM_FAILED, "Failed setting %s "\
++                                LG_MSG_SET_PARAM_FAILED, "Failed setting %s "
+                                 "to params dictionary",
+-                                GFDB_IPC_CTR_GET_DB_PARAM_OPS);\
++                                GFDB_IPC_CTR_GET_DB_PARAM_OPS);
+                         goto out;
+                 }
+ 
+                 ret = dict_set_str (ctr_ipc_in_dict,
+                                 GFDB_IPC_CTR_GET_DB_KEY, "journal_mode");
+                 if (ret) {
+-                        gf_msg ("tier", GF_LOG_ERROR, 0,\
+-                                LG_MSG_SET_PARAM_FAILED, "Failed setting %s "\
++                        gf_msg ("tier", GF_LOG_ERROR, 0,
++                                LG_MSG_SET_PARAM_FAILED, "Failed setting %s "
+                                 "to params dictionary",
+                                 GFDB_IPC_CTR_GET_DB_KEY);\
+                         goto out;
+@@ -952,10 +952,10 @@ tier_process_brick (tier_brick_list_t *local_brick, void *args) {
+ 
+                 ret = dict_get_str (ctr_ipc_out_dict, "journal_mode", &strval);
+                 if (ret) {
+-                        gf_msg ("tier", GF_LOG_ERROR, 0,\
+-                                LG_MSG_GET_PARAM_FAILED, "Failed getting %s "\
+-                                "to params dictionary",
+-                                "journal_mode");\
++                        gf_msg ("tier", GF_LOG_ERROR, 0,
++                                LG_MSG_GET_PARAM_FAILED, "Failed getting %s "
++                                "to params dictionary"
++                                "journal_mode", strval);
+                         goto out;
+                 }
+ 
+@@ -1040,8 +1040,8 @@ tier_build_migration_qfile (demotion_args_t *args,
+                 if (ret) {
+                         gf_msg (args->this->name, GF_LOG_ERROR, 0,
+                                 DHT_MSG_BRICK_QUERY_FAILED,
+-                                "Brick query failed\n");
+-                        goto out;
++                                "Brick %s query failed\n",
++                                local_brick->brick_db_path);
+                 }
+         }
+         ret = 0;
+-- 
+1.7.1
+

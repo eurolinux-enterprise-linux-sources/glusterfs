@@ -1,9 +1,15 @@
 #!/bin/bash
 
 . $(dirname $0)/../include.rc
+. $(dirname $0)/../volume.rc
+. $(dirname $0)/../nfs.rc
 . $(dirname $0)/../fileio.rc
 
 cleanup;
+
+QDD=$(dirname $0)/quota
+# compile the test write program and run it
+build_tester $(dirname $0)/quota.c -o $QDD
 
 TESTS_EXPECTED_IN_LOOP=16
 TEST glusterd
@@ -43,7 +49,7 @@ TEST $CLI volume quota $V0 limit-usage / 1
 TEST $CLI volume quota $V0 soft-timeout 0
 TEST $CLI volume quota $V0 hard-timeout 0
 
-TEST mount -t nfs -o noac,soft,nolock,vers=3 $H0:/$V0 $N0
+TEST mount_nfs $H0:/$V0 $N0 noac,soft,nolock,vers=3;
 deep=/0/1/2/3/4/5/6/7/8/9
 TEST mkdir -p $N0/$deep
 
@@ -55,7 +61,14 @@ TEST fd_open 5 'w' "$N0/$deep/file3"
 TEST fd_open 6 'w' "$N0/$deep/file4"
 
 # consume all quota
-TEST ! dd if=/dev/zero of="$N0/$deep/file" bs=1MB count=1
+echo "Hello" > $N0/$deep/new_file_1
+echo "World" >> $N0/$deep/new_file_1
+echo 1 >> $N0/$deep/new_file_1
+echo 2 >> $N0/$deep/new_file_1
+
+# Try to create a 1M file which should fail
+TEST ! $QDD $N0/$deep/new_file_2 256 4
+
 
 # At the end of each fop in server, reference count of the
 # inode associated with each of the file above drops to zero and hence
@@ -81,6 +94,11 @@ exec 6>&-
 
 $CLI volume statedump $V0 all
 
-TEST umount -l $N0
+EXPECT_WITHIN $UMOUNT_TIMEOUT "Y" force_umount $N0
+
+TEST $CLI volume stop $V0
+EXPECT "1" get_aux
+
+rm -f $QDD
 
 cleanup;

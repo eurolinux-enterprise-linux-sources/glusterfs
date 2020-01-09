@@ -1,0 +1,51 @@
+From 5781ada554d584d8c0b90a63e6d40b9ba07d3372 Mon Sep 17 00:00:00 2001
+From: Anuradha Talur <atalur@redhat.com>
+Date: Tue, 8 Dec 2015 17:02:23 +0530
+Subject: [PATCH 183/191] features/index : Prevent logging due to NULL dict
+
+        Backport of http://review.gluster.org/12971
+
+Added a check for non-NULLness of dict before
+performing dict_foreach_match on it.
+
+        >Change-Id: I77d83559934006425ed33745b8a244b2f5d90cb1
+        >BUG: 1250803
+        >Signed-off-by: Anuradha Talur <atalur@redhat.com>
+        >Reviewed-on: http://review.gluster.org/12910
+        >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+        >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+        >Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+
+Change-Id: I01e353bd41001b114fb1ded9e2a0506f99aaedf8
+BUG: 1289893
+Signed-off-by: Anuradha Talur <atalur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63804
+Reviewed-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+Tested-by: Ravishankar Narayanankutty <ravishankar@redhat.com>
+---
+ xlators/features/index/src/index.c |    8 ++++----
+ 1 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/xlators/features/index/src/index.c b/xlators/features/index/src/index.c
+index 7185a31..cf2f873 100644
+--- a/xlators/features/index/src/index.c
++++ b/xlators/features/index/src/index.c
+@@ -615,11 +615,11 @@ index_find_xattr_type (dict_t *d, char *k, data_t *v)
+         int             idx  = -1;
+         index_priv_t   *priv = THIS->private;
+ 
+-        if (is_xattr_in_watchlist (d, k, v,
+-                                   priv->dirty_watchlist))
++        if (priv->dirty_watchlist && is_xattr_in_watchlist (d, k, v,
++                                            priv->dirty_watchlist))
+                 idx = DIRTY;
+-        else if (is_xattr_in_watchlist (d, k, v,
+-                                   priv->pending_watchlist))
++        else if (priv->pending_watchlist && is_xattr_in_watchlist (d, k, v,
++                                                  priv->pending_watchlist))
+                 idx = PENDING;
+ 
+         return idx;
+-- 
+1.7.1
+

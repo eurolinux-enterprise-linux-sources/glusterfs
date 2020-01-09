@@ -14,8 +14,15 @@
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
+#if !defined(__clang__)
+#if !defined(__NetBSD__)
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+#else
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-value"
+#endif
 #endif
 #endif
 
@@ -24,7 +31,7 @@
  * It was generated using rpcgen.
  */
 
-#include "glusterfs3-xdr.h"
+#include "../../../rpc/xdr/src/glusterfs3-xdr.h"
 
 bool_t
 xdr_gf_statfs (XDR *xdrs, gf_statfs *objp)
@@ -228,6 +235,85 @@ xdr_gf_iatt (XDR *xdrs, gf_iatt *objp)
 	 if (!xdr_u_int (xdrs, &objp->ia_ctime))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->ia_ctime_nsec))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_cbk_cache_invalidation_req (XDR *xdrs, gfs3_cbk_cache_invalidation_req *objp)
+{
+	register int32_t *buf;
+
+
+	if (xdrs->x_op == XDR_ENCODE) {
+		 if (!xdr_string (xdrs, &objp->gfid, ~0))
+			 return FALSE;
+		buf = XDR_INLINE (xdrs, 3 * BYTES_PER_XDR_UNIT);
+		if (buf == NULL) {
+			 if (!xdr_u_int (xdrs, &objp->event_type))
+				 return FALSE;
+			 if (!xdr_u_int (xdrs, &objp->flags))
+				 return FALSE;
+			 if (!xdr_u_int (xdrs, &objp->expire_time_attr))
+				 return FALSE;
+
+		} else {
+		IXDR_PUT_U_LONG(buf, objp->event_type);
+		IXDR_PUT_U_LONG(buf, objp->flags);
+		IXDR_PUT_U_LONG(buf, objp->expire_time_attr);
+		}
+		 if (!xdr_gf_iatt (xdrs, &objp->stat))
+			 return FALSE;
+		 if (!xdr_gf_iatt (xdrs, &objp->parent_stat))
+			 return FALSE;
+		 if (!xdr_gf_iatt (xdrs, &objp->oldparent_stat))
+			 return FALSE;
+		 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+			 return FALSE;
+		return TRUE;
+	} else if (xdrs->x_op == XDR_DECODE) {
+		 if (!xdr_string (xdrs, &objp->gfid, ~0))
+			 return FALSE;
+		buf = XDR_INLINE (xdrs, 3 * BYTES_PER_XDR_UNIT);
+		if (buf == NULL) {
+			 if (!xdr_u_int (xdrs, &objp->event_type))
+				 return FALSE;
+			 if (!xdr_u_int (xdrs, &objp->flags))
+				 return FALSE;
+			 if (!xdr_u_int (xdrs, &objp->expire_time_attr))
+				 return FALSE;
+
+		} else {
+		objp->event_type = IXDR_GET_U_LONG(buf);
+		objp->flags = IXDR_GET_U_LONG(buf);
+		objp->expire_time_attr = IXDR_GET_U_LONG(buf);
+		}
+		 if (!xdr_gf_iatt (xdrs, &objp->stat))
+			 return FALSE;
+		 if (!xdr_gf_iatt (xdrs, &objp->parent_stat))
+			 return FALSE;
+		 if (!xdr_gf_iatt (xdrs, &objp->oldparent_stat))
+			 return FALSE;
+		 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+			 return FALSE;
+	 return TRUE;
+	}
+
+	 if (!xdr_string (xdrs, &objp->gfid, ~0))
+		 return FALSE;
+	 if (!xdr_u_int (xdrs, &objp->event_type))
+		 return FALSE;
+	 if (!xdr_u_int (xdrs, &objp->flags))
+		 return FALSE;
+	 if (!xdr_u_int (xdrs, &objp->expire_time_attr))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->stat))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->parent_stat))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->oldparent_stat))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
 		 return FALSE;
 	return TRUE;
 }
@@ -1662,6 +1748,32 @@ xdr_gfs3_rchecksum_rsp (XDR *xdrs, gfs3_rchecksum_rsp *objp)
 	 if (!xdr_u_int (xdrs, &objp->weak_checksum))
 		 return FALSE;
 	 if (!xdr_bytes (xdrs, (char **)&objp->strong_checksum.strong_checksum_val, (u_int *) &objp->strong_checksum.strong_checksum_len, ~0))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_ipc_req (XDR *xdrs, gfs3_ipc_req *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_int (xdrs, &objp->op))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_ipc_rsp (XDR *xdrs, gfs3_ipc_rsp *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_int (xdrs, &objp->op_ret))
+		 return FALSE;
+	 if (!xdr_int (xdrs, &objp->op_errno))
 		 return FALSE;
 	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
 		 return FALSE;

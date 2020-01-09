@@ -1,0 +1,47 @@
+From 80d65921491b2d8070ac60972aec4ce30b3166da Mon Sep 17 00:00:00 2001
+From: Ravishankar N <ravishankar@redhat.com>
+Date: Wed, 20 Jan 2016 17:09:17 +0530
+Subject: [PATCH 254/254] afr: Fix excessive logging in afr_accuse_smallfiles()
+
+This is a combined fix from http://review.gluster.org/#/c/13077/ and
+http://review.gluster.org/#/c/13185/
+
+It checks that the dict is not null before doing a dict_get()
+
+Change-Id: I53dec39004bcf1ec168bfc85b35faeb06464ac7a
+BUG: 1299724
+Signed-off-by: Ravishankar N <ravishankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/66001
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index 0eb2509..b377a32 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -642,7 +642,8 @@ afr_accuse_smallfiles (xlator_t *this, struct afr_reply *replies,
+ 	priv = this->private;
+ 
+ 	for (i = 0; i < priv->child_count; i++) {
+-                if (dict_get (replies[i].xdata, GLUSTERFS_BAD_INODE))
++                if (replies[i].valid && replies[i].xdata &&
++                    dict_get (replies[i].xdata, GLUSTERFS_BAD_INODE))
+                         continue;
+ 		if (data_accused[i])
+ 			continue;
+@@ -705,7 +706,8 @@ afr_replies_interpret (call_frame_t *frame, xlator_t *this, inode_t *inode)
+ 			continue;
+ 		}
+ 
+-                if (dict_get (replies[i].xdata, GLUSTERFS_BAD_INODE)) {
++                if (replies[i].xdata &&
++                    dict_get (replies[i].xdata, GLUSTERFS_BAD_INODE)) {
+ 			data_readable[i] = 0;
+ 			metadata_readable[i] = 0;
+ 			continue;
+-- 
+1.7.1
+

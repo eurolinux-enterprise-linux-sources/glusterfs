@@ -1,0 +1,129 @@
+From c35ba23ce013266de4eafacd330d5f9cdb98b945 Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Thu, 10 Sep 2015 16:07:29 +0530
+Subject: [PATCH 07/23] Tier/cli: Change detach-tier commit force to detach-tier force
+
+Current detach-tier cli command support commit force.
+Deprecating the same to force.
+
+So the new syntax would be:
+
+volume detach-tier <VOLNAME>  <start|stop|status|commit|force>
+
+Back port of>
+
+>Change-Id: Ie86dfd72341078c0a1be94767f523730911312ef
+>BUG: 1261862
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12151
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+
+>(cherry picked from commit 68e8d617eb62a7ec40a1db5f3f60730767a168b6)
+
+>Change-Id: I5b72dd0046fcf2ead74f7d1275f35036cce3195b
+>BUG: 1258242
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12246
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+
+Change-Id: I2416f387eccc24f923c84723ff4a005603d5bbe4
+BUG: 1271724
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59396
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ cli/src/cli-cmd-parser.c                           |   19 ++++---------------
+ cli/src/cli-cmd-volume.c                           |    2 +-
+ ...60185-donot-allow-detach-commit-unnecessarily.t |    2 +-
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c     |    2 +-
+ 4 files changed, 7 insertions(+), 18 deletions(-)
+
+diff --git a/cli/src/cli-cmd-parser.c b/cli/src/cli-cmd-parser.c
+index cd63782..ffe945b 100644
+--- a/cli/src/cli-cmd-parser.c
++++ b/cli/src/cli-cmd-parser.c
+@@ -1782,21 +1782,11 @@ cli_cmd_volume_detach_tier_parse (const char **words, int wordcount,
+                 return -1;
+         }
+ 
+-        if (!((wordcount == 4) || (wordcount == 5))) {
++        if (wordcount != 4) {
+                 ret = -1;
+                 goto out;
+         }
+ 
+-        if (wordcount == 5) {
+-                word = (char *)words[4];
+-                if (!strcmp(word, "force"))
+-                        force = 1;
+-                else {
+-                        ret = -1;
+-                        goto out;
+-                }
+-        }
+-
+         word = (char *)words[3];
+ 
+         ret = -1;
+@@ -1804,10 +1794,9 @@ cli_cmd_volume_detach_tier_parse (const char **words, int wordcount,
+         if (!strcmp(word, "start")) {
+                 command = GF_OP_CMD_DETACH_START;
+         } else if (!strcmp(word, "commit")) {
+-                if (force)
+-                        command = GF_OP_CMD_DETACH_COMMIT_FORCE;
+-                else
+-                        command = GF_OP_CMD_DETACH_COMMIT;
++                command = GF_OP_CMD_DETACH_COMMIT;
++        } else if (!strcmp(word, "force")) {
++                command = GF_OP_CMD_DETACH_COMMIT_FORCE;
+         } else if (!strcmp(word, "stop"))
+                 command = GF_OP_CMD_STOP_DETACH_TIER;
+         else if (!strcmp(word, "status"))
+diff --git a/cli/src/cli-cmd-volume.c b/cli/src/cli-cmd-volume.c
+index 1b9f0af..4f71e21 100644
+--- a/cli/src/cli-cmd-volume.c
++++ b/cli/src/cli-cmd-volume.c
+@@ -2675,7 +2675,7 @@ struct cli_cmd volume_cmds[] = {
+           "[<replica COUNT>] <NEW-BRICK>..."},
+ 
+         { "volume detach-tier <VOLNAME> "
+-          " <start|stop|status|commit|[force]>",
++          " <start|stop|status|commit|force>",
+         cli_cmd_volume_tier_cbk,
+           "NOTE: this is old syntax, will be depreciated in next release. "
+           "Please use gluster volume tier <vol> detach "
+diff --git a/tests/bugs/glusterd/bug-1260185-donot-allow-detach-commit-unnecessarily.t b/tests/bugs/glusterd/bug-1260185-donot-allow-detach-commit-unnecessarily.t
+index 220216e..4ef4c9d 100644
+--- a/tests/bugs/glusterd/bug-1260185-donot-allow-detach-commit-unnecessarily.t
++++ b/tests/bugs/glusterd/bug-1260185-donot-allow-detach-commit-unnecessarily.t
+@@ -27,7 +27,7 @@ TEST ! $CLI volume detach-tier $V0 commit
+ 
+ ## detach-tier commit operation with force option on volume $V0
+ ## should succeed
+-TEST  $CLI volume detach-tier $V0 commit force
++TEST  $CLI volume detach-tier $V0 force
+ 
+ ## Again performing attach-tier operation on volume $V0
+ TEST $CLI volume attach-tier $V0 $H0:$B0/${V0}{5..6}
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index b8cc379..26ee5c5 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -1724,7 +1724,7 @@ glusterd_remove_brick_validate_bricks (gf1_op_commands cmd, int32_t brick_count,
+                                 snprintf (msg, sizeof (msg), "Brick's in Hot "
+                                           "tier is not decommissioned yet. Use "
+                                           "gluster volume detach-tier <VOLNAME>"
+-                                          " <start | commit | [force]>"
++                                          " <start | commit | force>"
+                                           " command instead");
+                                 *errstr = gf_strdup (msg);
+                                 ret = -1;
+-- 
+1.7.1
+

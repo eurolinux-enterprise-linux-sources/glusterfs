@@ -1,0 +1,122 @@
+From d8acf71c404e957ada879f6d2dc631e2ba3c5d5c Mon Sep 17 00:00:00 2001
+From: Soumya Koduri <skoduri@redhat.com>
+Date: Wed, 28 Oct 2015 14:50:55 +0530
+Subject: [PATCH 92/98] common-ha: Corrected refresh-config output parsing
+
+>>>> Sample program with the earlier changes -
+output=$(dbus-send --print-reply --system \
+--dest=org.ganesha.nfsd /org/ganesha/nfsd/ExportMgr \
+org.ganesha.nfsd.exportmgr.RemoveExport uint16:5 2>&1\
+  | grep -v "^method return")
+ret=$?
+echo "${output}"
+echo $ret
+sleep 1
+output=$(dbus-send --system --dest=org.ganesha.nfsd \
+/org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.AddExport \
+string:/usr/etc/ganesha/exports/export.vol3.conf \
+string:"EXPORT(Path=/vol3)" 2>&1  | grep -v "^method return")
+ret=$?
+echo "${output}"
+echo $ret
+
+Output:
+
+1
+
+1
+
+Even if the command was successfully executed, 'grep -v' has
+filtered out the output.
+
+>>>> Sample program with the current changes -
+
+output=$(dbus-send --print-reply --system --dest=org.ganesha.nfsd \
+/org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.RemoveExport\
+ uint16:5 2>&1)
+ret=$?
+echo "${output}"
+echo $ret
+sleep 1
+output=$(dbus-send --print-reply --system --dest=org.ganesha.nfsd \
+/org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.AddExport \
+string:/usr/etc/ganesha/exports/export.vol3.conf \
+string:"EXPORT(Path=/vol3)" 2>&1)
+ret=$?
+echo "${output}"
+echo $ret
+
+Output:
+method return sender=:1.155 -> dest=:1.174 reply_serial=2
+0
+method return sender=:1.155 -> dest=:1.175 reply_serial=2
+   string "1 exports added"
+0
+
+This is backport of the below upstream fix -
+http://review.gluster.org/#/c/12439/
+
+Change-Id: If9a38e825b2c1a87101de303f9494a0769a9e897
+BUG: 1241436
+Signed-off-by: Soumya Koduri <skoduri@redhat.com>
+Reviewed-on: http://review.gluster.org/12439
+Reviewed-by: jiffin tony Thottan <jthottan@redhat.com>
+Reviewed-by: Kaleb KEITHLEY <kkeithle@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60982
+Reviewed-by: Niels de Vos <ndevos@redhat.com>
+Tested-by: Niels de Vos <ndevos@redhat.com>
+---
+ extras/ganesha/scripts/ganesha-ha.sh |   12 ++++++------
+ 1 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/extras/ganesha/scripts/ganesha-ha.sh b/extras/ganesha/scripts/ganesha-ha.sh
+index 9ea3ca7..149733f 100644
+--- a/extras/ganesha/scripts/ganesha-ha.sh
++++ b/extras/ganesha/scripts/ganesha-ha.sh
+@@ -262,7 +262,7 @@ ${current_host}:${HA_CONFDIR}/exports/
+ -oStrictHostKeyChecking=no -i ${SECRET_PEM} root@${current_host} \
+ "dbus-send --print-reply --system --dest=org.ganesha.nfsd \
+ /org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.RemoveExport \
+-uint16:$removed_id 2>&1 | grep -v \"^method return\"")
++uint16:$removed_id 2>&1")
+                  ret=$?
+                  logger <<< "${output}"
+                  if [ ${ret} -ne 0 ]; then
+@@ -272,10 +272,10 @@ uint16:$removed_id 2>&1 | grep -v \"^method return\"")
+                  sleep 1
+                  output=$(ssh -oPasswordAuthentication=no \
+ -oStrictHostKeyChecking=no -i ${SECRET_PEM} root@${current_host} \
+-"dbus-send --system --dest=org.ganesha.nfsd \
++"dbus-send --print-reply --system --dest=org.ganesha.nfsd \
+ /org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.AddExport \
+ string:$HA_CONFDIR/exports/export.$VOL.conf \
+-string:\"EXPORT(Path=/$VOL)\" 2>&1 | grep -v \"^method return\"")
++string:\"EXPORT(Path=/$VOL)\" 2>&1")
+                  ret=$?
+                  logger <<< "${output}"
+                if [ ${ret} -ne 0 ]; then
+@@ -296,7 +296,7 @@ string:\"EXPORT(Path=/$VOL)\" 2>&1 | grep -v \"^method return\"")
+ #Run the same command on the localhost,
+         output=$(dbus-send --print-reply --system --dest=org.ganesha.nfsd \
+ /org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.RemoveExport \
+-uint16:$removed_id 2>&1 | grep -v "^method return")
++uint16:$removed_id 2>&1)
+         ret=$?
+         logger <<< "${output}"
+         if [ ${ret} -ne 0 ]; then
+@@ -304,10 +304,10 @@ uint16:$removed_id 2>&1 | grep -v "^method return")
+                 exit 1
+         fi
+         sleep 1
+-        output=$(dbus-send --system --dest=org.ganesha.nfsd \
++        output=$(dbus-send --print-reply --system --dest=org.ganesha.nfsd \
+ /org/ganesha/nfsd/ExportMgr org.ganesha.nfsd.exportmgr.AddExport \
+ string:$HA_CONFDIR/exports/export.$VOL.conf \
+-string:"EXPORT(Path=/$VOL)" 2>&1 | grep -v "^method return")
++string:"EXPORT(Path=/$VOL)" 2>&1)
+         ret=$?
+         logger <<< "${output}"
+         if [ ${ret} -ne 0 ] ; then
+-- 
+1.7.1
+

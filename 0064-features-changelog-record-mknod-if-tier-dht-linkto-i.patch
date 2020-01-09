@@ -1,0 +1,87 @@
+From 0091c885b7767ab9687f721414525ffc3555d2f1 Mon Sep 17 00:00:00 2001
+From: Saravanakumar Arumugam <sarumuga@redhat.com>
+Date: Fri, 23 Oct 2015 11:57:42 +0530
+Subject: [PATCH 64/67] features/changelog: record mknod if tier-dht linkto is set
+
+This is a series of patches which aims to fix geo-replication
+in a Tiering Volume.
+
+Problem:
+Consider, a file is placed in volume initially and then hot tier is
+attached. During any operation on the file, due to lookup a linkto
+file is created in hot tier.
+
+Now, any namespace operation carried out on the file is recorded in
+both cold and hot tier.
+There is a room for races when both changelogs are replayed.
+
+Solution:
+So, We are going to replay (namespace related)operations
+only in the hot tier.
+
+Why?
+a. If the file is directly placed in Hot tier, all fops will be
+recorded in HOT tier.
+
+b. If  the file is already present in Cold tier, and if any fop is
+carried out, it creates linkto file in Hot tier.
+Now, operations like UNLINK, RENAME are captured in Hot tier(by means of linkto file).
+
+This way, we can get both tier's operation in HOT tier itself.
+
+But, We may miss initial Data sync immediately after creating the
+file as it is only recording MKNOD. So, if MKNOD encountered
+with sticky bit set, queue DATA operation for the corresponding gfid.
+( This geo-rep related changes are addressed in this patch: http://review.gluster.org/12326/ )
+
+So, If tier-dht linkto is set, we need to record the corresponding
+MKNOD. Earlier this was avoided as it was set as INTERNAL fop.
+(This is addressed here in this patch)
+
+Change-Id: I25514fe3e25f68592a8d6361507f8c8a4fcb70b1
+BUG: 1267185
+Reviewed-on: http://review.gluster.org/12417
+Reviewed-on: http://review.gluster.org/12428
+Signed-off-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60161
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/features/changelog/src/changelog.c |   20 ++++++++++++++++++--
+ 1 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/features/changelog/src/changelog.c b/xlators/features/changelog/src/changelog.c
+index 428ed1d..f6bab24 100644
+--- a/xlators/features/changelog/src/changelog.c
++++ b/xlators/features/changelog/src/changelog.c
+@@ -885,8 +885,24 @@ changelog_mknod (call_frame_t *frame,
+         gf_boolean_t     barrier_enabled   = _gf_false;
+ 
+         priv = this->private;
+-        CHANGELOG_NOT_ACTIVE_THEN_GOTO (frame, priv, wind);
+-        CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO (frame, xdata, wind);
++
++        /* Check whether changelog active */
++        if (!(priv->active))
++                goto wind;
++
++        /* Check whether rebalance activity */
++        if (frame->root->pid == GF_CLIENT_PID_DEFRAG)
++                goto wind;
++
++        /* If tier-dht linkto is SET, ignore about verifiying :
++         * 1. Whether internal fop AND
++         * 2. Whether tier rebalance process activity (this will help in
++         * recording mknod if tier rebalance process calls this mknod) */
++        if (!(dict_get (xdata, "trusted.tier.tier-dht.linkto"))) {
++                CHANGELOG_IF_INTERNAL_FOP_THEN_GOTO (frame, xdata, wind);
++                if (frame->root->pid == GF_CLIENT_PID_TIER_DEFRAG)
++                        goto wind;
++        }
+ 
+         ret = dict_get_ptr (xdata, "gfid-req", &uuid_req);
+         if (ret) {
+-- 
+1.7.1
+

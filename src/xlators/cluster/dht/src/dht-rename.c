@@ -19,7 +19,6 @@
 #include "glusterfs.h"
 #include "xlator.h"
 #include "dht-common.h"
-#include "dht-messages.h"
 #include "defaults.h"
 
 
@@ -41,7 +40,7 @@ dht_rename_dir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (op_ret == -1) {
                 /* TODO: undo the damage */
-                uuid_unparse(local->loc.inode->gfid, gfid);
+                gf_uuid_unparse(local->loc.inode->gfid, gfid);
 
                 gf_msg (this->name, GF_LOG_INFO, op_errno,
                         DHT_MSG_RENAME_FAILED,
@@ -111,7 +110,7 @@ dht_rename_hashed_dir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (op_ret == -1) {
                 /* TODO: undo the damage */
 
-                uuid_unparse(local->loc.inode->gfid, gfid);
+                gf_uuid_unparse(local->loc.inode->gfid, gfid);
 
                 gf_msg (this->name, GF_LOG_INFO, op_errno,
                         DHT_MSG_RENAME_FAILED,
@@ -242,7 +241,7 @@ dht_rename_opendir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (op_ret == -1) {
 
-                uuid_unparse(local->loc.inode->gfid, gfid);
+                gf_uuid_unparse(local->loc.inode->gfid, gfid);
                 gf_msg (this->name, GF_LOG_INFO, op_errno,
                         DHT_MSG_OPENDIR_FAILED,
                         "opendir on %s for %s failed,(gfid = %s) ",
@@ -250,6 +249,7 @@ dht_rename_opendir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto err;
         }
 
+        fd_bind (fd);
         STACK_WIND (frame, dht_rename_readdir_cbk,
                     prev->this, prev->this->fops->readdir,
                     local->fd, 4096, 0, NULL);
@@ -320,22 +320,56 @@ err:
                           NULL, NULL);
         return 0;
 }
-#define DHT_MARK_FOP_INTERNAL(xattr) do {                                      \
-                int tmp = -1;                                                  \
-                if (!xattr) {                                                  \
-                        xattr = dict_new ();                                   \
-                        if (!xattr)                                            \
-                                break;                                         \
-                }                                                              \
-                tmp = dict_set_str (xattr, GLUSTERFS_INTERNAL_FOP_KEY, "yes"); \
-                if (tmp) {                                                     \
-                        gf_msg (this->name, GF_LOG_ERROR, 0,                   \
-                                DHT_MSG_DICT_SET_FAILED,                       \
-                                "Failed to set dictionary value: key = %s,"    \
-                                " path = %s", GLUSTERFS_INTERNAL_FOP_KEY,      \
-                                 local->loc.path);                             \
-                }                                                              \
-        }while (0)
+
+
+
+static int
+dht_rename_track_for_changelog (xlator_t *this, dict_t *xattr,
+                                loc_t *oldloc, loc_t *newloc)
+{
+        int ret        = -1;
+        dht_changelog_rename_info_t *info = NULL;
+        char *name     = NULL;
+        int len1       = 0;
+        int len2       = 0;
+        int size       = 0;
+
+        if (!xattr || !oldloc || !newloc || !this)
+                return ret;
+
+        len1 = strlen (oldloc->name) + 1;
+        len2 = strlen (newloc->name) + 1;
+        size = sizeof (dht_changelog_rename_info_t) + len1 + len2;
+
+        info = GF_CALLOC (size, sizeof(char), gf_common_mt_char);
+        if (!info) {
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_DICT_SET_FAILED,
+                        "Failed to calloc memory");
+                return ret;
+        }
+
+        gf_uuid_copy (info->old_pargfid, oldloc->pargfid);
+        gf_uuid_copy (info->new_pargfid, newloc->pargfid);
+
+        info->oldname_len = len1;
+        info->newname_len = len2;
+        strncpy (info->buffer, oldloc->name, len1);
+        name = info->buffer + len1;
+        strncpy (name, newloc->name, len2);
+
+        ret = dict_set_bin (xattr, DHT_CHANGELOG_RENAME_OP_KEY,
+                            info, size);
+        if (ret) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_DICT_SET_FAILED,
+                        "Failed to set dictionary value: key = %s,"
+                        " path = %s", DHT_CHANGELOG_RENAME_OP_KEY,
+                        oldloc->name);
+        }
+        return ret;
+}
+
+
 
 #define DHT_MARKER_DONT_ACCOUNT(xattr) do {                             \
                 int tmp = -1;                                                  \
@@ -354,6 +388,32 @@ err:
                                 local->loc.path);                             \
                 }                                                              \
         }while (0)
+
+
+#define DHT_CHANGELOG_TRACK_AS_RENAME(xattr, oldloc, newloc) do {            \
+                int tmp = -1;                                                \
+                if (!xattr) {                                                \
+                        xattr = dict_new ();                                 \
+                        if (!xattr) {                                        \
+                                gf_msg (this->name, GF_LOG_ERROR, 0,         \
+                                        DHT_MSG_DICT_SET_FAILED,             \
+                                        "Failed to create dictionary to "    \
+                                        "track rename");                     \
+                                break;                                       \
+                        }                                                    \
+                }                                                            \
+                                                                             \
+                tmp = dht_rename_track_for_changelog (this, xattr,           \
+                                oldloc, newloc);                             \
+                                                                             \
+                if (tmp) {                                                   \
+                        gf_msg (this->name, GF_LOG_ERROR, 0,                 \
+                                DHT_MSG_DICT_SET_FAILED,                     \
+                                "Failed to set dictionary value: key = %s,"  \
+                                " path = %s", DHT_CHANGELOG_RENAME_OP_KEY,   \
+                                (oldloc)->path);                             \
+                }                                                            \
+        } while (0)
 
 int
 dht_rename_unlock_cbk (call_frame_t *frame, void *cookie,
@@ -391,7 +451,8 @@ dht_rename_unlock (call_frame_t *frame, xlator_t *this)
                 if (local->loc2.inode)
                         uuid_utoa_r (local->loc2.inode->gfid, dst_gfid);
 
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_UNLOCKING_FAILED,
                         "winding unlock inodelk failed "
                         "rename (%s:%s:%s %s:%s:%s), "
                         "stale locks left on bricks",
@@ -434,7 +495,8 @@ dht_rename_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         prev  = cookie;
 
         if (!local) {
-                gf_log (this->name, GF_LOG_ERROR,
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_INVALID_VALUE,
                         "!local, should not happen");
                 goto out;
         }
@@ -486,12 +548,14 @@ dht_rename_cleanup (call_frame_t *frame)
         if (src_cached == dst_cached)
                 goto nolinks;
 
-        if (local->linked && (dst_hashed != src_hashed) &&
-                (dst_hashed != src_cached))
+        if (local->linked && (dst_hashed != src_hashed )&&
+                (dst_hashed != src_cached)) {
                 call_cnt++;
+        }
 
-        if (local->added_link && (src_cached != dst_hashed))
+        if (local->added_link && (src_cached != dst_hashed)) {
                 call_cnt++;
+        }
 
         local->call_cnt = call_cnt;
 
@@ -500,7 +564,7 @@ dht_rename_cleanup (call_frame_t *frame)
 
         DHT_MARK_FOP_INTERNAL (xattr);
 
-        uuid_unparse(local->loc.inode->gfid, gfid);
+        gf_uuid_unparse(local->loc.inode->gfid, gfid);
 
         if (local->linked && (dst_hashed != src_hashed) &&
                         (dst_hashed != src_cached)) {
@@ -534,7 +598,7 @@ dht_rename_cleanup (call_frame_t *frame)
 
                 xattr_new = dict_copy_with_ref (xattr, NULL);
 
-                if (uuid_compare (local->loc.pargfid,
+                if (gf_uuid_compare (local->loc.pargfid,
                                   local->loc2.pargfid) == 0) {
                         DHT_MARKER_DONT_ACCOUNT(xattr_new);
                 }
@@ -577,9 +641,10 @@ dht_rename_links_create_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         local = frame->local;
 
         if (op_ret == -1) {
-                gf_log (this->name, GF_LOG_WARNING,
-                        "link/file %s on %s failed (%s)",
-                        local->loc.path, prev->this->name, strerror (op_errno));
+                gf_msg (this->name, GF_LOG_WARNING, op_errno,
+                        DHT_MSG_CREATE_LINK_FAILED,
+                        "link/file %s on %s failed",
+                        local->loc.path, prev->this->name);
         }
 
         if (local->linked == _gf_true) {
@@ -682,7 +747,7 @@ dht_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 if (link_local->loc.inode)
                         inode_unref (link_local->loc.inode);
                 link_local->loc.inode = inode_ref (local->loc.inode);
-                uuid_copy (link_local->gfid, local->loc.inode->gfid);
+                gf_uuid_copy (link_local->gfid, local->loc.inode->gfid);
 
                 dht_linkfile_create (link_frame, dht_rename_links_create_cbk,
                                      this, src_cached, dst_hashed,
@@ -739,11 +804,13 @@ err:
                               "deleting old src datafile %s @ %s",
                               local->loc.path, src_cached->name);
 
-                if (uuid_compare (local->loc.pargfid,
+                if (gf_uuid_compare (local->loc.pargfid,
                                   local->loc2.pargfid) == 0) {
                         DHT_MARKER_DONT_ACCOUNT(xattr_new);
                 }
 
+                DHT_CHANGELOG_TRACK_AS_RENAME(xattr_new, &local->loc,
+                                              &local->loc2);
                 STACK_WIND (frame, dht_rename_unlink_cbk,
                             src_cached, src_cached->fops->unlink,
                             &local->loc, 0, xattr_new);
@@ -791,16 +858,12 @@ unwind:
         WIPE (&local->postoldparent);
         WIPE (&local->preparent);
         WIPE (&local->postparent);
-        if (xattr)
-                dict_unref (xattr);
 
         dht_rename_done (frame, this);
 
         return 0;
 
 cleanup:
-        if (xattr)
-                dict_unref (xattr);
         dht_rename_cleanup (frame);
 
         return 0;
@@ -832,6 +895,10 @@ dht_do_rename (call_frame_t *frame)
 
         if ((src_cached != dst_hashed) && (rename_subvol == dst_hashed)) {
                 DHT_MARKER_DONT_ACCOUNT(dict);
+        }
+
+        if (rename_subvol == src_cached) {
+                DHT_CHANGELOG_TRACK_AS_RENAME(dict, &local->loc, &local->loc2);
         }
 
         gf_msg_trace (this->name, 0,
@@ -919,7 +986,7 @@ dht_rename_linkto_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         gf_msg_trace (this->name, 0,
                       "link %s => %s (%s)", local->loc.path,
                       local->loc2.path, src_cached->name);
-        if (uuid_compare (local->loc.pargfid,
+        if (gf_uuid_compare (local->loc.pargfid,
                                 local->loc2.pargfid) == 0) {
                 DHT_MARKER_DONT_ACCOUNT(xattr);
         }
@@ -1051,7 +1118,6 @@ dht_rename_create_links (call_frame_t *frame)
                               src_cached->name);
 
                 memcpy (local->gfid, local->loc.inode->gfid, 16);
-
                 dht_linkfile_create (frame, dht_rename_linkto_cbk, this,
                                      src_cached, dst_hashed, &local->loc);
         } else if (src_cached != dst_hashed) {
@@ -1059,22 +1125,22 @@ dht_rename_create_links (call_frame_t *frame)
 
                 xattr_new = dict_copy_with_ref (xattr, NULL);
 
-		gf_msg_trace (this->name, 0,
+                gf_msg_trace (this->name, 0,
                               "link %s => %s (%s)", local->loc.path,
-			      local->loc2.path, src_cached->name);
-                if (uuid_compare (local->loc.pargfid,
+                              local->loc2.path, src_cached->name);
+                if (gf_uuid_compare (local->loc.pargfid,
                                   local->loc2.pargfid) == 0) {
                         DHT_MARKER_DONT_ACCOUNT(xattr_new);
                 }
 
                 local->added_link = _gf_true;
 
-		STACK_WIND (frame, dht_rename_link_cbk,
-			    src_cached, src_cached->fops->link,
-			    &local->loc, &local->loc2, xattr_new);
+                STACK_WIND (frame, dht_rename_link_cbk,
+                            src_cached, src_cached->fops->link,
+                            &local->loc, &local->loc2, xattr_new);
 
                 dict_unref (xattr_new);
-	}
+        }
 
 nolinks:
         if (!call_cnt) {
@@ -1156,10 +1222,10 @@ dht_rename_lock_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 if (local->loc2.inode)
                         uuid_utoa_r (local->loc2.inode->gfid, dst_gfid);
 
-                gf_log (this->name, GF_LOG_WARNING,
-                        "acquiring inodelk failed (%s) "
+                gf_msg (this->name, GF_LOG_WARNING, op_errno,
+                        DHT_MSG_INODE_LK_ERROR,
+                        "acquiring inodelk failed "
                         "rename (%s:%s:%s %s:%s:%s), returning EBUSY",
-                        strerror (op_errno),
                         local->loc.path, src_gfid, local->src_cached->name,
                         local->loc2.path, dst_gfid,
                         local->dst_cached ? local->dst_cached->name : NULL);
@@ -1280,9 +1346,8 @@ dht_rename (call_frame_t *frame, xlator_t *this,
         VALIDATE_OR_GOTO (this, err);
         VALIDATE_OR_GOTO (oldloc, err);
         VALIDATE_OR_GOTO (newloc, err);
-        VALIDATE_OR_GOTO (oldloc->inode, err);
 
-        uuid_unparse(oldloc->inode->gfid, gfid);
+        gf_uuid_unparse(oldloc->inode->gfid, gfid);
 
         src_hashed = dht_subvol_get_hashed (this, oldloc);
         if (!src_hashed) {
@@ -1338,7 +1403,8 @@ dht_rename (call_frame_t *frame, xlator_t *this,
         local->dst_hashed = dst_hashed;
         local->dst_cached = dst_cached;
 
-        gf_log (this->name, GF_LOG_INFO,
+        gf_msg (this->name, GF_LOG_INFO, 0,
+                DHT_MSG_RENAME_INFO,
                 "renaming %s (hash=%s/cache=%s) => %s (hash=%s/cache=%s)",
                 oldloc->path, src_hashed->name, src_cached->name,
                 newloc->path, dst_hashed->name,

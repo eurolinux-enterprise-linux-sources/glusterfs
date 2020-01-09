@@ -1,0 +1,118 @@
+From 7c326cca06b4c4581b736d98fd32c91b96d1fd99 Mon Sep 17 00:00:00 2001
+From: Venky Shankar <vshankar@redhat.com>
+Date: Tue, 29 Dec 2015 10:54:55 +0530
+Subject: [PATCH 248/251] glusterd/cli: mask out inaccurate scrub statistics
+
+        Backport of http://review.gluster.org/13105
+
+Some of the scrub statistics are inaccurate at the moment and would
+successfully fool users at times. It's best to not display these
+stats and stick to what is accurate.
+
+Note that the change is only in the CLI part - glusterd (and brick)
+supplies _all_ available scrub statistics, but CLI just selectively
+sticks to what needs to be displayed.
+
+BUG: 1285226
+Change-Id: I551b314528b893858b3b8604f88c9ad54a3d8586
+Signed-off-by: Venky Shankar <vshankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/65957
+Reviewed-by: Gaurav Garg <ggarg@redhat.com>
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ cli/src/cli-rpc-ops.c |   67 ++++++++-----------------------------------------
+ 1 files changed, 11 insertions(+), 56 deletions(-)
+
+diff --git a/cli/src/cli-rpc-ops.c b/cli/src/cli-rpc-ops.c
+index 9d482b9..a08d42e 100644
+--- a/cli/src/cli-rpc-ops.c
++++ b/cli/src/cli-rpc-ops.c
+@@ -10721,34 +10721,6 @@ gf_cli_print_bitrot_scrub_status (dict_t *dict)
+                         gf_log ("cli", GF_LOG_TRACE, "failed to get node-name");
+ 
+                 memset (key, 0, 256);
+-                snprintf (key, 256, "scrubbed-files-%d", i);
+-                ret = dict_get_uint64 (dict, key, &scrub_files);
+-                if (ret)
+-                        gf_log ("cli", GF_LOG_TRACE, "failed to get scrubbed "
+-                                "files");
+-
+-                memset (key, 0, 256);
+-                snprintf (key, 256, "unsigned-files-%d", i);
+-                ret = dict_get_uint64 (dict, key, &unsigned_files);
+-                if (ret)
+-                        gf_log ("cli", GF_LOG_TRACE, "failed to get unsigned "
+-                                "files");
+-
+-                memset (key, 0, 256);
+-                snprintf (key, 256, "scrub-duration-%d", i);
+-                ret = dict_get_uint64 (dict, key, &scrub_time);
+-                if (ret)
+-                        gf_log ("cli", GF_LOG_TRACE, "failed to get last scrub "
+-                                "duration");
+-
+-                memset (key, 0, 256);
+-                snprintf (key, 256, "last-scrub-time-%d", i);
+-                ret = dict_get_str (dict, key, &last_scrub);
+-                if (ret)
+-                        gf_log ("cli", GF_LOG_TRACE, "failed to get last scrub"
+-                                " time");
+-
+-                memset (key, 0, 256);
+                 snprintf (key, 256, "error-count-%d", i);
+                 ret = dict_get_uint64 (dict, key, &error_count);
+                 if (ret)
+@@ -10758,37 +10730,20 @@ gf_cli_print_bitrot_scrub_status (dict_t *dict)
+                 cli_out ("\n%s\n", "=========================================="
+                          "===============");
+ 
+-                cli_out ("%s: %s\n", "Node name", node_name);
+-
+-                cli_out ("%s: %"PRIu64 "\n", "Number of Scrubbed files",
+-                          scrub_files);
+-
+-                cli_out ("%s: %"PRIu64 "\n", "Number of Unsigned files",
+-                          unsigned_files);
+-
+-                cli_out ("%s: %s\n", "Last completed scrub time",
+-                          (*last_scrub) ? last_scrub : "Scrubber pending to "
+-                           "complete.");
+-
+-                /* Printing last scrub duration time in human readable form*/
+-                days       = scrub_time/86400;
+-                hour       = (scrub_time%86400)/3600;
+-                minut      = (scrub_time%86400%3600)/60;
+-                second     = (scrub_time%86400%3600%60);
+-                cli_out ("%s: %"PRIu64 ":%"PRIu64 ":%"PRIu64 ":%"PRIu64 "\n",
+-                         "Duration of last scrub", days, hour, minut, second);
++                cli_out ("%s: %s\n", "Node", node_name);
+ 
+                 cli_out ("%s: %"PRIu64 "\n", "Error count", error_count);
+ 
+-                if (error_count)
+-                        cli_out ("%s:\n", "Corrupted object's");
+-                /* Printing list of bad file's (Corrupted object's)*/
+-                for (j = 0; j < error_count; j++) {
+-                        memset (key, 0, 256);
+-                        snprintf (key, 256, "quarantine-%d-%d", j, i);
+-                        ret = dict_get_str (dict, key, &bad_file_str);
+-                        if (!ret) {
+-                                cli_out ("%s\n", bad_file_str);
++                if (error_count) {
++                        cli_out ("%s:\n", "Corrupted object's [GFID]");
++                        /* Printing list of bad file's (Corrupted object's)*/
++                        for (j = 0; j < error_count; j++) {
++                                memset (key, 0, 256);
++                                snprintf (key, 256, "quarantine-%d-%d", j, i);
++                                ret = dict_get_str (dict, key, &bad_file_str);
++                                if (!ret) {
++                                        cli_out ("%s\n", bad_file_str);
++                                }
+                         }
+                 }
+         }
+-- 
+1.7.1
+

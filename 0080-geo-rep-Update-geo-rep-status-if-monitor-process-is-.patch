@@ -1,0 +1,105 @@
+From 0193f36df670770debc258b93217668744b22918 Mon Sep 17 00:00:00 2001
+From: Saravanakumar Arumugam <sarumuga@redhat.com>
+Date: Mon, 10 Aug 2015 18:42:05 +0530
+Subject: [PATCH 80/98] geo-rep: Update geo-rep status, if monitor process is killed
+
+Problem:
+When the monitor process itself is getting killed, geo-rep session
+still shows as active.
+
+Status command will just pick up the content from the status file
+to show the output. Monitor process is the one which updates the Status file.
+
+When the monitor process itself gets killed, there is no way to update
+the status file. So, geo-rep session status command ends up showing
+last updated Status present in the status file.
+
+Solution:
+While getting the status output, check whether monitor process is running.
+If it is NOT running, update the status as STOPPED.
+
+Change-Id: I86a7ac1746dd8f27eef93658e992ef16f6068d9d
+BUG: 1249975
+Reviewed-on: http://review.gluster.org/11873
+Reviewed-on: http://review.gluster.org/12448
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Reviewed-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-by: Jeff Darcy <jdarcy@redhat.com>
+Signed-off-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60388
+Reviewed-by: Kotresh Hiremath Ravishankar <khiremat@redhat.com>
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Tested-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+---
+ geo-replication/syncdaemon/gsyncd.py       |    3 ++-
+ geo-replication/syncdaemon/gsyncdstatus.py |   17 ++++++++++++++++-
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/gsyncd.py b/geo-replication/syncdaemon/gsyncd.py
+index 4ea931d..982b853 100644
+--- a/geo-replication/syncdaemon/gsyncd.py
++++ b/geo-replication/syncdaemon/gsyncd.py
+@@ -616,7 +616,8 @@ def main_i():
+     status_get = rconf.get('status_get')
+     if status_get:
+         for brick in gconf.path:
+-            brick_status = GeorepStatus(gconf.state_file, brick)
++            brick_status = GeorepStatus(gconf.state_file, brick,
++                                        getattr(gconf, "pid_file", None))
+             checkpoint_time = int(getattr(gconf, "checkpoint", "0"))
+             brick_status.print_status(checkpoint_time=checkpoint_time)
+         return
+diff --git a/geo-replication/syncdaemon/gsyncdstatus.py b/geo-replication/syncdaemon/gsyncdstatus.py
+index 57692f8..77f3f9e 100644
+--- a/geo-replication/syncdaemon/gsyncdstatus.py
++++ b/geo-replication/syncdaemon/gsyncdstatus.py
+@@ -16,6 +16,7 @@ import urllib
+ import json
+ import time
+ from datetime import datetime
++from errno import EACCES, EAGAIN
+ 
+ DEFAULT_STATUS = "N/A"
+ MONITOR_STATUS = ("Created", "Started", "Paused", "Stopped")
+@@ -113,7 +114,7 @@ def set_monitor_status(status_file, status):
+ 
+ 
+ class GeorepStatus(object):
+-    def __init__(self, monitor_status_file, brick):
++    def __init__(self, monitor_status_file, brick, monitor_pid_file=None):
+         self.work_dir = os.path.dirname(monitor_status_file)
+         self.monitor_status_file = monitor_status_file
+         self.filename = os.path.join(self.work_dir,
+@@ -126,6 +127,7 @@ class GeorepStatus(object):
+         os.close(fd)
+         self.brick = brick
+         self.default_values = get_default_values()
++        self.monitor_pid_file = monitor_pid_file
+ 
+     def _update(self, mergerfunc):
+         with LockedOpen(self.filename, 'r+') as f:
+@@ -254,6 +256,19 @@ class GeorepStatus(object):
+                 pass
+         monitor_status = self.get_monitor_status()
+ 
++        # Verifying whether monitor process running and adjusting status
++        if monitor_status in ["Started", "Paused"]:
++            try:
++                with open(self.monitor_pid_file, "r+") as f:
++                    fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                    monitor_status = "Stopped"
++            except (IOError, OSError) as e:
++                if e.errno in (EACCES, EAGAIN):
++                    # cannot grab. so, monitor process still running..move on
++                    pass
++                else:
++                    raise
++
+         if monitor_status in ["Created", "Paused", "Stopped"]:
+             data["worker_status"] = monitor_status
+ 
+-- 
+1.7.1
+

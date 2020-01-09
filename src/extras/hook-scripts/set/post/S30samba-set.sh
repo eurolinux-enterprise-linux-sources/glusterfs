@@ -18,11 +18,12 @@
 
 
 PROGNAME="Ssamba-set"
-OPTSPEC="volname:"
+OPTSPEC="volname:,gd-workdir:"
 VOL=
 CONFIGFILE=
 LOGFILEBASE=
 PIDDIR=
+GLUSTERD_WORKDIR=
 USERSMB_SET=""
 USERCIFS_SET=""
 
@@ -32,13 +33,17 @@ function parse_args () {
 
         while true; do
             case $1 in
-            --volname)
-                shift
-                VOL=$1
-                ;;
-            *)
-                shift
-                for pair in $@; do
+                --volname)
+                    shift
+                    VOL=$1
+                    ;;
+                --gd-workdir)
+                    shift
+                    GLUSTERD_WORKDIR=$1
+                    ;;
+                *)
+                    shift
+                    for pair in $@; do
                         read key value < <(echo "$pair" | tr "=" " ")
                         case "$key" in
                             "user.cifs")
@@ -48,13 +53,12 @@ function parse_args () {
                                 USERSMB_SET="YES"
                                 ;;
                             *)
-                                    ;;
+                                ;;
                         esac
-                done
-
-                shift
-                break
-                ;;
+                    done
+                    shift
+                    break
+                    ;;
             esac
             shift
         done
@@ -102,7 +106,7 @@ function del_samba_share () {
 
 function is_volume_started () {
         volname=$1
-        echo "$(grep status /var/lib/glusterd/vols/"$volname"/info |\
+        echo "$(grep status $GLUSTERD_WORKDIR/vols/"$volname"/info |\
                 cut -d"=" -f2)"
 }
 
@@ -110,9 +114,9 @@ function get_smb () {
         volname=$1
         uservalue=
 
-        usercifsvalue=$(grep user.cifs /var/lib/glusterd/vols/"$volname"/info |\
+        usercifsvalue=$(grep user.cifs $GLUSTERD_WORKDIR/vols/"$volname"/info |\
                         cut -d"=" -f2)
-        usersmbvalue=$(grep user.smb /var/lib/glusterd/vols/"$volname"/info |\
+        usersmbvalue=$(grep user.smb $GLUSTERD_WORKDIR/vols/"$volname"/info |\
                        cut -d"=" -f2)
 
         if [[ $usercifsvalue = "disable" || $usersmbvalue = "disable" ]]; then

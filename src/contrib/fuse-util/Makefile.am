@@ -9,5 +9,6 @@ AM_CFLAGS = -Wall $(GF_CFLAGS)
 
 install-exec-hook:
 	-chown root $(DESTDIR)$(bindir)/fusermount-glusterfs
+	chmod u+s $(DESTDIR)$(bindir)/fusermount-glusterfs
 
 CLEANFILES =

@@ -1,0 +1,38 @@
+From d33d38f67f472b897a219335f49d6c72d7b490a4 Mon Sep 17 00:00:00 2001
+From: N Balachandran <nbalacha@redhat.com>
+Date: Tue, 5 Jan 2016 11:04:27 +0530
+Subject: [PATCH 225/237] cluster/tier: Additional details in error messages
+
+Added file path/gfid when available to the tier log
+messages to make debugging easier.
+upstream : http://review.gluster.org/#/c/13114/
+
+Change-Id: I0413f3a49417388f4305197c1344d01cda926580
+BUG: 1272409
+Signed-off-by: N Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64783
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/cluster/dht/src/tier.c |    5 +++--
+ 1 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index 773b6bf..9d9680d 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -456,8 +456,9 @@ tier_migrate_using_query_file (void *_args)
+                         }
+ 
+                         gf_msg_debug (this->name, 0,
+-                                      "Tier %d : src_subvol %s file %s",
+-                                      query_cbk_args->is_promotion,
++                                      "Tier %s : src_subvol %s file %s",
++                                      (query_cbk_args->is_promotion ?
++                                      "promote" : "demote"),
+                                       src_subvol->name,
+                                       loc.path);
+ 
+-- 
+1.7.1
+

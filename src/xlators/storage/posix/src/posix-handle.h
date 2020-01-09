@@ -15,9 +15,16 @@
 #include "config.h"
 #endif
 
+#include <limits.h>
 #include <sys/types.h>
 #include "xlator.h"
 #include "gf-dirent.h"
+#include "posix-messages.h"
+
+/* From Open Group Base Specifications Issue 6 */
+#ifndef _XOPEN_PATH_MAX
+#define _XOPEN_PATH_MAX 1024
+#endif
 
 #define TRASH_DIR "landfill"
 
@@ -44,9 +51,9 @@
                                 flags);                                 \
         if (op_ret == -1) {                                             \
                 op_errno = errno;                                       \
-                gf_log (this->name, GF_LOG_WARNING,                     \
-                        "setting xattr failed on %s: key = %s (%s)",    \
-                        path, key, strerror (op_errno));                \
+                gf_msg (this->name, GF_LOG_WARNING, errno, P_MSG_PGFID_OP, \
+                        "setting xattr failed on %s: key = %s ",        \
+                        path, key);                                     \
                 goto label;                                             \
         }                                                               \
         } while (0)
@@ -61,9 +68,10 @@
                                 SET_PGFID_XATTR (path, key, value, flags,      \
                                                  op_ret, this, label);         \
                         } else {                                               \
-                                gf_log(this->name, GF_LOG_WARNING, "getting "  \
-                                       "xattr failed on %s: key = %s (%s)",    \
-                                       path, key, strerror (op_errno));        \
+                                gf_msg (this->name, GF_LOG_WARNING, op_errno,  \
+                                       P_MSG_PGFID_OP, "getting xattr "    \
+                                       "failed on %s: key = %s ",              \
+                                       path, key);                             \
                         }                                                      \
                 }                                                              \
         } while (0)
@@ -72,9 +80,10 @@
        op_ret = sys_lremovexattr (path, key);                           \
        if (op_ret == -1) {                                              \
                op_errno = errno;                                        \
-               gf_log (this->name, GF_LOG_WARNING, "removing xattr "    \
-                       "failed on %s: key = %s (%s)", path, key,        \
-                       strerror (op_errno));                            \
+               gf_msg (this->name, GF_LOG_WARNING, op_errno,                   \
+                       P_MSG_PGFID_OP,                                     \
+                       "removing xattr failed"                                 \
+                       "on %s: key = %s", path, key);                          \
                goto label;                                              \
        }                                                                \
        } while (0)
@@ -84,12 +93,12 @@
        op_ret = sys_lgetxattr (path, key, &value, sizeof (value));  \
        if (op_ret == -1) {                                              \
                op_errno = errno;                                        \
-               if (op_errno == ENOATTR) {                               \
+               if (op_errno == ENOATTR || op_errno == ENODATA) {        \
                        value = 1;                                       \
                } else {                                                 \
-                       gf_log (this->name, GF_LOG_WARNING,"getting xattr " \
-                               "failed on %s: key = %s (%s)", path, key, \
-                               strerror (op_errno));                    \
+                       gf_msg (this->name, GF_LOG_WARNING, errno,       \
+                               P_MSG_PGFID_OP, "getting xattr "      \
+                               "failed on %s: key = %s ", path, key);      \
                        goto label;                                      \
                }                                                        \
        } else {                                                         \
@@ -104,8 +113,9 @@
        op_ret = sys_lgetxattr (path, key, &value, sizeof (value));  \
        if (op_ret == -1) {                                              \
                op_errno = errno;                                        \
-               gf_log (this->name, GF_LOG_WARNING, "getting xattr failed on " \
-                       "%s: key = %s (%s)", path, key, strerror (op_errno)); \
+               gf_msg (this->name, GF_LOG_WARNING, errno,               \
+                      P_MSG_PGFID_OP, "getting xattr failed on " \
+                       "%s: key = %s ", path, key);                     \
                goto label;                                              \
        } else {                                                         \
                value = ntoh32 (value);                                  \
@@ -120,10 +130,18 @@
     } while (0)
 
 #define MAKE_REAL_PATH(var, this, path) do {                            \
-        var = alloca (strlen (path) + POSIX_BASE_PATH_LEN(this) + 2);   \
-        strcpy (var, POSIX_BASE_PATH(this));                            \
-        strcpy (&var[POSIX_BASE_PATH_LEN(this)], path);                 \
-        } while (0)
+        size_t path_len = strlen(path);                                 \
+        size_t var_len = path_len + POSIX_BASE_PATH_LEN(this) + 1;      \
+        if (POSIX_PATH_MAX(this) != -1 &&                               \
+            var_len >= POSIX_PATH_MAX(this)) {                          \
+                var = alloca (path_len + 1);                            \
+                strcpy (var, (path[0] == '/') ? path + 1 : path);       \
+        } else {                                                        \
+                var = alloca (var_len);                                 \
+                strcpy (var, POSIX_BASE_PATH(this));                    \
+                strcpy (&var[POSIX_BASE_PATH_LEN(this)], path);         \
+        }                                                               \
+    } while (0)
 
 #define MAKE_HANDLE_PATH(var, this, gfid, base) do {                    \
         int __len;                                                      \
@@ -167,8 +185,9 @@
 
 
 #define MAKE_INODE_HANDLE(rpath, this, loc, iatt_p) do {                \
-        if (uuid_is_null (loc->gfid)) {                                 \
-                gf_log (this->name, GF_LOG_ERROR,                       \
+        if (gf_uuid_is_null (loc->gfid)) {                              \
+                gf_msg (this->name, GF_LOG_ERROR, 0,                    \
+                        P_MSG_INODE_HANDLE_CREATE,                      \
                         "null gfid for path %s", (loc)->path);          \
                 break;                                                  \
         }                                                               \
@@ -180,12 +199,13 @@
         errno = 0;                                                      \
         op_ret = posix_istat (this, loc->gfid, NULL, iatt_p);           \
         if (errno != ELOOP) {                                           \
-                MAKE_HANDLE_PATH (rpath, this, (loc)->gfid, NULL);        \
+                MAKE_HANDLE_PATH (rpath, this, (loc)->gfid, NULL);      \
                 if (!rpath) {                                           \
                         op_ret = -1;                                    \
-                        gf_log (this->name, GF_LOG_ERROR,               \
-                        "Failed to create inode handle "                \
-                        "for path %s", (loc)->path);                      \
+                        gf_msg (this->name, GF_LOG_ERROR, errno,        \
+                                P_MSG_INODE_HANDLE_CREATE,            \
+                                "Failed to create inode handle "        \
+                                "for path %s", (loc)->path);            \
                 }                                                       \
                 break;                                                  \
         }                                                               \
@@ -196,8 +216,8 @@
 #define MAKE_ENTRY_HANDLE(entp, parp, this, loc, ent_p) do {            \
         char *__parp;                                                   \
                                                                         \
-        if (uuid_is_null (loc->pargfid) || !loc->name) {                \
-                gf_log (this->name, GF_LOG_ERROR,                       \
+        if (gf_uuid_is_null (loc->pargfid) || !loc->name) {             \
+                gf_msg (this->name, GF_LOG_ERROR, 0, P_MSG_ENTRY_HANDLE_CREATE,\
                         "null pargfid/name for path %s", loc->path);    \
                 break;                                                  \
         }                                                               \
@@ -215,9 +235,10 @@
                 MAKE_HANDLE_PATH (parp, this, loc->pargfid, NULL);      \
                 MAKE_HANDLE_PATH (entp, this, loc->pargfid, loc->name); \
                 if (!parp || !entp) {                                   \
-                        gf_log (this->name, GF_LOG_ERROR,               \
-                        "Failed to create entry handle "                \
-                        "for path %s", loc->path);                      \
+                        gf_msg (this->name, GF_LOG_ERROR, errno,        \
+                                P_MSG_ENTRY_HANDLE_CREATE,      \
+                                "Failed to create entry handle "        \
+                                "for path %s", loc->path);              \
                 }                                                       \
                 break;                                                  \
         }                                                               \
@@ -239,7 +260,7 @@ posix_make_ancestryfromgfid (xlator_t *this, char *path, int pathsize,
                              const size_t handle_size,
                              const char *priv_base_path,
                              inode_table_t *table, inode_t **parent,
-                             dict_t *xdata);
+                             dict_t *xdata, int32_t *op_errno);
 int
 posix_handle_path_safe (xlator_t *this, uuid_t gfid, const char *basename,
                         char *buf, size_t len);

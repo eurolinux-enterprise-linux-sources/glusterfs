@@ -1,0 +1,96 @@
+From 1696ebd472f7a9995f33728cf0ef6ff2cadfcc7a Mon Sep 17 00:00:00 2001
+From: Aravinda VK <avishwan@redhat.com>
+Date: Wed, 25 Nov 2015 18:34:29 +0530
+Subject: [PATCH 150/162] geo-rep: fd close and fcntl issue
+
+When any of the open fd of a file is closed
+on which fcntl lock is taken even though another
+fd of the same file is open on which lock is taken,
+all fcntl locks will be released. This causes both
+replica workers to be ACTIVE sometimes. This patche
+fixes that issue.
+
+BUG: 1285295
+Change-Id: I383220ebf21b41a41f8e3485b4259238e099275d
+Original-Author: Aravinda VK <avishwan@redhat.com>
+Signed-off-by: Kotresh HR <khiremat@redhat.com>
+Reviewed-on: http://review.gluster.org/12752
+Reviewed-on: http://review.gluster.org/12842
+Tested-by: Gluster Build System <jenkins@build.gluster.com>
+Reviewed-by: Milind Changire <mchangir@redhat.com>
+Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+Reviewed-by: Aravinda VK <avishwan@redhat.com>
+Reviewed-by: Venky Shankar <vshankar@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62769
+Reviewed-by: Saravanakumar Arumugam <sarumuga@redhat.com>
+Reviewed-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+Tested-by: Aravinda Vishwanathapura Krishna Murthy <avishwan@redhat.com>
+---
+ geo-replication/syncdaemon/master.py |   34 +++++++++++++++++++---------------
+ 1 files changed, 19 insertions(+), 15 deletions(-)
+
+diff --git a/geo-replication/syncdaemon/master.py b/geo-replication/syncdaemon/master.py
+index 8552e11..0911822 100644
+--- a/geo-replication/syncdaemon/master.py
++++ b/geo-replication/syncdaemon/master.py
+@@ -443,6 +443,24 @@ class GMasterCommon(object):
+     def mgmt_lock(self):
+ 
+         """Take management volume lock """
++        if gconf.mgmt_lock_fd:
++            try:
++                fcntl.lockf(gconf.mgmt_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                if not gconf.active_earlier:
++                    gconf.active_earlier = True
++                    logging.info("Got lock : %s : Becoming ACTIVE"
++                                 % gconf.local_path)
++                return True
++            except:
++                ex = sys.exc_info()[1]
++                if isinstance(ex, IOError) and ex.errno in (EACCES, EAGAIN):
++                    if not gconf.passive_earlier:
++                        gconf.passive_earlier = True
++                        logging.info("Didn't get lock : %s : Becoming PASSIVE"
++                                     % gconf.local_path)
++                    return False
++                raise
++
+         fd = None
+         bname = str(self.uuid) + "_" + str(gconf.slave_id) + "_subvol_" \
+             + str(gconf.subvol_num) + ".lock"
+@@ -468,31 +486,17 @@ class GMasterCommon(object):
+                 raise
+         try:
+             fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+-            # Close the previously acquired lock so that
+-            # fd will not leak. Reset fd to None
+-            if gconf.mgmt_lock_fd:
+-                os.close(gconf.mgmt_lock_fd)
+-                gconf.mgmt_lock_fd = None
+-
+             # Save latest FD for future use
+             gconf.mgmt_lock_fd = fd
+         except:
+             ex = sys.exc_info()[1]
+-            if fd:
+-                os.close(fd)
+-
+-            # When previously Active becomes Passive, Close the
+-            # fd of previously acquired lock
+-            if gconf.mgmt_lock_fd:
+-                os.close(gconf.mgmt_lock_fd)
+-                gconf.mgmt_lock_fd = None
+-
+             if isinstance(ex, IOError) and ex.errno in (EACCES, EAGAIN):
+                 # cannot grab, it's taken
+                 if not gconf.passive_earlier:
+                     gconf.passive_earlier = True
+                     logging.info("Didn't get lock : %s : Becoming PASSIVE"
+                                  % gconf.local_path)
++                gconf.mgmt_lock_fd = fd
+                 return False
+             raise
+ 
+-- 
+1.7.1
+

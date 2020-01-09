@@ -1,0 +1,536 @@
+From 7adade3bce71b8604917f110ec60b3fbd95ddf20 Mon Sep 17 00:00:00 2001
+From: Anuradha Talur <atalur@redhat.com>
+Date: Thu, 12 Nov 2015 19:45:10 +0530
+Subject: [PATCH 159/162] cluster/afr : Readdirp performance enhancement
+
+        Backport of http://review.gluster.org/#/c/12507/
+
+Things done :
+1) during lookup and inode_refresh as part of read_txn,
+request is sent to detect if heal is required or not.
+
+2) If heal is required, be conservative in setting the
+readdirp entry inodes to NULL, otherwise don't be.
+
+3) Self-heal-daemon now crawls both indices/xattrop
+and indices/dirty directory while healing.
+
+        >Change-Id: Ic4a4da63fb7e0726eab5f341a200859b29cf7eb7
+        >BUG: 1250803
+        >Signed-off-by: Anuradha Talur <atalur@redhat.com>
+        >Reviewed-on: http://review.gluster.org/12507
+        >Tested-by: Gluster Build System <jenkins@build.gluster.com>
+        >Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+        >Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+        >Signed-off-by: Anuradha Talur <atalur@redhat.com>
+
+Change-Id: Ie015dca375f9e3d5dabc962b315d5bb02d663a7b
+BUG: 1250241
+Signed-off-by: Anuradha Talur <atalur@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/62902
+Reviewed-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+Tested-by: Pranith Kumar Karampuri <pkarampu@redhat.com>
+---
+ xlators/cluster/afr/src/afr-common.c           |  105 ++++++++++++++++++++++-
+ xlators/cluster/afr/src/afr-dir-read.c         |   10 ++
+ xlators/cluster/afr/src/afr-self-heal-common.c |    9 ++-
+ xlators/cluster/afr/src/afr-self-heald.c       |  111 +++++++-----------------
+ xlators/cluster/afr/src/afr.h                  |    9 ++
+ 5 files changed, 162 insertions(+), 82 deletions(-)
+
+diff --git a/xlators/cluster/afr/src/afr-common.c b/xlators/cluster/afr/src/afr-common.c
+index ff2a421..1cec248 100644
+--- a/xlators/cluster/afr/src/afr-common.c
++++ b/xlators/cluster/afr/src/afr-common.c
+@@ -851,6 +851,8 @@ afr_inode_refresh_subvol_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 	afr_local_t *local = NULL;
+ 	int call_child = (long) cookie;
+ 	int call_count = 0;
++	GF_UNUSED int ret = 0;
++	int8_t need_heal = 1;
+ 
+ 	local = frame->local;
+ 
+@@ -863,10 +865,19 @@ afr_inode_refresh_subvol_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 		local->replies[call_child].xdata = dict_ref (xdata);
+ 	}
+ 
++        if (xdata) {
++                ret = dict_get_int8 (xdata, "link-count", &need_heal);
++                local->replies[call_child].need_heal = need_heal;
++        } else {
++                local->replies[call_child].need_heal = need_heal;
++        }
++
+ 	call_count = afr_frame_return (frame);
+ 
+-	if (call_count == 0)
++	if (call_count == 0) {
++                afr_set_need_heal (this, local);
+ 		afr_inode_refresh_done (frame, this);
++        }
+ 
+ 	return 0;
+ }
+@@ -898,6 +909,7 @@ afr_inode_refresh_do (call_frame_t *frame, xlator_t *this)
+ 	afr_private_t *priv = NULL;
+ 	int call_count = 0;
+ 	int i = 0;
++        int ret = 0;
+ 	dict_t *xdata = NULL;
+ 
+ 	priv = this->private;
+@@ -917,6 +929,12 @@ afr_inode_refresh_do (call_frame_t *frame, xlator_t *this)
+ 		return 0;
+ 	}
+ 
++        ret = dict_set_str (xdata, "link-count", GF_XATTROP_INDEX_COUNT);
++        if (ret) {
++                gf_msg_debug (this->name, -ret,
++                              "Unable to set link-count in dict ");
++        }
++
+ 	local->call_count = AFR_COUNT (local->child_up, priv->child_count);
+ 
+ 	call_count = local->call_count;
+@@ -1035,6 +1053,12 @@ afr_lookup_xattr_req_prepare (afr_local_t *local, xlator_t *this,
+                         loc->path, GLUSTERFS_PARENT_ENTRYLK);
+         }
+ 
++        ret = dict_set_str (xattr_req, "link-count", GF_XATTROP_INDEX_COUNT);
++        if (ret) {
++                gf_msg_debug (this->name, -ret,
++                              "Unable to set link-count in dict ");
++        }
++
+         ret = 0;
+ out:
+         return ret;
+@@ -1231,6 +1255,7 @@ afr_replies_wipe (struct afr_reply *replies, int count)
+                         replies[i].xattr = NULL;
+                 }
+         }
++	memset (&replies->need_heal, 0, sizeof (replies->need_heal));
+ }
+ 
+ void
+@@ -1683,6 +1708,7 @@ afr_lookup_done (call_frame_t *frame, xlator_t *this)
+ 	afr_handle_quota_size (frame, this);
+ 
+ unwind:
++        afr_set_need_heal (this, local);
+         if (read_subvol == -1) {
+                 if (spb_choice >= 0)
+                         read_subvol = spb_choice;
+@@ -1818,6 +1844,8 @@ afr_lookup_sh_metadata_wrap (void *opaque)
+         afr_private_t *priv       = NULL;
+         struct afr_reply *replies = NULL;
+         int i= 0, first = -1;
++        int ret = -1;
++        dict_t *dict = NULL;
+ 
+         local = frame->local;
+         this  = frame->this;
+@@ -1842,14 +1870,27 @@ afr_lookup_sh_metadata_wrap (void *opaque)
+         inode_unref (inode);
+ 
+         afr_local_replies_wipe (local, this->private);
++
++        dict = dict_new ();
++        if (!dict)
++                goto out;
++        ret = dict_set_str (dict, "link-count", GF_XATTROP_INDEX_COUNT);
++        if (ret) {
++                gf_msg_debug (this->name, -ret,
++                              "Unable to set link-count in dict ");
++        }
++
+         inode = afr_selfheal_unlocked_lookup_on (frame, local->loc.parent,
+                                                  local->loc.name, local->replies,
+-                                                 local->child_up, NULL);
++                                                 local->child_up, dict);
+         if (inode)
+                 inode_unref (inode);
+ out:
+         afr_lookup_done (frame, this);
+ 
++        if (dict)
++                dict_unref (dict);
++
+         return 0;
+ }
+ 
+@@ -2027,6 +2068,8 @@ afr_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         afr_local_t *   local = NULL;
+         int             call_count      = -1;
+         int             child_index     = -1;
++        GF_UNUSED int   ret             = 0;
++	int8_t need_heal                = 1;
+ 
+ 	child_index = (long) cookie;
+ 
+@@ -2043,6 +2086,12 @@ afr_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         if (xdata && dict_get (xdata, "gfid-changed"))
+                 local->cont.lookup.needs_fresh_lookup = _gf_true;
+ 
++        if (xdata) {
++                ret = dict_get_int8 (xdata, "link-count", &need_heal);
++                local->replies[child_index].need_heal = need_heal;
++        } else {
++                local->replies[child_index].need_heal = need_heal;
++        }
+ 	if (op_ret != -1) {
+ 		local->replies[child_index].poststat = *buf;
+ 		local->replies[child_index].postparent = *postparent;
+@@ -2052,6 +2101,7 @@ afr_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 
+         call_count = afr_frame_return (frame);
+         if (call_count == 0) {
++                afr_set_need_heal (this, local);
+ 		afr_lookup_entry_heal (frame, this);
+         }
+ 
+@@ -2129,6 +2179,8 @@ afr_discover_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         afr_local_t *   local = NULL;
+         int             call_count      = -1;
+         int             child_index     = -1;
++        GF_UNUSED int ret               = 0;
++	int8_t need_heal                = 1;
+ 
+ 	child_index = (long) cookie;
+ 
+@@ -2147,8 +2199,16 @@ afr_discover_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+         if (local->do_discovery && (op_ret == 0))
+                 afr_attempt_local_discovery (this, child_index);
+ 
++        if (xdata) {
++                ret = dict_get_int8 (xdata, "link-count", &need_heal);
++                local->replies[child_index].need_heal = need_heal;
++        } else {
++                local->replies[child_index].need_heal = need_heal;
++        }
++
+         call_count = afr_frame_return (frame);
+         if (call_count == 0) {
++               afr_set_need_heal (this, local);
+                afr_discover_done (frame, this);
+         }
+ 
+@@ -4872,3 +4932,44 @@ afr_get_child_index_from_name (xlator_t *this, char *name)
+ out:
+         return index;
+ }
++
++void
++afr_priv_need_heal_set (afr_private_t *priv, gf_boolean_t need_heal)
++{
++        LOCK (&priv->lock);
++        {
++                priv->need_heal = need_heal;
++        }
++        UNLOCK (&priv->lock);
++}
++
++void
++afr_set_need_heal (xlator_t *this, afr_local_t *local)
++{
++        int             i         = 0;
++        afr_private_t  *priv      = this->private;
++        gf_boolean_t    need_heal = _gf_false;
++
++        for (i = 0; i < priv->child_count; i++) {
++                if (local->replies[i].valid && local->replies[i].need_heal) {
++                        need_heal = _gf_true;
++                        break;
++                }
++        }
++        afr_priv_need_heal_set (priv, need_heal);
++        return;
++}
++
++gf_boolean_t
++afr_get_need_heal (xlator_t *this)
++{
++        afr_private_t  *priv      = this->private;
++        gf_boolean_t    need_heal = _gf_true;
++
++        LOCK (&priv->lock);
++        {
++                need_heal = priv->need_heal;
++        }
++        UNLOCK (&priv->lock);
++        return need_heal;
++}
+diff --git a/xlators/cluster/afr/src/afr-dir-read.c b/xlators/cluster/afr/src/afr-dir-read.c
+index 11f583e..559211e 100644
+--- a/xlators/cluster/afr/src/afr-dir-read.c
++++ b/xlators/cluster/afr/src/afr-dir-read.c
+@@ -174,8 +174,15 @@ afr_readdir_transform_entries (gf_dirent_t *subvol_entries, int subvol,
+         gf_dirent_t   *entry = NULL;
+         gf_dirent_t   *tmp   = NULL;
+         xlator_t      *this  = NULL;
++        afr_private_t *priv  = NULL;
++        gf_boolean_t  need_heal = _gf_false;
++        gf_boolean_t  validate_subvol = _gf_false;
+ 
+         this = THIS;
++        priv = this->private;
++
++        need_heal = afr_get_need_heal (this);
++        validate_subvol = need_heal | priv->consistent_metadata;
+ 
+         list_for_each_entry_safe (entry, tmp, &subvol_entries->list, list) {
+                 if (__is_root_gfid (fd->inode->gfid) &&
+@@ -186,6 +193,9 @@ afr_readdir_transform_entries (gf_dirent_t *subvol_entries, int subvol,
+ 		list_del_init (&entry->list);
+ 		list_add_tail (&entry->list, &entries->list);
+ 
++                if (!validate_subvol)
++                        continue;
++
+ 		if (entry->inode) {
+                         ret = afr_validate_read_subvol (entry->inode, this,
+                                                         subvol);
+diff --git a/xlators/cluster/afr/src/afr-self-heal-common.c b/xlators/cluster/afr/src/afr-self-heal-common.c
+index a746047..967ed09 100644
+--- a/xlators/cluster/afr/src/afr-self-heal-common.c
++++ b/xlators/cluster/afr/src/afr-self-heal-common.c
+@@ -658,6 +658,8 @@ afr_selfheal_discover_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ {
+ 	afr_local_t *local = NULL;
+ 	int i = -1;
++        GF_UNUSED int ret = -1;
++	int8_t need_heal = 1;
+ 
+ 	local = frame->local;
+ 	i = (long) cookie;
+@@ -669,8 +671,13 @@ afr_selfheal_discover_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+ 		local->replies[i].poststat = *buf;
+ 	if (parbuf)
+ 		local->replies[i].postparent = *parbuf;
+-	if (xdata)
++	if (xdata) {
+ 		local->replies[i].xdata = dict_ref (xdata);
++                ret = dict_get_int8 (xdata, "link-count", &need_heal);
++                local->replies[i].need_heal = need_heal;
++        } else {
++                local->replies[i].need_heal = need_heal;
++        }
+ 
+ 	syncbarrier_wake (&local->barrier);
+ 
+diff --git a/xlators/cluster/afr/src/afr-self-heald.c b/xlators/cluster/afr/src/afr-self-heald.c
+index 8cbdc73..35b1d74 100644
+--- a/xlators/cluster/afr/src/afr-self-heald.c
++++ b/xlators/cluster/afr/src/afr-self-heald.c
+@@ -186,9 +186,8 @@ out:
+ 	return inode;
+ }
+ 
+-
+ inode_t*
+-afr_shd_index_inode (xlator_t *this, xlator_t *subvol)
++afr_shd_index_inode (xlator_t *this, xlator_t *subvol, char *vgfid)
+ {
+ 	loc_t rootloc = {0, };
+ 	inode_t *inode = NULL;
+@@ -200,18 +199,18 @@ afr_shd_index_inode (xlator_t *this, xlator_t *subvol)
+ 	gf_uuid_copy (rootloc.gfid, rootloc.inode->gfid);
+ 
+ 	ret = syncop_getxattr (subvol, &rootloc, &xattr,
+-			       GF_XATTROP_INDEX_GFID, NULL, NULL);
++			       vgfid, NULL, NULL);
+ 	if (ret || !xattr) {
+ 		errno = -ret;
+ 		goto out;
+ 	}
+ 
+-	ret = dict_get_ptr (xattr, GF_XATTROP_INDEX_GFID, &index_gfid);
++	ret = dict_get_ptr (xattr, vgfid, &index_gfid);
+ 	if (ret)
+ 		goto out;
+ 
+-        gf_msg_debug (this->name, 0, "index-dir gfid for %s: %s",
+-	              subvol->name, uuid_utoa (index_gfid));
++        gf_msg_debug (this->name, 0, "%s dir gfid for %s: %s",
++	              vgfid, subvol->name, uuid_utoa (index_gfid));
+ 
+ 	inode = afr_shd_inode_find (this, subvol, index_gfid);
+ 
+@@ -429,7 +428,7 @@ afr_shd_index_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
+ }
+ 
+ int
+-afr_shd_index_sweep (struct subvol_healer *healer)
++afr_shd_index_sweep (struct subvol_healer *healer, char *vgfid)
+ {
+ 	loc_t         loc     = {0};
+ 	afr_private_t *priv   = NULL;
+@@ -439,7 +438,7 @@ afr_shd_index_sweep (struct subvol_healer *healer)
+ 	priv = healer->this->private;
+ 	subvol = priv->children[healer->subvol];
+ 
+-	loc.inode = afr_shd_index_inode (healer->this, subvol);
++	loc.inode = afr_shd_index_inode (healer->this, subvol, vgfid);
+ 	if (!loc.inode) {
+ 	        gf_msg (healer->this->name, GF_LOG_WARNING,
+                         0, AFR_MSG_INDEX_DIR_GET_FAILED,
+@@ -460,6 +459,29 @@ afr_shd_index_sweep (struct subvol_healer *healer)
+ }
+ 
+ int
++afr_shd_index_sweep_all (struct subvol_healer *healer)
++{
++        int            ret    = 0;
++        int            count  = 0;
++
++        ret = afr_shd_index_sweep (healer, GF_XATTROP_INDEX_GFID);
++        if (ret < 0)
++                goto out;
++        count = ret;
++
++        ret = afr_shd_index_sweep (healer, GF_XATTROP_DIRTY_GFID);
++        if (ret < 0)
++                goto out;
++        count += ret;
++
++out:
++        if (ret < 0)
++                return ret;
++        else
++                return count;
++}
++
++int
+ afr_shd_full_heal (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
+                    void *data)
+ {
+@@ -515,7 +537,7 @@ afr_shd_index_healer (void *data)
+ 
+ 			afr_shd_sweep_prepare (healer);
+ 
+-			ret = afr_shd_index_sweep (healer);
++                        ret = afr_shd_index_sweep_all (healer);
+ 
+ 			afr_shd_sweep_done (healer);
+ 			/*
+@@ -847,73 +869,6 @@ out:
+ }
+ 
+ int
+-afr_shd_gather_entry (xlator_t *subvol, gf_dirent_t *entry, loc_t *parent,
+-                      void *data)
+-{
+-        dict_t        *output = data;
+-        xlator_t      *this   = NULL;
+-        afr_private_t *priv   = NULL;
+-        char          *path   = NULL;
+-        int           ret     = 0;
+-        int           child   = 0;
+-        uuid_t        gfid    = {0};
+-
+-        this = THIS;
+-        priv = this->private;
+-
+-        gf_msg_debug (this->name, 0, "got entry: %s",
+-                      entry->d_name);
+-
+-        ret = gf_uuid_parse (entry->d_name, gfid);
+-        if (ret)
+-                return 0;
+-
+-        for (child = 0; child < priv->child_count; child++)
+-                if (priv->children[child] == subvol)
+-                        break;
+-
+-        if (child == priv->child_count)
+-                return 0;
+-
+-        ret = syncop_gfid_to_path (this->itable, subvol, gfid, &path);
+-
+-        if (ret == -ENOENT || ret == -ESTALE) {
+-                afr_shd_index_purge (subvol, parent->inode, entry->d_name);
+-        } else if (ret == 0) {
+-                ret = afr_shd_dict_add_path (this, output, child, path, NULL);
+-        }
+-
+-        return 0;
+-}
+-
+-int
+-afr_shd_gather_index_entries (xlator_t *this, int child, dict_t *output)
+-{
+-        loc_t          loc    = {0};
+-        afr_private_t *priv   = NULL;
+-        xlator_t      *subvol = NULL;
+-        int           ret     = 0;
+-
+-        priv = this->private;
+-        subvol = priv->children[child];
+-
+-        loc.inode = afr_shd_index_inode (this, subvol);
+-        if (!loc.inode) {
+-                gf_msg (this->name, GF_LOG_WARNING,
+-                        0, AFR_MSG_INDEX_DIR_GET_FAILED,
+-                        "unable to get index-dir on %s", subvol->name);
+-                return -errno;
+-        }
+-
+-        ret = syncop_dir_scan (subvol, &loc, GF_CLIENT_PID_SELF_HEALD,
+-                               output, afr_shd_gather_entry);
+-        inode_forget (loc.inode, 1);
+-        loc_wipe (&loc);
+-        return ret;
+-}
+-
+-
+-int
+ afr_add_shd_event (circular_buffer_t *cb, void *data)
+ {
+ 	dict_t *output = NULL;
+@@ -1153,9 +1108,7 @@ afr_xl_op (xlator_t *this, dict_t *input, dict_t *output)
+ 		}
+                 break;
+         case GF_SHD_OP_INDEX_SUMMARY:
+-		for (i = 0; i < priv->child_count; i++)
+-			if (shd->index_healers[i].local)
+-				afr_shd_gather_index_entries (this, i, output);
++                /* this case has been handled in glfs-heal.c */
+                 break;
+         case GF_SHD_OP_HEALED_FILES:
+         case GF_SHD_OP_HEAL_FAILED_FILES:
+diff --git a/xlators/cluster/afr/src/afr.h b/xlators/cluster/afr/src/afr.h
+index c2fd116..8e0a1f1 100644
+--- a/xlators/cluster/afr/src/afr.h
++++ b/xlators/cluster/afr/src/afr.h
+@@ -132,6 +132,7 @@ typedef struct _afr_private {
+ 	gf_boolean_t           use_afr_in_pump;
+         gf_boolean_t           consistent_metadata;
+         uint64_t               spb_choice_timeout;
++        gf_boolean_t           need_heal;
+ } afr_private_t;
+ 
+ 
+@@ -273,6 +274,8 @@ struct afr_reply {
+         /* For rchecksum */
+ 	uint8_t checksum[MD5_DIGEST_LENGTH];
+         gf_boolean_t buf_has_zeroes;
++        /* For lookup */
++        int8_t need_heal;
+ };
+ 
+ typedef enum {
+@@ -1088,4 +1091,10 @@ afr_spb_choice_timeout_cancel (xlator_t *this, inode_t *inode);
+ 
+ int
+ afr_set_split_brain_choice (int ret, call_frame_t *frame, void *opaque);
++
++gf_boolean_t
++afr_get_need_heal (xlator_t *this);
++
++void
++afr_set_need_heal (xlator_t *this, afr_local_t *local);
+ #endif /* __AFR_H__ */
+-- 
+1.7.1
+

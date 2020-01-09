@@ -1,0 +1,65 @@
+From 032b4dc34e9396cd31428423f679f56221c80ca7 Mon Sep 17 00:00:00 2001
+From: Gaurav Kumar Garg <garg.gaurav52@gmail.com>
+Date: Fri, 30 Oct 2015 16:39:16 +0530
+Subject: [PATCH 77/98] glusterd: move new feature (tiering) enum op to the last of the array
+
+This patch is Backport of: http://review.gluster.org/#/c/12473/
+
+Currently new feature tiering have GD_OP_DETACH_TIER and GD_OP_TIER_MIGRATE
+enum in the middle of the glusterd_op_ enum array. In multi nodes
+cluster when one of the node upgraded from lower version to higher
+version and upon executing command can end up in a mismatch in enum ops
+at the receiver ends causing command execution fail.
+
+Fix is to put every new feature glusterd operation enum code to last of
+the enum array.
+
+  >>Change-Id: I640f811065e8c84add624237aa80fed43fde5967
+  >>BUG: 1276643
+  >>Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+
+Change-Id: I3a22b851a5bff12e15df83e4f789aa49a7021c4b
+BUG: 1276587
+Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/60757
+Reviewed-by: Atin Mukherjee <amukherj@redhat.com>
+Tested-by: Atin Mukherjee <amukherj@redhat.com>
+---
+ xlators/mgmt/glusterd/src/glusterd.h |    7 +++++--
+ 1 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd.h b/xlators/mgmt/glusterd/src/glusterd.h
+index aabfb2b..2fdfa9b 100644
+--- a/xlators/mgmt/glusterd/src/glusterd.h
++++ b/xlators/mgmt/glusterd/src/glusterd.h
+@@ -82,6 +82,9 @@ typedef struct glusterd_volinfo_ glusterd_volinfo_t;
+ struct glusterd_snap_;
+ typedef struct glusterd_snap_ glusterd_snap_t;
+ 
++/* For every new feature please add respective enum of new feature
++ * at the end of latest enum (just before the GD_OP_MAX enum)
++ */
+ typedef enum glusterd_op_ {
+         GD_OP_NONE = 0,
+         GD_OP_CREATE_VOLUME,
+@@ -93,8 +96,6 @@ typedef enum glusterd_op_ {
+         GD_OP_DEFRAG_VOLUME,
+         GD_OP_ADD_BRICK,
+         GD_OP_REMOVE_BRICK,
+-        GD_OP_DETACH_TIER,
+-        GD_OP_TIER_MIGRATE,
+         GD_OP_REPLACE_BRICK,
+         GD_OP_SET_VOLUME,
+         GD_OP_RESET_VOLUME,
+@@ -117,6 +118,8 @@ typedef enum glusterd_op_ {
+         GD_OP_BARRIER,
+         GD_OP_GANESHA,
+         GD_OP_BITROT,
++        GD_OP_DETACH_TIER,
++        GD_OP_TIER_MIGRATE,
+         GD_OP_MAX,
+ } glusterd_op_t;
+ 
+-- 
+1.7.1
+

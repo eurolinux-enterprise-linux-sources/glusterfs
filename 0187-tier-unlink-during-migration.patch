@@ -1,0 +1,979 @@
+From 85872318a759e3f7386531d21366d94e1bc7249d Mon Sep 17 00:00:00 2001
+From: Mohammed Rafi KC <rkavunga@redhat.com>
+Date: Mon, 30 Nov 2015 19:02:54 +0530
+Subject: [PATCH 187/191] tier:unlink during migration
+
+files deleted during promotion were not deleting as the
+files are moving from hashed to non-hashed.
+
+On deleting a file that is undergoing promotion,
+the unlink call is not sent to the dst file as the
+hashed subvol == cached subvol. This causes
+the file to reappear once the migration is complete.
+
+This patch also fixes a problem with stale linkfile
+deleting.
+
+Backport of>
+>Change-Id: I4b02a498218c9d8eeaa4556fa4219e91e7fa71e5
+>BUG: 1282390
+>Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+>Reviewed-on: http://review.gluster.org/12829
+>Tested-by: NetBSD Build System <jenkins@build.gluster.org>
+>Tested-by: Gluster Build System <jenkins@build.gluster.com>
+>Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+>Tested-by: Dan Lambright <dlambrig@redhat.com>
+>(cherry picked from commit b5de382afa8c5777e455c7a376fc4f1f01d782d1)
+
+Change-Id: I951adb4d929926bcd646dd7574f7a2d41d57479d
+BUG: 1276227
+Signed-off-by: Mohammed Rafi KC <rkavunga@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64015
+Reviewed-by: Joseph Fernandes <josferna@redhat.com>
+Tested-by: Joseph Fernandes <josferna@redhat.com>
+---
+ libglusterfs/src/glusterfs.h               |    1 +
+ tests/basic/tier/unlink-during-migration.t |   91 +++++++++
+ xlators/cluster/dht/src/dht-common.c       |  151 +++++++-------
+ xlators/cluster/dht/src/dht-common.h       |    3 +
+ xlators/cluster/dht/src/tier-common.c      |  296 ++++++++++++++++++++++++++++
+ xlators/cluster/dht/src/tier-common.h      |    5 +
+ xlators/cluster/dht/src/tier.c             |    2 +-
+ xlators/storage/posix/src/posix.c          |  159 ++++++++++------
+ xlators/storage/posix/src/posix.h          |    6 +-
+ 9 files changed, 581 insertions(+), 133 deletions(-)
+ create mode 100755 tests/basic/tier/unlink-during-migration.t
+
+diff --git a/libglusterfs/src/glusterfs.h b/libglusterfs/src/glusterfs.h
+index d518991..c300bbb 100644
+--- a/libglusterfs/src/glusterfs.h
++++ b/libglusterfs/src/glusterfs.h
+@@ -240,6 +240,7 @@
+ #define DHT_COMMITHASH_STR "commithash"
+ 
+ #define DHT_SKIP_NON_LINKTO_UNLINK  "unlink-only-if-dht-linkto-file"
++#define TIER_SKIP_NON_LINKTO_UNLINK  "unlink-only-if-tier-linkto-file"
+ #define DHT_SKIP_OPEN_FD_UNLINK     "dont-unlink-for-open-fd"
+ #define DHT_IATT_IN_XDATA_KEY       "dht-get-iatt-in-xattr"
+ 
+diff --git a/tests/basic/tier/unlink-during-migration.t b/tests/basic/tier/unlink-during-migration.t
+new file mode 100755
+index 0000000..7888743
+--- /dev/null
++++ b/tests/basic/tier/unlink-during-migration.t
+@@ -0,0 +1,91 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../tier.rc
++
++
++DEMOTE_FREQ=5
++PROMOTE_FREQ=5
++
++function create_dist_rep_vol () {
++        mkdir $B0/cold
++        mkdir $B0/hot
++        TEST $CLI volume create $V0 replica 2 $H0:$B0/cold/${V0}{0..3}
++        TEST $CLI volume set $V0 performance.quick-read off
++        TEST $CLI volume set $V0 performance.io-cache off
++        TEST $CLI volume set $V0 features.ctr-enabled on
++        TEST $CLI volume start $V0
++}
++
++function attach_dist_rep_tier () {
++        TEST $CLI volume attach-tier $V0 replica 2 $H0:$B0/hot/${V0}{0..3}
++        TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.read-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.write-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.tier-mode test
++}
++
++cleanup;
++
++#Basic checks
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume info
++
++
++#Create and start a volume
++create_dist_rep_vol
++
++# Mount FUSE
++TEST glusterfs -s $H0 --volfile-id $V0 $M0
++
++# Create a large file (320MB), so that rebalance takes time
++TEST dd if=/dev/zero of=$M0/foo bs=64k count=5120
++
++# Get the path of the file on the cold tier
++CPATH=`find $B0/cold/ -name  foo`
++echo "File path on cold tier: "$CPATH
++
++#Now attach the tier
++attach_dist_rep_tier
++
++#Write into the file to promote it
++echo "good morning">>$M0/foo
++
++# Wait for the tier process to promote the file
++EXPECT_WITHIN $REBALANCE_TIMEOUT "yes" is_sticky_set $CPATH
++
++# Get the path of the file on the hot tier
++HPATH=`find $B0/hot/ -name  foo`
++
++echo "File path on hot tier: "$HPATH
++TEST rm -rf $M0/foo
++TEST ! stat $HPATH
++TEST ! stat $CPATH
++
++#unlink during demotion
++HPATH="";
++CPATH="";
++
++# Create a large file (320MB), so that rebalance takes time
++TEST dd if=/dev/zero of=$M0/foo1 bs=64k count=5120
++
++# Get the path of the file on the hot tier
++HPATH=`find $B0/hot/ -name  foo1`
++echo "File path on hot tier : "$HPATH
++
++EXPECT_WITHIN $REBALANCE_TIMEOUT "yes" is_sticky_set $HPATH
++
++# Get the path of the file on the cold tier
++CPATH=`find $B0/cold/ -name  foo1`
++echo "File path on cold tier : "$CPATH
++
++TEST rm -rf $M0/foo1
++
++TEST ! stat $HPATH
++TEST ! stat $CPATH
++
++cleanup;
++
+diff --git a/xlators/cluster/dht/src/dht-common.c b/xlators/cluster/dht/src/dht-common.c
+index bc7390b..c02bf5e 100644
+--- a/xlators/cluster/dht/src/dht-common.c
++++ b/xlators/cluster/dht/src/dht-common.c
+@@ -1167,9 +1167,19 @@ dht_lookup_unlink_stale_linkto_cbk (call_frame_t *frame, void *cookie,
+ int
+ dht_fill_dict_to_avoid_unlink_of_migrating_file (dict_t *dict) {
+ 
+-        int ret = 0;
++        int                      ret = 0;
++        xlator_t                *this           = NULL;
++        char                    *linktoskip_key = NULL;
++
++        this    = THIS;
++        GF_VALIDATE_OR_GOTO ("dht", this, err);
+ 
+-        ret = dict_set_int32 (dict, DHT_SKIP_NON_LINKTO_UNLINK, 1);
++        if (dht_is_tier_xlator (this))
++                linktoskip_key = TIER_SKIP_NON_LINKTO_UNLINK;
++        else
++                linktoskip_key = DHT_SKIP_NON_LINKTO_UNLINK;
++
++        ret = dict_set_int32 (dict, linktoskip_key, 1);
+ 
+         if (ret)
+                 goto err;
+@@ -2431,103 +2441,104 @@ err:
+         return 0;
+ }
+ 
+-
+ int
+-dht_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+-                int op_ret, int op_errno, struct iatt *preparent,
+-                struct iatt *postparent, dict_t *xdata)
++dht_unlink_linkfile_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                         int op_ret, int op_errno, struct iatt *preparent,
++                         struct iatt *postparent, dict_t *xdata)
+ {
+-        dht_local_t  *local = NULL;
+-        call_frame_t *prev  = NULL;
++        dht_local_t     *local          = NULL;
++        call_frame_t    *prev           = NULL;
+ 
+         local = frame->local;
+         prev  = cookie;
+ 
+         LOCK (&frame->lock);
+         {
+-                if (op_ret == -1) {
+-                        local->op_ret   = -1;
++                if ((op_ret == -1) && !((op_errno == ENOENT) ||
++                                        (op_errno == ENOTCONN))) {
+                         local->op_errno = op_errno;
+                         gf_msg_debug (this->name, op_errno,
+-                                      "Unlink: subvolume %s returned -1",
+-                                       prev->this->name);
++                                      "Unlink link: subvolume %s"
++                                      " returned -1",
++                                      prev->this->name);
+                         goto unlock;
+                 }
+ 
+                 local->op_ret = 0;
+-
+-                local->postparent = *postparent;
+-                local->preparent = *preparent;
+-
+-                if (local->loc.parent) {
+-                        dht_inode_ctx_time_update (local->loc.parent, this,
+-                                                   &local->preparent, 0);
+-                        dht_inode_ctx_time_update (local->loc.parent, this,
+-                                                   &local->postparent, 1);
+-                }
+         }
+ unlock:
+         UNLOCK (&frame->lock);
+ 
++
+         DHT_STACK_UNWIND (unlink, frame, local->op_ret, local->op_errno,
+-                          &local->preparent, &local->postparent, NULL);
++                          &local->preparent, &local->postparent, xdata);
+ 
+         return 0;
+ }
+ 
+-
+ int
+-dht_unlink_linkfile_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+-                         int op_ret, int op_errno, struct iatt *preparent,
+-                         struct iatt *postparent, dict_t *xdata)
++dht_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                int op_ret, int op_errno, struct iatt *preparent,
++                struct iatt *postparent, dict_t *xdata)
+ {
+-        dht_local_t  *local = NULL;
+-        call_frame_t *prev = NULL;
+-
+-        xlator_t *cached_subvol = NULL;
++        dht_local_t     *local          = NULL;
++        call_frame_t    *prev           = NULL;
++        xlator_t        *hashed_subvol  = NULL;
+ 
+         local = frame->local;
+         prev  = cookie;
+ 
+         LOCK (&frame->lock);
+         {
+-                if ((op_ret == -1) && !((op_errno == ENOENT) ||
+-                                        (op_errno == ENOTCONN))) {
+-                        local->op_errno = op_errno;
++                if (op_ret == -1) {
++                        if (op_errno != ENOENT) {
++                                local->op_ret   = -1;
++                                local->op_errno = op_errno;
++                        } else {
++                                local->op_ret = 0;
++                        }
+                         gf_msg_debug (this->name, op_errno,
+-                                      "Unlink link: subvolume %s"
+-                                      " returned -1",
+-                                      prev->this->name);
++                                      "Unlink: subvolume %s returned -1",
++                                       prev->this->name);
+                         goto unlock;
+                 }
+ 
+                 local->op_ret = 0;
++
++                local->postparent = *postparent;
++                local->preparent = *preparent;
++
++                if (local->loc.parent) {
++                        dht_inode_ctx_time_update (local->loc.parent, this,
++                                                   &local->preparent, 0);
++                        dht_inode_ctx_time_update (local->loc.parent, this,
++                                                   &local->postparent, 1);
++                }
+         }
+ unlock:
+         UNLOCK (&frame->lock);
+ 
+-        if (local->op_ret == -1)
+-                goto err;
+-
+-        cached_subvol = dht_subvol_get_cached (this, local->loc.inode);
+-        if (!cached_subvol) {
+-                gf_msg_debug (this->name, 0,
+-                              "no cached subvolume for path=%s",
+-                              local->loc.path);
+-                local->op_errno = EINVAL;
+-                goto err;
++        if (!local->op_ret) {
++                hashed_subvol = dht_subvol_get_hashed (this, &local->loc);
++                if (hashed_subvol &&
++                hashed_subvol != local->cached_subvol) {
++                        /*
++                         * If hashed and cached are different, then we need
++                         * to unlink linkfile from hashed subvol if data
++                         * file is deleted successfully
++                         */
++                        STACK_WIND (frame, dht_unlink_linkfile_cbk,
++                                    hashed_subvol,
++                                    hashed_subvol->fops->unlink, &local->loc,
++                                    local->flags, xdata);
++                        return 0;
++                }
+         }
+ 
+-        STACK_WIND (frame, dht_unlink_cbk,
+-                    cached_subvol, cached_subvol->fops->unlink,
+-                    &local->loc, local->flags, NULL);
++        DHT_STACK_UNWIND (unlink, frame, local->op_ret, local->op_errno,
++                          &local->preparent, &local->postparent, xdata);
+ 
+         return 0;
+-
+-err:
+-        DHT_STACK_UNWIND (unlink, frame, -1, local->op_errno,
+-                          NULL, NULL, NULL);
+-        return 0;
+ }
+ 
+ int
+@@ -5609,7 +5620,6 @@ dht_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
+             dict_t *xdata)
+ {
+         xlator_t    *cached_subvol = NULL;
+-        xlator_t    *hashed_subvol = NULL;
+         int          op_errno = -1;
+         dht_local_t *local = NULL;
+ 
+@@ -5624,15 +5634,6 @@ dht_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
+                 goto err;
+         }
+ 
+-        hashed_subvol = dht_subvol_get_hashed (this, loc);
+-        /* Dont fail unlink if hashed_subvol is NULL which can be the result
+-         * of layout anomaly */
+-        if (!hashed_subvol) {
+-                gf_msg_debug (this->name, 0,
+-                              "no subvolume in layout for path=%s",
+-                              loc->path);
+-        }
+-
+         cached_subvol = local->cached_subvol;
+         if (!cached_subvol) {
+                 gf_msg_debug (this->name, 0,
+@@ -5642,15 +5643,9 @@ dht_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
+         }
+ 
+         local->flags = xflag;
+-        if (hashed_subvol && hashed_subvol != cached_subvol) {
+-                STACK_WIND (frame, dht_unlink_linkfile_cbk,
+-                            hashed_subvol, hashed_subvol->fops->unlink, loc,
+-                            xflag, xdata);
+-        } else {
+-                STACK_WIND (frame, dht_unlink_cbk,
+-                            cached_subvol, cached_subvol->fops->unlink, loc,
+-                            xflag, xdata);
+-        }
++        STACK_WIND (frame, dht_unlink_cbk,
++                    cached_subvol, cached_subvol->fops->unlink, loc,
++                    xflag, xdata);
+ 
+         return 0;
+ err:
+@@ -8116,3 +8111,11 @@ int32_t dht_set_local_rebalance (xlator_t *this, dht_local_t *local,
+         return 0;
+ }
+ 
++gf_boolean_t
++dht_is_tier_xlator (xlator_t *this)
++{
++
++        if (strcmp (this->type, "cluster/tier") == 0)
++                return _gf_true;
++        return _gf_false;
++}
+diff --git a/xlators/cluster/dht/src/dht-common.h b/xlators/cluster/dht/src/dht-common.h
+index 4e185c7..10ec08a 100644
+--- a/xlators/cluster/dht/src/dht-common.h
++++ b/xlators/cluster/dht/src/dht-common.h
+@@ -1122,6 +1122,9 @@ dht_layout_missing_dirs (dht_layout_t *layout);
+ int
+ dht_refresh_layout (call_frame_t *frame);
+ 
++gf_boolean_t
++dht_is_tier_xlator (xlator_t *this);
++
+ int
+ dht_build_parent_loc (xlator_t *this, loc_t *parent, loc_t *child,
+                                                  int32_t *op_errno);
+diff --git a/xlators/cluster/dht/src/tier-common.c b/xlators/cluster/dht/src/tier-common.c
+index 129932c..0adf338 100644
+--- a/xlators/cluster/dht/src/tier-common.c
++++ b/xlators/cluster/dht/src/tier-common.c
+@@ -22,6 +22,302 @@
+ #include "tier.h"
+ 
+ int
++tier_unlink_nonhashed_linkfile_cbk (call_frame_t *frame, void *cookie,
++                                    xlator_t *this, int op_ret, int op_errno,
++                                    struct iatt *preparent,
++                                    struct iatt *postparent, dict_t *xdata)
++{
++        dht_local_t  *local = NULL;
++        call_frame_t *prev = NULL;
++
++        local = frame->local;
++        prev  = cookie;
++
++        LOCK (&frame->lock);
++        {
++                if ((op_ret == -1) && (op_errno != ENOENT)) {
++                        local->op_errno = op_errno;
++                        local->op_ret = op_ret;
++                        gf_msg_debug (this->name, op_errno,
++                                      "Unlink link: subvolume %s"
++                                      " returned -1",
++                                      prev->this->name);
++                        goto unlock;
++                }
++
++                local->op_ret = 0;
++        }
++unlock:
++        UNLOCK (&frame->lock);
++
++        if (local->op_ret == -1)
++                goto err;
++        DHT_STACK_UNWIND (unlink, frame, local->op_ret, local->op_errno,
++                          &local->preparent, &local->postparent, NULL);
++
++
++        return 0;
++
++err:
++        DHT_STACK_UNWIND (unlink, frame, -1, local->op_errno,
++                          NULL, NULL, NULL);
++        return 0;
++}
++
++int
++tier_unlink_lookup_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                        int op_ret, int op_errno, inode_t *inode,
++                        struct iatt *preparent, dict_t *xdata,
++                        struct iatt *postparent)
++{
++        dht_local_t             *local             = NULL;
++        call_frame_t            *prev              = NULL;
++        dht_conf_t              *conf              = NULL;
++        xlator_t                *hot_subvol        = NULL;
++
++        local = frame->local;
++        prev  = cookie;
++        conf = this->private;
++        hot_subvol = TIER_UNHASHED_SUBVOL;
++
++        if (!op_ret) {
++                /*
++                 * linkfile present on hot tier. unlinking the linkfile
++                 */
++                STACK_WIND (frame, tier_unlink_nonhashed_linkfile_cbk,
++                            hot_subvol, hot_subvol->fops->unlink,
++                            &local->loc, local->flags, NULL);
++                return 0;
++        }
++
++        LOCK (&frame->lock);
++        {
++                if (op_errno == ENOENT) {
++                        local->op_ret   = 0;
++                        local->op_errno = op_errno;
++                } else {
++                        local->op_ret = op_ret;
++                        local->op_errno = op_errno;
++                }
++                gf_msg_debug (this->name, op_errno,
++                              "Lookup : subvolume %s returned -1",
++                               prev->this->name);
++        }
++
++        UNLOCK (&frame->lock);
++
++        DHT_STACK_UNWIND (unlink, frame, local->op_ret, local->op_errno,
++                          &local->preparent, &local->postparent, xdata);
++
++        return 0;
++}
++
++int
++tier_unlink_linkfile_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                         int op_ret, int op_errno, struct iatt *preparent,
++                         struct iatt *postparent, dict_t *xdata)
++{
++        dht_local_t  *local = NULL;
++        call_frame_t *prev = NULL;
++
++        local = frame->local;
++        prev  = cookie;
++
++        LOCK (&frame->lock);
++        {
++                /* Ignore EINVAL for tier to ignore error when the file
++                        does not exist on the other tier  */
++                if ((op_ret == -1) && !((op_errno == ENOENT) ||
++                                        (op_errno == EINVAL))) {
++                        local->op_errno = op_errno;
++                        local->op_ret   = op_ret;
++                        gf_msg_debug (this->name, op_errno,
++                                      "Unlink link: subvolume %s"
++                                      " returned -1",
++                                      prev->this->name);
++                        goto unlock;
++                }
++
++                local->op_ret = 0;
++        }
++unlock:
++        UNLOCK (&frame->lock);
++
++        if (local->op_ret == -1)
++                goto err;
++
++        DHT_STACK_UNWIND (unlink, frame, local->op_ret, local->op_errno,
++                          &local->preparent, &local->postparent, xdata);
++
++        return 0;
++
++err:
++        DHT_STACK_UNWIND (unlink, frame, -1, local->op_errno,
++                          NULL, NULL, NULL);
++        return 0;
++}
++
++int32_t
++tier_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
++                int op_ret, int op_errno, struct iatt *preparent,
++                struct iatt *postparent, dict_t *xdata)
++{
++        dht_local_t     *local          = NULL;
++        call_frame_t    *prev           = NULL;
++        struct iatt     *stbuf          = NULL;
++        dht_conf_t      *conf           = NULL;
++        int              ret            = -1;
++        xlator_t        *hot_tier       = NULL;
++        xlator_t        *cold_tier      = NULL;
++
++        local = frame->local;
++        prev  = cookie;
++        conf  = this->private;
++
++        cold_tier = TIER_HASHED_SUBVOL;
++        hot_tier = TIER_UNHASHED_SUBVOL;
++
++        LOCK (&frame->lock);
++        {
++                if (op_ret == -1) {
++                        if (op_errno == ENOENT) {
++                                local->op_ret = 0;
++                        } else {
++                                local->op_ret   = -1;
++                                local->op_errno = op_errno;
++                        }
++                        gf_msg_debug (this->name, op_errno,
++                                      "Unlink: subvolume %s returned -1"
++                                      " with errno = %d",
++                                       prev->this->name, op_errno);
++                        goto unlock;
++                }
++
++                local->op_ret = 0;
++
++                local->postparent = *postparent;
++                local->preparent = *preparent;
++
++                if (local->loc.parent) {
++                        dht_inode_ctx_time_update (local->loc.parent, this,
++                                                   &local->preparent, 0);
++                        dht_inode_ctx_time_update (local->loc.parent, this,
++                                                   &local->postparent, 1);
++                }
++        }
++unlock:
++        UNLOCK (&frame->lock);
++
++        if (local->op_ret)
++                goto out;
++
++        if (cold_tier != local->cached_subvol) {
++                /*
++                 * File is present in hot tier, so there will be
++                 * a link file on cold tier, deleting the linkfile
++                 * from cold tier
++                 */
++                STACK_WIND (frame, tier_unlink_linkfile_cbk,
++                            cold_tier,
++                            cold_tier->fops->unlink, &local->loc,
++                            local->flags, xdata);
++                return 0;
++        }
++
++        ret = dict_get_bin (xdata, DHT_IATT_IN_XDATA_KEY, (void **) &stbuf);
++        if (!ret && stbuf && ((IS_DHT_MIGRATION_PHASE2 (stbuf)) ||
++                      IS_DHT_MIGRATION_PHASE1 (stbuf))) {
++                /*
++                 * File is migrating from cold to hot tier.
++                 * Delete the destination linkfile.
++                 */
++                STACK_WIND (frame, tier_unlink_lookup_cbk,
++                            hot_tier,
++                            hot_tier->fops->lookup,
++                            &local->loc, NULL);
++                return 0;
++
++        }
++
++out:
++        DHT_STACK_UNWIND (unlink, frame, local->op_ret, local->op_errno,
++                          &local->preparent, &local->postparent, xdata);
++
++        return 0;
++}
++
++int
++tier_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
++            dict_t *xdata)
++{
++        xlator_t                *cached_subvol = NULL;
++        xlator_t                *hashed_subvol = NULL;
++        dht_conf_t              *conf          = NULL;
++        int                      op_errno      = -1;
++        dht_local_t             *local         = NULL;
++        int                      ret           = -1;
++
++        VALIDATE_OR_GOTO (frame, err);
++        VALIDATE_OR_GOTO (this, err);
++        VALIDATE_OR_GOTO (loc, err);
++
++        conf = this->private;
++
++        local = dht_local_init (frame, loc, NULL, GF_FOP_UNLINK);
++        if (!local) {
++                op_errno = ENOMEM;
++
++                goto err;
++        }
++
++        hashed_subvol = TIER_HASHED_SUBVOL;
++
++        cached_subvol = local->cached_subvol;
++        if (!cached_subvol) {
++                gf_msg_debug (this->name, 0,
++                              "no cached subvolume for path=%s", loc->path);
++                op_errno = EINVAL;
++                goto err;
++        }
++
++        local->flags = xflag;
++        if (hashed_subvol == cached_subvol) {
++                /*
++                 * File resides in cold tier. We need to stat
++                 * the file to see if it is being promoted.
++                 * If yes we need to delete the destination
++                 * file as well.
++                 */
++                xdata = xdata ? dict_ref (xdata) : dict_new ();
++                if (xdata) {
++                        ret = dict_set_dynstr_with_alloc (xdata,
++                                DHT_IATT_IN_XDATA_KEY, "yes");
++                        if (ret) {
++                                gf_msg_debug (this->name, 0,
++                                        "Failed to set dictionary key %s",
++                                         DHT_IATT_IN_XDATA_KEY);
++                        }
++                }
++        }
++
++        /*
++         * File is on hot tier, delete the data file first, then
++         * linkfile from cold.
++         */
++        STACK_WIND (frame, tier_unlink_cbk,
++                    cached_subvol, cached_subvol->fops->unlink, loc,
++                    xflag, xdata);
++        if (xdata)
++                dict_unref (xdata);
++        return 0;
++err:
++        op_errno = (op_errno == -1) ? errno : op_errno;
++        DHT_STACK_UNWIND (unlink, frame, -1, op_errno, NULL, NULL, NULL);
++
++        return 0;
++}
++
++int
+ tier_readdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                  int op_ret, int op_errno, gf_dirent_t *orig_entries,
+                  dict_t *xdata)
+diff --git a/xlators/cluster/dht/src/tier-common.h b/xlators/cluster/dht/src/tier-common.h
+index db5bc8c..a9d98ea 100644
+--- a/xlators/cluster/dht/src/tier-common.h
++++ b/xlators/cluster/dht/src/tier-common.h
+@@ -10,6 +10,11 @@
+ 
+ #ifndef _TIER_COMMON_H_
+ #define _TIER_COMMON_H_
++/* Function definitions */
++
++int32_t
++tier_unlink (call_frame_t *frame, xlator_t *this,
++             loc_t *loc, int xflag, dict_t *xdata);
+ 
+ #ifndef _CONFIG_H
+ #define _CONFIG_H
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index 5d6b162..95a4960 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -1989,7 +1989,7 @@ struct xlator_fops fops = {
+         .readdirp    = tier_readdirp,
+         .fsyncdir    = dht_fsyncdir,
+         .symlink     = dht_symlink,
+-        .unlink      = dht_unlink,
++        .unlink      = tier_unlink,
+         .link        = dht_link,
+         .mkdir       = dht_mkdir,
+         .rmdir       = dht_rmdir,
+diff --git a/xlators/storage/posix/src/posix.c b/xlators/storage/posix/src/posix.c
+index 6139414..2550178 100644
+--- a/xlators/storage/posix/src/posix.c
++++ b/xlators/storage/posix/src/posix.c
+@@ -1486,6 +1486,66 @@ err:
+         return -1;
+ }
+ 
++static
++int32_t posix_set_iatt_in_dict (dict_t *dict, struct iatt *in_stbuf)
++{
++        int ret             = -1;
++        struct iatt *stbuf  = NULL;
++        int32_t len         = sizeof(struct iatt);
++
++        if (!dict || !in_stbuf)
++                return ret;
++
++        stbuf = GF_CALLOC (1, len, gf_common_mt_char);
++        if (!stbuf)
++                return ret;
++
++        memcpy (stbuf, in_stbuf, len);
++
++        ret = dict_set_bin (dict, DHT_IATT_IN_XDATA_KEY, stbuf, len);
++        if (ret)
++                GF_FREE (stbuf);
++
++        return ret;
++}
++
++gf_boolean_t
++posix_skip_non_linkto_unlink (dict_t *xdata, loc_t *loc, char *key,
++                              const char *linkto_xattr, struct iatt *stbuf,
++                              const char *real_path)
++{
++        gf_boolean_t     skip_unlink            = _gf_false;
++        gf_boolean_t     is_dht_linkto_file     = _gf_false;
++        int              unlink_if_linkto       = 0;
++        ssize_t          xattr_size             = -1;
++        int              op_ret                 = -1;
++
++        op_ret = dict_get_int32 (xdata, key,
++                                 &unlink_if_linkto);
++
++        if (!op_ret && unlink_if_linkto) {
++
++                is_dht_linkto_file =  IS_DHT_LINKFILE_MODE (stbuf);
++                if (!is_dht_linkto_file)
++                        return _gf_true;
++
++                LOCK (&loc->inode->lock);
++
++                xattr_size = sys_lgetxattr (real_path, linkto_xattr, NULL, 0);
++
++                if (xattr_size <= 0)
++                        skip_unlink = _gf_true;
++
++                UNLOCK (&loc->inode->lock);
++
++                gf_msg ("posix", GF_LOG_INFO, 0, P_MSG_XATTR_STATUS,
++                        "linkto_xattr status: %"PRIu32" for %s", skip_unlink,
++                        real_path);
++        }
++        return skip_unlink;
++
++}
++
+ int32_t
+ posix_unlink (call_frame_t *frame, xlator_t *this,
+               loc_t *loc, int xflag, dict_t *xdata)
+@@ -1496,6 +1556,7 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
+         char                   *par_path          = NULL;
+         int32_t                fd                 = -1;
+         struct iatt            stbuf              = {0,};
++        struct iatt            postbuf            = {0,};
+         struct posix_private  *priv               = NULL;
+         struct iatt            preparent          = {0,};
+         struct iatt            postparent         = {0,};
+@@ -1504,6 +1565,7 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
+         int32_t                unlink_if_linkto   = 0;
+         int32_t                check_open_fd      = 0;
+         int32_t                skip_unlink        = 0;
++        int32_t                fdstat_requested   = 0;
+         int32_t                ctr_link_req       = 0;
+         ssize_t                xattr_size         = -1;
+         int32_t                is_dht_linkto_file = 0;
+@@ -1557,40 +1619,30 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
+                         goto out;
+                 }
+         }
+-
+-
+-        op_ret = dict_get_int32 (xdata, DHT_SKIP_NON_LINKTO_UNLINK,
+-                                 &unlink_if_linkto);
+-
+-        if (!op_ret && unlink_if_linkto) {
+-
+-                LOCK (&loc->inode->lock);
+-
+-                xattr_size = sys_lgetxattr (real_path, LINKTO, NULL, 0);
+-
+-                if (xattr_size <= 0) {
+-                        skip_unlink = 1;
+-                } else {
+-                       is_dht_linkto_file =  IS_DHT_LINKFILE_MODE (&stbuf);
+-                       if (!is_dht_linkto_file)
+-                               skip_unlink = 1;
+-                }
+-
+-                UNLOCK (&loc->inode->lock);
+-
+-                gf_msg (this->name, GF_LOG_INFO, 0, P_MSG_XATTR_STATUS,
+-                        "linkto_xattr status: %"PRIu32" for %s", skip_unlink,
+-                        real_path);
+-
+-                if (skip_unlink) {
+-                        op_ret = -1;
+-                        op_errno = EBUSY;
+-                        goto out;
+-                }
++        /*
++         * If either of the function return true, skip_unlink.
++         * If first first function itself return true,
++         * we don't need to call second function, skip unlink.
++         */
++        skip_unlink = posix_skip_non_linkto_unlink (xdata, loc,
++                                                    DHT_SKIP_NON_LINKTO_UNLINK,
++                                                    DHT_LINKTO, &stbuf,
++                                                    real_path);
++        skip_unlink = skip_unlink || posix_skip_non_linkto_unlink (xdata, loc,
++                                                    TIER_SKIP_NON_LINKTO_UNLINK,
++                                                    TIER_LINKTO, &stbuf,
++                                                    real_path);
++        if (skip_unlink) {
++                op_ret = -1;
++                op_errno = EBUSY;
++                goto out;
+         }
+ 
++        if (xdata && dict_get (xdata, DHT_IATT_IN_XDATA_KEY)) {
++                fdstat_requested = 1;
++        }
+ 
+-        if (priv->background_unlink) {
++        if (priv->background_unlink || fdstat_requested) {
+                 if (IA_ISREG (loc->inode->ia_type)) {
+                         fd = open (real_path, O_RDONLY);
+                         if (fd == -1) {
+@@ -1633,6 +1685,24 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
+                 goto out;
+         }
+ 
++        unwind_dict = dict_new ();
++        if (!unwind_dict) {
++                op_errno = -ENOMEM;
++                op_ret = -1;
++                goto out;
++        }
++        if (fdstat_requested) {
++                op_ret = posix_fdstat (this, fd, &postbuf);
++                if (op_ret == -1) {
++                        op_errno = errno;
++                        gf_msg (this->name, GF_LOG_ERROR, errno,
++                                P_MSG_FSTAT_FAILED, "post operation "
++                                "fstat failed on fd=%d", fd);
++                        goto out;
++                }
++                op_ret = posix_set_iatt_in_dict (unwind_dict, &postbuf);
++        }
++
+         op_ret = posix_pstat (this, loc->pargfid, par_path, &postparent);
+         if (op_ret == -1) {
+                 op_errno = errno;
+@@ -1642,7 +1712,7 @@ posix_unlink (call_frame_t *frame, xlator_t *this,
+                 goto out;
+         }
+ 
+-        unwind_dict = posix_dict_set_nlink (xdata, NULL, stbuf.ia_nlink);
++        unwind_dict = posix_dict_set_nlink (xdata, unwind_dict, stbuf.ia_nlink);
+         op_ret = 0;
+ out:
+         SET_TO_OLD_FS_ID ();
+@@ -3241,31 +3311,6 @@ map_xattr_flags(int flags)
+ }
+ #endif
+ 
+-static
+-int32_t posix_set_iatt_in_dict (dict_t *dict, struct iatt *in_stbuf)
+-{
+-        int ret             = -1;
+-        struct iatt *stbuf  = NULL;
+-        int32_t len         = sizeof(struct iatt);
+-
+-        if (!dict || !in_stbuf)
+-                return ret;
+-
+-        stbuf = GF_CALLOC (1, len, gf_common_mt_char);
+-        if (!stbuf)
+-                return ret;
+-
+-        memcpy (stbuf, in_stbuf, len);
+-
+-        ret = dict_set_bin (dict, DHT_IATT_IN_XDATA_KEY, stbuf, len);
+-        if (ret)
+-                GF_FREE (stbuf);
+-
+-        return ret;
+-}
+-
+-
+-
+ int32_t
+ posix_setxattr (call_frame_t *frame, xlator_t *this,
+                 loc_t *loc, dict_t *dict, int flags, dict_t *xdata)
+diff --git a/xlators/storage/posix/src/posix.h b/xlators/storage/posix/src/posix.h
+index f8230be..f9ec710 100644
+--- a/xlators/storage/posix/src/posix.h
++++ b/xlators/storage/posix/src/posix.h
+@@ -55,7 +55,11 @@
+ 
+ #define ACL_BUFFER_MAX 4096 /* size of character buffer */
+ 
+-#define LINKTO "trusted.glusterfs.dht.linkto"
++#define DHT_LINKTO "trusted.glusterfs.dht.linkto"
++/*
++ * TIER_MODE need to be changed when we stack tiers
++ */
++#define TIER_LINKTO "trusted.tier.tier-dht.linkto"
+ 
+ #define POSIX_GFID_HANDLE_SIZE(base_path_len) (base_path_len + SLEN("/") \
+                                                + SLEN(GF_HIDDEN_PATH) + SLEN("/") \
+-- 
+1.7.1
+

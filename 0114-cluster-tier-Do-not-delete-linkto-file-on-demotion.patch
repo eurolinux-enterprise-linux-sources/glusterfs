@@ -1,0 +1,182 @@
+From 47d55d7aa9db4d395a6b8037c129b35ab833ea59 Mon Sep 17 00:00:00 2001
+From: Nithya Balachandran <nbalacha@redhat.com>
+Date: Thu, 19 Nov 2015 12:05:35 +0530
+Subject: [PATCH 114/131] cluster/tier: Do not delete linkto file on demotion
+
+The current DHT migration code will always delete the
+src linkto file after migration as dht always moves
+ files to the hashed subvol. This is not the case in tiering.
+The lack of linkto files causes rename to fail leaving 2 files
+ with the same name but different gfids on the volume.
+Modified to leave the linkto file behind if the source
+ volume is the hashed subvolume.
+
+upstream: http://review.gluster.org/12551
+
+Change-Id: Iddc1064c02fb564a85ba88193cfdd0f8f355287b
+BUG: 1277088
+Signed-off-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61840
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ tests/bugs/tier/bug-1279376-rename-demoted-file.t |   88 +++++++++++++++++++++
+ xlators/cluster/dht/src/dht-rebalance.c           |    9 ++-
+ xlators/cluster/dht/src/tier.h                    |    2 +
+ 3 files changed, 97 insertions(+), 2 deletions(-)
+ create mode 100644 tests/bugs/tier/bug-1279376-rename-demoted-file.t
+
+diff --git a/tests/bugs/tier/bug-1279376-rename-demoted-file.t b/tests/bugs/tier/bug-1279376-rename-demoted-file.t
+new file mode 100644
+index 0000000..c75c398
+--- /dev/null
++++ b/tests/bugs/tier/bug-1279376-rename-demoted-file.t
+@@ -0,0 +1,88 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../tier.rc
++
++
++NUM_BRICKS=2
++DEMOTE_FREQ=5
++DEMOTE_TIMEOUT=10
++PROMOTE_FREQ=500
++
++
++#Both src and dst files must hash to the same hot tier subvol
++SRC_FILE="file1.txt"
++DST_FILE="newfile1.txt"
++
++
++# Creates a tiered volume with pure distribute hot and cold tiers
++# Both hot and cold tiers will have an equal number of bricks.
++
++function create_dist_tier_vol () {
++        mkdir $B0/cold
++        mkdir $B0/hot
++        TEST $CLI volume create $V0 $H0:$B0/cold/${V0}{0..$1}
++        TEST $CLI volume set $V0 performance.quick-read off
++        TEST $CLI volume set $V0 performance.io-cache off
++        TEST $CLI volume start $V0
++        TEST $CLI volume tier $V0 attach $H0:$B0/hot/${V0}{0..$1}
++        TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.tier-mode test
++
++#We do not want any files to be promoted during this test
++        TEST $CLI volume set $V0 cluster.read-freq-threshold 50
++        TEST $CLI volume set $V0 cluster.write-freq-threshold 50
++}
++
++
++cleanup;
++
++#Basic checks
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume info
++
++
++#Create and start a tiered volume
++create_dist_tier_vol $NUM_BRICKS
++
++# Mount FUSE
++TEST glusterfs -s $H0 --volfile-id $V0 $M0
++
++
++# The file will be created on the hot tier
++
++touch "$M0/$SRC_FILE"
++
++# Get the path of the file on the hot tier
++HPATH=`find $B0/hot/ -name  "$SRC_FILE"`
++echo "File path on hot tier: "$HPATH
++
++
++EXPECT "yes" exists_and_regular_file $HPATH
++
++# Wait for the tier process to demote the file
++sleep $DEMOTE_TIMEOUT
++
++# Get the path of the file on the cold tier
++CPATH=`find $B0/cold/ -name  "$SRC_FILE"`
++echo "File path on cold tier: "$CPATH
++
++EXPECT "yes" exists_and_regular_file $CPATH
++
++#This will be created on the hot tier
++
++touch "$M0/$DST_FILE"
++HPATH=`find $B0/hot/ -name "$DST_FILE"`
++echo "File path on hot tier: "$HPATH
++
++TEST mv $M0/$SRC_FILE $M0/$DST_FILE
++
++# We expect a single file to exist at this point
++# when viewed on the mountpoint
++EXPECT 1 echo $(ls -l $M0 | grep $DST_FILE | wc -l)
++
++cleanup;
++
+diff --git a/xlators/cluster/dht/src/dht-rebalance.c b/xlators/cluster/dht/src/dht-rebalance.c
+index 6c9206b..a9d78f8 100644
+--- a/xlators/cluster/dht/src/dht-rebalance.c
++++ b/xlators/cluster/dht/src/dht-rebalance.c
+@@ -14,6 +14,7 @@
+ #include "config.h"
+ #endif
+ 
++#include "tier.h"
+ #include "dht-common.h"
+ #include "xlator.h"
+ #include <signal.h>
+@@ -1180,6 +1181,7 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+         gf_boolean_t    clean_src            = _gf_false;
+         gf_boolean_t    clean_dst            = _gf_false;
+         int             log_level            = GF_LOG_INFO;
++        gf_boolean_t    delete_src_linkto    = _gf_true;
+ 
+         defrag = conf->defrag;
+         if (!defrag)
+@@ -1466,9 +1468,11 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+ 
+         /* store size of previous migrated file  */
+         if (defrag->tier_conf.is_tier) {
+-                if (from == conf->subvolumes[0]) {
++                if (from != TIER_HASHED_SUBVOL) {
+                         defrag->tier_conf.st_last_promoted_size = stbuf.ia_size;
+                 } else {
++                        /* Don't delete the linkto file on the hashed subvol */
++                        delete_src_linkto = _gf_false;
+                         defrag->tier_conf.st_last_demoted_size = stbuf.ia_size;
+                 }
+         }
+@@ -1535,8 +1539,9 @@ dht_migrate_file (xlator_t *this, loc_t *loc, xlator_t *from, xlator_t *to,
+                 rcvd_enoent_from_src = 1;
+         }
+ 
++
+         if ((gf_uuid_compare (empty_iatt.ia_gfid, loc->gfid) == 0 ) &&
+-            (!rcvd_enoent_from_src)) {
++            (!rcvd_enoent_from_src) && delete_src_linkto) {
+                 /* take out the source from namespace */
+                 ret = syncop_unlink (from, loc, NULL, NULL);
+                 if (ret) {
+diff --git a/xlators/cluster/dht/src/tier.h b/xlators/cluster/dht/src/tier.h
+index 8087eee..148f8d9 100644
+--- a/xlators/cluster/dht/src/tier.h
++++ b/xlators/cluster/dht/src/tier.h
+@@ -38,6 +38,8 @@
+ #define PROMOTION_QFILE "promotequeryfile"
+ #define DEMOTION_QFILE "demotequeryfile"
+ 
++#define TIER_HASHED_SUBVOL   (conf->subvolumes[1])
++
+ #define GET_QFILE_PATH(is_promotion)\
+         (is_promotion) ? promotion_qfile : demotion_qfile
+ 
+-- 
+1.7.1
+

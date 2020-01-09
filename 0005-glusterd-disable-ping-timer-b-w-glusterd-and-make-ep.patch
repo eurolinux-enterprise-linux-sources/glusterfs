@@ -1,0 +1,41 @@
+From bf6e94a5b6143edb2e48b9d1d7abd9fbee3ed4cf Mon Sep 17 00:00:00 2001
+From: Gaurav Kumar Garg <ggarg@redhat.com>
+Date: Fri, 11 Sep 2015 17:55:42 +0530
+Subject: [PATCH 05/23] glusterd: disable ping timer b/w glusterd and make epoll thread count to 1
+
+Currently glusterd is crashing when enable/disable heal and i/o is in
+progress on the fuse mount.
+
+for more details refer following bug:
+https://bugzilla.redhat.com/show_bug.cgi?id=1259992
+https://bugzilla.redhat.com/show_bug.cgi?id=1260930
+
+This is because of by default multi thread epoll in glusterd is 2.
+Workaround is to make epoll thread to 1 and set ping-timeout to 0
+
+BUG: 1271750
+Change-Id: I60ec6e928c66ad03b852ad0e1ab8ea1b29888289
+Signed-off-by: Gaurav Kumar Garg <ggarg@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/59410
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ extras/glusterd.vol.in |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/extras/glusterd.vol.in b/extras/glusterd.vol.in
+index 690dbe7..316104c 100644
+--- a/extras/glusterd.vol.in
++++ b/extras/glusterd.vol.in
+@@ -5,6 +5,7 @@ volume management
+     option transport.socket.keepalive-time 10
+     option transport.socket.keepalive-interval 2
+     option transport.socket.read-fail-log off
+-    option ping-timeout 30
++    option ping-timeout 0
++    option event-threads 1
+ #   option base-port 49152
+ end-volume
+-- 
+1.7.1
+

@@ -1,0 +1,281 @@
+From 5343f2ef5632382eb5e53ed282dfd607d4ada0c5 Mon Sep 17 00:00:00 2001
+From: Dan Lambright <dlambrig@redhat.com>
+Date: Sat, 14 Nov 2015 14:35:26 -0500
+Subject: [PATCH 115/131] cluster/tier make cache mode default for tiered volumes
+
+The default mode for tiered volumes must be cache. The current
+test mode was for engineering and should ordinarily not be used
+by customers.
+
+This is a back port of 12581
+
+> Change-Id: I20583f54a9269ce75daade645be18ab8575b0b9b
+> BUG: 1282076
+> Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+> Reviewed-on: http://review.gluster.org/12581
+> Tested-by: Gluster Build System <jenkins@build.gluster.com>
+> Reviewed-by: mohammed rafi  kc <rkavunga@redhat.com>
+
+Signed-off-by: Dan Lambright <dlambrig@redhat.com>
+
+Conflicts:
+	tests/basic/tier/file_with_spaces.t
+	tests/basic/tier/fops-during-migration-pause.t
+
+Change-Id: If54e5955e7a2adb66b3c88ccfc954fa3a22702fb
+BUG: 1283410
+Reviewed-on: https://code.engineering.redhat.com/gerrit/61896
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ run-tests.sh                                    |    2 +-
+ tests/basic/tier/file_with_spaces.t             |   70 +++++++++++++++++++++++
+ tests/basic/tier/fops-during-migration-pause.t  |   10 ++-
+ tests/basic/tier/fops-during-migration.t        |    1 +
+ tests/basic/tier/legacy-many.t                  |    3 +-
+ tests/basic/tier/locked_file_migration.t        |    1 +
+ tests/basic/tier/tier_lookup_heal.t             |    1 +
+ tests/tier.rc                                   |   14 +++++
+ xlators/mgmt/glusterd/src/glusterd-brick-ops.c  |    3 +
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |    2 +-
+ 10 files changed, 100 insertions(+), 7 deletions(-)
+ create mode 100755 tests/basic/tier/file_with_spaces.t
+
+diff --git a/run-tests.sh b/run-tests.sh
+index 98a3f19..8cc7bdc 100755
+--- a/run-tests.sh
++++ b/run-tests.sh
+@@ -198,7 +198,7 @@ function is_bad_test ()
+               ./tests/basic/quota-nfs.t \
+               ./tests/basic/tier/tier_lookup_heal.t \
+               ./tests/basic/tier/bug-1214222-directories_miising_after_attach_tier.t \
+-              ./tests/basic/tier/record-metadata-heat.t
++              ./tests/basic/tier/record-metadata-heat.t \
+               ./tests/bugs/snapshot/bug-1109889.t \
+               ./tests/bugs/distribute/bug-1066798.t \
+               ./tests/geo-rep/georep-basic-dr-rsync.t \
+diff --git a/tests/basic/tier/file_with_spaces.t b/tests/basic/tier/file_with_spaces.t
+new file mode 100755
+index 0000000..7492804
+--- /dev/null
++++ b/tests/basic/tier/file_with_spaces.t
+@@ -0,0 +1,70 @@
++#!/bin/bash
++
++. $(dirname $0)/../../include.rc
++. $(dirname $0)/../../volume.rc
++. $(dirname $0)/../../tier.rc
++
++NUM_BRICKS=3
++DEMOTE_FREQ=5
++DEMOTE_TIMEOUT=10
++PROMOTE_FREQ=5
++
++FILE_SPACE="Testing filenames with spaces.log"
++
++
++# Creates a tiered volume with pure distribute hot and cold tiers
++# Both hot and cold tiers will have an equal number of bricks.
++
++function create_dist_tier_vol () {
++        mkdir $B0/cold
++        mkdir $B0/hot
++        TEST $CLI volume create $V0 $H0:$B0/cold/${V0}{0..$1}
++        TEST $CLI volume set $V0 performance.quick-read off
++        TEST $CLI volume set $V0 performance.io-cache off
++        TEST $CLI volume set $V0 features.ctr-enabled on
++        TEST $CLI volume start $V0
++        TEST $CLI volume attach-tier $V0 $H0:$B0/hot/${V0}{0..$1}
++        TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
++        TEST $CLI volume set $V0 cluster.read-freq-threshold 50
++        TEST $CLI volume set $V0 cluster.write-freq-threshold 50
++        TEST $CLI volume set $V0 cluster.tier-mode test
++}
++
++
++cleanup;
++
++#Basic checks
++TEST glusterd
++TEST pidof glusterd
++TEST $CLI volume info
++
++
++#Create and start a tiered volume
++create_dist_tier_vol $NUM_BRICKS
++
++# Mount FUSE
++TEST glusterfs -s $H0 --volfile-id $V0 $M0
++
++
++# The file will be created on the hot tier
++
++touch "$M0/$FILE_SPACE"
++
++# Get the path of the file on the hot tier
++HPATH=`find $B0/hot/ -name  "$FILE_SPACE"`
++echo "File path on hot tier: "$HPATH
++
++EXPECT "yes" exists_and_regular_file $HPATH
++
++# Wait for the tier process to demote the file
++sleep $DEMOTE_TIMEOUT
++
++# Get the path of the file on the cold tier
++CPATH=`find $B0/cold/ -name  "$FILE_SPACE"`
++echo "File path on cold tier: "$CPATH
++
++EXPECT "yes" exists_and_regular_file $CPATH
++
++cleanup;
++
+diff --git a/tests/basic/tier/fops-during-migration-pause.t b/tests/basic/tier/fops-during-migration-pause.t
+index 702465f..b146284 100755
+--- a/tests/basic/tier/fops-during-migration-pause.t
++++ b/tests/basic/tier/fops-during-migration-pause.t
+@@ -2,11 +2,11 @@
+ 
+ . $(dirname $0)/../../include.rc
+ . $(dirname $0)/../../volume.rc
+-
++. $(dirname $0)/../../tier.rc
+ 
+ NUM_BRICKS=3
+-DEMOTE_FREQ=5
+-PROMOTE_FREQ=5
++DEMOTE_FREQ=10
++PROMOTE_FREQ=10
+ 
+ TEST_STR="Testing write and truncate fops on tier migration"
+ 
+@@ -37,6 +37,7 @@ function create_dist_tier_vol () {
+         TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
+         TEST $CLI volume set $V0 cluster.read-freq-threshold 0
+         TEST $CLI volume set $V0 cluster.write-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.tier-mode test
+ }
+ 
+ 
+@@ -59,7 +60,8 @@ TEST mkdir $M0/dir1
+ # Create a large file (200MB), so that rebalance takes time
+ # The file will be created on the hot tier
+ 
+-dd if=/dev/zero of=$M0/dir1/FILE1 bs=64k count=5120
++sleep_until_mid_cycle $DEMOTE_FREQ
++dd if=/dev/zero of=$M0/dir1/FILE1 bs=256k count=5120
+ 
+ # Get the path of the file on the hot tier
+ HPATH=`find $B0/hot/ -name  FILE1`
+diff --git a/tests/basic/tier/fops-during-migration.t b/tests/basic/tier/fops-during-migration.t
+index aa86884..b80511a 100755
+--- a/tests/basic/tier/fops-during-migration.t
++++ b/tests/basic/tier/fops-during-migration.t
+@@ -28,6 +28,7 @@ function create_dist_tier_vol () {
+         TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
+         TEST $CLI volume set $V0 cluster.read-freq-threshold 0
+         TEST $CLI volume set $V0 cluster.write-freq-threshold 0
++        TEST $CLI volume set $V0 cluster.tier-mode test
+ }
+ 
+ 
+diff --git a/tests/basic/tier/legacy-many.t b/tests/basic/tier/legacy-many.t
+index 6e1147a..0f32ff6 100644
+--- a/tests/basic/tier/legacy-many.t
++++ b/tests/basic/tier/legacy-many.t
+@@ -36,6 +36,7 @@ TEST $CLI volume set $V0 performance.quick-read off
+ TEST $CLI volume set $V0 performance.io-cache off
+ TEST $CLI volume set $V0 features.ctr-enabled on
+ 
++
+ TEST $GFS --volfile-id=/$V0 --volfile-server=$H0 $M0;
+ 
+ # Create a number of "legacy" files before attaching tier
+@@ -48,7 +49,7 @@ wait
+ TEST $CLI volume attach-tier $V0 replica 2 $H0:$B0/${V0}$CACHE_BRICK_FIRST $H0:$B0/${V0}$CACHE_BRICK_LAST
+ TEST $CLI volume rebalance $V0 tier status
+ 
+-
++TEST $CLI volume set $V0 cluster.tier-mode test
+ TEST $CLI volume set $V0 cluster.tier-demote-frequency $DEMOTE_FREQ
+ TEST $CLI volume set $V0 cluster.tier-promote-frequency $PROMOTE_FREQ
+ TEST $CLI volume set $V0 cluster.read-freq-threshold 0
+diff --git a/tests/basic/tier/locked_file_migration.t b/tests/basic/tier/locked_file_migration.t
+index 7a03d1e..f7a9d1f 100755
+--- a/tests/basic/tier/locked_file_migration.t
++++ b/tests/basic/tier/locked_file_migration.t
+@@ -31,6 +31,7 @@ function create_dist_tier_vol () {
+ #We don't want promotes to happen in this test
+         TEST $CLI volume set $V0 cluster.read-freq-threshold 10
+         TEST $CLI volume set $V0 cluster.write-freq-threshold 10
++        TEST $CLI volume set $V0 cluster.tier-mode test
+ }
+ 
+ 
+diff --git a/tests/basic/tier/tier_lookup_heal.t b/tests/basic/tier/tier_lookup_heal.t
+index 625b6b7..81bb0d6 100755
+--- a/tests/basic/tier/tier_lookup_heal.t
++++ b/tests/basic/tier/tier_lookup_heal.t
+@@ -52,6 +52,7 @@ TEST $CLI volume set $V0 cluster.read-freq-threshold 0
+ TEST $CLI volume set $V0 cluster.write-freq-threshold 0
+ TEST $CLI volume set $V0 performance.quick-read off
+ TEST $CLI volume set $V0 performance.io-cache off
++TEST $CLI volume set $V0 cluster.tier-mode test
+ 
+ #The lookup should heal the database.
+ TEST ls file1
+diff --git a/tests/tier.rc b/tests/tier.rc
+index 517049c..557e5fe 100644
+--- a/tests/tier.rc
++++ b/tests/tier.rc
+@@ -17,6 +17,20 @@ function is_sticky_set () {
+         fi
+ }
+ 
++function exists_and_regular_file () {
++        filepath=$1
++        if [ -n "$filepath" ];
++        then
++                if [ -k "$filepath" ]
++                then
++                        echo "no"
++                else
++                        echo "yes"
++                fi
++        else
++                echo "no"
++        fi
++}
+ 
+ function check_counters {
+     index=0
+diff --git a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+index 7380356..4d40ced 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
++++ b/xlators/mgmt/glusterd/src/glusterd-brick-ops.c
+@@ -2228,6 +2228,9 @@ glusterd_op_perform_attach_tier (dict_t *dict,
+         if (!ret)
+                 ret = dict_set_str (volinfo->dict, "features.ctr-enabled", "on");
+ 
++        if (!ret)
++                ret = dict_set_str (volinfo->dict, "cluster.tier-mode", "cache");
++
+         return ret;
+ }
+ 
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index cd9037d..3d2cab0 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -2023,7 +2023,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+         { .key         = "cluster.tier-mode",
+           .voltype     = "cluster/tier",
+           .option      = "tier-mode",
+-          .value       = "test",
++          .value       = "cache",
+           .op_version  = GD_OP_VERSION_3_7_6,
+           .flags       = OPT_FLAG_CLIENT_OPT,
+           .validate_fn = validate_tier,
+-- 
+1.7.1
+

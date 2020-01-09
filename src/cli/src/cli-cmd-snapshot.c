@@ -82,9 +82,14 @@ struct cli_cmd snapshot_cmds[] = {
           cli_cmd_snapshot_help_cbk,
           "display help for snapshot commands"
         },
-        { "snapshot create <snapname> <volname(s)> [description <description>] [force]",
+        { "snapshot create <snapname> <volname> [no-timestamp] "
+                "[description <description>] [force]",
           cli_cmd_snapshot_cbk,
           "Snapshot Create."
+        },
+        { "snapshot clone <clonename> <snapname>",
+          cli_cmd_snapshot_cbk,
+          "Snapshot Clone."
         },
         { "snapshot restore <snapname>",
           cli_cmd_snapshot_cbk,
@@ -109,7 +114,7 @@ struct cli_cmd snapshot_cmds[] = {
           cli_cmd_snapshot_cbk,
           "Snapshot Config."
         },
-        {"snapshot delete <snapname>",
+        {"snapshot delete (all | snapname | volume <volname>)",
           cli_cmd_snapshot_cbk,
           "Snapshot Delete."
         },

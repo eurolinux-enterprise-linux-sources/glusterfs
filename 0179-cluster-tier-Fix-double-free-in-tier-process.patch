@@ -1,0 +1,47 @@
+From 7e4bb185b420c212abbe63d3326721a715c02437 Mon Sep 17 00:00:00 2001
+From: Nithya Balachandran <nbalacha@redhat.com>
+Date: Wed, 9 Dec 2015 09:57:15 +0530
+Subject: [PATCH 179/191] cluster/tier : Fix double free in tier process
+
+The tier process tries to free ipc_ctr_params twice
+if the syncop_ipc call in tier_process_ctr_query fails.
+ipc_ctr_params is freed when ctr_ipc_in_dict is freed.
+But ctr_ipc_out_dict is NULL when syncop_ipc fails, causing
+GF_FREE to be called on a non-NULL ipc_ctr_params ptr again.
+
+Change-Id: I170216f9e411fefa453b82d50f76edb2c7343dfe
+BUG: 1288003
+Signed-off-by: Nithya Balachandran <nbalacha@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/63354
+Reviewed-by: Dan Lambright <dlambrig@redhat.com>
+Tested-by: Dan Lambright <dlambrig@redhat.com>
+---
+ xlators/cluster/dht/src/tier.c |    3 +--
+ 1 files changed, 1 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/cluster/dht/src/tier.c b/xlators/cluster/dht/src/tier.c
+index 1713e75..5d6b162 100644
+--- a/xlators/cluster/dht/src/tier.c
++++ b/xlators/cluster/dht/src/tier.c
+@@ -844,6 +844,7 @@ tier_process_ctr_query (tier_brick_list_t *local_brick, void *args)
+                 gf_msg (this->name, GF_LOG_ERROR, 0, LG_MSG_SET_PARAM_FAILED,
+                         "Failed setting %s to params dictionary",
+                         GFDB_IPC_CTR_GET_QUERY_PARAMS);
++                GF_FREE (ipc_ctr_params);
+                 goto out;
+         }
+ 
+@@ -889,10 +890,8 @@ out:
+         if (ctr_ipc_out_dict) {
+                 dict_unref(ctr_ipc_out_dict);
+                 ctr_ipc_out_dict = NULL;
+-                ipc_ctr_params = NULL;
+         }
+ 
+-        GF_FREE (ipc_ctr_params);
+ 
+         return ret;
+ }
+-- 
+1.7.1
+

@@ -1,0 +1,40 @@
+From 873334987eb8370ee6aacbf87fd30ac49c3e9b58 Mon Sep 17 00:00:00 2001
+From: Joseph Fernandes <josferna@redhat.com>
+Date: Tue, 22 Dec 2015 23:05:52 +0530
+Subject: [PATCH 211/214] tier/glusterd : reset to gd_op_3_7_6 from gd_op_3_7_7
+
+ reset to gd_op_3_7_6 from gd_op_3_7_7
+
+Change-Id: I8744219ba631a7ee4c80390c97631a91d3a31123
+BUG: 1282729
+Signed-off-by: Joseph Fernandes <josferna@redhat.com>
+Reviewed-on: https://code.engineering.redhat.com/gerrit/64381
+---
+ xlators/mgmt/glusterd/src/glusterd-volume-set.c |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/xlators/mgmt/glusterd/src/glusterd-volume-set.c b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+index 305726f..018c674 100644
+--- a/xlators/mgmt/glusterd/src/glusterd-volume-set.c
++++ b/xlators/mgmt/glusterd/src/glusterd-volume-set.c
+@@ -2465,7 +2465,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .value       = "1000",
+           .option      = "sql-db-cachesize",
+           .validate_fn = validate_ctr_sql_params,
+-          .op_version  = GD_OP_VERSION_3_7_7,
++          .op_version  = GD_OP_VERSION_3_7_6,
+           .description = "Defines the cache size of the sqlite database of "
+                          "changetimerecorder xlator."
+                          "The input to this option is in pages."
+@@ -2479,7 +2479,7 @@ struct volopt_map_entry glusterd_volopt_map[] = {
+           .value       = "1000",
+           .option      = "sql-db-wal-autocheckpoint",
+           .validate_fn = validate_ctr_sql_params,
+-          .op_version  = GD_OP_VERSION_3_7_7,
++          .op_version  = GD_OP_VERSION_3_7_6,
+           .description = "Defines the autocheckpoint of the sqlite database of "
+                          " changetimerecorder. "
+                          "The input to this option is in pages. "
+-- 
+1.7.1
+

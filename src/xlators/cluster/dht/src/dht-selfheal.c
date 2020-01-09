@@ -20,14 +20,17 @@
 #include "dht-messages.h"
 #include "glusterfs-acl.h"
 
-#define DHT_SET_LAYOUT_RANGE(layout,i,srt,chunk,cnt,path)    do {       \
+#define DHT_SET_LAYOUT_RANGE(layout,i,srt,chunk,path)    do {           \
                 layout->list[i].start = srt;                            \
                 layout->list[i].stop  = srt + chunk - 1;                \
+                layout->list[i].commit_hash = layout->commit_hash;      \
                                                                         \
-                gf_msg_trace (this->name, 0,                       \
-                              "gave fix: %u - %u on %s for %s",         \
+                gf_msg_trace (this->name, 0,                            \
+                              "gave fix: %u - %u, with commit-hash %u"  \
+                              " on %s for %s",                          \
                               layout->list[i].start,                    \
                               layout->list[i].stop,                     \
+                              layout->list[i].commit_hash,              \
                               layout->list[i].xlator->name, path);      \
         } while (0)
 
@@ -142,7 +145,8 @@ dht_refresh_layout_done (call_frame_t *frame)
 
         ret = dht_layout_sort (refreshed);
         if (ret == -1) {
-                gf_log (frame->this->name, GF_LOG_WARNING,
+                gf_msg (frame->this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_LAYOUT_SORT_FAILED,
                         "sorting the layout failed");
                 goto err;
         }
@@ -194,10 +198,9 @@ dht_refresh_layout_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
                 if (op_ret == -1) {
                         local->op_errno = op_errno;
-                        gf_msg_debug (this->name, 0,
-                                      "lookup of %s on %s returned error (%s)",
-                                      local->loc.path, prev->this->name,
-                                      strerror (op_errno));
+                        gf_msg_debug (this->name, op_errno,
+                                      "lookup of %s on %s returned error",
+                                      local->loc.path, prev->this->name);
 
                         goto unlock;
                 }
@@ -211,7 +214,7 @@ unlock:
 
         if (is_last_call (this_call_cnt)) {
                 if (local->op_ret == 0) {
-                        dht_refresh_layout_done (frame);
+                        local->refresh_layout_done (frame);
                 } else {
                         goto err;
                 }
@@ -221,7 +224,8 @@ unlock:
         return 0;
 
 err:
-        dht_selfheal_dir_finish (frame, this, -1);
+        local->refresh_layout_unlock (frame, this, -1);
+
         return 0;
 }
 
@@ -261,7 +265,7 @@ dht_refresh_layout (call_frame_t *frame)
         }
 
         if (local->xattr_req == NULL) {
-                local->xattr_req = dict_new();
+                local->xattr_req = dict_new ();
                 if (local->xattr_req == NULL) {
                         goto out;
                 }
@@ -287,7 +291,7 @@ dht_refresh_layout (call_frame_t *frame)
         return 0;
 
 out:
-        dht_selfheal_dir_finish (frame, this, -1);
+        local->refresh_layout_unlock (frame, this, -1);
         return 0;
 }
 
@@ -296,9 +300,21 @@ int32_t
 dht_selfheal_layout_lock_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                               int32_t op_ret, int32_t op_errno, dict_t *xdata)
 {
-        if (op_ret < 0) {
+        dht_local_t     *local = NULL;
+
+        local = frame->local;
+
+        if (!local) {
                 goto err;
         }
+
+        if (op_ret < 0) {
+                local->op_errno = op_errno;
+                goto err;
+        }
+
+        local->refresh_layout_unlock = dht_selfheal_dir_finish;
+        local->refresh_layout_done = dht_refresh_layout_done;
 
         dht_refresh_layout (frame);
         return 0;
@@ -412,16 +428,50 @@ out:
         return count;
 }
 
+dht_distribution_type_t
+dht_distribution_type (xlator_t *this, dht_layout_t *layout)
+{
+        dht_distribution_type_t type        = GF_DHT_EQUAL_DISTRIBUTION;
+        int                     i           = 0;
+        uint32_t                start_range = 0, range = 0, diff = 0;
+
+        if ((this == NULL) || (layout == NULL) || (layout->cnt < 1)) {
+                goto out;
+        }
+
+        for (i = 0; i < layout->cnt; i++) {
+                if (start_range == 0) {
+                        start_range = layout->list[i].stop
+                                - layout->list[i].start;
+                        continue;
+                }
+
+                range = layout->list[i].stop - layout->list[i].start;
+                diff = abs (range - start_range);
+
+                if ((range != 0) && (diff > layout->cnt)) {
+                        type = GF_DHT_WEIGHTED_DISTRIBUTION;
+                        break;
+                }
+        }
+
+out:
+        return type;
+}
+
 gf_boolean_t
 dht_should_fix_layout (call_frame_t *frame, dht_layout_t **inmem,
                        dht_layout_t **ondisk)
 {
-        gf_boolean_t  fixit                        = _gf_true;
-        dht_local_t  *local                        = NULL;
-        int           layout_span                  = 0;
-        int           ondisk_decommissioned_bricks = 0;
-        int           ret                          = 0;
-        dht_conf_t   *conf                         = NULL;
+        gf_boolean_t             fixit                 = _gf_true;
+
+        dht_local_t             *local                 = NULL;
+        int                      layout_span           = 0;
+        int                      decommissioned_bricks = 0;
+        int                      ret                   = 0;
+        dht_conf_t              *conf                  = NULL;
+        dht_distribution_type_t  inmem_dist_type       = 0;
+        dht_distribution_type_t  ondisk_dist_type      = 0;
 
         conf = frame->this->private;
 
@@ -449,17 +499,26 @@ dht_should_fix_layout (call_frame_t *frame, dht_layout_t **inmem,
         if (local->selfheal.hole_cnt || local->selfheal.overlaps_cnt)
                 goto out;
 
+        /* If commit hashes are being updated, let it through */
+        if ((*inmem)->commit_hash != (*ondisk)->commit_hash)
+                goto out;
+
         layout_span = dht_layout_span (*ondisk);
 
-        ondisk_decommissioned_bricks
-                = dht_decommissioned_bricks_in_layout (frame->this, *ondisk);
+        decommissioned_bricks
+                = dht_decommissioned_bricks_in_layout (frame->this,
+                                                       *ondisk);
+        inmem_dist_type = dht_distribution_type (frame->this, *inmem);
+        ondisk_dist_type = dht_distribution_type (frame->this, *ondisk);
 
-        if ((ondisk_decommissioned_bricks == 0)
-            && (layout_span
-                == (conf->subvolume_cnt - conf->decommission_subvols_cnt)))
+        if ((decommissioned_bricks == 0)
+            && (layout_span == (conf->subvolume_cnt
+                                - conf->decommission_subvols_cnt))
+            && (inmem_dist_type == ondisk_dist_type))
                 fixit = _gf_false;
 
 out:
+
         return fixit;
 }
 
@@ -620,7 +679,7 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
                 goto err;
         }
 
-        uuid_unparse(loc->inode->gfid, gfid);
+        gf_uuid_unparse(loc->inode->gfid, gfid);
 
         ret = dht_disk_layout_extract (this, layout, i, &disk_layout);
         if (ret == -1) {
@@ -663,8 +722,8 @@ dht_selfheal_dir_xattr_persubvol (call_frame_t *frame, loc_t *loc,
                 }
         }
 
-        if (!uuid_is_null (local->gfid))
-                uuid_copy (loc->gfid, local->gfid);
+        if (!gf_uuid_is_null (local->gfid))
+                gf_uuid_copy (loc->gfid, local->gfid);
 
         STACK_WIND (frame, dht_selfheal_dir_xattr_cbk,
                     subvol, subvol->fops->setxattr,
@@ -705,6 +764,8 @@ dht_fix_dir_xattr (call_frame_t *frame, loc_t *loc, dht_layout_t *layout)
 
         local->call_cnt = count = conf->subvolume_cnt;
 
+        dht_log_new_layout_for_dir_selfheal (this, loc, layout);
+
         for (i = 0; i < layout->cnt; i++) {
                 dht_selfheal_dir_xattr_persubvol (frame, loc, layout, i, NULL);
 
@@ -717,6 +778,7 @@ dht_fix_dir_xattr (call_frame_t *frame, loc_t *loc, dht_layout_t *layout)
         dummy = dht_layout_new (this, 1);
         if (!dummy)
                 goto out;
+        dummy->commit_hash = layout->commit_hash;
         for (i = 0; i < conf->subvolume_cnt; i++) {
                 if (_gf_false ==
                     dht_is_subvol_in_layout (layout, conf->subvolumes[i])) {
@@ -775,6 +837,9 @@ dht_selfheal_dir_xattr (call_frame_t *frame, loc_t *loc, dht_layout_t *layout)
         }
 
         local->call_cnt = missing_xattr;
+
+        dht_log_new_layout_for_dir_selfheal (this, loc, layout);
+
         for (i = 0; i < layout->cnt; i++) {
                 if (layout->list[i].err != -1 || !layout->list[i].stop)
                         continue;
@@ -889,9 +954,9 @@ dht_selfheal_dir_xattr_for_nameless_lookup (call_frame_t *frame, loc_t *loc,
         }
 
 
-        gf_log (this->name, GF_LOG_TRACE,
-                "%d subvolumes missing xattr for %s",
-                missing_xattr, loc->path);
+        gf_msg_trace (this->name, 0,
+                      "%d subvolumes missing xattr for %s",
+                      missing_xattr, loc->path);
 
         if (missing_xattr == 0) {
                 dht_selfheal_dir_finish (frame, this, 0);
@@ -899,6 +964,9 @@ dht_selfheal_dir_xattr_for_nameless_lookup (call_frame_t *frame, loc_t *loc,
         }
 
         local->call_cnt = missing_xattr;
+
+        dht_log_new_layout_for_dir_selfheal (this, loc, layout);
+
         for (i = 0; i < layout->cnt; i++) {
                 if (layout->list[i].err != -1 || !layout->list[i].stop)
                         continue;
@@ -996,8 +1064,8 @@ dht_selfheal_dir_setattr (call_frame_t *frame, loc_t *loc, struct iatt *stbuf,
                 return 0;
         }
 
-        if (!uuid_is_null (local->gfid))
-                uuid_copy (loc->gfid, local->gfid);
+        if (!gf_uuid_is_null (local->gfid))
+                gf_uuid_copy (loc->gfid, local->gfid);
 
         local->call_cnt = missing_attr;
         for (i = 0; i < layout->cnt; i++) {
@@ -1048,7 +1116,7 @@ dht_selfheal_dir_mkdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (op_ret) {
 
-                uuid_unparse(local->loc.gfid, gfid);
+                gf_uuid_unparse(local->loc.gfid, gfid);
                 gf_msg (this->name, ((op_errno == EEXIST) ? GF_LOG_DEBUG :
                                      GF_LOG_WARNING),
                         op_errno, DHT_MSG_DIR_SELFHEAL_FAILED,
@@ -1143,7 +1211,7 @@ dht_selfheal_dir_mkdir (call_frame_t *frame, loc_t *loc,
         }
 
         local->call_cnt = missing_dirs;
-        if (!uuid_is_null (local->gfid)) {
+        if (!gf_uuid_is_null (local->gfid)) {
                 dict = dict_new ();
                 if (!dict)
                         return -1;
@@ -1163,7 +1231,8 @@ dht_selfheal_dir_mkdir (call_frame_t *frame, loc_t *loc,
                 dht_selfheal_dir_mkdir_setacl (local->xattr, dict);
 
         if (!dict)
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_DICT_SET_FAILED,
                         "dict is NULL, need to make sure gfids are same");
 
         for (i = 0; i < layout->cnt; i++) {
@@ -1429,6 +1498,22 @@ dht_fix_layout_of_directory (call_frame_t *frame, loc_t *loc,
 		new_layout->list[i].xlator = layout->list[i].xlator;
         }
 
+        new_layout->commit_hash = layout->commit_hash;
+
+        if (priv->du_stats) {
+                for (i = 0; i < priv->subvolume_cnt; ++i) {
+                        gf_msg (this->name, GF_LOG_INFO, 0,
+                                DHT_MSG_SUBVOL_INFO,
+                                "subvolume %d (%s): %u chunks", i,
+                                priv->subvolumes[i]->name,
+                                priv->du_stats[i].chunks);
+                }
+        }
+        else {
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_NO_DISK_USAGE_STATUS, "no du stats ?!?");
+        }
+
 	/* First give it a layout as though it is a new directory. This
 	   ensures rotation to kick in */
         dht_layout_sort_volname (new_layout);
@@ -1453,6 +1538,32 @@ done:
 }
 
 
+/*
+ * Having to call this 2x for each entry in the layout is pretty horrible, but
+ * that's what all of this layout-sorting nonsense gets us.
+ */
+uint32_t
+dht_get_chunks_from_xl (xlator_t *parent, xlator_t *child)
+{
+        dht_conf_t      *priv   = parent->private;
+        xlator_list_t   *trav;
+        uint32_t        index   = 0;
+
+        if (!priv->du_stats) {
+                return 0;
+        }
+
+        for (trav = parent->children; trav; trav = trav->next) {
+                if (trav->xlator == child) {
+                        return priv->du_stats[index].chunks;
+                }
+                ++index;
+        }
+
+        return 0;
+}
+
+
 void
 dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
                                    dht_layout_t *layout)
@@ -1461,44 +1572,94 @@ dht_selfheal_layout_new_directory (call_frame_t *frame, loc_t *loc,
         uint32_t     chunk = 0;
         int          i = 0;
         uint32_t     start = 0;
-        int          cnt = 0;
+        int          bricks_to_use = 0;
         int          err = 0;
         int          start_subvol = 0;
+        uint32_t     curr_size;
+        uint32_t     total_size = 0;
+        int          real_i;
+        dht_conf_t   *priv;
+        gf_boolean_t weight_by_size;
+        int          bricks_used = 0;
 
         this = frame->this;
+        priv = this->private;
+        weight_by_size = priv->do_weighting;
 
-        cnt = dht_get_layout_count (this, layout, 1);
+        bricks_to_use = dht_get_layout_count (this, layout, 1);
+        GF_ASSERT (bricks_to_use > 0);
 
-        chunk = ((unsigned long) 0xffffffff) / ((cnt) ? cnt : 1);
+        bricks_used = 0;
+        for (i = 0; i < layout->cnt; ++i) {
+                err = layout->list[i].err;
+                if ((err != -1) && (err != ENOENT)) {
+                        continue;
+                }
+                curr_size = dht_get_chunks_from_xl (this,
+                                                    layout->list[i].xlator);
+                if (!curr_size) {
+                        weight_by_size = _gf_false;
+                        break;
+                }
+                total_size += curr_size;
+                if (++bricks_used >= bricks_to_use) {
+                        break;
+                }
+        }
+
+        if (weight_by_size && total_size) {
+                /* We know total_size is not zero. */
+                chunk = ((unsigned long) 0xffffffff) / total_size;
+                gf_msg_debug (this->name, 0,
+                              "chunk size = 0xffffffff / %u = 0x%x",
+                              total_size, chunk);
+        }
+        else {
+                weight_by_size = _gf_false;
+                chunk = ((unsigned long) 0xffffffff) / bricks_to_use;
+        }
 
         start_subvol = dht_selfheal_layout_alloc_start (this, loc, layout);
 
         /* clear out the range, as we are re-computing here */
         DHT_RESET_LAYOUT_RANGE (layout);
-        for (i = start_subvol; i < layout->cnt; i++) {
-                err = layout->list[i].err;
-                if (err == -1 || err == ENOENT) {
-                        DHT_SET_LAYOUT_RANGE(layout, i, start, chunk,
-                                             cnt, loc->path);
-                        if (--cnt == 0) {
-                                layout->list[i].stop = 0xffffffff;
-                                goto done;
-                        }
-                        start += chunk;
-                }
-        }
 
-        for (i = 0; i < start_subvol; i++) {
+        /*
+         * OK, what's this "real_i" stuff about?  This used to be two loops -
+         * from start_subvol to layout->cnt-1, then from 0 to start_subvol-1.
+         * That way is practically an open invitation to bugs when only one
+         * of the loops is updated.  Using real_i and modulo operators to make
+         * it one loop avoids this problem.  Remember, folks: it's everyone's
+         * responsibility to help stamp out copy/paste abuse.
+         */
+        bricks_used = 0;
+        for (real_i = 0; real_i < layout->cnt; real_i++) {
+                i = (real_i + start_subvol) % layout->cnt;
                 err = layout->list[i].err;
-                if (err == -1 || err == ENOENT) {
-                        DHT_SET_LAYOUT_RANGE(layout, i, start, chunk,
-                                             cnt, loc->path);
-                        if (--cnt == 0) {
-                                layout->list[i].stop = 0xffffffff;
-                                goto done;
-                        }
-                        start += chunk;
+                if ((err != -1) && (err != ENOENT)) {
+                        continue;
                 }
+                if (weight_by_size) {
+                        curr_size = dht_get_chunks_from_xl (this,
+                                layout->list[i].xlator);
+                        if (!curr_size) {
+                                continue;
+                        }
+                }
+                else {
+                        curr_size = 1;
+                }
+                gf_msg_debug (this->name, 0,
+                              "assigning range size 0x%x to %s",
+                              chunk * curr_size,
+                              layout->list[i].xlator->name);
+                DHT_SET_LAYOUT_RANGE(layout, i, start, chunk * curr_size,
+                                     loc->path);
+                if (++bricks_used >= bricks_to_use) {
+                        layout->list[i].stop = 0xffffffff;
+                        goto done;
+                }
+                start += (chunk * curr_size);
         }
 
 done:
@@ -1521,6 +1682,11 @@ dht_selfheal_dir_getafix (call_frame_t *frame, loc_t *loc,
         overlaps = local->selfheal.overlaps_cnt;
 
         if (holes || overlaps) {
+                /* If the layout has anomolies which would change the hash
+                 * ranges, then we need to reset the commit_hash for this
+                 * directory, as the layout would change and things may not
+                 * be in place as expected */
+                layout->commit_hash = DHT_LAYOUT_HASH_INVALID;
                 dht_selfheal_layout_new_directory (frame, loc, layout);
                 ret = 0;
         }
@@ -1607,7 +1773,7 @@ dht_selfheal_directory (call_frame_t *frame, dht_selfheal_dir_cbk_t dir_cbk,
         local = frame->local;
         this = frame->this;
 
-        uuid_unparse(loc->gfid, gfid);
+        gf_uuid_unparse(loc->gfid, gfid);
 
         dht_layout_anomalies (this, loc, layout,
                               &local->selfheal.hole_cnt,
@@ -1691,14 +1857,16 @@ dht_selfheal_directory_for_nameless_lookup (call_frame_t *frame,
         local->selfheal.layout = dht_layout_ref (this, layout);
 
         if (down) {
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_SUBVOL_DOWN_ERROR,
                         "%d subvolumes down -- not fixing", down);
                 ret = 0;
                 goto sorry_no_fix;
         }
 
         if (misc) {
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_SUBVOL_ERROR,
                         "%d subvolumes have unrecoverable errors", misc);
                 ret = 0;
                 goto sorry_no_fix;
@@ -1708,7 +1876,8 @@ dht_selfheal_directory_for_nameless_lookup (call_frame_t *frame,
         ret = dht_selfheal_dir_getafix (frame, loc, layout);
 
         if (ret == -1) {
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_LAYOUT_FORM_FAILED,
                         "not able to form layout for the directory");
                 goto sorry_no_fix;
         }
@@ -1781,9 +1950,9 @@ dht_dir_attr_heal (void *data)
                         continue;
                 ret = syncop_setattr (subvol, &local->loc, &local->stbuf,
                                       (GF_SET_ATTR_UID | GF_SET_ATTR_GID),
-                                      NULL, NULL);
+                                      NULL, NULL, NULL, NULL);
                 if (ret) {
-                        uuid_unparse(local->loc.gfid, gfid);
+                        gf_uuid_unparse(local->loc.gfid, gfid);
 
                         gf_msg ("dht", GF_LOG_ERROR, -ret,
                                 DHT_MSG_DIR_ATTR_HEAL_FAILED,
@@ -1801,4 +1970,301 @@ dht_dir_attr_heal_done (int ret, call_frame_t *sync_frame, void *data)
 {
         DHT_STACK_DESTROY (sync_frame);
         return 0;
+}
+
+/* EXIT: dht_update_commit_hash_for_layout */
+int
+dht_update_commit_hash_for_layout_done (call_frame_t *frame, void *cookie,
+                       xlator_t *this, int32_t op_ret, int32_t op_errno,
+                       dict_t *xdata)
+{
+        dht_local_t  *local = NULL;
+
+        local = frame->local;
+
+        /* preserve oldest error */
+        if (op_ret && !local->op_ret) {
+                local->op_ret = op_ret;
+                local->op_errno = op_errno;
+        }
+
+        DHT_STACK_UNWIND (setxattr, frame, local->op_ret,
+                          local->op_errno, NULL);
+
+        return 0;
+}
+
+int
+dht_update_commit_hash_for_layout_unlock (call_frame_t *frame, xlator_t *this)
+{
+        dht_local_t  *local = NULL;
+        int ret = 0;
+
+        local = frame->local;
+
+        ret = dht_unlock_inodelk (frame, local->lock.locks,
+                                  local->lock.lk_count,
+                                  dht_update_commit_hash_for_layout_done);
+        if (ret < 0) {
+                /* preserve oldest error, just ... */
+                if (!local->op_ret) {
+                        local->op_errno = errno;
+                        local->op_ret = -1;
+                }
+
+                gf_msg (this->name, GF_LOG_WARNING, errno,
+                        DHT_MSG_DIR_SELFHEAL_XATTR_FAILED,
+                        "Winding unlock failed: stale locks left on brick"
+                        " %s", local->loc.path);
+
+                dht_update_commit_hash_for_layout_done (frame, NULL, this,
+                                                        0, 0, NULL);
+        }
+
+        return 0;
+}
+
+int
+dht_update_commit_hash_for_layout_cbk (call_frame_t *frame, void *cookie,
+                                       xlator_t *this, int op_ret,
+                                       int op_errno, dict_t *xdata)
+{
+        dht_local_t  *local = NULL;
+        int           this_call_cnt = 0;
+
+        local = frame->local;
+
+        LOCK (&frame->lock);
+        /* store first failure, just because */
+        if (op_ret && !local->op_ret) {
+                local->op_ret = op_ret;
+                local->op_errno = op_errno;
+        }
+        UNLOCK (&frame->lock);
+
+        this_call_cnt = dht_frame_return (frame);
+
+        if (is_last_call (this_call_cnt)) {
+                dht_update_commit_hash_for_layout_unlock (frame, this);
+        }
+
+        return 0;
+}
+
+int
+dht_update_commit_hash_for_layout_resume (call_frame_t *frame, void *cookie,
+                                          xlator_t *this, int32_t op_ret,
+                                          int32_t op_errno, dict_t *xdata)
+{
+        dht_local_t   *local = NULL;
+        int            count = 1, ret = -1, i = 0, j = 0;
+        dht_conf_t    *conf = NULL;
+        dht_layout_t  *layout = NULL;
+        int32_t       *disk_layout = NULL;
+        dict_t        **xattr = NULL;
+
+        local = frame->local;
+        conf = frame->this->private;
+        count = conf->local_subvols_cnt;
+        layout = local->layout;
+
+        if (op_ret < 0) {
+                goto err_done;
+        }
+
+        /* We precreate the xattr list as we cannot change call count post the
+         * first wind as we may never continue from there. So we finish prep
+         * work before winding the setxattrs */
+        xattr = GF_CALLOC (count, sizeof (*xattr), gf_common_mt_char);
+        if (!xattr) {
+                local->op_errno = errno;
+
+                gf_msg (this->name, GF_LOG_WARNING, errno,
+                        DHT_MSG_DIR_SELFHEAL_XATTR_FAILED,
+                        "Directory commit hash update failed:"
+                        " %s: Allocation failed", local->loc.path);
+
+                goto err;
+        }
+
+        for (i = 0; i < count; i++) {
+                /* find the layout index for the subvolume */
+                ret = dht_layout_index_for_subvol (layout,
+                                                   conf->local_subvols[i]);
+                if (ret < 0) {
+                        local->op_errno = ENOENT;
+
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                DHT_MSG_DIR_SELFHEAL_XATTR_FAILED,
+                                "Directory commit hash update failed:"
+                                " %s: (subvol %s) Failed to find disk layout",
+                                local->loc.path, conf->local_subvols[i]->name);
+
+                        goto err;
+                }
+                j = ret;
+
+                /* update the commit hash for the layout */
+                layout->list[j].commit_hash = layout->commit_hash;
+
+                /* extract the current layout */
+                ret = dht_disk_layout_extract (this, layout, j, &disk_layout);
+                if (ret == -1) {
+                        local->op_errno = errno;
+
+                        gf_msg (this->name, GF_LOG_WARNING, errno,
+                                DHT_MSG_DIR_SELFHEAL_XATTR_FAILED,
+                                "Directory commit hash update failed:"
+                                " %s: (subvol %s) Failed to extract disk"
+                                " layout", local->loc.path,
+                                conf->local_subvols[i]->name);
+
+                        goto err;
+                }
+
+                xattr[i] = get_new_dict ();
+                if (!xattr[i]) {
+                        local->op_errno = errno;
+
+                        gf_msg (this->name, GF_LOG_WARNING, errno,
+                                DHT_MSG_DIR_SELFHEAL_XATTR_FAILED,
+                                "Directory commit hash update failed:"
+                                " %s: Allocation failed", local->loc.path);
+
+                        goto err;
+                }
+
+                ret = dict_set_bin (xattr[i], conf->xattr_name,
+                                    disk_layout, 4 * 4);
+                if (ret != 0) {
+                        local->op_errno = ENOMEM;
+
+                        gf_msg (this->name, GF_LOG_WARNING, 0,
+                                DHT_MSG_DIR_SELFHEAL_XATTR_FAILED,
+                                "Directory self heal xattr failed:"
+                                "%s: (subvol %s) Failed to set xattr"
+                                " dictionary,", local->loc.path,
+                                conf->local_subvols[i]->name);
+
+                        goto err;
+                }
+                disk_layout = NULL;
+
+                gf_msg_trace (this->name, 0,
+                              "setting commit hash %u on subvolume %s"
+                              " for %s", layout->list[j].commit_hash,
+                              conf->local_subvols[i]->name, local->loc.path);
+        }
+
+        /* wind the setting of the commit hash across the local subvols */
+        local->call_cnt = count;
+        local->op_ret = 0;
+        local->op_errno = 0;
+        for (i = 0; i < count; i++) {
+                dict_ref (xattr[i]);
+
+                STACK_WIND (frame, dht_update_commit_hash_for_layout_cbk,
+                            conf->local_subvols[i],
+                            conf->local_subvols[i]->fops->setxattr,
+                            &local->loc, xattr[i], 0, NULL);
+
+                dict_unref (xattr[i]);
+        }
+
+        return 0;
+err:
+        if (xattr) {
+                for (i = 0; i < count; i++) {
+                        if (xattr[i])
+                                dict_destroy (xattr[i]);
+                }
+
+                GF_FREE (xattr);
+        }
+
+        GF_FREE (disk_layout);
+
+        local->op_ret = -1;
+
+        dht_update_commit_hash_for_layout_unlock (frame, this);
+
+        return 0;
+err_done:
+        local->op_ret = -1;
+
+        dht_update_commit_hash_for_layout_done (frame, NULL, this, 0, 0, NULL);
+
+        return 0;
+}
+
+/* ENTER: dht_update_commit_hash_for_layout (see EXIT above)
+ * This function is invoked from rebalance only.
+ * As a result, the check here is simple enough to see if defrag is present
+ * in the conf, as other data would be populated appropriately if so.
+ * If ever this was to be used in other code paths, checks would need to
+ * change.
+ *
+ * Functional details:
+ *  - Lock the inodes on the subvols that we want the commit hash updated
+ *  - Update each layout with the inode layout, modified to take in the new
+ *    commit hash.
+ *  - Unlock and return.
+ */
+int
+dht_update_commit_hash_for_layout (call_frame_t *frame)
+{
+        dht_local_t   *local = NULL;
+        int            count = 1, ret = -1, i = 0;
+        dht_lock_t   **lk_array = NULL;
+        dht_conf_t    *conf = NULL;
+
+        GF_VALIDATE_OR_GOTO ("dht", frame, err);
+        GF_VALIDATE_OR_GOTO (frame->this->name, frame->local, err);
+
+        local = frame->local;
+        conf = frame->this->private;
+
+        if (!conf->defrag)
+                goto err;
+
+        count = conf->local_subvols_cnt;
+        lk_array = GF_CALLOC (count, sizeof (*lk_array),
+                              gf_common_mt_char);
+        if (lk_array == NULL)
+                goto err;
+
+        for (i = 0; i < count; i++) {
+                lk_array[i] = dht_lock_new (frame->this,
+                                            conf->local_subvols[i],
+                                            &local->loc, F_WRLCK,
+                                            DHT_LAYOUT_HEAL_DOMAIN);
+                if (lk_array[i] == NULL)
+                        goto err;
+        }
+
+        local->lock.locks = lk_array;
+        local->lock.lk_count = count;
+
+        ret = dht_blocking_inodelk (frame, lk_array, count,
+                                    dht_update_commit_hash_for_layout_resume);
+        if (ret < 0) {
+                local->lock.locks = NULL;
+                local->lock.lk_count = 0;
+                goto err;
+        }
+
+        return 0;
+err:
+        if (lk_array != NULL) {
+                int tmp_count = 0, i = 0;
+
+                for (i = 0; (i < count) && (lk_array[i]); i++, tmp_count++) {
+                        ;
+                }
+
+                dht_lock_array_free (lk_array, tmp_count);
+                GF_FREE (lk_array);
+        }
+
+        return -1;
 }
