@@ -18,6 +18,7 @@
 #include "glusterd.h"
 #include "glusterd-op-sm.h"
 #include "glusterd-utils.h"
+#include "glusterd-ping.h"
 
 static inline void
 gd_synctask_barrier_wait (struct syncargs *args, int count)
@@ -157,6 +158,8 @@ gd_syncop_submit_request (struct rpc_clnt *rpc, void *req,
         struct iovec   iov      = {0, };
         ssize_t        req_size = 0;
         call_frame_t  *frame    = NULL;
+        int            start_ping = 0;
+        glusterd_conf_t *conf   = THIS->private;
 
         GF_ASSERT (rpc);
         if (!req)
@@ -195,7 +198,18 @@ gd_syncop_submit_request (struct rpc_clnt *rpc, void *req,
                                &iov, count, NULL, 0, iobref,
                                frame, NULL, 0, NULL, 0, NULL);
 
-        /* TODO: do we need to start ping also? */
+        if (ret == 0) {
+                pthread_mutex_lock (&rpc->conn.lock);
+                {
+                        if (!rpc->conn.ping_started) {
+                                start_ping = 1;
+                        }
+                }
+                pthread_mutex_unlock (&rpc->conn.lock);
+        }
+
+        if (start_ping && conf->pingsvc)
+                glusterd_start_ping (rpc);
 
 out:
         iobref_unref (iobref);
@@ -1076,9 +1090,11 @@ gd_unlock_op_phase (struct list_head *peers, glusterd_op_t op, int op_ret,
 
 out:
         glusterd_op_send_cli_response (op, op_ret, 0, req, op_ctx, op_errstr);
-        glusterd_op_clear_op (op);
-        if (is_locked)
+
+        if (is_locked) {
+                glusterd_op_clear_op (op);
                 glusterd_unlock (MY_UUID);
+        }
         /*
          * If there are any quorum evens while the OP is in progress, process
          * them.
@@ -1213,9 +1229,11 @@ gd_sync_task_begin (dict_t *op_ctx, rpcsvc_request_t * req)
          * the 'cluster' lock*/
         glusterd_op_set_op  (op);
         INIT_LIST_HEAD (&conf->xaction_peers);
+
         npeers = gd_build_peers_list  (&conf->peers, &conf->xaction_peers, op);
 
-        ret = gd_lock_op_phase (&conf->xaction_peers, op, op_ctx, &op_errstr, npeers);
+        ret = gd_lock_op_phase (&conf->xaction_peers, op, op_ctx, &op_errstr,
+                                npeers);
         if (ret)
                 goto out;
 

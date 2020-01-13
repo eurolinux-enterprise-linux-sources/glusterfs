@@ -244,16 +244,22 @@ __server_getspec (rpcsvc_request_t *req)
         }
 
         trans = req->trans;
+        /* addrstr will be empty for cli socket connections */
         ret = rpcsvc_transport_peername (trans, (char *)&addrstr,
                                          sizeof (addrstr));
         if (ret)
                 goto fail;
 
-        tmp = strrchr (addrstr, ':');
-        *tmp = '\0';
+        tmp  = strrchr (addrstr, ':');
+        if (tmp)
+                *tmp = '\0';
 
-        /* we trust the local admin */
-        if (gf_is_local_addr (addrstr)) {
+        /* The trusted volfiles are given to the glusterd owned process like NFS
+         * server, self-heal daemon etc., so that they are not inadvertently
+         * blocked by a auth.{allow,reject} setting. The trusted volfile is not
+         * meant for external users.
+         */
+        if (strlen (addrstr) && gf_is_local_addr (addrstr)) {
 
                 ret = build_volfile_path (volume, filename,
                                           sizeof (filename),
@@ -585,11 +591,9 @@ glusterd_mgmt_hndsk_versions_ack (rpcsvc_request_t *req)
 }
 
 rpcsvc_actor_t gluster_handshake_actors[] = {
-        [GF_HNDSK_NULL]         = {"NULL", GF_HNDSK_NULL, NULL, NULL, 0},
-        [GF_HNDSK_GETSPEC]      = {"GETSPEC", GF_HNDSK_GETSPEC,
-                                   server_getspec, NULL, 0},
-        [GF_HNDSK_EVENT_NOTIFY] = {"EVENTNOTIFY", GF_HNDSK_EVENT_NOTIFY,
-                                   server_event_notify,  NULL, 0},
+        [GF_HNDSK_NULL]         = {"NULL",        GF_HNDSK_NULL,         NULL,                NULL, 0, DRC_NA},
+        [GF_HNDSK_GETSPEC]      = {"GETSPEC",     GF_HNDSK_GETSPEC,      server_getspec,      NULL, 0, DRC_NA},
+        [GF_HNDSK_EVENT_NOTIFY] = {"EVENTNOTIFY", GF_HNDSK_EVENT_NOTIFY, server_event_notify, NULL, 0, DRC_NA},
 };
 
 
@@ -598,6 +602,19 @@ struct rpcsvc_program gluster_handshake_prog = {
         .prognum   = GLUSTER_HNDSK_PROGRAM,
         .progver   = GLUSTER_HNDSK_VERSION,
         .actors    = gluster_handshake_actors,
+        .numactors = GF_HNDSK_MAXVALUE,
+};
+
+/* A minimal RPC program just for the cli getspec command */
+rpcsvc_actor_t gluster_cli_getspec_actors[] = {
+        [GF_HNDSK_GETSPEC]      = {"GETSPEC",     GF_HNDSK_GETSPEC,      server_getspec,      NULL, 0, DRC_NA},
+};
+
+struct rpcsvc_program gluster_cli_getspec_prog = {
+        .progname  = "Gluster Handshake (CLI Getspec)",
+        .prognum   = GLUSTER_HNDSK_PROGRAM,
+        .progver   = GLUSTER_HNDSK_VERSION,
+        .actors    = gluster_cli_getspec_actors,
         .numactors = GF_HNDSK_MAXVALUE,
 };
 
@@ -1027,6 +1044,27 @@ out:
 }
 
 static gf_boolean_t
+_mgmt_ping_prog_present (gf_prog_detail *prog) {
+        gf_boolean_t    ret = _gf_false;
+        gf_prog_detail  *trav = NULL;
+
+        GF_ASSERT (prog);
+
+        trav = prog;
+
+        while (trav) {
+                if ((trav->prognum == GD_PING_PROGRAM) &&
+                    (trav->progver == GD_PING_VERSION)) {
+                        ret = _gf_true;
+                        goto out;
+                }
+                trav = trav->next;
+        }
+out:
+        return ret;
+}
+
+static gf_boolean_t
 _mgmt_hndsk_prog_present (gf_prog_detail *prog) {
         gf_boolean_t    ret = _gf_false;
         gf_prog_detail  *trav = NULL;
@@ -1091,12 +1129,15 @@ __glusterd_peer_dump_version_cbk (struct rpc_req *req, struct iovec *iov,
                 goto out;
         }
 
+        conf->pingsvc = _mgmt_ping_prog_present (rsp.prog);
+
         if (_mgmt_hndsk_prog_present (rsp.prog)) {
                 gf_log (this->name, GF_LOG_DEBUG,
                         "Proceeding to op-version handshake with peer %s",
                         peerinfo->hostname);
                 ret = glusterd_mgmt_handshake (this, peerctx);
                 goto out;
+
         } else if (conf->op_version > 1) {
                 ret = -1;
                 snprintf (msg, sizeof (msg),

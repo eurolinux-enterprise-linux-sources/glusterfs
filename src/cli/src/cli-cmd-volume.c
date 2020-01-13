@@ -395,7 +395,7 @@ cli_cmd_volume_create_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 }
         }
 
-        if (state->mode & GLUSTER_MODE_SCRIPT) {
+        if (state->mode & GLUSTER_MODE_WIGNORE) {
                 ret = dict_set_int32 (options, "force", _gf_true);
                 if (ret) {
                         gf_log ("cli", GF_LOG_ERROR, "Failed to set force "
@@ -981,7 +981,7 @@ cli_cmd_volume_add_brick_cbk (struct cli_state *state,
                 }
         }
 
-        if (state->mode & GLUSTER_MODE_SCRIPT) {
+        if (state->mode & GLUSTER_MODE_WIGNORE) {
                 ret = dict_set_int32 (options, "force", _gf_true);
                 if (ret) {
                         gf_log ("cli", GF_LOG_ERROR, "Failed to set force "
@@ -1096,9 +1096,11 @@ print_quota_list_header (void)
 {
         //Header
         cli_out ("                  Path                   Hard-limit "
-                 "Soft-limit   Used  Available");
+                 "Soft-limit   Used  Available  Soft-limit exceeded?"
+                 " Hard-limit exceeded?");
         cli_out ("-----------------------------------------------------"
-                 "---------------------------");
+                 "-----------------------------------------------------"
+                 "-----------------");
 }
 
 int
@@ -1554,7 +1556,7 @@ cli_cmd_volume_replace_brick_cbk (struct cli_state *state,
                 goto out;
         }
 
-        if (state->mode & GLUSTER_MODE_SCRIPT) {
+        if (state->mode & GLUSTER_MODE_WIGNORE) {
                 ret = dict_set_int32 (options, "force", _gf_true);
                 if (ret) {
                         gf_log ("cli", GF_LOG_ERROR, "Failed to set force"
@@ -2035,6 +2037,10 @@ cli_cmd_volume_heal_cbk (struct cli_state *state, struct cli_cmd_word *word,
         dict_t                  *options = NULL;
         xlator_t                *this = NULL;
         cli_local_t             *local = NULL;
+        int                     heal_op = 0;
+        runner_t                runner = {0};
+        char                    buff[PATH_MAX] = {0};
+        char                    *out = NULL;
 
         this = THIS;
         frame = create_frame (this, this->ctx->pool);
@@ -2053,13 +2059,32 @@ cli_cmd_volume_heal_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 parse_error = 1;
                 goto out;
         }
+        ret = dict_get_int32 (options, "heal-op", &heal_op);
+        if (ret < 0)
+                goto out;
 
-        proc = &cli_rpc_prog->proctable[GLUSTER_CLI_HEAL_VOLUME];
+        if (heal_op == GF_AFR_OP_INDEX_SUMMARY) {
+                runinit (&runner);
+                runner_add_args (&runner, SBIN_DIR"/glfsheal", words[2], NULL);
+                runner_redir (&runner, STDOUT_FILENO, RUN_PIPE);
+                ret = runner_start (&runner);
+                if (ret == -1)
+                        goto out;
+                while ((out = fgets(buff, sizeof(buff),
+                                   runner_chio (&runner, STDOUT_FILENO)))) {
+                        printf ("%s", out);
+                }
 
-        CLI_LOCAL_INIT (local, words, frame, options);
+                ret = runner_end (&runner);
+                ret = WEXITSTATUS (ret);
+        } else {
+                proc = &cli_rpc_prog->proctable[GLUSTER_CLI_HEAL_VOLUME];
 
-        if (proc->fn) {
-                ret = proc->fn (frame, THIS, options);
+                CLI_LOCAL_INIT (local, words, frame, options);
+
+                if (proc->fn) {
+                        ret = proc->fn (frame, THIS, options);
+                }
         }
 
 out:
@@ -2255,7 +2280,7 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_add_brick_cbk,
           "add brick to volume <VOLNAME>"},
 
-        { "volume remove-brick <VOLNAME> [replica <COUNT>] <BRICK> ... {start|stop|status|commit|force}",
+        { "volume remove-brick <VOLNAME> [replica <COUNT>] <BRICK> ... [start|stop|status|commit|force]",
           cli_cmd_volume_remove_brick_cbk,
           "remove brick from volume <VOLNAME>"},
 
@@ -2315,7 +2340,7 @@ struct cli_cmd volume_cmds[] = {
            "volume top operations"},
 
         { "volume status [all | <VOLNAME> [nfs|shd|<BRICK>|quotad]]"
-          " [detail|clients|mem|inode|fd|callpool]",
+          " [detail|clients|mem|inode|fd|callpool|tasks]",
           cli_cmd_volume_status_cbk,
           "display status of all or specified volume(s)/brick"},
 

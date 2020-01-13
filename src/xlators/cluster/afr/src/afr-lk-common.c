@@ -658,6 +658,7 @@ afr_unlock_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         afr_internal_lock_t *int_lock = NULL;
         afr_inodelk_t       *inodelk = NULL;
         int32_t             child_index = (long)cookie;
+        afr_private_t       *priv = NULL;
 
         local = frame->local;
         int_lock = &local->internal_lock;
@@ -666,9 +667,12 @@ afr_unlock_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                AFR_UNLOCK_OP, NULL, op_ret,
                                op_errno, child_index);
 
+        priv = this->private;
+
         if (op_ret < 0 && op_errno != ENOTCONN && op_errno != EBADFD) {
-                gf_log (this->name, GF_LOG_INFO, "%s: unlock failed on %d "
-                        "unlock by %s", local->loc.path, child_index,
+                gf_log (this->name, GF_LOG_INFO, "%s: unlock failed on subvolume %s "
+                        "with lock owner %s", local->loc.path,
+                        priv->children[child_index]->name,
                         lkowner_utoa (&frame->root->lk_owner));
         }
 
@@ -1428,6 +1432,7 @@ afr_nonblocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         LOCK (&frame->lock);
         {
 		if (op_ret < 0) {
+                        int_lock->lock_op_errno      = op_errno;
 			if (op_errno == ENOSYS) {
 				/* return ENOTSUP */
 				gf_log (this->name, GF_LOG_ERROR,
@@ -1436,7 +1441,6 @@ afr_nonblocking_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 					"server");
 				local->op_ret                = op_ret;
 				int_lock->lock_op_ret        = op_ret;
-				int_lock->lock_op_errno      = op_errno;
 				local->op_errno              = op_errno;
 			}
 			if (local->transaction.eager_lock)

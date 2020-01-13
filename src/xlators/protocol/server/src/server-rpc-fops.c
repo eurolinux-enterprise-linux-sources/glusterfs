@@ -24,6 +24,11 @@
 
 #include "xdr-nfs3.h"
 
+#define SERVER_REQ_SET_ERROR(req, ret)                          \
+        do {                                                    \
+                rpcsvc_request_seterr (req, GARBAGE_ARGS);      \
+                ret = RPCSVC_ACTOR_ERROR;                       \
+        } while (0)
 
 /* Callback function section */
 int
@@ -236,7 +241,8 @@ server_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         if (op_ret < 0) {
                 if ((op_errno != ENOSYS) && (op_errno != EAGAIN)) {
-                        gf_log (this->name, GF_LOG_INFO,
+                        gf_log (this->name, (op_errno == ENOENT)?
+                                GF_LOG_DEBUG:GF_LOG_ERROR,
                                 "%"PRId64": INODELK %s (%s) ==> (%s)",
                                 frame->root->unique, state->loc.path,
                                 uuid_utoa (state->resolve.gfid),
@@ -699,7 +705,8 @@ server_opendir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                     rsp.xdata.xdata_len, op_errno, out);
 
         if (op_ret < 0) {
-                gf_log (this->name, GF_LOG_INFO,
+                gf_log (this->name, (op_errno == ENOENT)?
+                        GF_LOG_DEBUG:GF_LOG_ERROR,
                         "%"PRId64": OPENDIR %s (%s) ==> (%s)",
                         frame->root->unique, state->loc.path,
                         uuid_utoa (state->resolve.gfid), strerror (op_errno));
@@ -1360,10 +1367,11 @@ server_flush_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                     rsp.xdata.xdata_len, op_errno, out);
 
         if (op_ret < 0) {
-                gf_log (this->name, GF_LOG_INFO,
-                        "%"PRId64": FLUSH %"PRId64" (%s) ==>  (%s)",
+                gf_log (this->name, (op_errno == ENOENT)?
+                        GF_LOG_DEBUG:GF_LOG_ERROR,
+                        "%"PRId64": FLUSH %"PRId64" (%s) ==> (%s)",
                         frame->root->unique, state->resolve.fd_no,
-                         uuid_utoa (state->resolve.gfid), strerror (op_errno));
+                        uuid_utoa (state->resolve.gfid), strerror (op_errno));
                 goto out;
         }
 
@@ -1565,7 +1573,8 @@ server_open_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                     rsp.xdata.xdata_len, op_errno, out);
 
         if (op_ret < 0) {
-                gf_log (this->name, GF_LOG_INFO,
+                gf_log (this->name, (op_errno == ENOENT)?
+                        GF_LOG_DEBUG:GF_LOG_ERROR,
                         "%"PRId64": OPEN %s (%s) ==> (%s)",
                         frame->root->unique, state->loc.path,
                         uuid_utoa (state->resolve.gfid),
@@ -1732,7 +1741,8 @@ server_stat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                     rsp.xdata.xdata_len, op_errno, out);
 
         if (op_ret) {
-                gf_log (this->name, GF_LOG_INFO,
+                gf_log (this->name, (op_errno == ENOENT)?
+                        GF_LOG_DEBUG:GF_LOG_ERROR,
                         "%"PRId64": STAT %s (%s) ==> (%s)",
                         frame->root->unique, state->loc.path,
                         uuid_utoa (state->resolve.gfid),
@@ -2936,14 +2946,13 @@ server3_3_stat (rpcsvc_request_t *req)
         ret = xdr_to_generic (req->msg[0], &args, (xdrproc_t)xdr_gfs3_stat_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
-                // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_STAT;
@@ -2951,7 +2960,7 @@ server3_3_stat (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -2971,7 +2980,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -2993,14 +3002,14 @@ server3_3_setattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_setattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_SETATTR;
@@ -3008,7 +3017,7 @@ server3_3_setattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3028,7 +3037,7 @@ server3_3_setattr (rpcsvc_request_t *req)
 
 out:
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         free (args.xdata.xdata_val);
 
@@ -3052,14 +3061,13 @@ server3_3_fsetattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fsetattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
-                // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FSETATTR;
@@ -3067,7 +3075,7 @@ server3_3_fsetattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3089,7 +3097,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3111,14 +3119,14 @@ server3_3_readlink (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_readlink_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_READLINK;
@@ -3126,7 +3134,7 @@ server3_3_readlink (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3147,7 +3155,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3171,14 +3179,14 @@ server3_3_create (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_create_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_CREATE;
@@ -3186,7 +3194,7 @@ server3_3_create (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3217,7 +3225,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3238,14 +3246,14 @@ server3_3_open (rpcsvc_request_t *req)
         ret = xdr_to_generic (req->msg[0], &args, (xdrproc_t)xdr_gfs3_open_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_OPEN;
@@ -3253,7 +3261,7 @@ server3_3_open (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3271,7 +3279,7 @@ server3_3_open (rpcsvc_request_t *req)
         resolve_and_resume (frame, server_open_resume);
 out:
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         free (args.xdata.xdata_val);
 
@@ -3294,14 +3302,14 @@ server3_3_readv (rpcsvc_request_t *req)
         ret = xdr_to_generic (req->msg[0], &args, (xdrproc_t)xdr_gfs3_read_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_READ;
@@ -3309,7 +3317,7 @@ server3_3_readv (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3333,7 +3341,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3357,14 +3365,14 @@ server3_3_writev (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_write_req);
         if (len < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_WRITE;
@@ -3372,7 +3380,7 @@ server3_3_writev (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3415,7 +3423,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3490,7 +3498,7 @@ server3_3_release (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_release_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3522,13 +3530,13 @@ server3_3_releasedir (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_release_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         conn = req->trans->xl_private;
         if (!conn) {
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3559,14 +3567,14 @@ server3_3_fsync (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fsync_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FSYNC;
@@ -3574,7 +3582,7 @@ server3_3_fsync (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3594,7 +3602,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3617,14 +3625,14 @@ server3_3_flush (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_flush_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FLUSH;
@@ -3632,7 +3640,7 @@ server3_3_flush (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3651,7 +3659,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3674,14 +3682,14 @@ server3_3_ftruncate (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_ftruncate_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FTRUNCATE;
@@ -3689,7 +3697,7 @@ server3_3_ftruncate (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3709,7 +3717,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3731,14 +3739,14 @@ server3_3_fstat (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fstat_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FSTAT;
@@ -3746,7 +3754,7 @@ server3_3_fstat (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3765,7 +3773,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3787,14 +3795,14 @@ server3_3_truncate (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_truncate_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_TRUNCATE;
@@ -3802,7 +3810,7 @@ server3_3_truncate (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3821,7 +3829,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3846,14 +3854,14 @@ server3_3_unlink (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_unlink_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_UNLINK;
@@ -3861,7 +3869,7 @@ server3_3_unlink (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3882,7 +3890,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -3907,14 +3915,14 @@ server3_3_setxattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_setxattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_SETXATTR;
@@ -3922,7 +3930,7 @@ server3_3_setxattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -3953,7 +3961,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         if (dict)
                 dict_unref (dict);
@@ -3981,14 +3989,14 @@ server3_3_fsetxattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fsetxattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FSETXATTR;
@@ -3996,7 +4004,7 @@ server3_3_fsetxattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4025,7 +4033,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         if (dict)
                 dict_unref (dict);
@@ -4053,14 +4061,14 @@ server3_3_fxattrop (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fxattrop_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FXATTROP;
@@ -4068,7 +4076,7 @@ server3_3_fxattrop (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4098,7 +4106,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         if (dict)
                 dict_unref (dict);
@@ -4127,14 +4135,14 @@ server3_3_xattrop (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_xattrop_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_XATTROP;
@@ -4142,7 +4150,7 @@ server3_3_xattrop (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4170,7 +4178,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         if (dict)
                 dict_unref (dict);
@@ -4197,14 +4205,14 @@ server3_3_getxattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_getxattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_GETXATTR;
@@ -4212,7 +4220,7 @@ server3_3_getxattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4236,7 +4244,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4259,14 +4267,14 @@ server3_3_fgetxattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fgetxattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FGETXATTR;
@@ -4274,7 +4282,7 @@ server3_3_fgetxattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4296,7 +4304,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4321,14 +4329,14 @@ server3_3_removexattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_removexattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_REMOVEXATTR;
@@ -4336,7 +4344,7 @@ server3_3_removexattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4355,7 +4363,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4378,14 +4386,14 @@ server3_3_fremovexattr (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fremovexattr_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FREMOVEXATTR;
@@ -4393,7 +4401,7 @@ server3_3_fremovexattr (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4413,7 +4421,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4437,14 +4445,14 @@ server3_3_opendir (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_opendir_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_OPENDIR;
@@ -4452,7 +4460,7 @@ server3_3_opendir (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4470,7 +4478,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4493,14 +4501,14 @@ server3_3_readdirp (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_readdirp_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_READDIRP;
@@ -4508,7 +4516,7 @@ server3_3_readdirp (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4539,7 +4547,7 @@ server3_3_readdirp (rpcsvc_request_t *req)
         resolve_and_resume (frame, server_readdirp_resume);
 out:
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         free (args.dict.dict_val);
 
@@ -4563,14 +4571,14 @@ server3_3_readdir (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_readdir_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_READDIR;
@@ -4578,7 +4586,7 @@ server3_3_readdir (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4609,7 +4617,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4630,14 +4638,14 @@ server3_3_fsyncdir (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fsyncdir_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FSYNCDIR;
@@ -4645,7 +4653,7 @@ server3_3_fsyncdir (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4665,7 +4673,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4690,14 +4698,14 @@ server3_3_mknod (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_mknod_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_MKNOD;
@@ -4705,7 +4713,7 @@ server3_3_mknod (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4727,7 +4735,7 @@ server3_3_mknod (rpcsvc_request_t *req)
 
 out:
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         /* memory allocated by libc, don't use GF_FREE */
         free (args.xdata.xdata_val);
@@ -4755,14 +4763,14 @@ server3_3_mkdir (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_mkdir_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_MKDIR;
@@ -4770,7 +4778,7 @@ server3_3_mkdir (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4792,7 +4800,7 @@ server3_3_mkdir (rpcsvc_request_t *req)
 
 out:
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         free (args.xdata.xdata_val);
 
@@ -4818,14 +4826,14 @@ server3_3_rmdir (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_rmdir_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_RMDIR;
@@ -4833,7 +4841,7 @@ server3_3_rmdir (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4854,7 +4862,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4880,14 +4888,14 @@ server3_3_inodelk (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_inodelk_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_INODELK;
@@ -4895,7 +4903,7 @@ server3_3_inodelk (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -4945,7 +4953,7 @@ out:
         free (args.flock.lk_owner.lk_owner_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -4967,14 +4975,14 @@ server3_3_finodelk (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_finodelk_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FINODELK;
@@ -4982,7 +4990,7 @@ server3_3_finodelk (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5033,7 +5041,7 @@ out:
         free (args.flock.lk_owner.lk_owner_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5058,14 +5066,14 @@ server3_3_entrylk (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_entrylk_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_ENTRYLK;
@@ -5073,7 +5081,7 @@ server3_3_entrylk (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5098,7 +5106,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5122,14 +5130,14 @@ server3_3_fentrylk (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_fentrylk_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_FENTRYLK;
@@ -5137,7 +5145,7 @@ server3_3_fentrylk (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5162,7 +5170,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5183,14 +5191,14 @@ server3_3_access (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_access_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_ACCESS;
@@ -5198,7 +5206,7 @@ server3_3_access (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5217,7 +5225,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5243,14 +5251,14 @@ server3_3_symlink (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_symlink_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_SYMLINK;
@@ -5258,7 +5266,7 @@ server3_3_symlink (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5278,7 +5286,7 @@ server3_3_symlink (rpcsvc_request_t *req)
 
 out:
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         /* memory allocated by libc, don't use GF_FREE */
         free (args.xdata.xdata_val);
@@ -5305,14 +5313,14 @@ server3_3_link (rpcsvc_request_t *req)
         ret = xdr_to_generic (req->msg[0], &args, (xdrproc_t)xdr_gfs3_link_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_LINK;
@@ -5320,7 +5328,7 @@ server3_3_link (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5342,7 +5350,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5367,14 +5375,14 @@ server3_3_rename (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_rename_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_RENAME;
@@ -5382,7 +5390,7 @@ server3_3_rename (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5405,7 +5413,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5425,14 +5433,14 @@ server3_3_lk (rpcsvc_request_t *req)
         ret = xdr_to_generic (req->msg[0], &args, (xdrproc_t)xdr_gfs3_lk_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_LK;
@@ -5440,7 +5448,7 @@ server3_3_lk (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5509,7 +5517,7 @@ out:
         free (args.flock.lk_owner.lk_owner_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5531,14 +5539,14 @@ server3_3_rchecksum (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_rchecksum_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_RCHECKSUM;
@@ -5546,7 +5554,7 @@ server3_3_rchecksum (rpcsvc_request_t *req)
         state = CALL_STATE(frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5566,7 +5574,7 @@ out:
         free (args.xdata.xdata_val);
 
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
@@ -5603,14 +5611,14 @@ server3_3_lookup (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_lookup_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto err;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto err;
         }
         frame->root->op = GF_FOP_LOOKUP;
@@ -5622,7 +5630,7 @@ server3_3_lookup (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5669,14 +5677,14 @@ server3_3_statfs (rpcsvc_request_t *req)
                               (xdrproc_t)xdr_gfs3_statfs_req);
         if (ret < 0) {
                 //failed to decode msg;
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
         frame = get_frame_from_request (req);
         if (!frame) {
                 // something wrong, mostly insufficient memory
-                req->rpc_err = GARBAGE_ARGS; /* TODO */
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
         frame->root->op = GF_FOP_STATFS;
@@ -5684,7 +5692,7 @@ server3_3_statfs (rpcsvc_request_t *req)
         state = CALL_STATE (frame);
         if (!state->conn->bound_xl) {
                 /* auth failure, request on subvolume without setvolume */
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
                 goto out;
         }
 
@@ -5700,57 +5708,57 @@ server3_3_statfs (rpcsvc_request_t *req)
         resolve_and_resume (frame, server_statfs_resume);
 out:
         if (op_errno)
-                req->rpc_err = GARBAGE_ARGS;
+                SERVER_REQ_SET_ERROR (req, ret);
 
         return ret;
 }
 
 
 rpcsvc_actor_t glusterfs3_3_fop_actors[] = {
-        [GFS3_OP_NULL]        = { "NULL",       GFS3_OP_NULL, server_null, NULL, 0},
-        [GFS3_OP_STAT]        = { "STAT",       GFS3_OP_STAT, server3_3_stat, NULL, 0},
-        [GFS3_OP_READLINK]    = { "READLINK",   GFS3_OP_READLINK, server3_3_readlink, NULL, 0},
-        [GFS3_OP_MKNOD]       = { "MKNOD",      GFS3_OP_MKNOD, server3_3_mknod, NULL, 0},
-        [GFS3_OP_MKDIR]       = { "MKDIR",      GFS3_OP_MKDIR, server3_3_mkdir, NULL, 0},
-        [GFS3_OP_UNLINK]      = { "UNLINK",     GFS3_OP_UNLINK, server3_3_unlink, NULL, 0},
-        [GFS3_OP_RMDIR]       = { "RMDIR",      GFS3_OP_RMDIR, server3_3_rmdir, NULL, 0},
-        [GFS3_OP_SYMLINK]     = { "SYMLINK",    GFS3_OP_SYMLINK, server3_3_symlink, NULL, 0},
-        [GFS3_OP_RENAME]      = { "RENAME",     GFS3_OP_RENAME, server3_3_rename, NULL, 0},
-        [GFS3_OP_LINK]        = { "LINK",       GFS3_OP_LINK, server3_3_link, NULL, 0},
-        [GFS3_OP_TRUNCATE]    = { "TRUNCATE",   GFS3_OP_TRUNCATE, server3_3_truncate, NULL, 0},
-        [GFS3_OP_OPEN]        = { "OPEN",       GFS3_OP_OPEN, server3_3_open, NULL, 0},
-        [GFS3_OP_READ]        = { "READ",       GFS3_OP_READ, server3_3_readv, NULL, 0},
-        [GFS3_OP_WRITE]       = { "WRITE",      GFS3_OP_WRITE, server3_3_writev, server3_3_writev_vecsizer, 0},
-        [GFS3_OP_STATFS]      = { "STATFS",     GFS3_OP_STATFS, server3_3_statfs, NULL, 0},
-        [GFS3_OP_FLUSH]       = { "FLUSH",      GFS3_OP_FLUSH, server3_3_flush, NULL, 0},
-        [GFS3_OP_FSYNC]       = { "FSYNC",      GFS3_OP_FSYNC, server3_3_fsync, NULL, 0},
-        [GFS3_OP_SETXATTR]    = { "SETXATTR",   GFS3_OP_SETXATTR, server3_3_setxattr, NULL, 0},
-        [GFS3_OP_GETXATTR]    = { "GETXATTR",   GFS3_OP_GETXATTR, server3_3_getxattr, NULL, 0},
-        [GFS3_OP_REMOVEXATTR] = { "REMOVEXATTR", GFS3_OP_REMOVEXATTR, server3_3_removexattr, NULL, 0},
-        [GFS3_OP_OPENDIR]     = { "OPENDIR",    GFS3_OP_OPENDIR, server3_3_opendir, NULL, 0},
-        [GFS3_OP_FSYNCDIR]    = { "FSYNCDIR",   GFS3_OP_FSYNCDIR, server3_3_fsyncdir, NULL, 0},
-        [GFS3_OP_ACCESS]      = { "ACCESS",     GFS3_OP_ACCESS, server3_3_access, NULL, 0},
-        [GFS3_OP_CREATE]      = { "CREATE",     GFS3_OP_CREATE, server3_3_create, NULL, 0},
-        [GFS3_OP_FTRUNCATE]   = { "FTRUNCATE",  GFS3_OP_FTRUNCATE, server3_3_ftruncate, NULL, 0},
-        [GFS3_OP_FSTAT]       = { "FSTAT",      GFS3_OP_FSTAT, server3_3_fstat, NULL, 0},
-        [GFS3_OP_LK]          = { "LK",         GFS3_OP_LK, server3_3_lk, NULL, 0},
-        [GFS3_OP_LOOKUP]      = { "LOOKUP",     GFS3_OP_LOOKUP, server3_3_lookup, NULL, 0},
-        [GFS3_OP_READDIR]     = { "READDIR",    GFS3_OP_READDIR, server3_3_readdir, NULL, 0},
-        [GFS3_OP_INODELK]     = { "INODELK",    GFS3_OP_INODELK, server3_3_inodelk, NULL, 0},
-        [GFS3_OP_FINODELK]    = { "FINODELK",   GFS3_OP_FINODELK, server3_3_finodelk, NULL, 0},
-        [GFS3_OP_ENTRYLK]     = { "ENTRYLK",    GFS3_OP_ENTRYLK, server3_3_entrylk, NULL, 0},
-        [GFS3_OP_FENTRYLK]    = { "FENTRYLK",   GFS3_OP_FENTRYLK, server3_3_fentrylk, NULL, 0},
-        [GFS3_OP_XATTROP]     = { "XATTROP",    GFS3_OP_XATTROP, server3_3_xattrop, NULL, 0},
-        [GFS3_OP_FXATTROP]    = { "FXATTROP",   GFS3_OP_FXATTROP, server3_3_fxattrop, NULL, 0},
-        [GFS3_OP_FGETXATTR]   = { "FGETXATTR",  GFS3_OP_FGETXATTR, server3_3_fgetxattr, NULL, 0},
-        [GFS3_OP_FSETXATTR]   = { "FSETXATTR",  GFS3_OP_FSETXATTR, server3_3_fsetxattr, NULL, 0},
-        [GFS3_OP_RCHECKSUM]   = { "RCHECKSUM",  GFS3_OP_RCHECKSUM, server3_3_rchecksum, NULL, 0},
-        [GFS3_OP_SETATTR]     = { "SETATTR",    GFS3_OP_SETATTR, server3_3_setattr, NULL, 0},
-        [GFS3_OP_FSETATTR]    = { "FSETATTR",   GFS3_OP_FSETATTR, server3_3_fsetattr, NULL, 0},
-        [GFS3_OP_READDIRP]    = { "READDIRP",   GFS3_OP_READDIRP, server3_3_readdirp, NULL, 0},
-        [GFS3_OP_RELEASE]     = { "RELEASE",    GFS3_OP_RELEASE, server3_3_release, NULL, 0},
-        [GFS3_OP_RELEASEDIR]  = { "RELEASEDIR", GFS3_OP_RELEASEDIR, server3_3_releasedir, NULL, 0},
-        [GFS3_OP_FREMOVEXATTR] = { "FREMOVEXATTR", GFS3_OP_FREMOVEXATTR, server3_3_fremovexattr, NULL, 0},
+        [GFS3_OP_NULL]         = { "NULL",         GFS3_OP_NULL,         server_null,            NULL, 0, DRC_NA},
+        [GFS3_OP_STAT]         = { "STAT",         GFS3_OP_STAT,         server3_3_stat,         NULL, 0, DRC_NA},
+        [GFS3_OP_READLINK]     = { "READLINK",     GFS3_OP_READLINK,     server3_3_readlink,     NULL, 0, DRC_NA},
+        [GFS3_OP_MKNOD]        = { "MKNOD",        GFS3_OP_MKNOD,        server3_3_mknod,        NULL, 0, DRC_NA},
+        [GFS3_OP_MKDIR]        = { "MKDIR",        GFS3_OP_MKDIR,        server3_3_mkdir,        NULL, 0, DRC_NA},
+        [GFS3_OP_UNLINK]       = { "UNLINK",       GFS3_OP_UNLINK,       server3_3_unlink,       NULL, 0, DRC_NA},
+        [GFS3_OP_RMDIR]        = { "RMDIR",        GFS3_OP_RMDIR,        server3_3_rmdir,        NULL, 0, DRC_NA},
+        [GFS3_OP_SYMLINK]      = { "SYMLINK",      GFS3_OP_SYMLINK,      server3_3_symlink,      NULL, 0, DRC_NA},
+        [GFS3_OP_RENAME]       = { "RENAME",       GFS3_OP_RENAME,       server3_3_rename,       NULL, 0, DRC_NA},
+        [GFS3_OP_LINK]         = { "LINK",         GFS3_OP_LINK,         server3_3_link,         NULL, 0, DRC_NA},
+        [GFS3_OP_TRUNCATE]     = { "TRUNCATE",     GFS3_OP_TRUNCATE,     server3_3_truncate,     NULL, 0, DRC_NA},
+        [GFS3_OP_OPEN]         = { "OPEN",         GFS3_OP_OPEN,         server3_3_open,         NULL, 0, DRC_NA},
+        [GFS3_OP_READ]         = { "READ",         GFS3_OP_READ,         server3_3_readv,        NULL, 0, DRC_NA},
+        [GFS3_OP_WRITE]        = { "WRITE",        GFS3_OP_WRITE,        server3_3_writev, server3_3_writev_vecsizer, 0, DRC_NA},
+        [GFS3_OP_STATFS]       = { "STATFS",       GFS3_OP_STATFS,       server3_3_statfs,       NULL, 0, DRC_NA},
+        [GFS3_OP_FLUSH]        = { "FLUSH",        GFS3_OP_FLUSH,        server3_3_flush,        NULL, 0, DRC_NA},
+        [GFS3_OP_FSYNC]        = { "FSYNC",        GFS3_OP_FSYNC,        server3_3_fsync,        NULL, 0, DRC_NA},
+        [GFS3_OP_SETXATTR]     = { "SETXATTR",     GFS3_OP_SETXATTR,     server3_3_setxattr,     NULL, 0, DRC_NA},
+        [GFS3_OP_GETXATTR]     = { "GETXATTR",     GFS3_OP_GETXATTR,     server3_3_getxattr,     NULL, 0, DRC_NA},
+        [GFS3_OP_REMOVEXATTR]  = { "REMOVEXATTR",  GFS3_OP_REMOVEXATTR,  server3_3_removexattr,  NULL, 0, DRC_NA},
+        [GFS3_OP_OPENDIR]      = { "OPENDIR",      GFS3_OP_OPENDIR,      server3_3_opendir,      NULL, 0, DRC_NA},
+        [GFS3_OP_FSYNCDIR]     = { "FSYNCDIR",     GFS3_OP_FSYNCDIR,     server3_3_fsyncdir,     NULL, 0, DRC_NA},
+        [GFS3_OP_ACCESS]       = { "ACCESS",       GFS3_OP_ACCESS,       server3_3_access,       NULL, 0, DRC_NA},
+        [GFS3_OP_CREATE]       = { "CREATE",       GFS3_OP_CREATE,       server3_3_create,       NULL, 0, DRC_NA},
+        [GFS3_OP_FTRUNCATE]    = { "FTRUNCATE",    GFS3_OP_FTRUNCATE,    server3_3_ftruncate,    NULL, 0, DRC_NA},
+        [GFS3_OP_FSTAT]        = { "FSTAT",        GFS3_OP_FSTAT,        server3_3_fstat,        NULL, 0, DRC_NA},
+        [GFS3_OP_LK]           = { "LK",           GFS3_OP_LK,           server3_3_lk,           NULL, 0, DRC_NA},
+        [GFS3_OP_LOOKUP]       = { "LOOKUP",       GFS3_OP_LOOKUP,       server3_3_lookup,       NULL, 0, DRC_NA},
+        [GFS3_OP_READDIR]      = { "READDIR",      GFS3_OP_READDIR,      server3_3_readdir,      NULL, 0, DRC_NA},
+        [GFS3_OP_INODELK]      = { "INODELK",      GFS3_OP_INODELK,      server3_3_inodelk,      NULL, 0, DRC_NA},
+        [GFS3_OP_FINODELK]     = { "FINODELK",     GFS3_OP_FINODELK,     server3_3_finodelk,     NULL, 0, DRC_NA},
+        [GFS3_OP_ENTRYLK]      = { "ENTRYLK",      GFS3_OP_ENTRYLK,      server3_3_entrylk,      NULL, 0, DRC_NA},
+        [GFS3_OP_FENTRYLK]     = { "FENTRYLK",     GFS3_OP_FENTRYLK,     server3_3_fentrylk,     NULL, 0, DRC_NA},
+        [GFS3_OP_XATTROP]      = { "XATTROP",      GFS3_OP_XATTROP,      server3_3_xattrop,      NULL, 0, DRC_NA},
+        [GFS3_OP_FXATTROP]     = { "FXATTROP",     GFS3_OP_FXATTROP,     server3_3_fxattrop,     NULL, 0, DRC_NA},
+        [GFS3_OP_FGETXATTR]    = { "FGETXATTR",    GFS3_OP_FGETXATTR,    server3_3_fgetxattr,    NULL, 0, DRC_NA},
+        [GFS3_OP_FSETXATTR]    = { "FSETXATTR",    GFS3_OP_FSETXATTR,    server3_3_fsetxattr,    NULL, 0, DRC_NA},
+        [GFS3_OP_RCHECKSUM]    = { "RCHECKSUM",    GFS3_OP_RCHECKSUM,    server3_3_rchecksum,    NULL, 0, DRC_NA},
+        [GFS3_OP_SETATTR]      = { "SETATTR",      GFS3_OP_SETATTR,      server3_3_setattr,      NULL, 0, DRC_NA},
+        [GFS3_OP_FSETATTR]     = { "FSETATTR",     GFS3_OP_FSETATTR,     server3_3_fsetattr,     NULL, 0, DRC_NA},
+        [GFS3_OP_READDIRP]     = { "READDIRP",     GFS3_OP_READDIRP,     server3_3_readdirp,     NULL, 0, DRC_NA},
+        [GFS3_OP_RELEASE]      = { "RELEASE",      GFS3_OP_RELEASE,      server3_3_release,      NULL, 0, DRC_NA},
+        [GFS3_OP_RELEASEDIR]   = { "RELEASEDIR",   GFS3_OP_RELEASEDIR,   server3_3_releasedir,   NULL, 0, DRC_NA},
+        [GFS3_OP_FREMOVEXATTR] = { "FREMOVEXATTR", GFS3_OP_FREMOVEXATTR, server3_3_fremovexattr, NULL, 0, DRC_NA},
 };
 
 

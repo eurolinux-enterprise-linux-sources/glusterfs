@@ -318,6 +318,20 @@ enomem:
 	return -1;
 }
 
+int glfs_setfsuid (uid_t fsuid)
+{
+	return syncopctx_setfsuid (&fsuid);
+}
+
+int glfs_setfsgid (gid_t fsgid)
+{
+	return syncopctx_setfsgid (&fsgid);
+}
+
+int glfs_setfsgroups (size_t size, const gid_t *list)
+{
+	return syncopctx_setfsgroups(size, list);
+}
 
 struct glfs *
 glfs_from_glfd (struct glfs_fd *glfd)
@@ -371,6 +385,9 @@ glfs_fd_destroy (struct glfs_fd *glfd)
 
 	if (glfd->fd)
 		fd_unref (glfd->fd);
+
+	GF_FREE (glfd->readdirbuf);
+
 	GF_FREE (glfd);
 }
 
@@ -641,6 +658,9 @@ glfs_fini (struct glfs *fs)
         }
 
         glfs_subvol_done (fs, subvol);
+
+        if (gf_log_fini(ctx) != 0)
+                ret = -1;
 
         return ret;
 }

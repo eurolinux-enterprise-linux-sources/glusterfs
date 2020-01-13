@@ -146,7 +146,7 @@ class NormalMixin(object):
 
     def set_slave_xtime(self, path, mark):
         self.slave.server.set_stime(path, self.uuid, mark)
-        self.slave.server.set_xtime_remote(path, self.uuid, mark)
+        # self.slave.server.set_xtime_remote(path, self.uuid, mark)
 
 class PartialMixin(NormalMixin):
     """a variant tuned towards operation with a master
@@ -199,7 +199,7 @@ class TarSSHEngine(object):
     """Sync engine that uses tar(1) piped over ssh(1)
        for data transfers. Good for lots of small files.
     """
-    def syncdata(self, files):
+    def a_syncdata(self, files):
         logging.debug('files: %s' % (files))
         self.current_files_skipped_count = 0
         del self.skipped_gfid_list[:]
@@ -220,13 +220,18 @@ class TarSSHEngine(object):
                     self.current_files_skipped_count += 1
                     self.skipped_gfid_list.append(se_list[1])
             self.add_job(self.FLAT_DIR_HIERARCHY, 'reg', regjob, f, None, pb)
-        self.syncer.sync()
+
+    def syncdata_wait(self):
         if self.wait(self.FLAT_DIR_HIERARCHY, None):
             return True
 
+    def syncdata(self, files):
+        self.a_syncdata(files)
+        self.syncdata_wait()
+
 class RsyncEngine(object):
     """Sync engine that uses rsync(1) for data transfers"""
-    def syncdata(self, files):
+    def a_syncdata(self, files):
         logging.debug('files: %s' % (files))
         self.current_files_skipped_count = 0
         del self.skipped_gfid_list[:]
@@ -250,8 +255,14 @@ class RsyncEngine(object):
                     self.current_files_skipped_count += 1
                     self.skipped_gfid_list.append(se_list[1])
             self.add_job(self.FLAT_DIR_HIERARCHY, 'reg', regjob, f, None, pb)
+
+    def syncdata_wait(self):
         if self.wait(self.FLAT_DIR_HIERARCHY, None):
             return True
+
+    def syncdata(self, files):
+        self.a_syncdata(files)
+        self.syncdata_wait()
 
 class GMasterCommon(object):
     """abstract class impementling master role"""
@@ -346,9 +357,12 @@ class GMasterCommon(object):
         self.slave = slave
         self.jobtab = {}
         if boolify(gconf.use_tarssh):
-            self.syncer = TarSSHSyncer(slave)
+            logging.info("using 'tar over ssh' as the sync engine")
+            self.syncer = Syncer(slave, self.slave.tarssh)
         else:
-            self.syncer = RsyncSyncer(slave)
+            logging.info("using 'rsync' as the sync engine")
+            # partial transfer (cf. rsync(1)), that's normal
+            self.syncer = Syncer(slave, self.slave.rsync, [23, 24])
         # crawls vs. turns:
         # - self.crawls is simply the number of crawl() invocations on root
         # - one turn is a maximal consecutive sequence of crawls so that each
@@ -447,11 +461,12 @@ class GMasterCommon(object):
                 self.update_worker_health("Passive")
                 # bring up _this_ brick to the cluster stime
                 # which is min of cluster (but max of the replicas)
-                brick_stime = self.slave.server.stime('.', self.uuid)
-                cluster_stime = self.master.server.stime_mnt('.', '.'.join([str(self.uuid), str(gconf.slave_id)]))
+                brick_stime = self.xtime('.', self.slave)
+                cluster_stime = self.master.server.aggregated.stime_mnt('.', '.'.join([str(self.uuid), str(gconf.slave_id)]))
                 logging.debug("Cluster stime: %s | Brick stime: %s" % (repr(cluster_stime), repr(brick_stime)))
-                if brick_stime < cluster_stime:
-                    self.slave.server.set_stime(self.FLAT_DIR_HIERARCHY, self.uuid, cluster_stime)
+                if not isinstance(cluster_stime, int):
+                    if brick_stime < cluster_stime:
+                        self.slave.server.set_stime(self.FLAT_DIR_HIERARCHY, self.uuid, cluster_stime)
                 time.sleep(5)
                 continue
             self.update_worker_health("Active")
@@ -578,7 +593,7 @@ class GMasterCommon(object):
                 try:
                     conn, _ = chan.accept()
                     try:
-                        conn.send("  | checkpoint %s is %s " % (chkpt_lbl, status))
+                        conn.send("checkpoint %s is %s\0" % (chkpt_lbl, status))
                     except:
                         exc = sys.exc_info()[1]
                         if (isinstance(exc, OSError) or isinstance(exc, IOError)) and \
@@ -793,50 +808,86 @@ class GMasterChangelogMixin(GMasterCommon):
                 meta_entries.append(edct('META', go=go, stat=st))
             if meta_entries:
                 self.slave.server.meta_ops(meta_entries)
-        if not datas:
-            if done:
-                self.master.server.changelog_done(change)
-            return True
         # sync data
-        if self.syncdata(datas):
-            if done:
-                self.master.server.changelog_done(change)
-            return True
+        if datas:
+            self.a_syncdata(datas)
 
     def process(self, changes, done=1):
-        for change in changes:
-            tries = 0
-            retry = False
-            while True:
-                logging.debug('processing change %s' % change)
-                if self.process_change(change, done, retry):
-                    self.update_worker_files_syncd()
-                    break
-                retry = True
-                tries += 1
-                if tries == self.MAX_RETRIES:
-                    logging.warn('changelog %s could not be processed - moving on...' % os.path.basename(change))
-                    self.update_worker_total_files_skipped(self.current_files_skipped_count)
-                    for i in self.skipped_gfid_list:
-                        logging.warn('SKIPPED GFID = ' + i)
-                    self.update_worker_files_syncd()
-                    if done:
-                        self.master.server.changelog_done(change)
-                    break
-                # it's either entry_ops() or Rsync that failed to do it's
-                # job. Mostly it's entry_ops() [which currently has a problem
-                # of failing to create an entry but failing to return an errno]
-                # Therefore we do not know if it's either Rsync or the freaking
-                # entry_ops() that failed... so we retry the _whole_ changelog
-                # again.
-                # TODO: remove entry retries when it's gets fixed.
-                logging.warn('incomplete sync, retrying changelog: %s' % change)
-                time.sleep(0.5)
-            self.turns += 1
+        tries = 0
+        retry = False
 
-    def upd_stime(self, stime):
+        while True:
+            self.skipped_gfid_list = []
+            self.current_files_skipped_count = 0
+
+            # first, fire all changelog transfers in parallel. entry and metadata
+            # are performed synchronously, therefore in serial. However at the end
+            # of each changelog, data is synchronized with syncdata_async() - which
+            # means it is serial w.r.t entries/metadata of that changelog but
+            # happens in parallel with data of other changelogs.
+
+            for change in changes:
+                logging.debug('processing change %s' % change)
+                self.process_change(change, done, retry)
+                if not retry:
+                    self.turns += 1 # number of changelogs processed in the batch
+
+            # Now we wait for all the data transfers fired off in the above step
+            # to complete. Note that this is not ideal either. Ideally we want to
+            # trigger the entry/meta-data transfer of the next batch while waiting
+            # for the data transfer of the current batch to finish.
+
+            # Note that the reason to wait for the data transfer (vs doing it
+            # completely in the background and call the changelog_done()
+            # asynchronously) is because this waiting acts as a "backpressure"
+            # and prevents a spiraling increase of wait stubs from consuming
+            # unbounded memory and resources.
+
+            # update the slave's time with the timestamp of the _last_ changelog
+            # file time suffix. Since, the changelog prefix time is the time when
+            # the changelog was rolled over, introduce a tolerence of 1 second to
+            # counter the small delta b/w the marker update and gettimeofday().
+            # NOTE: this is only for changelog mode, not xsync.
+
+            # @change is the last changelog (therefore max time for this batch)
+            if self.syncdata_wait():
+                if done:
+                    xtl = (int(change.split('.')[-1]) - 1, 0)
+                    self.upd_stime(xtl)
+                    map(self.master.server.changelog_done, changes)
+                self.update_worker_files_syncd()
+                break
+
+            # We do not know which changelog transfer failed, retry everything.
+            retry = True
+            tries += 1
+            if tries == self.MAX_RETRIES:
+                logging.warn('changelogs %s could not be processed - moving on...' % \
+                             ' '.join(map(os.path.basename, changes)))
+                self.update_worker_total_files_skipped(self.current_files_skipped_count)
+                logging.warn('SKIPPED GFID = %s' % ','.join(self.skipped_gfid_list))
+                self.update_worker_files_syncd()
+                if done:
+                    xtl = (int(change.split('.')[-1]) - 1, 0)
+                    self.upd_stime(xtl)
+                    map(self.master.server.changelog_done, changes)
+                break
+            # it's either entry_ops() or Rsync that failed to do it's
+            # job. Mostly it's entry_ops() [which currently has a problem
+            # of failing to create an entry but failing to return an errno]
+            # Therefore we do not know if it's either Rsync or the freaking
+            # entry_ops() that failed... so we retry the _whole_ changelog
+            # again.
+            # TODO: remove entry retries when it's gets fixed.
+            logging.warn('incomplete sync, retrying changelogs: %s' % \
+                         ' '.join(map(os.path.basename, changes)))
+            time.sleep(0.5)
+
+    def upd_stime(self, stime, path=None):
+        if not path:
+            path = self.FLAT_DIR_HIERARCHY
         if not stime == URXTIME:
-            self.sendmark(self.FLAT_DIR_HIERARCHY, stime)
+            self.sendmark(path, stime)
 
     def get_worker_status_file(self):
         file_name = gconf.local_path+'.status'
@@ -1010,18 +1061,15 @@ class GMasterChangelogMixin(GMasterCommon):
             self.update_worker_crawl_status("Hybrid Crawl")
         changes = self.master.server.changelog_getchanges()
         if changes:
-            xtl = self.xtime(self.FLAT_DIR_HIERARCHY)
-            if isinstance(xtl, int):
-                logging.warn("master's xtime is not available")
             if purge_time:
-                processed = [x for x in changes if int(x.split('.')[-1]) < purge_time]
+                logging.info("slave's time: %s" % repr(purge_time))
+                processed = [x for x in changes if int(x.split('.')[-1]) < purge_time[0]]
                 for pr in processed:
                     logging.info('skipping already processed change: %s...' % os.path.basename(pr))
                     self.master.server.changelog_done(pr)
                     changes.remove(pr)
             logging.debug('processing changes %s' % repr(changes))
             self.process(changes)
-            self.upd_stime(xtl)
 
     def register(self):
         (workdir, logfile) = self.setup_working_dir()
@@ -1053,6 +1101,7 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
     def register(self):
         self.counter = 0
         self.comlist = []
+        self.stimes = []
         self.sleep_interval = 60
         self.tempdir = self.setup_working_dir()[0]
         self.tempdir = os.path.join(self.tempdir, 'xsync')
@@ -1067,26 +1116,32 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
                 raise
 
     def crawl(self):
-        """Not bothering about wasting CPU by trying list pop()
-        since this is a one-shot crawl.
+        """
+        event dispatcher thread
+
+        this thread dispatches either changelog or synchronizes stime.
+        additionally terminates itself on recieving a 'finale' event
         """
         def Xsyncer():
             self.Xcrawl()
         t = Thread(target=Xsyncer)
         t.start()
-        logging.info('starting hybrid crawl')
+        logging.info('starting hybrid crawl...')
         self.update_worker_crawl_status("Hybrid Crawl")
         while True:
             try:
                 item = self.comlist.pop(0)
-                if item == None:
+                if item[0] == 'finale':
                     logging.info('finished hybrid crawl syncing')
-                    stime = self.comlist.pop(0)
-                    if stime:
-                        self.upd_stime(stime)
                     break
-                logging.info('processing xsync changelog %s' % (item))
-                self.process([item], 0)
+                elif item[0] == 'xsync':
+                    logging.info('processing xsync changelog %s' % (item[1]))
+                    self.process([item[1]], 0)
+                elif item[0] == 'stime':
+                    logging.debug('setting slave time: %s' % repr(item[1]))
+                    self.upd_stime(item[1][1], item[1][0])
+                else:
+                    logging.warn('unknown tuple in comlist (%s)' % repr(item))
             except IndexError:
                 time.sleep(1)
 
@@ -1106,38 +1161,66 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
     def fname(self):
         return self.xsync_change
 
-    def put(self, item):
-        self.counter = 0
-        self.comlist.append(item)
+    def put(self, mark, item):
+        self.comlist.append((mark, item))
 
-    def next(self, last=False, stime=None):
+    def sync_xsync(self, last):
+        """schedule a processing of changelog"""
         self.close()
-        self.put(self.fname())
-        if last:
-            self.put(None)
-            self.put(stime)
-        else:
+        self.put('xsync', self.fname())
+        self.counter = 0
+        if not last:
+            time.sleep(1) # make sure changelogs are 1 second apart
             self.open()
 
-    def Xcrawl(self, path='.', xtr=None):
-        """ generate a CHANGELOG file consumable by process_change """
+    def sync_stime(self, stime=None, last=False):
+        """schedule a stime synchronization"""
+        if stime:
+            self.put('stime', stime)
+        if last:
+            self.put('finale', None)
+
+    def sync_done(self, stime=[], last=False):
+        self.sync_xsync(last)
+        if stime:
+            # Send last as True only for last stime entry
+            for st in stime[:-1]:
+                self.sync_stime(st, False)
+
+            if stime and stime[-1]:
+                self.sync_stime(stime[-1], last)
+
+    def Xcrawl(self, path='.', xtr_root=None):
+        """
+        generate a CHANGELOG file consumable by process_change.
+
+        slave's xtime (stime) is _cached_ for comparisons across
+        the filesystem tree, but set after directory synchronization.
+        """
         if path == '.':
             self.open()
             self.crawls += 1
-        if not xtr:
+        if not xtr_root:
             # get the root stime and use it for all comparisons
-            xtr = self.xtime('.', self.slave)
-            if isinstance(xtr, int):
-                if xtr != ENOENT:
+            xtr_root = self.xtime('.', self.slave)
+            if isinstance(xtr_root, int):
+                if xtr_root != ENOENT:
                     logging.warn("slave cluster not returning the " \
-                                 "correct xtime (%d)" % xtr)
-                xtr = self.minus_infinity
+                                 "correct xtime for root (%d)" % xtr_root)
+                xtr_root = self.minus_infinity
         xtl = self.xtime(path)
         if isinstance(xtl, int):
             logging.warn("master cluster's xtime not found")
-        if xtr == xtl:
+        xtr = self.xtime(path, self.slave)
+        if isinstance(xtr, int):
+            if xtr != ENOENT:
+                logging.warn("slave cluster not returning the " \
+                             "correct xtime for %s (%d)" % (path, xtr))
+            xtr = self.minus_infinity
+        xtr = max(xtr, xtr_root)
+        if not self.need_sync(path, xtl, xtr):
             if path == '.':
-                self.next(True, xtl)
+                self.sync_done([(path, xtl)], True)
             return
         self.xtime_reversion_hook(path, xtl, xtr)
         logging.debug("entering " + path)
@@ -1150,37 +1233,42 @@ class GMasterXsyncMixin(GMasterChangelogMixin):
             e = os.path.join(path, e)
             xte = self.xtime(e)
             if isinstance(xte, int):
-                logging.warn("master cluster's xtime not found")
+                logging.warn("irregular xtime for %s: %s" % (e, errno.errorcode[xte]))
+                continue
             if not self.need_sync(e, xte, xtr):
                 continue
             st = self.master.server.lstat(e)
             if isinstance(st, int):
-                logging.warn('%s got purged in the interim..' % e)
+                logging.warn('%s got purged in the interim ...' % e)
                 continue
             gfid = self.master.server.gfid(e)
             if isinstance(gfid, int):
-                logging.warn('skipping entry %s..' % (e))
+                logging.warn('skipping entry %s..' % e)
                 continue
             mo = st.st_mode
             self.counter += 1
             if self.counter == self.XSYNC_MAX_ENTRIES:
-                self.next()
+                self.sync_done(self.stimes, False)
+                self.stimes = []
             if stat.S_ISDIR(mo):
                 self.write_entry_change("E", [gfid, 'MKDIR', str(mo), str(st.st_uid), str(st.st_gid), escape(os.path.join(pargfid, bname))])
-                self.Xcrawl(e, xtr)
+                self.Xcrawl(e, xtr_root)
+                self.stimes.append((e, xte))
             elif stat.S_ISLNK(mo):
                 self.write_entry_change("E", [gfid, 'SYMLINK', escape(os.path.join(pargfid, bname))])
-            else:
+            elif stat.S_ISREG(mo):
+                nlink = st.st_nlink
+                nlink -= 1 # fixup backend stat link count
                 # if a file has a hardlink, create a Changelog entry as 'LINK' so the slave
                 # side will decide if to create the new entry, or to create link.
-                if st.st_nlink == 1:
+                if nlink == 1:
                     self.write_entry_change("E", [gfid, 'MKNOD', str(mo), str(st.st_uid), str(st.st_gid), escape(os.path.join(pargfid, bname))])
                 else:
                     self.write_entry_change("E", [gfid, 'LINK', escape(os.path.join(pargfid, bname))])
-                if stat.S_ISREG(mo):
-                    self.write_entry_change("D", [gfid])
+                self.write_entry_change("D", [gfid])
         if path == '.':
-            self.next(True, xtl)
+            self.stimes.append((path, xtl))
+            self.sync_done(self.stimes, True)
 
 class BoxClosedErr(Exception):
     pass
@@ -1226,33 +1314,7 @@ class PostBox(list):
         self.open = False
         self.lever.release()
 
-class TarSSHSyncer(object):
-    def __init__(self, slave):
-        self.slave = slave
-        self.pb = PostBox()
-
-    def syncjob(self):
-        pb, self.pb = self.pb, PostBox()
-        po = self.slave.tarssh(pb)
-        if po.returncode == 0:
-            ret = (True, 0)
-        else:
-            ret = (False, po.returncode)
-        pb.wakeup(ret)
-
-    def sync(self):
-        self.syncjob()
-
-    def add(self, e):
-        while True:
-            pb = self.pb
-            try:
-                pb.append(e)
-                return pb
-            except BoxClosedErr:
-                pass
-
-class RsyncSyncer(object):
+class Syncer(object):
     """a staged queue to relay rsync requests to rsync workers
 
     By "staged queue" its meant that when a consumer comes to the
@@ -1282,18 +1344,16 @@ class RsyncSyncer(object):
     each completed syncjob.
     """
 
-    def __init__(self, slave):
+    def __init__(self, slave, sync_engine, resilient_errnos=[]):
         """spawn worker threads"""
         self.slave = slave
         self.lock = Lock()
         self.pb = PostBox()
-        self.bytes_synced = 0
+        self.sync_engine = sync_engine
+        self.errnos_ok = resilient_errnos
         for i in range(int(gconf.sync_jobs)):
             t = Thread(target=self.syncjob)
             t.start()
-
-    def sync(self):
-        pass
 
     def syncjob(self):
         """the life of a worker"""
@@ -1308,11 +1368,10 @@ class RsyncSyncer(object):
                     break
                 time.sleep(0.5)
             pb.close()
-            po = self.slave.rsync(pb)
+            po = self.sync_engine(pb)
             if po.returncode == 0:
                 ret = (True, 0)
-            elif po.returncode in (23, 24):
-                # partial transfer (cf. rsync(1)), that's normal
+            elif po.returncode in self.errnos_ok:
                 ret = (False, po.returncode)
             else:
                 po.errfail()

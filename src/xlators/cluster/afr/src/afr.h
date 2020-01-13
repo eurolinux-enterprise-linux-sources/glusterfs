@@ -183,6 +183,7 @@ typedef enum {
         AFR_SELF_HEAL_NOT_ATTEMPTED,
         AFR_SELF_HEAL_STARTED,
         AFR_SELF_HEAL_FAILED,
+        AFR_SELF_HEAL_SYNC_BEGIN,
 } afr_self_heal_status;
 
 typedef struct {
@@ -283,6 +284,14 @@ struct afr_self_heal_ {
         gf_boolean_t entries_skipped;
 
         gf_boolean_t actual_sh_started;
+
+        int32_t dry_run;
+        gf_boolean_t metadata_sh_pending;
+        gf_boolean_t possibly_healing; //set when it is detected
+                                       //that a self-heal is in progress
+        gf_boolean_t data_sh_pending;
+        gf_boolean_t entry_sh_pending;
+
         gf_boolean_t sync_done;
         gf_boolean_t data_lock_held;
         gf_boolean_t sh_dom_lock_held;
@@ -297,6 +306,8 @@ struct afr_self_heal_ {
         afr_post_remove_call_t post_remove_call;
 
         char    *data_sh_info;
+        char    *metadata_sh_info;
+
         loc_t parent_loc;
         call_frame_t *orig_frame;
         call_frame_t *old_loop_frame;
@@ -498,6 +509,13 @@ typedef struct _afr_local {
 	   O_DSYNC?
 	*/
 	gf_boolean_t      stable_write;
+
+	/* This write appended to the file. Nnot necessarily O_APPEND,
+	   just means the offset of write was at the end of file.
+	*/
+	gf_boolean_t      append_write;
+        int attempt_self_heal; //Remove optimizations in self-heal triggering.
+        int foreground_self_heal;// self-heal should be foreground.
 
         /*
           This struct contains the arguments for the "continuation"
@@ -1165,6 +1183,27 @@ afr_xattr_array_destroy (dict_t **xattr, unsigned int child_count);
 } while (0);
 
 
+#define AFR_SBRAIN_MSG "Failed on %s as split-brain is seen. Returning EIO."
+
+#define AFR_SBRAIN_CHECK_FD(fd, label) do {                              \
+        if (fd->inode && afr_is_split_brain (this, fd->inode)) {        \
+                op_errno = EIO;                                         \
+                gf_log (this->name, GF_LOG_WARNING,                     \
+                        AFR_SBRAIN_MSG ,uuid_utoa (fd->inode->gfid));   \
+                goto label;                                             \
+        }                                                               \
+} while (0)
+
+#define AFR_SBRAIN_CHECK_LOC(loc, label) do {                           \
+        if (loc->inode && afr_is_split_brain (this, loc->inode)) {      \
+                op_errno = EIO;                                         \
+                loc_path (loc, NULL);                                   \
+                gf_log (this->name, GF_LOG_WARNING,                     \
+                        AFR_SBRAIN_MSG , loc->path);                    \
+                goto label;                                             \
+        }                                                               \
+} while (0)
+
 int
 afr_fd_report_unstable_write (xlator_t *this, fd_t *fd);
 
@@ -1183,4 +1222,16 @@ afr_handle_open_fd_count (call_frame_t *frame, xlator_t *this);
 afr_inode_ctx_t*
 afr_inode_ctx_get (inode_t *inode, xlator_t *this);
 
+gf_boolean_t
+afr_can_start_missing_entry_gfid_self_heal (afr_local_t *local,
+                                            afr_private_t *priv);
+
+gf_boolean_t
+afr_can_start_entry_self_heal (afr_local_t *local, afr_private_t *priv);
+
+gf_boolean_t
+afr_can_start_data_self_heal (afr_local_t *local, afr_private_t *priv);
+
+gf_boolean_t
+afr_can_start_metadata_self_heal (afr_local_t *local, afr_private_t *priv);
 #endif /* __AFR_H__ */

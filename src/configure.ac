@@ -6,7 +6,7 @@ dnl  General Public License, version 3 or any later version (LGPLv3 or
 dnl  later), or the GNU General Public License, version 2 (GPLv2), in all
 dnl  cases as published by the Free Software Foundation.
 
-AC_INIT([glusterfs],[3.4.0.40rhs],[gluster-users@gluster.org],,[https://github.com/gluster/glusterfs.git])
+AC_INIT([glusterfs],[3.4.0.59rhs],[gluster-users@gluster.org],,[https://github.com/gluster/glusterfs.git])
 
 AM_INIT_AUTOMAKE
 
@@ -163,6 +163,8 @@ AC_CONFIG_FILES([Makefile
 		geo-replication/Makefile
 		geo-replication/src/Makefile
 		geo-replication/syncdaemon/Makefile
+                heal/Makefile
+                heal/src/Makefile
 		glusterfs.spec])
 
 AC_CANONICAL_HOST
@@ -497,9 +499,13 @@ if test "x${have_linkat}" = "xyes"; then
 fi
 AC_SUBST(HAVE_LINKAT)
 
+dnl check for Monotonic clock
+AC_CHECK_FUNC([clock_gettime], [has_monotonic_clock=yes], AC_CHECK_LIB([rt], [clock_gettime], , AC_MSG_WARN([System doesn't have monotonic clock using contrib])))
+
 dnl Check for argp
 AC_CHECK_HEADER([argp.h], AC_DEFINE(HAVE_ARGP, 1, [have argp]))
 AC_CONFIG_SUBDIRS(argp-standalone)
+
 BUILD_ARGP_STANDALONE=no
 if test "x${ac_cv_header_argp_h}" = "xno"; then 
    BUILD_ARGP_STANDALONE=yes
@@ -558,7 +564,6 @@ fi
 
 case $host_os in
      linux*)
-     dnl	GF_LINUX_HOST_OS=1
         GF_HOST_OS="GF_LINUX_HOST_OS"
 	GF_CFLAGS="${ARGP_STANDALONE_CPPFLAGS} -O0"
 	GF_GLUSTERFS_CFLAGS="${GF_CFLAGS}"

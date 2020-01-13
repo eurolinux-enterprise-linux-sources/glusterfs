@@ -782,6 +782,9 @@ afr_local_sh_cleanup (afr_local_t *local, xlator_t *this)
         if (sh->data_sh_info && strcmp (sh->data_sh_info, ""))
                 GF_FREE (sh->data_sh_info);
 
+        if (sh->metadata_sh_info && strcmp (sh->metadata_sh_info, ""))
+                GF_FREE (sh->metadata_sh_info);
+
         GF_FREE (sh->buf);
 
         GF_FREE (sh->parentbufs);
@@ -1408,19 +1411,90 @@ afr_detect_self_heal_by_lookup_status (afr_local_t *local, xlator_t *this)
 }
 
 gf_boolean_t
-afr_can_self_heal_proceed (afr_self_heal_t *sh, afr_private_t *priv)
+afr_can_start_missing_entry_gfid_self_heal (afr_local_t *local,
+                                            afr_private_t *priv)
 {
-        GF_ASSERT (sh);
-        GF_ASSERT (priv);
-
-        if (sh->force_confirm_spb)
+        if (!local)
+                goto out;
+        //attempt self heal is only for data/metadata/entry
+        if (local->self_heal.do_gfid_self_heal ||
+            local->self_heal.do_missing_entry_self_heal)
                 return _gf_true;
-        return (sh->do_gfid_self_heal
-                || sh->do_missing_entry_self_heal
-                || (afr_data_self_heal_enabled (priv->data_self_heal) &&
-                    sh->do_data_self_heal)
-                || (priv->metadata_self_heal && sh->do_metadata_self_heal)
-                || (priv->entry_self_heal && sh->do_entry_self_heal));
+out:
+        return _gf_false;
+}
+
+gf_boolean_t
+afr_can_start_entry_self_heal (afr_local_t *local, afr_private_t *priv)
+{
+        if (!local)
+                goto out;
+        //force_confirm_spb is not checked here because directory split-brains
+        //are not reported at the moment.
+        if (local->self_heal.do_entry_self_heal) {
+                if (local->attempt_self_heal || priv->entry_self_heal)
+                        return _gf_true;
+        }
+out:
+        return _gf_false;
+}
+
+gf_boolean_t
+afr_can_start_data_self_heal (afr_local_t *local, afr_private_t *priv)
+{
+        if (!local)
+                goto out;
+
+        if (local->self_heal.force_confirm_spb)
+                return _gf_true;
+
+        if (local->self_heal.do_data_self_heal) {
+                if (local->attempt_self_heal ||
+                    afr_data_self_heal_enabled (priv->data_self_heal))
+                        return _gf_true;
+        }
+out:
+        return _gf_false;
+}
+
+gf_boolean_t
+afr_can_start_metadata_self_heal (afr_local_t *local, afr_private_t *priv)
+{
+        if (!local)
+                goto out;
+        if (local->self_heal.force_confirm_spb)
+                return _gf_true;
+
+        if (local->self_heal.do_metadata_self_heal) {
+                if (local->attempt_self_heal || priv->metadata_self_heal)
+                        return _gf_true;
+        }
+out:
+        return _gf_false;
+}
+
+gf_boolean_t
+afr_can_self_heal_proceed (afr_local_t *local, afr_private_t *priv)
+{
+        if (!local)
+                goto out;
+
+        if (local->self_heal.force_confirm_spb)
+                return _gf_true;
+
+        if (afr_can_start_missing_entry_gfid_self_heal (local, priv))
+                return _gf_true;
+
+        if (afr_can_start_entry_self_heal (local, priv))
+                return _gf_true;
+
+        if (afr_can_start_data_self_heal (local, priv))
+                return _gf_true;
+
+        if (afr_can_start_metadata_self_heal (local, priv))
+                return _gf_true;
+out:
+        return _gf_false;
 }
 
 afr_transaction_type
@@ -1740,14 +1814,25 @@ afr_self_heal_lookup_unwind (call_frame_t *frame, xlator_t *this,
 
         afr_lookup_done_success_action (frame, this, _gf_true);
         xattr = local->cont.lookup.xattr;
-        if (xattr) {
+        if (!xattr)
+                goto out;
+
+        if (sh_failed) {
                 ret = dict_set_int32 (xattr, "sh-failed", sh_failed);
                 if (ret)
                         gf_log (this->name, GF_LOG_ERROR, "%s: Failed to set "
                                 "sh-failed to %d", local->loc.path, sh_failed);
+                ret = dict_set_int32 (xattr, "possibly-healing",
+                                      local->self_heal.possibly_healing);
+        } else {
+                ret = dict_set_int32 (xattr, "metadata-self-heal-pending",
+                                      local->self_heal.metadata_sh_pending);
+                ret = dict_set_int32 (xattr, "data-self-heal-pending",
+                                      local->self_heal.data_sh_pending);
+                ret = dict_set_int32 (xattr, "entry-self-heal-pending",
+                                      local->self_heal.entry_sh_pending);
 
-                if (local->self_heal.actual_sh_started == _gf_true &&
-                    sh_failed == 0) {
+                if (local->self_heal.actual_sh_started == _gf_true) {
                         ret = dict_set_int32 (xattr, "actual-sh-done", 1);
                         if (ret)
                                 gf_log(this->name, GF_LOG_ERROR, "%s: Failed to"
@@ -1821,20 +1906,27 @@ afr_lookup_perform_self_heal (call_frame_t *frame, xlator_t *this,
         local        = frame->local;
 
         up_count  = afr_up_children_count (local->child_up, priv->child_count);
-        if (up_count == 1) {
+        if (!local->attempt_self_heal && up_count == 1) {
                 gf_log (this->name, GF_LOG_DEBUG,
                         "Only 1 child up - do not attempt to detect self heal");
                 goto out;
         }
 
         afr_lookup_set_self_heal_params (local, this);
-        if (afr_can_self_heal_proceed (&local->self_heal, priv)) {
-                if  (afr_is_transaction_running (local))
+        if (afr_can_self_heal_proceed (local, priv)) {
+                if  (!local->attempt_self_heal &&
+                     afr_is_transaction_running (local) &&
+                     /*Forcefully call afr_launch_self_heal (which will go on to
+                       fail) for SB files.This prevents stale data being served
+                       due to race in  afr_is_transaction_running() when
+                       multiple clients access the same SB file*/
+                     !local->cont.lookup.possible_spb)
                         goto out;
 
                 reason = "lookup detected pending operations";
                 afr_launch_self_heal (frame, this, local->cont.lookup.inode,
-                                      _gf_true, local->cont.lookup.buf.ia_type,
+                                      !local->foreground_self_heal,
+                                      local->cont.lookup.buf.ia_type,
                                       reason, afr_post_gfid_sh_success,
                                       afr_self_heal_lookup_unwind);
                 *sh_launched = _gf_true;
@@ -2205,7 +2297,7 @@ afr_set_root_inode_on_first_lookup (afr_local_t *local, xlator_t *this,
                 goto out;
         priv = this->private;
         if ((priv->first_lookup)) {
-                gf_log (this->name, GF_LOG_INFO, "added root inode");
+                gf_log (this->name, GF_LOG_DEBUG, "added root inode");
                 priv->root_inode = inode_ref (inode);
                 priv->first_lookup = 0;
         }
@@ -2266,7 +2358,7 @@ afr_discovery_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
          */
         if (is_local) {
                 child_index = (int32_t)(long)cookie;
-                gf_log (this->name, GF_LOG_INFO,
+                gf_log (this->name, GF_LOG_DEBUG,
                         "selecting local read_child %s",
                         priv->children[child_index]->name);
                 priv->read_child = child_index;
@@ -2495,6 +2587,20 @@ afr_lookup (call_frame_t *frame, xlator_t *this,
 
         /* By default assume ENOTCONN. On success it will be set to 0. */
         local->op_errno = ENOTCONN;
+
+        if (xattr_req) {
+                ret = dict_get_int32 (xattr_req, "attempt-self-heal",
+                                      &local->attempt_self_heal);
+                dict_del (xattr_req, "attempt-self-heal");
+
+                ret = dict_get_int32 (xattr_req, "foreground-self-heal",
+                                      &local->foreground_self_heal);
+                dict_del (xattr_req, "foreground-self-heal");
+
+                ret = dict_get_int32 (xattr_req, "dry-run-self-heal",
+                                      &local->self_heal.dry_run);
+                dict_del (xattr_req, "dry-run-self-heal");
+        }
 
         ret = afr_lookup_xattr_req_prepare (local, this, xattr_req, &local->loc,
                                             &gfid_req);
@@ -3939,6 +4045,10 @@ afr_notify (xlator_t *this, int32_t event,
         case GF_EVENT_TRANSLATOR_OP:
                 input = data;
                 output = data2;
+                if (!had_heard_from_all) {
+                        ret = -1;
+                        goto out;
+                }
                 ret = afr_xl_op (this, input, output);
                 goto out;
                 break;
@@ -4060,6 +4170,8 @@ afr_local_init (afr_local_t *local, afr_private_t *priv, int32_t *op_errno)
                         *op_errno = ENOMEM;
                 goto out;
         }
+
+	local->append_write = _gf_false;
 
         ret = 0;
 out:

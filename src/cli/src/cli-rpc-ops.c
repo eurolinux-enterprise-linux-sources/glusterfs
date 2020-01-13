@@ -42,6 +42,11 @@
 #include "cli-quotad-client.h"
 #include "run.h"
 
+enum gf_task_types {
+        GF_TASK_TYPE_REBALANCE,
+        GF_TASK_TYPE_REMOVE_BRICK
+};
+
 extern struct rpc_clnt *global_quotad_rpc;
 extern rpc_clnt_prog_t cli_quotad_clnt;
 extern rpc_clnt_prog_t *cli_rpc_prog;
@@ -64,6 +69,19 @@ char *cli_vol_status_str[] = {"Created",
 
 char *cli_volume_backend[] = {"",
                            "Volume Group",
+};
+
+
+char *cli_vol_task_status_str[] = {"not started",
+                                   "in progress",
+                                   "stopped",
+                                   "completed",
+                                   "failed",
+                                   "fix-layout in progress",
+                                   "fix-layout stopped",
+                                   "fix-layout completed",
+                                   "fix-layout failed",
+                                   "unknown"
 };
 
 int32_t
@@ -1187,32 +1205,147 @@ out:
 }
 
 int
+gf_cli_print_rebalance_status (dict_t *dict, enum gf_task_types task_type)
+{
+        int                ret          = -1;
+        int                count        = 0;
+        int                i            = 1;
+        char               key[256]     = {0,};
+        gf_defrag_status_t status_rcd   = GF_DEFRAG_STATUS_NOT_STARTED;
+        uint64_t           files        = 0;
+        uint64_t           size         = 0;
+        uint64_t           lookup       = 0;
+        char               *node_name   = NULL;
+        uint64_t           failures     = 0;
+        uint64_t           skipped      = 0;
+        double             elapsed      = 0;
+        char               *status_str  = NULL;
+        char               *size_str    = NULL;
+
+        ret = dict_get_int32 (dict, "count", &count);
+        if (ret) {
+                gf_log ("cli", GF_LOG_ERROR, "count not set");
+                goto out;
+        }
+
+
+        cli_out ("%40s %16s %13s %13s %13s %13s %20s %18s", "Node",
+                 "Rebalanced-files", "size", "scanned", "failures", "skipped",
+                 "status", "run time in secs");
+        cli_out ("%40s %16s %13s %13s %13s %13s %20s %18s", "---------",
+                 "-----------", "-----------", "-----------", "-----------",
+                 "-----------", "------------", "--------------");
+        for (i = 1; i <= count; i++) {
+                /* Reset the variables to prevent carryover of values */
+                node_name = NULL;
+                files = 0;
+                size = 0;
+                lookup = 0;
+                skipped = 0;
+                status_str = NULL;
+                elapsed = 0;
+
+                /* Check if status is NOT_STARTED, and continue early */
+                memset (key, 0, 256);
+                snprintf (key, 256, "status-%d", i);
+                ret = dict_get_int32 (dict, key, (int32_t *)&status_rcd);
+                if (ret) {
+                        gf_log ("cli", GF_LOG_TRACE, "failed to get status");
+                        goto out;
+                }
+                if (GF_DEFRAG_STATUS_NOT_STARTED == status_rcd)
+                        continue;
+
+
+                snprintf (key, 256, "node-name-%d", i);
+                ret = dict_get_str (dict, key, &node_name);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE, "failed to get node-name");
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "files-%d", i);
+                ret = dict_get_uint64 (dict, key, &files);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE,
+                                "failed to get file count");
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "size-%d", i);
+                ret = dict_get_uint64 (dict, key, &size);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE,
+                                "failed to get size of xfer");
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "lookups-%d", i);
+                ret = dict_get_uint64 (dict, key, &lookup);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE,
+                                "failed to get lookedup file count");
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "failures-%d", i);
+                ret = dict_get_uint64 (dict, key, &failures);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE,
+                                "failed to get failures count");
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "skipped-%d", i);
+                ret = dict_get_uint64 (dict, key, &skipped);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE,
+                                "failed to get skipped count");
+
+                /* For remove-brick include skipped count into failure count*/
+                if (task_type != GF_TASK_TYPE_REBALANCE) {
+                        failures += skipped;
+                        skipped = 0;
+                }
+
+                memset (key, 0, 256);
+                snprintf (key, 256, "run-time-%d", i);
+                ret = dict_get_double (dict, key, &elapsed);
+                if (ret)
+                        gf_log ("cli", GF_LOG_TRACE, "failed to get run-time");
+
+                /* Check for array bound */
+                if (status_rcd >= GF_DEFRAG_STATUS_MAX)
+                        status_rcd = GF_DEFRAG_STATUS_MAX;
+
+                status_str = cli_vol_task_status_str[status_rcd];
+                size_str = gf_uint64_2human_readable(size);
+                if (size_str) {
+                        cli_out ("%40s %16"PRIu64 " %13s" " %13"PRIu64 " %13"
+                                 PRIu64" %13"PRIu64 " %20s %18.2f", node_name,
+                                 files, size_str, lookup, failures, skipped,
+                                 status_str, elapsed);
+                } else {
+                        cli_out ("%40s %16"PRIu64 " %13"PRIu64 " %13"PRIu64
+                                 " %13"PRIu64" %13"PRIu64 " %20s %18.2f",
+                                 node_name, files, size, lookup, failures,
+                                 skipped, status_str, elapsed);
+                }
+                GF_FREE(size_str);
+        }
+out:
+        return ret;
+}
+
+int
 gf_cli_defrag_volume_cbk (struct rpc_req *req, struct iovec *iov,
                              int count, void *myframe)
 {
-        gf_cli_rsp               rsp     = {0,};
-        cli_local_t             *local   = NULL;
-        char                    *volname = NULL;
-        call_frame_t            *frame   = NULL;
-        char                    *status  = "unknown";
-        int                      cmd     = 0;
-        int                      ret     = -1;
-        dict_t                  *dict    = NULL;
-        dict_t                  *local_dict = NULL;
-        uint64_t                 files   = 0;
-        uint64_t                 size    = 0;
-        uint64_t                 lookup  = 0;
-        char                     msg[1024] = {0,};
-        gf_defrag_status_t       status_rcd = GF_DEFRAG_STATUS_NOT_STARTED;
-        int32_t                  counter = 0;
-        char                    *node_uuid = NULL;
-        char                     key[256] = {0,};
-        int32_t                  i = 1;
-        uint64_t                 failures = 0;
-        uint64_t                 skipped = 0;
-        double                   elapsed = 0;
-        char                    *size_str = NULL;
-        char                    *task_id_str = NULL;
+        gf_cli_rsp   rsp          = {0,};
+        cli_local_t  *local       = NULL;
+        char         *volname     = NULL;
+        call_frame_t *frame       = NULL;
+        int          cmd          = 0;
+        int          ret          = -1;
+        dict_t       *dict        = NULL;
+        dict_t       *local_dict  = NULL;
+        char         msg[1024]    = {0,};
+        char         *task_id_str = NULL;
 
         if (-1 == req->rpc_status) {
                 goto out;
@@ -1324,100 +1457,10 @@ gf_cli_defrag_volume_cbk (struct rpc_req *req, struct iovec *iov,
                 goto out;
         }
 
-        ret = dict_get_int32 (dict, "count", &counter);
-        if (ret) {
-                gf_log (frame->this->name, GF_LOG_ERROR, "count not set");
-                goto out;
-        }
-
-        cli_out ("%40s %16s %13s %13s %13s %13s %14s %s", "Node",
-                 "Rebalanced-files", "size", "scanned", "failures", "skipped",
-                 "status", "run time in secs");
-        cli_out ("%40s %16s %13s %13s %13s %13s %14s %16s", "---------",
-                 "-----------", "-----------", "-----------", "-----------",
-                 "-----------", "------------", "--------------");
-        do {
-                snprintf (key, 256, "node-uuid-%d", i);
-                ret = dict_get_str (dict, key, &node_uuid);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get node-uuid");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "files-%d", i);
-                ret = dict_get_uint64 (dict, key, &files);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get file count");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "size-%d", i);
-                ret = dict_get_uint64 (dict, key, &size);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get size of xfer");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "lookups-%d", i);
-                ret = dict_get_uint64 (dict, key, &lookup);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get lookedup file count");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "status-%d", i);
-                ret = dict_get_int32 (dict, key, (int32_t *)&status_rcd);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get status");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "failures-%d", i);
-                ret = dict_get_uint64 (dict, key, &failures);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get failures count");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "skipped-%d", i);
-                ret = dict_get_uint64 (dict, key, &skipped);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get skipped count");
-                memset (key, 0, 256);
-                snprintf (key, 256, "run-time-%d", i);
-                ret = dict_get_double (dict, key, &elapsed);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get run-time");
-
-                switch (status_rcd) {
-                case GF_DEFRAG_STATUS_NOT_STARTED:
-                        status = "not started";
-                        break;
-                case GF_DEFRAG_STATUS_STARTED:
-                        status = "in progress";
-                        break;
-                case GF_DEFRAG_STATUS_STOPPED:
-                        status = "stopped";
-                        break;
-                case GF_DEFRAG_STATUS_COMPLETE:
-                        status = "completed";
-                        break;
-                case GF_DEFRAG_STATUS_FAILED:
-                        status = "failed";
-                        break;
-                }
-
-                size_str = gf_uint64_2human_readable(size);
-                cli_out ("%40s %16"PRIu64 " %13s" " %13"PRIu64 " %13"PRIu64
-                         " %13"PRIu64 " %14s %16.2f", node_uuid, files,
-                         size_str, lookup, failures, skipped, status, elapsed);
-                GF_FREE(size_str);
-
-                i++;
-        } while (i <= counter);
-
+        ret = gf_cli_print_rebalance_status (dict, GF_TASK_TYPE_REBALANCE);
+        if (ret)
+                gf_log ("cli", GF_LOG_ERROR,
+                        "Failed to print rebalance status");
 
 done:
         if (rsp.op_ret)
@@ -1715,22 +1758,9 @@ gf_cli3_remove_brick_status_cbk (struct rpc_req *req, struct iovec *iov,
                                  int count, void *myframe)
 {
         gf_cli_rsp               rsp     = {0,};
-        char                    *status  = "unknown";
         int                      ret     = -1;
-        uint64_t                 files   = 0;
-        uint64_t                 size    = 0;
-        uint64_t                 lookup  = 0;
         dict_t                  *dict    = NULL;
         char                     msg[1024] = {0,};
-        char                     key[256] = {0,};
-        int32_t                  i       = 1;
-        int32_t                  counter = 0;
-        char                    *node_uuid = 0;
-        gf_defrag_status_t       status_rcd = GF_DEFRAG_STATUS_NOT_STARTED;
-        uint64_t                 failures = 0;
-        uint64_t                 skipped = 0;
-        double                   elapsed = 0;
-        char                    *size_str = NULL;
         int32_t                  command = 0;
         gf1_op_commands          cmd = GF_OP_CMD_NONE;
         cli_local_t             *local = NULL;
@@ -1822,99 +1852,12 @@ xml_output:
                 goto out;
         }
 
-        ret = dict_get_int32 (dict, "count", &counter);
+        ret = gf_cli_print_rebalance_status (dict, GF_TASK_TYPE_REMOVE_BRICK);
         if (ret) {
-                gf_log (frame->this->name, GF_LOG_ERROR, "count not set");
+                gf_log ("cli", GF_LOG_ERROR, "Failed to print remove-brick "
+                        "rebalance status");
                 goto out;
         }
-
-
-        cli_out ("%40s %16s %13s %13s %13s %13s %14s %s", "Node",
-                 "Rebalanced-files", "size", "scanned", "failures", "skipped",
-                 "status", "run-time in secs");
-        cli_out ("%40s %16s %13s %13s %13s %13s %14s %16s", "---------",
-                 "-----------", "-----------", "-----------", "-----------",
-                  "-----------","------------", "--------------");
-
-        do {
-                snprintf (key, 256, "node-uuid-%d", i);
-                ret = dict_get_str (dict, key, &node_uuid);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get node-uuid");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "files-%d", i);
-                ret = dict_get_uint64 (dict, key, &files);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get file count");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "size-%d", i);
-                ret = dict_get_uint64 (dict, key, &size);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get size of xfer");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "lookups-%d", i);
-                ret = dict_get_uint64 (dict, key, &lookup);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get lookedup file count");
-
-                memset (key, 0, 256);
-                snprintf (key, 256, "status-%d", i);
-                ret = dict_get_int32 (dict, key, (int32_t *)&status_rcd);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "failed to get status");
-
-                snprintf (key, 256, "failures-%d", i);
-                ret = dict_get_uint64 (dict, key, &failures);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "Failed to get failure on files");
-
-                snprintf (key, 256, "failures-%d", i);
-                ret = dict_get_uint64 (dict, key, &skipped);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "Failed to get skipped files");
-                memset (key, 0, 256);
-                snprintf (key, 256, "run-time-%d", i);
-                ret = dict_get_double (dict, key, &elapsed);
-                if (ret)
-                        gf_log (frame->this->name, GF_LOG_TRACE,
-                                "Failed to get run-time");
-
-                switch (status_rcd) {
-                case GF_DEFRAG_STATUS_NOT_STARTED:
-                        status = "not started";
-                        break;
-                case GF_DEFRAG_STATUS_STARTED:
-                        status = "in progress";
-                        break;
-                case GF_DEFRAG_STATUS_STOPPED:
-                        status = "stopped";
-                        break;
-                case GF_DEFRAG_STATUS_COMPLETE:
-                        status = "completed";
-                        break;
-                case GF_DEFRAG_STATUS_FAILED:
-                        status = "failed";
-                        break;
-                }
-
-                size_str = gf_uint64_2human_readable(size);
-                cli_out ("%40s %16"PRIu64 " %13s" " %13"PRIu64 " %13"PRIu64
-                         " %13"PRIu64 " %14s %16.2f", node_uuid, files,
-                         size_str, lookup, failures, skipped, status, elapsed);
-                GF_FREE(size_str);
-
-                i++;
-        } while (i <= counter);
 
         if ((cmd == GF_OP_CMD_STOP) && (rsp.op_ret == 0)) {
                 cli_out ("'remove-brick' process may be in the middle of a "
@@ -2342,8 +2285,11 @@ print_quota_list_output (char *mountdir, char *default_sl, char *path)
         char    *avail_str        = NULL;
         int     ret               = -1;
         char    *sl_final         = NULL;
-        char     percent_str[20]  = {0,};
         char    *hl_str           = NULL;
+        double  sl_num           = 0;
+        gf_boolean_t sl          = _gf_false;
+        gf_boolean_t hl          = _gf_false;
+        char percent_str[20]     = {0};
 
         struct quota_limit {
                 int64_t hl;
@@ -2380,8 +2326,11 @@ print_quota_list_output (char *mountdir, char *default_sl, char *path)
         hl_str = gf_uint64_2human_readable (existing_limits.hl);
 
         if (existing_limits.sl < 0) {
+                ret = gf_string2percent (default_sl, &sl_num);
+                sl_num = (sl_num * existing_limits.hl) / 100;
                 sl_final = default_sl;
         } else {
+                sl_num = (existing_limits.sl * existing_limits.hl) / 100;
                 snprintf (percent_str, sizeof (percent_str), "%"PRIu64"%%",
                           existing_limits.sl);
                 sl_final = percent_str;
@@ -2391,26 +2340,37 @@ print_quota_list_output (char *mountdir, char *default_sl, char *path)
                              &used_space, sizeof (used_space));
 
         if (ret < 0) {
-                cli_out ("%-40s %7s %9s %11s %7s", path, hl_str, sl_final,
-                         "N/A", "N/A");
+                cli_out ("%-40s %7s %9s %11s %7s %15s %20s",
+                         path, hl_str, sl_final,
+                         "N/A", "N/A", "N/A", "N/A");
         } else {
                 used_space = ntoh64 (used_space);
 
                 used_str = gf_uint64_2human_readable (used_space);
 
-                if (existing_limits.hl > used_space)
+                if (existing_limits.hl > used_space) {
                         avail = existing_limits.hl - used_space;
-                else
+                        hl = _gf_false;
+                        if (used_space > sl_num)
+                                sl = _gf_true;
+                        else
+                                sl = _gf_false;
+                } else {
                         avail = 0;
+                        hl = sl = _gf_true;
+                }
 
                 avail_str = gf_uint64_2human_readable (avail);
-                if (used_str == NULL)
+                if (used_str == NULL) {
                         cli_out ("%-40s %7s %9s %11"PRIu64
-                                                 "%9"PRIu64, path, hl_str,
-                                                 sl_final, used_space, avail);
-                else
-                        cli_out ("%-40s %7s %9s %11s %7s", path, hl_str,
-                                 sl_final, used_str, avail_str);
+                                 "%9"PRIu64" %15s %18s", path, hl_str,
+                                  sl_final, used_space, avail, sl? "Yes" : "No",
+                                  hl? "Yes" : "No");
+                } else {
+                        cli_out ("%-40s %7s %9s %11s %7s %15s %20s", path, hl_str,
+                                 sl_final, used_str, avail_str, sl? "Yes" : "No",
+                                 hl? "Yes" : "No");
+                }
         }
 
 out:
@@ -2449,9 +2409,11 @@ gf_cli_print_limit_list_from_dict (char *volname, dict_t *dict,
         }
 
         cli_out ("                  Path                   Hard-limit "
-                 "Soft-limit   Used  Available");
-        cli_out ("-----------------------------------------------------"
-                 "---------------------------");
+                 "Soft-limit   Used  Available  Soft-limit exceeded?"
+                 "  Hard-limit exceeded?");
+        cli_out ("--------------------------------------------------------"
+                 "--------------------------------------------------------"
+                 "-----------");
 
         while (count--) {
                 snprintf (key, sizeof (key), "path%d", i++);
@@ -2482,14 +2444,17 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict)
         int64_t *limit         = NULL;
         char    *used_str      = NULL;
         char    *avail_str     = NULL;
-        char    percent_str[20]= {0};
         char    *hl_str        = NULL;
         char    *sl_final      = NULL;
         char    *path          = NULL;
-        char    *default_sl = NULL;
+        char    *default_sl    = NULL;
         int     ret            = -1;
         cli_local_t *local     = NULL;
         dict_t *gd_rsp_dict    = NULL;
+        double sl_num          = 0;
+        gf_boolean_t sl        = _gf_false;
+        gf_boolean_t hl        = _gf_false;
+        char  percent_str[20]  = {0,};
 
         local = frame->local;
         gd_rsp_dict = local->dict;
@@ -2526,37 +2491,48 @@ print_quota_list_from_quotad (call_frame_t *frame, dict_t *rsp_dict)
         hl_str = gf_uint64_2human_readable (existing_limits->hl);
 
         if (existing_limits->sl < 0) {
+                ret = gf_string2percent (default_sl, &sl_num);
+                sl_num = (sl_num * existing_limits->hl) / 100;
                 sl_final = default_sl;
         } else {
+                sl_num = (existing_limits->sl * existing_limits->hl) / 100;
                 snprintf (percent_str, sizeof (percent_str), "%"PRIu64"%%",
                           existing_limits->sl);
-                sl_final = percent_str;
+                sl_final =  percent_str;
         }
 
         ret = dict_get_bin (rsp_dict, QUOTA_SIZE_KEY, (void**)&limit);
         if (ret < 0) {
                 gf_log ("cli", GF_LOG_WARNING,
                         "size key not present in dict");
-                cli_out ("%-40s %7s %9s %11s %7s", path, hl_str, sl_final,
-                         "N/A", "N/A");
+                cli_out ("%-40s %7s %9s %11s %7s %15s %20s", path, hl_str,
+                         sl_final, "N/A", "N/A", "N/A", "N/A");
         } else {
                 used_space = *limit;
                 used_space = ntoh64 (used_space);
                 used_str = gf_uint64_2human_readable (used_space);
 
-                if (existing_limits->hl > used_space)
+                if (existing_limits->hl > used_space) {
                         avail = existing_limits->hl - used_space;
-                else
+                        hl = _gf_false;
+                        if (used_space > sl_num)
+                                sl = _gf_true;
+                        else
+                                sl = _gf_false;
+                } else {
                         avail = 0;
-
+                        hl = sl = _gf_true;
+                }
                 avail_str = gf_uint64_2human_readable (avail);
                 if (used_str == NULL)
                         cli_out ("%-40s %7s %9s %11"PRIu64
-                                                 "%9"PRIu64, path, hl_str,
-                                                 sl_final, used_space, avail);
+                                 "%9"PRIu64" %15s %20s", path, hl_str,
+                                 sl_final, used_space, avail, sl? "Yes" : "No",
+                                 hl? "Yes" : "No");
                 else
-                        cli_out ("%-40s %7s %9s %11s %7s", path, hl_str,
-                                 sl_final, used_str, avail_str);
+                        cli_out ("%-40s %7s %9s %11s %7s %15s %20s", path,
+                                 hl_str, sl_final, used_str, avail_str,
+                                 sl? "Yes" : "No", hl? "Yes" : "No");
         }
 
         ret = 0;
@@ -4021,12 +3997,13 @@ get_struct_variable (int mem_num, gf_gsync_status_t *sts_val)
         case 2:  return (sts_val->brick);
         case 3:  return (sts_val->slave_node);
         case 4:  return (sts_val->worker_status);
-        case 5:  return (sts_val->crawl_status);
-        case 6:  return (sts_val->files_syncd);
-        case 7:  return (sts_val->files_remaining);
-        case 8:  return (sts_val->bytes_remaining);
-        case 9:  return (sts_val->purges_remaining);
-        case 10: return (sts_val->total_files_skipped);
+        case 5:  return (sts_val->checkpoint_status);
+        case 6:  return (sts_val->crawl_status);
+        case 7:  return (sts_val->files_syncd);
+        case 8:  return (sts_val->files_remaining);
+        case 9:  return (sts_val->bytes_remaining);
+        case 10: return (sts_val->purges_remaining);
+        case 11: return (sts_val->total_files_skipped);
         default:
                  goto out;
         }
@@ -4044,6 +4021,7 @@ gf_cli_print_status (char **title_values,
         int     i                        = 0;
         int     j                        = 0;
         int     ret                      = 0;
+        int     status_fields            = 6; /* Indexed at 0 */
         int     total_spacing            = 0;
         char  **output_values            = NULL;
         char   *tmp                      = NULL;
@@ -4052,7 +4030,7 @@ gf_cli_print_status (char **title_values,
         /* calculating spacing for hyphens */
         for (i = 0; i < number_of_fields; i++) {
                 /* Suppressing detail output for status */
-                if ((!is_detail) && (i > 5)) {
+                if ((!is_detail) && (i > status_fields)) {
                        /* Suppressing detailed output for
                         * status */
                         continue;
@@ -4091,7 +4069,7 @@ gf_cli_print_status (char **title_values,
         /* setting the title "NODE", "MASTER", etc. from title_values[]
            and printing the same */
         for (j = 0; j < number_of_fields; j++) {
-                if ((!is_detail) && (j > 5)) {
+                if ((!is_detail) && (j > status_fields)) {
                        /* Suppressing detailed output for
                         * status */
                        output_values[j][0] = '\0';
@@ -4102,13 +4080,13 @@ gf_cli_print_status (char **title_values,
                         strlen(title_values[j]));
                 output_values[j][spacing[j]] = '\0';
         }
-        cli_out ("%s %s %s %s %s %s %s %s %s %s %s",
+        cli_out ("%s %s %s %s %s %s %s %s %s %s %s %s",
                  output_values[0], output_values[1],
                  output_values[2], output_values[3],
                  output_values[4], output_values[5],
                  output_values[6], output_values[7],
                  output_values[8], output_values[9],
-                 output_values[10]);
+                 output_values[10], output_values[11]);
 
         /* setting and printing the hyphens */
         memset (hyphens, '-', total_spacing);
@@ -4117,7 +4095,7 @@ gf_cli_print_status (char **title_values,
 
         for (i = 0; i < gsync_count; i++) {
                 for (j = 0; j < number_of_fields; j++) {
-                        if ((!is_detail) && (j > 5)) {
+                        if ((!is_detail) && (j > status_fields)) {
                                 /* Suppressing detailed output for
                                  * status */
                                 output_values[j][0] = '\0';
@@ -4135,13 +4113,13 @@ gf_cli_print_status (char **title_values,
                         output_values[j][spacing[j]] = '\0';
                 }
 
-                cli_out ("%s %s %s %s %s %s %s %s %s %s %s",
+                cli_out ("%s %s %s %s %s %s %s %s %s %s %s %s",
                          output_values[0], output_values[1],
                          output_values[2], output_values[3],
                          output_values[4], output_values[5],
                          output_values[6], output_values[7],
                          output_values[8], output_values[9],
-                         output_values[10]);
+                         output_values[10], output_values[11]);
         }
 
 out:
@@ -4204,17 +4182,17 @@ gf_cli_gsync_status_output (dict_t *dict, gf_boolean_t is_detail)
         int                     gsync_count    = 0;
         int                     i              = 0;
         int                     ret            = 0;
-        int                     spacing[12]    = {0};
-        int                     num_of_fields  = 11;
+        int                     spacing[13]    = {0};
+        int                     num_of_fields  = 12;
         char                    errmsg[1024]   = "";
         char                   *master         = NULL;
         char                   *slave          = NULL;
         char                   *title_values[] = {"MASTER NODE", "MASTER VOL",
                                                   "MASTER BRICK", "SLAVE",
-                                                  "STATUS", "CRAWL STATUS",
-                                                  "FILES SYNCD", "FILES PENDING",
-                                                  "BYTES PENDING", "DELETES PENDING",
-                                                  "FILES SKIPPED"};
+                                                  "STATUS", "CHECKPOINT STATUS",
+                                                  "CRAWL STATUS", "FILES SYNCD",
+                                                  "FILES PENDING", "BYTES PENDING",
+                                                  "DELETES PENDING", "FILES SKIPPED"};
         gf_gsync_status_t     **sts_vals       = NULL;
 
         /* Checks if any session is active or not */
@@ -6369,43 +6347,57 @@ out:
         return;
 }
 
-
 static void
-cli_print_volume_tasks (dict_t *dict) {
-        int             ret = -1;
-        int             tasks = 0;
-        char            *op = 0;
-        char            *task_id_str = NULL;
-        int             status = 0;
-        char            key[1024] = {0,};
-        int             i = 0;
+cli_print_volume_status_tasks (dict_t *dict)
+{
+        int             ret         = -1;
+        int             i           = 0;
+        int             j           = 0;
+        int             count       = 0;
+        int             task_count  = 0;
+        int             status      = 0;
+        char           *op          = NULL;
+        char           *task_id_str = NULL;
+        char           *volname     = NULL;
+        char            key[1024]   = {0,};
+        char            task[1024]  = {0,};
+        char           *brick       = NULL;
+        char           *src_brick   = NULL;
+        char           *dest_brick  = NULL;
 
-        ret = dict_get_int32 (dict, "tasks", &tasks);
+        ret = dict_get_str (dict, "volname", &volname);
+        if (ret)
+                goto out;
+
+        ret = dict_get_int32 (dict, "tasks", &task_count);
         if (ret) {
-                gf_log ("cli", GF_LOG_ERROR,
-                        "Failed to get tasks count");
+                gf_log ("cli", GF_LOG_ERROR, "Failed to get tasks count");
                 return;
         }
 
-        if (tasks == 0) {
+        cli_out ("Task Status of Volume %s", volname);
+        cli_print_line (CLI_BRICK_STATUS_LINE_LEN);
+
+        if (task_count == 0) {
                 cli_out ("There are no active volume tasks");
+                cli_out (" ");
                 return;
         }
 
-        cli_out ("%15s%40s%15s", "Task", "ID", "Status");
-        cli_out ("%15s%40s%15s", "----", "--", "------");
-        for (i = 0; i < tasks; i++) {
+        for (i = 0; i < task_count; i++) {
                 memset (key, 0, sizeof (key));
                 snprintf (key, sizeof (key), "task%d.type", i);
                 ret = dict_get_str(dict, key, &op);
                 if (ret)
                         return;
+                cli_out ("%-20s : %-20s", "Task", op);
 
                 memset (key, 0, sizeof (key));
                 snprintf (key, sizeof (key), "task%d.id", i);
                 ret = dict_get_str (dict, key, &task_id_str);
                 if (ret)
                         return;
+                cli_out ("%-20s : %-20s", "ID", task_id_str);
 
                 memset (key, 0, sizeof (key));
                 snprintf (key, sizeof (key), "task%d.status", i);
@@ -6413,9 +6405,63 @@ cli_print_volume_tasks (dict_t *dict) {
                 if (ret)
                         return;
 
-                cli_out ("%15s%40s%15d", op, task_id_str, status);
+                snprintf (task, sizeof (task), "task%d", i);
+
+                /*
+                   Replace brick only has two states - In progress and Complete
+                   Ref: xlators/mgmt/glusterd/src/glusterd-replace-brick.c
+                */
+
+                if (!strcmp (op, "Replace brick")) {
+                        if (status)
+                                status = GF_DEFRAG_STATUS_COMPLETE;
+                        else
+                                status = GF_DEFRAG_STATUS_STARTED;
+
+                        memset (key, 0, sizeof (key));
+                        snprintf (key, sizeof (key), "%s.src-brick", task);
+                        ret = dict_get_str (dict, key, &src_brick);
+                        if (ret)
+                                goto out;
+
+                        cli_out ("%-20s : %-20s", "Source Brick", src_brick);
+
+                        memset (key, 0, sizeof (key));
+                        snprintf (key, sizeof (key), "%s.dst-brick", task);
+                        ret = dict_get_str (dict, key, &dest_brick);
+                        if (ret)
+                                goto out;
+
+                        cli_out ("%-20s : %-20s", "Destination Brick",
+                                 dest_brick);
+
+                } else if (!strcmp (op, "Remove brick")) {
+                        memset (key, 0, sizeof (key));
+                        snprintf (key, sizeof (key), "%s.count", task);
+                        ret = dict_get_int32 (dict, key, &count);
+                        if (ret)
+                                goto out;
+
+                        cli_out ("%-20s", "Removed bricks:");
+
+                        for (j = 1; j <= count; j++) {
+                                memset (key, 0, sizeof (key));
+                                snprintf (key, sizeof (key),"%s.brick%d",
+                                          task, j);
+                                ret = dict_get_str (dict, key, &brick);
+                                if (ret)
+                                        goto out;
+
+                                cli_out ("%-20s", brick);
+                        }
+                }
+                cli_out ("%-20s : %-20s", "Status",
+                         cli_vol_task_status_str[status]);
+                cli_out (" ");
         }
 
+out:
+        return;
 }
 
 static int
@@ -6472,10 +6518,12 @@ gf_cli_status_cbk (struct rpc_req *req, struct iovec *iov,
                                   "status information.");
 
                 if (global_state->mode & GLUSTER_MODE_XML) {
-                       cli_xml_output_str ("volStatus", msg, rsp.op_ret,
-                                           rsp.op_errno, rsp.op_errstr);
-                       ret = 0;
-                       goto out;
+                        if (!local->all)
+                                cli_xml_output_str ("volStatus", msg,
+                                                    rsp.op_ret, rsp.op_errno,
+                                                    rsp.op_errstr);
+                        ret = 0;
+                        goto out;
                 }
 
                 cli_err ("%s", msg);
@@ -6518,23 +6566,6 @@ gf_cli_status_cbk (struct rpc_req *req, struct iovec *iov,
             (cmd & GF_CLI_STATUS_QUOTAD))
                 notbrick = _gf_true;
 
-        ret = dict_get_int32 (dict, "count", &count);
-        if (ret)
-                goto out;
-        if (count == 0) {
-                ret = -1;
-                goto out;
-        }
-
-        ret = dict_get_int32 (dict, "brick-index-max", &brick_index_max);
-        if (ret)
-                goto out;
-        ret = dict_get_int32 (dict, "other-count", &other_count);
-        if (ret)
-                goto out;
-
-        index_max = brick_index_max + other_count;
-
         if (global_state->mode & GLUSTER_MODE_XML) {
                 if (!local->all) {
                         ret = cli_xml_output_vol_status_begin (local,
@@ -6547,11 +6578,21 @@ gf_cli_status_cbk (struct rpc_req *req, struct iovec *iov,
                                 goto out;
                         }
                 }
-                ret = cli_xml_output_vol_status (local, dict);
-                if (ret) {
-                        gf_log ("cli", GF_LOG_ERROR,
-                                "Error outputting to xml");
-                        goto out;
+                if (cmd & GF_CLI_STATUS_TASKS) {
+                        ret = cli_xml_output_vol_status_tasks_detail (local,
+                                                                      dict);
+                        if (ret) {
+                                gf_log ("cli", GF_LOG_ERROR,"Error outputting "
+                                        "to xml");
+                                goto out;
+                        }
+                } else {
+                        ret = cli_xml_output_vol_status (local, dict);
+                        if (ret) {
+                                gf_log ("cli", GF_LOG_ERROR,
+                                        "Error outputting to xml");
+                                goto out;
+                        }
                 }
 
                 if (!local->all) {
@@ -6587,6 +6628,10 @@ gf_cli_status_cbk (struct rpc_req *req, struct iovec *iov,
                         cli_print_volume_status_callpool (dict, notbrick);
                         goto cont;
                         break;
+                case GF_CLI_STATUS_TASKS:
+                        cli_print_volume_status_tasks (dict);
+                        goto cont;
+                        break;
                 default:
                         break;
         }
@@ -6594,6 +6639,17 @@ gf_cli_status_cbk (struct rpc_req *req, struct iovec *iov,
         ret = dict_get_str (dict, "volname", &volname);
         if (ret)
                 goto out;
+
+        ret = dict_get_int32 (dict, "brick-index-max", &brick_index_max);
+        if (ret)
+                goto out;
+
+        ret = dict_get_int32 (dict, "other-count", &other_count);
+        if (ret)
+                goto out;
+
+        index_max = brick_index_max + other_count;
+
 
         cli_out ("Status of volume: %s", volname);
 
@@ -6669,7 +6725,7 @@ gf_cli_status_cbk (struct rpc_req *req, struct iovec *iov,
         cli_out (" ");
 
         if ((cmd & GF_CLI_STATUS_MASK) == GF_CLI_STATUS_NONE)
-                cli_print_volume_tasks (dict);
+                cli_print_volume_status_tasks (dict);
 cont:
         ret = rsp.op_ret;
 
@@ -6745,12 +6801,6 @@ gf_cli_status_volume_all (call_frame_t *frame, xlator_t *this, void *data)
                 goto out;
         }
 
-        if (vol_count == 0) {
-                cli_err ("No volumes present");
-                ret = 0;
-                goto out;
-        }
-
         /* remove the "all" flag in cmd */
         cmd &= ~GF_CLI_STATUS_ALL;
         cmd |= GF_CLI_STATUS_VOL;
@@ -6763,6 +6813,12 @@ gf_cli_status_volume_all (call_frame_t *frame, xlator_t *this, void *data)
                                 "Error outputting to xml");
                         goto out;
                 }
+        }
+
+        if (vol_count == 0 && !(global_state->mode & GLUSTER_MODE_XML)) {
+                cli_err ("No volumes present");
+                ret = 0;
+                goto out;
         }
 
         for (i = 0; i < vol_count; i++) {

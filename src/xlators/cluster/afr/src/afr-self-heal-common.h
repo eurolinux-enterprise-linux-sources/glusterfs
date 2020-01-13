@@ -139,12 +139,6 @@ afr_set_self_heal_status (afr_self_heal_t *sh, afr_self_heal_status status);
 void
 afr_log_self_heal_completion_status (afr_local_t *local, gf_loglevel_t  logl);
 
-gf_boolean_t
-afr_can_start_data_self_heal (afr_self_heal_t *sh, afr_private_t *priv);
-
-gf_boolean_t
-afr_can_start_metadata_self_heal (afr_self_heal_t *sh, afr_private_t *priv);
-
 char*
 afr_get_pending_matrix_str (int32_t *pending_matrix[], xlator_t *this);
 #endif /* __AFR_SELF_HEAL_COMMON_H__ */

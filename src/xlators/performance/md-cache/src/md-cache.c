@@ -18,6 +18,7 @@
 #include "dict.h"
 #include "xlator.h"
 #include "md-cache-mem-types.h"
+#include "glusterfs-acl.h"
 #include <assert.h>
 #include <sys/time.h>
 
@@ -42,12 +43,12 @@ static struct mdc_key {
 	int         check;
 } mdc_keys[] = {
 	{
-		.name = "system.posix_acl_access",
+		.name = POSIX_ACL_ACCESS_XATTR,
 		.load = 0,
 		.check = 1,
 	},
 	{
-		.name = "system.posix_acl_default",
+		.name = POSIX_ACL_DEFAULT_XATTR,
 		.load = 0,
 		.check = 1,
 	},
@@ -175,7 +176,7 @@ __mdc_inode_ctx_set (xlator_t *this, inode_t *inode, struct md_cache *mdc)
         uint64_t         mdc_int = 0;
 
 	mdc_int = (long) mdc;
-	ret = __inode_ctx_set2 (inode, this, &mdc_int, 0);
+	ret = __inode_ctx_set (inode, this, &mdc_int);
 
 	return ret;
 }

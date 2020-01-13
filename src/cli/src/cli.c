@@ -327,14 +327,21 @@ cli_opt_parse (char *opt, struct cli_state *state)
                 return 0;
         }
 
+        if (strcmp (opt, "wignore") == 0) {
+                state->mode |= GLUSTER_MODE_WIGNORE;
+                return 0;
+        }
+
         oarg = strtail (opt, "mode=");
         if (oarg) {
                 if (strcmp (oarg, "script") == 0) {
                         state->mode |= GLUSTER_MODE_SCRIPT;
                         return 0;
                 }
+
                 if (strcmp (oarg, "interactive") == 0)
                         return 0;
+
                 return -1;
         }
 
@@ -355,6 +362,12 @@ cli_opt_parse (char *opt, struct cli_state *state)
                 state->log_level = glusterd_check_log_level(oarg);
                 if (state->log_level == -1)
                         return -1;
+                return 0;
+        }
+
+        oarg = strtail (opt, "glusterd-sock=");
+        if (oarg) {
+                state->glusterd_sock = oarg;
                 return 0;
         }
 
@@ -419,7 +432,6 @@ cli_state_init (struct cli_state *state)
         int                   ret = 0;
 
 
-        state->remote_host = "localhost";
         state->log_level = -1;
 
         tree = &state->tree;
@@ -542,23 +554,46 @@ cli_rpc_init (struct cli_state *state)
         if (!options)
                 goto out;
 
-        ret = dict_set_str (options, "remote-host", state->remote_host);
-        if (ret)
-                goto out;
+        /* Connect using to glusterd using the specified method, giving
+         * preference to unix socket connection. If nothing is specified connect
+         * to the default glusterd socket
+         */
+        if (state->glusterd_sock) {
+                gf_log ("cli", GF_LOG_INFO, "Connecting to glusterd using "
+                        "sockfile %s", state->glusterd_sock);
+                ret = rpc_transport_unix_options_build (&options,
+                                                        state->glusterd_sock,
+                                                        0);
+                if (ret)
+                        goto out;
+        } else if (state->remote_host) {
+                gf_log ("cli", GF_LOG_INFO, "Connecting to remote glusterd at "
+                        "%s", state->remote_host);
+                ret = dict_set_str (options, "remote-host", state->remote_host);
+                if (ret)
+                        goto out;
 
-        if (state->remote_port)
-                port = state->remote_port;
+                if (state->remote_port)
+                        port = state->remote_port;
 
-        ret = dict_set_int32 (options, "remote-port", port);
-        if (ret)
-                goto out;
+                ret = dict_set_int32 (options, "remote-port", port);
+                if (ret)
+                        goto out;
 
-        ret = dict_set_str (options, "transport.address-family", "inet");
-        if (ret)
-                goto out;
+                ret = dict_set_str (options, "transport.address-family",
+                                    "inet");
+                if (ret)
+                        goto out;
+        } else {
+                gf_log ("cli", GF_LOG_DEBUG, "Connecting to glusterd using "
+                        "default socket");
+                ret = rpc_transport_unix_options_build
+                        (&options, DEFAULT_GLUSTERD_SOCKFILE, 0);
+                if (ret)
+                        goto out;
+        }
 
         rpc = rpc_clnt_new (options, this->ctx, this->name, 16);
-
         if (!rpc)
                 goto out;
 
@@ -568,7 +603,7 @@ cli_rpc_init (struct cli_state *state)
                 goto out;
         }
 
-        rpc_clnt_start (rpc);
+        ret = rpc_clnt_start (rpc);
 out:
         if (ret) {
                 if (rpc)

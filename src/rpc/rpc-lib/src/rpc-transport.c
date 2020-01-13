@@ -69,6 +69,19 @@ out:
         return ret;
 }
 
+int
+rpc_transport_throttle (rpc_transport_t *this, gf_boolean_t onoff)
+{
+        int ret = 0;
+
+        if (!this->ops->throttle)
+                return -ENOSYS;
+
+        ret = this->ops->throttle (this, onoff);
+
+        return ret;
+}
+
 int32_t
 rpc_transport_get_peeraddr (rpc_transport_t *this, char *peeraddr, int addrlen,
                             struct sockaddr_storage *sa, size_t salen)
@@ -282,7 +295,7 @@ rpc_transport_load (glusterfs_ctx_t *ctx, dict_t *options, char *trans_name)
 	}
 
         *VOID(&(trans->reconfigure)) = dlsym (handle, "reconfigure");
-        if (trans->fini == NULL) {
+        if (trans->reconfigure == NULL) {
                 gf_log ("rpc-transport", GF_LOG_DEBUG,
                         "dlsym (gf_rpc_transport_reconfigure) on %s", dlerror());
         }
@@ -545,6 +558,63 @@ rpc_transport_keepalive_options_set (dict_t *options, int32_t interval,
         if (ret)
                 goto out;
 out:
+        return ret;
+}
+
+int
+rpc_transport_unix_options_build (dict_t **options, char *filepath,
+                                  int frame_timeout)
+{
+        dict_t                  *dict = NULL;
+        char                    *fpath = NULL;
+        int                     ret = -1;
+
+        GF_ASSERT (filepath);
+        GF_ASSERT (options);
+
+        dict = dict_new ();
+        if (!dict)
+                goto out;
+
+        fpath = gf_strdup (filepath);
+        if (!fpath) {
+                ret = -1;
+                goto out;
+        }
+
+        ret = dict_set_dynstr (dict, "transport.socket.connect-path", fpath);
+        if (ret)
+                goto out;
+
+        ret = dict_set_str (dict, "transport.address-family", "unix");
+        if (ret)
+                goto out;
+
+        ret = dict_set_str (dict, "transport.socket.nodelay", "off");
+        if (ret)
+                goto out;
+
+        ret = dict_set_str (dict, "transport-type", "socket");
+        if (ret)
+                goto out;
+
+        ret = dict_set_str (dict, "transport.socket.keepalive", "off");
+        if (ret)
+                goto out;
+
+        if (frame_timeout > 0) {
+                ret = dict_set_int32 (dict, "frame-timeout", frame_timeout);
+                if (ret)
+                        goto out;
+        }
+
+        *options = dict;
+out:
+        if (ret) {
+                GF_FREE (fpath);
+                if (dict)
+                        dict_unref (dict);
+        }
         return ret;
 }
 

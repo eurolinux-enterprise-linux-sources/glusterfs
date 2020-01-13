@@ -16,6 +16,7 @@
 #include "mount-gluster-compat.h"
 #include "glusterfs.h"
 #include "byte-order.h"
+#include "glusterfs-acl.h"
 
 #ifdef __NetBSD__
 #undef open /* in perfuse.h, pulled from mount-gluster-compat.h */
@@ -3960,8 +3961,8 @@ fuse_setxattr (xlator_t *this, fuse_in_header_t *finh, void *msg)
         }
 
         if (!priv->acl) {
-                if ((strcmp (name, "system.posix_acl_access") == 0) ||
-                    (strcmp (name, "system.posix_acl_default") == 0)) {
+                if ((strcmp (name, POSIX_ACL_ACCESS_XATTR) == 0) ||
+                    (strcmp (name, POSIX_ACL_DEFAULT_XATTR) == 0)) {
                         send_fuse_err (this, finh, EOPNOTSUPP);
                         GF_FREE (finh);
                         return;
@@ -4301,8 +4302,8 @@ fuse_getxattr (xlator_t *this, fuse_in_header_t *finh, void *msg)
         }
 
         if (!priv->acl) {
-                if ((strcmp (name, "system.posix_acl_access") == 0) ||
-                    (strcmp (name, "system.posix_acl_default") == 0)) {
+                if ((strcmp (name, POSIX_ACL_ACCESS_XATTR) == 0) ||
+                    (strcmp (name, POSIX_ACL_DEFAULT_XATTR) == 0)) {
                         op_errno = ENOTSUP;
                         goto err;
                 }
@@ -5821,9 +5822,10 @@ dump_history_fuse (circular_buffer_t *cb, void *data)
 int
 fuse_graph_setup (xlator_t *this, glusterfs_graph_t *graph)
 {
-        inode_table_t  *itable = NULL;
-        int             ret = 0;
-        fuse_private_t *priv = NULL;
+        inode_table_t     *itable     = NULL;
+        int                ret        = 0, winds = 0;
+        fuse_private_t    *priv       = NULL;
+        glusterfs_graph_t *prev_graph = NULL;
 
         priv = this->private;
 
@@ -5844,12 +5846,29 @@ fuse_graph_setup (xlator_t *this, glusterfs_graph_t *graph)
 
         pthread_mutex_lock (&priv->sync_mutex);
         {
-                priv->next_graph = graph;
-                priv->event_recvd = 0;
+                prev_graph = priv->next_graph;
 
-                pthread_cond_signal (&priv->sync_cond);
+                if ((prev_graph != NULL) && (prev_graph->id > graph->id)) {
+                        /* there was a race and an old graph was initialised
+                         * before new one.
+                         */
+                        prev_graph = graph;
+                } else {
+                        priv->next_graph = graph;
+                        priv->event_recvd = 0;
+
+                        pthread_cond_signal (&priv->sync_cond);
+                }
+
+                if (prev_graph != NULL)
+                        winds = ((xlator_t *)prev_graph->top)->winds;
         }
         pthread_mutex_unlock (&priv->sync_mutex);
+
+        if ((prev_graph != NULL) && (winds == 0)) {
+                xlator_notify (prev_graph->top, GF_EVENT_PARENT_DOWN,
+                               prev_graph->top, NULL);
+        }
 
         gf_log ("fuse", GF_LOG_INFO, "switched to graph %d",
                 ((graph) ? graph->id : 0));

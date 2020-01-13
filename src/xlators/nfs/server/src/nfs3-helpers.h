@@ -44,6 +44,9 @@ nfs3_extract_lookup_name (lookup3args *args);
 extern nfsstat3
 nfs3_errno_to_nfsstat3 (int errnum);
 
+extern nfsstat3
+nfs3_cbk_errno_status (int32_t, int32_t);
+
 extern void
 nfs3_fill_lookup3res (lookup3res *res, nfsstat3 stat, struct nfs3_fh *newfh,
                       struct iatt *stbuf, struct iatt *postparent,
@@ -339,5 +342,8 @@ nfs3_is_parentdir_entry (char *entry);
 
 uint32_t
 nfs3_request_to_accessbits (int32_t accbits);
+
+void
+nfs3_map_deviceid_to_statdev (struct iatt *ia, uint64_t deviceid);
 
 #endif

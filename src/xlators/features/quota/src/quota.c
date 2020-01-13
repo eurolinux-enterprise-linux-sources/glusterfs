@@ -393,10 +393,10 @@ quota_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         INIT_LIST_HEAD (&parents);
 
+        local = frame->local;
+
         if (op_ret < 0)
                 goto err;
-
-        local = frame->local;
 
         parent = inode_parent (local->validate_loc.inode, 0, NULL);
         if (parent == NULL) {

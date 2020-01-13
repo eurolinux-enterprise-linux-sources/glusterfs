@@ -5,7 +5,7 @@ EXTRA_DIST = autogen.sh \
 	error-codes.json gf-error-codes.h.template gen-headers.py
 
 SUBDIRS = argp-standalone libglusterfs rpc api xlators glusterfsd \
-	$(FUSERMOUNT_SUBDIR) doc extras cli @SYNCDAEMON_SUBDIR@
+	$(FUSERMOUNT_SUBDIR) doc extras cli heal @SYNCDAEMON_SUBDIR@
 
 pkgconfigdir = @pkgconfigdir@
 pkgconfig_DATA = glusterfs-api.pc libgfchangelog.pc

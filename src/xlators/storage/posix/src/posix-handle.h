@@ -33,7 +33,6 @@
         strcat (var, uuid_utoa (pgfid));                                \
         } while (0)
 
-
 /* expects value in host byte order and converts it into network byte order
  * before storing on disk.
  */

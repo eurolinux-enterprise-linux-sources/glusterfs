@@ -192,10 +192,13 @@ struct rpc_transport {
         pthread_mutex_t            lock;
         int32_t                    refcount;
 
+        int32_t                    outstanding_rpc_count;
+
         glusterfs_ctx_t           *ctx;
         dict_t                    *options;
         char                      *name;
         void                      *dnscache;
+        void                      *drc_client;
         data_t                    *buf;
         int32_t                  (*init)   (rpc_transport_t *this);
         void                     (*fini)   (rpc_transport_t *this);
@@ -234,6 +237,7 @@ struct rpc_transport_ops {
         int32_t (*get_myaddr)     (rpc_transport_t *this, char *peeraddr,
                                    int addrlen, struct sockaddr_storage *sa,
                                    socklen_t sasize);
+        int32_t (*throttle)       (rpc_transport_t *this, gf_boolean_t onoff);
 };
 
 
@@ -287,6 +291,9 @@ int32_t
 rpc_transport_get_myaddr (rpc_transport_t *this, char *peeraddr, int addrlen,
                           struct sockaddr_storage *sa, size_t salen);
 
+int
+rpc_transport_throttle (rpc_transport_t *this, gf_boolean_t onoff);
+
 rpc_transport_pollin_t *
 rpc_transport_pollin_alloc (rpc_transport_t *this, struct iovec *vector,
                             int count, struct iobuf *hdr_iobuf,
@@ -297,6 +304,10 @@ rpc_transport_pollin_destroy (rpc_transport_pollin_t *pollin);
 int
 rpc_transport_keepalive_options_set (dict_t *options, int32_t interval,
                                      int32_t time);
+
+int
+rpc_transport_unix_options_build (dict_t **options, char *filepath,
+                                  int frame_timeout);
 
 int
 rpc_transport_inet_options_build (dict_t **options, const char *hostname, int port);

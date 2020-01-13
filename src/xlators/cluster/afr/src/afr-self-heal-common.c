@@ -18,12 +18,24 @@
 #include "afr-self-heal.h"
 #include "pump.h"
 
-#define ADD_FMT_STRING(msg, off, sh_str, status)                            \
+#define ADD_FMT_STRING(msg, off, sh_str, status, print_log)                 \
         do {                                                                \
                 if (AFR_SELF_HEAL_NOT_ATTEMPTED != status) {                \
                         off += snprintf (msg + off, sizeof (msg) - off,     \
                                          " "sh_str" self heal %s,",         \
                                          get_sh_completion_status (status));\
+                        print_log = 1;                                      \
+                }                                                           \
+        } while (0)
+
+#define ADD_FMT_STRING_SYNC(msg, off, sh_str, status, print_log)            \
+        do {                                                                \
+                if (AFR_SELF_HEAL_SYNC_BEGIN == status ||                   \
+                    AFR_SELF_HEAL_FAILED == status)  {                      \
+                        off += snprintf (msg + off, sizeof (msg) - off,     \
+                                         " "sh_str" self heal %s,",         \
+                                         get_sh_completion_status (status));\
+                        print_log = 1;                                      \
                 }                                                           \
         } while (0)
 
@@ -364,6 +376,20 @@ afr_sh_all_nodes_innocent (afr_node_character *characters,
         }
 
         return ret;
+}
+
+static gf_boolean_t
+afr_sh_has_any_fools (afr_node_character *characters, int child_count)
+{
+        int i   = 0;
+
+        for (i = 0; i < child_count; i++) {
+                if (characters[i].type == AFR_NODE_FOOL) {
+                        return _gf_true;
+                }
+        }
+
+        return _gf_false;
 }
 
 
@@ -907,6 +933,7 @@ afr_mark_success_children_sources (int32_t *sources, int32_t *success_children,
                 sources[success_children[i]] = 1;
         }
 }
+
 /**
  * mark_sources: Mark all 'source' nodes and return number of source
  * nodes found
@@ -956,6 +983,39 @@ afr_mark_sources (xlator_t *this, int32_t *sources, int32_t **pending_matrix,
         nsources = 0;
         afr_find_character_types (characters, pending_matrix, success_children,
                                   child_count);
+
+        if ((type == AFR_SELF_HEAL_ENTRY) &&
+            afr_sh_has_any_fools (characters, child_count)) {
+                /*
+                 * Force a conservative merge even if there is a single FOOL
+                 * in the characters. Just because a brick's state is FOOL we
+                 * should not assume that the brick does not have new entries.
+                 * Example where this matters:
+                 *All the operations done in this directory are 'creates'.
+                 0) create files a, b in the directory.
+                 1) bring down brick-0 (either the process or network) and
+                    create file 'c'. -- This makes brick-1 as 'source'.
+                 2) Disable self-heal-daemon and entry-self-heal to simulate
+                    the case where self-heal for this directory is not happened
+                    yet.
+                 3) bring up brick-0 and bring down brick-1.
+                 4) create files d, e and before 'post-op' can complete for the
+                    transaction for creation of 'e' bring down brick-0.  That
+                    leaves brick-0 in 'FOOL' state. If the post-op had
+                    completed for brick-0, it would also have gone to 'source'
+                    state and there would have been a split-brain where
+                    conservative merge would have happened and all the files
+                    would have been there.  But because post-op is not
+                    complete, changelogs say brick-1 is correct and brick-0 is
+                    stale which leads to removal of files d, e from brick-0.
+                 */
+                if (subvol_status)
+                        *subvol_status |= SPLIT_BRAIN;
+                //nsources is set to -1 when there is a split-brain
+                nsources = -1;
+                goto out;
+        }
+
         if (afr_sh_all_nodes_innocent (characters, child_count)) {
                 switch (type) {
                 case AFR_SELF_HEAL_METADATA:
@@ -2179,27 +2239,6 @@ afr_self_heal_missing_entries (call_frame_t *frame, xlator_t *this)
         return 0;
 }
 
-gf_boolean_t
-afr_can_start_metadata_self_heal (afr_self_heal_t *sh, afr_private_t *priv)
-{
-        if (sh->force_confirm_spb)
-                return _gf_true;
-        if (sh->do_metadata_self_heal && priv->metadata_self_heal)
-                return _gf_true;
-        return _gf_false;
-}
-
-gf_boolean_t
-afr_can_start_data_self_heal (afr_self_heal_t *sh, afr_private_t *priv)
-{
-        if (sh->force_confirm_spb)
-                return _gf_true;
-        if (sh->do_data_self_heal &&
-            afr_data_self_heal_enabled (priv->data_self_heal))
-                return _gf_true;
-        return _gf_false;
-}
-
 //Initialize inodelk domains that will be in use by self-heal
 static int
 afr_self_heal_inodelk_init (afr_local_t *local, xlator_t *this)
@@ -2207,18 +2246,16 @@ afr_self_heal_inodelk_init (afr_local_t *local, xlator_t *this)
         afr_private_t *priv = NULL;
         int           ret   = 0;
         int           pos   = 0;
-        afr_self_heal_t *sh = NULL;
 
         priv = this->private;
-        sh   = &local->self_heal;
-        if (afr_can_start_metadata_self_heal (sh, priv)) {
+        if (afr_can_start_metadata_self_heal (local, priv)) {
                 ret = afr_inodelk_init (&local->internal_lock.inodelk[pos++],
                                         priv->mdata_domain, priv->child_count);
                 if (ret)
                         goto out;
         }
 
-        if (afr_can_start_data_self_heal (sh, priv)) {
+        if (afr_can_start_data_self_heal (local, priv)) {
                 ret = afr_inodelk_init (&local->internal_lock.inodelk[pos++],
                                         this->name, priv->child_count);
                 if (ret)
@@ -2263,6 +2300,7 @@ afr_self_heal_local_init (afr_local_t *l, xlator_t *this)
 
         shc->unwind = sh->unwind;
         shc->gfid_sh_success_cbk = sh->gfid_sh_success_cbk;
+        shc->dry_run = sh->dry_run;
         shc->do_missing_entry_self_heal = sh->do_missing_entry_self_heal;
         shc->do_gfid_self_heal = sh->do_gfid_self_heal;
         shc->do_data_self_heal = sh->do_data_self_heal;
@@ -2273,6 +2311,7 @@ afr_self_heal_local_init (afr_local_t *l, xlator_t *this)
         shc->background = sh->background;
         shc->type = sh->type;
         shc->data_sh_info = "";
+        shc->metadata_sh_info =  "";
 
         uuid_copy (shc->sh_gfid_req, sh->sh_gfid_req);
         if (l->loc.path) {
@@ -2304,10 +2343,10 @@ afr_self_heal_local_init (afr_local_t *l, xlator_t *this)
                 goto out;
         }
 
+        lc->attempt_self_heal = l->attempt_self_heal;
         ret = afr_self_heal_inodelk_init (lc, this);
         if (ret)
                 goto out;
-
 out:
         if (ret) {
                 afr_local_cleanup (lc, this);
@@ -2345,6 +2384,9 @@ afr_self_heal_completion_cbk (call_frame_t *bgsh_frame, xlator_t *this)
                 loglevel = GF_LOG_DEBUG;
         }
 
+        if (sh->dry_run)
+                loglevel = GF_LOG_DEBUG;
+
         afr_log_self_heal_completion_status (local, loglevel);
 
         FRAME_SU_UNDO (bgsh_frame, afr_local_t);
@@ -2353,6 +2395,10 @@ afr_self_heal_completion_cbk (call_frame_t *bgsh_frame, xlator_t *this)
                 orig_frame_local = sh->orig_frame->local;
                 orig_frame_sh = &orig_frame_local->self_heal;
                 orig_frame_sh->actual_sh_started = _gf_true;
+                orig_frame_sh->entry_sh_pending = sh->entry_sh_pending;
+                orig_frame_sh->data_sh_pending = sh->data_sh_pending;
+                orig_frame_sh->metadata_sh_pending = sh->metadata_sh_pending;
+                orig_frame_sh->possibly_healing = sh->possibly_healing;
                 sh->unwind (sh->orig_frame, this, sh->op_ret, sh->op_errno,
                             is_self_heal_failed (sh, AFR_CHECK_ALL));
         }
@@ -2471,7 +2517,7 @@ afr_self_heal (call_frame_t *frame, xlator_t *this, inode_t *inode)
         sh->sh_type_in_action = AFR_SELF_HEAL_INVALID;
 
         FRAME_SU_DO (sh_frame, afr_local_t);
-        if (sh->do_missing_entry_self_heal || sh->do_gfid_self_heal) {
+        if (afr_can_start_missing_entry_gfid_self_heal (local, priv)) {
                 afr_self_heal_missing_entries (sh_frame, this);
         } else {
                 loc = &sh_local->loc;
@@ -2791,7 +2837,8 @@ get_sh_completion_status (afr_self_heal_status status)
 
         char *not_attempted       = " is not attempted";
         char *failed              = " failed";
-        char *successfull_complt  = " is successfully completed";
+        char *started             = " is started";
+        char *sync_begin          = " is successfully completed";
         char *result              = " has unknown status";
 
         switch (status)
@@ -2803,7 +2850,10 @@ get_sh_completion_status (afr_self_heal_status status)
                         result = failed;
                         break;
                 case AFR_SELF_HEAL_STARTED:
-                        result = successfull_complt;
+                        result = started;
+                        break;
+                case AFR_SELF_HEAL_SYNC_BEGIN:
+                        result = sync_begin;
                         break;
         }
 
@@ -2820,26 +2870,38 @@ afr_log_self_heal_completion_status (afr_local_t *local, gf_loglevel_t loglvl)
         afr_sh_status_for_all_type   all_status = sh->afr_all_sh_status;
         xlator_t      *this            = NULL;
         size_t        off              = 0;
+        int           data_sh          = 0;
+        int           metadata_sh      = 0;
+        int           print_log        = 0;
 
         this = THIS;
 
         ADD_FMT_STRING (sh_log, off, "gfid or missing entry",
-                        all_status.gfid_or_missing_entry_self_heal);
-        ADD_FMT_STRING (sh_log, off, "metadata", all_status.metadata_self_heal);
+                        all_status.gfid_or_missing_entry_self_heal, print_log);
+        ADD_FMT_STRING_SYNC (sh_log, off, "metadata",
+                             all_status.metadata_self_heal, print_log);
         if (sh->background) {
-                ADD_FMT_STRING (sh_log, off, "backgroung data",
-                                all_status.data_self_heal);
+                ADD_FMT_STRING_SYNC (sh_log, off, "backgroung data",
+                                all_status.data_self_heal, print_log);
         } else {
-                ADD_FMT_STRING (sh_log, off, "foreground data",
-                                all_status.data_self_heal);
+                ADD_FMT_STRING_SYNC (sh_log, off, "foreground data",
+                                all_status.data_self_heal, print_log);
         }
-        ADD_FMT_STRING (sh_log, off, "entry", all_status.entry_self_heal);
+        ADD_FMT_STRING_SYNC (sh_log, off, "entry", all_status.entry_self_heal,
+                             print_log);
 
-        if (AFR_SELF_HEAL_STARTED == all_status.data_self_heal) {
-                gf_log (this->name, loglvl, "%s %s on %s", sh_log,
-                        sh->data_sh_info, local->loc.path);
-        } else {
-                gf_log (this->name, loglvl, "%s on %s", sh_log,
-                        local->loc.path);
-        }
+        if (AFR_SELF_HEAL_SYNC_BEGIN == all_status.data_self_heal &&
+	    strcmp (sh->data_sh_info, "") && sh->data_sh_info )
+                data_sh = 1;
+        if (AFR_SELF_HEAL_SYNC_BEGIN == all_status.metadata_self_heal &&
+	    strcmp (sh->metadata_sh_info, "") && sh->metadata_sh_info)
+                metadata_sh = 1;
+
+        if (!print_log)
+                return;
+
+        gf_log (this->name, loglvl, "%s %s %s on %s", sh_log,
+                ((data_sh == 1) ? sh->data_sh_info : ""),
+                ((metadata_sh == 1) ? sh->metadata_sh_info : ""),
+                local->loc.path);
 }

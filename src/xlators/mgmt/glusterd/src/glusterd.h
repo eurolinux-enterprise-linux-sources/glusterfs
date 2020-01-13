@@ -50,7 +50,7 @@
 #define GLUSTERD_COMMON_PEM_PUB_FILE    "/geo-replication/common_secret.pem.pub"
 #define GLUSTERD_CREATE_HOOK_SCRIPT     "/hooks/1/gsync-create/post/" \
                                         "S56glusterd-geo-rep-create-post.sh"
-#define GEO_CONF_MAX_OPT_VALS           5
+#define GEO_CONF_MAX_OPT_VALS           6
 
 #define GLUSTERD_SERVER_QUORUM "server"
 
@@ -150,6 +150,8 @@ typedef struct {
         dict_t             *opts;
         synclock_t      big_lock;
         gf_boolean_t    restart_done;
+        rpcsvc_t        *uds_rpc; /* RPCSVC for the unix domain socket */
+        gf_boolean_t    pingsvc;
 } glusterd_conf_t;
 
 
@@ -243,6 +245,8 @@ struct glusterd_rebalance_ {
         uuid_t                  rebalance_id;
         double                  rebalance_time;
         glusterd_op_t           op;
+        dict_t                  *dict; /* Dict to store misc information
+                                        * like list of bricks being removed */
 };
 
 typedef struct glusterd_rebalance_ glusterd_rebalance_t;
@@ -312,6 +316,8 @@ struct glusterd_volinfo_ {
         int                      op_version;
         int                      client_op_version;
         gd_quorum_status_t       quorum_status;
+        pthread_mutex_t           reflock;
+        int                       refcnt;
 };
 
 typedef enum gd_node_type_ {
@@ -719,8 +725,7 @@ int glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
                                   size_t len, int cmd, defrag_cbk_fn_t cbk,
                                   glusterd_op_t op);
 int
-glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo,
-                               glusterd_conf_t *priv, int cmd);
+glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo);
 
 int glusterd_handle_cli_heal_volume (rpcsvc_request_t *req);
 

@@ -795,7 +795,7 @@ server_rpc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
                                         "timer for %s", conn->id);
 
                                 conn->timer = gf_timer_call_after (this->ctx,
-                                                                   conf->grace_tv,
+                                                                   conf->grace_ts,
                                                                    grace_time_handler,
                                                                    conn);
                         }
@@ -898,14 +898,14 @@ server_init_grace_timer (xlator_t *this, dict_t *options,
 
         ret = dict_get_int32 (options, "grace-timeout", &grace_timeout);
         if (!ret)
-                conf->grace_tv.tv_sec = grace_timeout;
+                conf->grace_ts.tv_sec = grace_timeout;
         else
-                conf->grace_tv.tv_sec = 10;
+                conf->grace_ts.tv_sec = 10;
 
         gf_log (this->name, GF_LOG_DEBUG, "Server grace timeout "
-                "value = %"PRIu64, conf->grace_tv.tv_sec);
+                "value = %"PRIu64, conf->grace_ts.tv_sec);
 
-        conf->grace_tv.tv_usec  = 0;
+        conf->grace_ts.tv_nsec  = 0;
 
         ret = 0;
 out:
@@ -952,12 +952,6 @@ reconfigure (xlator_t *this, dict_t *options)
 
         }
 
-        /*ret = dict_get_str (options, "statedump-path", &statedump_path);
-        if (!ret) {
-                gf_path_strip_trailing_slashes (statedump_path);
-                GF_FREE (this->ctx->statedump_path);
-                this->ctx->statedump_path = gf_strdup (statedump_path);
-        }*/
         GF_OPTION_RECONF ("statedump-path", statedump_path,
                           options, path, out);
         if (!statedump_path) {
@@ -996,6 +990,15 @@ reconfigure (xlator_t *this, dict_t *options)
 
         (void) rpcsvc_set_allow_insecure (rpc_conf, options);
         (void) rpcsvc_set_root_squash (rpc_conf, options);
+
+        ret = rpcsvc_set_outstanding_rpc_limit (rpc_conf, options,
+                                         RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to reconfigure outstanding-rpc-limit");
+                goto out;
+        }
+
         list_for_each_entry (listeners, &(rpc_conf->listeners), list) {
                 if (listeners->trans != NULL) {
                         if (listeners->trans->reconfigure )
@@ -1090,9 +1093,17 @@ init (xlator_t *this)
         /* RPC related */
         conf->rpc = rpcsvc_init (this, this->ctx, this->options, 0);
         if (conf->rpc == NULL) {
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_log (this->name, GF_LOG_ERROR,
                         "creation of rpcsvc failed");
                 ret = -1;
+                goto out;
+        }
+
+        ret = rpcsvc_set_outstanding_rpc_limit (conf->rpc, this->options,
+                                         RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Failed to configure outstanding-rpc-limit");
                 goto out;
         }
 

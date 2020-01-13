@@ -3822,6 +3822,7 @@ __glusterd_peer_rpc_notify (struct rpc_clnt *rpc, void *mydata,
         switch (event) {
         case RPC_CLNT_CONNECT:
         {
+                rpc_clnt_set_connected (&rpc->conn);
                 gf_log (this->name, GF_LOG_DEBUG, "got RPC_CLNT_CONNECT");
                 peerinfo->connected = 1;
                 peerinfo->quorum_action = _gf_true;
@@ -3834,6 +3835,7 @@ __glusterd_peer_rpc_notify (struct rpc_clnt *rpc, void *mydata,
 
         case RPC_CLNT_DISCONNECT:
         {
+                rpc_clnt_unset_connected (&rpc->conn);
                 gf_log (this->name, GF_LOG_DEBUG, "got RPC_CLNT_DISCONNECT %d",
                         peerinfo->state.state);
 
@@ -3894,11 +3896,11 @@ glusterd_null (rpcsvc_request_t *req)
 }
 
 rpcsvc_actor_t gd_svc_mgmt_actors[] = {
-        [GLUSTERD_MGMT_NULL]           = { "NULL", GLUSTERD_MGMT_NULL, glusterd_null, NULL, 0},
-        [GLUSTERD_MGMT_CLUSTER_LOCK]   = { "CLUSTER_LOCK", GLUSTERD_MGMT_CLUSTER_LOCK, glusterd_handle_cluster_lock, NULL, 0},
-        [GLUSTERD_MGMT_CLUSTER_UNLOCK] = { "CLUSTER_UNLOCK", GLUSTERD_MGMT_CLUSTER_UNLOCK, glusterd_handle_cluster_unlock, NULL, 0},
-        [GLUSTERD_MGMT_STAGE_OP]       = { "STAGE_OP", GLUSTERD_MGMT_STAGE_OP, glusterd_handle_stage_op, NULL, 0},
-        [GLUSTERD_MGMT_COMMIT_OP]      = { "COMMIT_OP", GLUSTERD_MGMT_COMMIT_OP, glusterd_handle_commit_op, NULL, 0},
+        [GLUSTERD_MGMT_NULL]           = { "NULL",           GLUSTERD_MGMT_NULL,           glusterd_null,                  NULL, 0, DRC_NA},
+        [GLUSTERD_MGMT_CLUSTER_LOCK]   = { "CLUSTER_LOCK",   GLUSTERD_MGMT_CLUSTER_LOCK,   glusterd_handle_cluster_lock,   NULL, 0, DRC_NA},
+        [GLUSTERD_MGMT_CLUSTER_UNLOCK] = { "CLUSTER_UNLOCK", GLUSTERD_MGMT_CLUSTER_UNLOCK, glusterd_handle_cluster_unlock, NULL, 0, DRC_NA},
+        [GLUSTERD_MGMT_STAGE_OP]       = { "STAGE_OP",       GLUSTERD_MGMT_STAGE_OP,       glusterd_handle_stage_op,       NULL, 0, DRC_NA},
+        [GLUSTERD_MGMT_COMMIT_OP]      = { "COMMIT_OP",      GLUSTERD_MGMT_COMMIT_OP,      glusterd_handle_commit_op,      NULL, 0, DRC_NA},
 };
 
 struct rpcsvc_program gd_svc_mgmt_prog = {
@@ -3911,11 +3913,11 @@ struct rpcsvc_program gd_svc_mgmt_prog = {
 };
 
 rpcsvc_actor_t gd_svc_peer_actors[] = {
-        [GLUSTERD_FRIEND_NULL]    = { "NULL", GLUSTERD_MGMT_NULL, glusterd_null, NULL, 0},
-        [GLUSTERD_PROBE_QUERY]    = { "PROBE_QUERY", GLUSTERD_PROBE_QUERY, glusterd_handle_probe_query, NULL, 0},
-        [GLUSTERD_FRIEND_ADD]     = { "FRIEND_ADD", GLUSTERD_FRIEND_ADD, glusterd_handle_incoming_friend_req, NULL, 0},
-        [GLUSTERD_FRIEND_REMOVE]  = { "FRIEND_REMOVE", GLUSTERD_FRIEND_REMOVE, glusterd_handle_incoming_unfriend_req, NULL, 0},
-        [GLUSTERD_FRIEND_UPDATE]  = { "FRIEND_UPDATE", GLUSTERD_FRIEND_UPDATE, glusterd_handle_friend_update, NULL, 0},
+        [GLUSTERD_FRIEND_NULL]    = { "NULL",          GLUSTERD_MGMT_NULL,     glusterd_null,                         NULL, 0, DRC_NA},
+        [GLUSTERD_PROBE_QUERY]    = { "PROBE_QUERY",   GLUSTERD_PROBE_QUERY,   glusterd_handle_probe_query,           NULL, 0, DRC_NA},
+        [GLUSTERD_FRIEND_ADD]     = { "FRIEND_ADD",    GLUSTERD_FRIEND_ADD,    glusterd_handle_incoming_friend_req,   NULL, 0, DRC_NA},
+        [GLUSTERD_FRIEND_REMOVE]  = { "FRIEND_REMOVE", GLUSTERD_FRIEND_REMOVE, glusterd_handle_incoming_unfriend_req, NULL, 0, DRC_NA},
+        [GLUSTERD_FRIEND_UPDATE]  = { "FRIEND_UPDATE", GLUSTERD_FRIEND_UPDATE, glusterd_handle_friend_update,         NULL, 0, DRC_NA},
 };
 
 struct rpcsvc_program gd_svc_peer_prog = {
@@ -3930,41 +3932,41 @@ struct rpcsvc_program gd_svc_peer_prog = {
 
 
 rpcsvc_actor_t gd_svc_cli_actors[] = {
-        [GLUSTER_CLI_PROBE]         = { "CLI_PROBE", GLUSTER_CLI_PROBE, glusterd_handle_cli_probe, NULL, 0},
-        [GLUSTER_CLI_CREATE_VOLUME] = { "CLI_CREATE_VOLUME", GLUSTER_CLI_CREATE_VOLUME, glusterd_handle_create_volume, NULL, 0},
-        [GLUSTER_CLI_DEFRAG_VOLUME] = { "CLI_DEFRAG_VOLUME", GLUSTER_CLI_DEFRAG_VOLUME, glusterd_handle_defrag_volume, NULL, 0},
-        [GLUSTER_CLI_DEPROBE]       = { "FRIEND_REMOVE", GLUSTER_CLI_DEPROBE, glusterd_handle_cli_deprobe, NULL, 0},
-        [GLUSTER_CLI_LIST_FRIENDS]  = { "LIST_FRIENDS", GLUSTER_CLI_LIST_FRIENDS, glusterd_handle_cli_list_friends, NULL, 0},
-        [GLUSTER_CLI_UUID_RESET]    = { "UUID_RESET", GLUSTER_CLI_UUID_RESET, glusterd_handle_cli_uuid_reset, NULL, 0},
-        [GLUSTER_CLI_UUID_GET]    = { "UUID_GET", GLUSTER_CLI_UUID_GET, glusterd_handle_cli_uuid_get, NULL, 0},
-        [GLUSTER_CLI_START_VOLUME]  = { "START_VOLUME", GLUSTER_CLI_START_VOLUME, glusterd_handle_cli_start_volume, NULL, 0},
-        [GLUSTER_CLI_STOP_VOLUME]   = { "STOP_VOLUME", GLUSTER_CLI_STOP_VOLUME, glusterd_handle_cli_stop_volume, NULL, 0},
-        [GLUSTER_CLI_DELETE_VOLUME] = { "DELETE_VOLUME", GLUSTER_CLI_DELETE_VOLUME, glusterd_handle_cli_delete_volume, NULL, 0},
-        [GLUSTER_CLI_GET_VOLUME]    = { "GET_VOLUME", GLUSTER_CLI_GET_VOLUME, glusterd_handle_cli_get_volume, NULL, 0},
-        [GLUSTER_CLI_ADD_BRICK]     = { "ADD_BRICK", GLUSTER_CLI_ADD_BRICK, glusterd_handle_add_brick, NULL, 0},
-        [GLUSTER_CLI_REPLACE_BRICK] = { "REPLACE_BRICK", GLUSTER_CLI_REPLACE_BRICK, glusterd_handle_replace_brick, NULL, 0},
-        [GLUSTER_CLI_REMOVE_BRICK]  = { "REMOVE_BRICK", GLUSTER_CLI_REMOVE_BRICK, glusterd_handle_remove_brick, NULL, 0},
-        [GLUSTER_CLI_LOG_ROTATE]    = { "LOG FILENAME", GLUSTER_CLI_LOG_ROTATE, glusterd_handle_log_rotate, NULL, 0},
-        [GLUSTER_CLI_SET_VOLUME]    = { "SET_VOLUME", GLUSTER_CLI_SET_VOLUME, glusterd_handle_set_volume, NULL, 0},
-        [GLUSTER_CLI_SYNC_VOLUME]   = { "SYNC_VOLUME", GLUSTER_CLI_SYNC_VOLUME, glusterd_handle_sync_volume, NULL, 0},
-        [GLUSTER_CLI_RESET_VOLUME]  = { "RESET_VOLUME", GLUSTER_CLI_RESET_VOLUME, glusterd_handle_reset_volume, NULL, 0},
-        [GLUSTER_CLI_FSM_LOG]       = { "FSM_LOG", GLUSTER_CLI_FSM_LOG, glusterd_handle_fsm_log, NULL, 0},
-        [GLUSTER_CLI_GSYNC_SET]     = { "GSYNC_SET", GLUSTER_CLI_GSYNC_SET, glusterd_handle_gsync_set, NULL, 0},
-        [GLUSTER_CLI_PROFILE_VOLUME] = { "STATS_VOLUME", GLUSTER_CLI_PROFILE_VOLUME, glusterd_handle_cli_profile_volume, NULL, 0},
-        [GLUSTER_CLI_QUOTA]         = { "QUOTA", GLUSTER_CLI_QUOTA, glusterd_handle_quota, NULL, 0},
-        [GLUSTER_CLI_GETWD]         = { "GETWD", GLUSTER_CLI_GETWD, glusterd_handle_getwd, NULL, 1},
-        [GLUSTER_CLI_STATUS_VOLUME]  = {"STATUS_VOLUME", GLUSTER_CLI_STATUS_VOLUME, glusterd_handle_status_volume, NULL, 0},
-        [GLUSTER_CLI_MOUNT]         = { "MOUNT", GLUSTER_CLI_MOUNT, glusterd_handle_mount, NULL, 1},
-        [GLUSTER_CLI_UMOUNT]        = { "UMOUNT", GLUSTER_CLI_UMOUNT, glusterd_handle_umount, NULL, 1},
-        [GLUSTER_CLI_HEAL_VOLUME]  = { "HEAL_VOLUME", GLUSTER_CLI_HEAL_VOLUME, glusterd_handle_cli_heal_volume, NULL, 0},
-        [GLUSTER_CLI_STATEDUMP_VOLUME] = {"STATEDUMP_VOLUME", GLUSTER_CLI_STATEDUMP_VOLUME, glusterd_handle_cli_statedump_volume, NULL, 0},
-        [GLUSTER_CLI_LIST_VOLUME] = {"LIST_VOLUME", GLUSTER_CLI_LIST_VOLUME, glusterd_handle_cli_list_volume, NULL, 0},
-        [GLUSTER_CLI_CLRLOCKS_VOLUME] = {"CLEARLOCKS_VOLUME", GLUSTER_CLI_CLRLOCKS_VOLUME, glusterd_handle_cli_clearlocks_volume, NULL, 0},
+        [GLUSTER_CLI_PROBE]            = { "CLI_PROBE",         GLUSTER_CLI_PROBE,            glusterd_handle_cli_probe,             NULL, 0, DRC_NA},
+        [GLUSTER_CLI_CREATE_VOLUME]    = { "CLI_CREATE_VOLUME", GLUSTER_CLI_CREATE_VOLUME,    glusterd_handle_create_volume,         NULL, 0, DRC_NA},
+        [GLUSTER_CLI_DEFRAG_VOLUME]    = { "CLI_DEFRAG_VOLUME", GLUSTER_CLI_DEFRAG_VOLUME,    glusterd_handle_defrag_volume,         NULL, 0, DRC_NA},
+        [GLUSTER_CLI_DEPROBE]          = { "FRIEND_REMOVE",     GLUSTER_CLI_DEPROBE,          glusterd_handle_cli_deprobe,           NULL, 0, DRC_NA},
+        [GLUSTER_CLI_LIST_FRIENDS]     = { "LIST_FRIENDS",      GLUSTER_CLI_LIST_FRIENDS,     glusterd_handle_cli_list_friends,      NULL, 0, DRC_NA},
+        [GLUSTER_CLI_UUID_RESET]       = { "UUID_RESET",        GLUSTER_CLI_UUID_RESET,       glusterd_handle_cli_uuid_reset,        NULL, 0, DRC_NA},
+        [GLUSTER_CLI_UUID_GET]         = { "UUID_GET",          GLUSTER_CLI_UUID_GET,         glusterd_handle_cli_uuid_get,          NULL, 0, DRC_NA},
+        [GLUSTER_CLI_START_VOLUME]     = { "START_VOLUME",      GLUSTER_CLI_START_VOLUME,     glusterd_handle_cli_start_volume,      NULL, 0, DRC_NA},
+        [GLUSTER_CLI_STOP_VOLUME]      = { "STOP_VOLUME",       GLUSTER_CLI_STOP_VOLUME,      glusterd_handle_cli_stop_volume,       NULL, 0, DRC_NA},
+        [GLUSTER_CLI_DELETE_VOLUME]    = { "DELETE_VOLUME",     GLUSTER_CLI_DELETE_VOLUME,    glusterd_handle_cli_delete_volume,     NULL, 0, DRC_NA},
+        [GLUSTER_CLI_GET_VOLUME]       = { "GET_VOLUME",        GLUSTER_CLI_GET_VOLUME,       glusterd_handle_cli_get_volume,        NULL, 0, DRC_NA},
+        [GLUSTER_CLI_ADD_BRICK]        = { "ADD_BRICK",         GLUSTER_CLI_ADD_BRICK,        glusterd_handle_add_brick,             NULL, 0, DRC_NA},
+        [GLUSTER_CLI_REPLACE_BRICK]    = { "REPLACE_BRICK",     GLUSTER_CLI_REPLACE_BRICK,    glusterd_handle_replace_brick,         NULL, 0, DRC_NA},
+        [GLUSTER_CLI_REMOVE_BRICK]     = { "REMOVE_BRICK",      GLUSTER_CLI_REMOVE_BRICK,     glusterd_handle_remove_brick,          NULL, 0, DRC_NA},
+        [GLUSTER_CLI_LOG_ROTATE]       = { "LOG FILENAME",      GLUSTER_CLI_LOG_ROTATE,       glusterd_handle_log_rotate,            NULL, 0, DRC_NA},
+        [GLUSTER_CLI_SET_VOLUME]       = { "SET_VOLUME",        GLUSTER_CLI_SET_VOLUME,       glusterd_handle_set_volume,            NULL, 0, DRC_NA},
+        [GLUSTER_CLI_SYNC_VOLUME]      = { "SYNC_VOLUME",       GLUSTER_CLI_SYNC_VOLUME,      glusterd_handle_sync_volume,           NULL, 0, DRC_NA},
+        [GLUSTER_CLI_RESET_VOLUME]     = { "RESET_VOLUME",      GLUSTER_CLI_RESET_VOLUME,     glusterd_handle_reset_volume,          NULL, 0, DRC_NA},
+        [GLUSTER_CLI_FSM_LOG]          = { "FSM_LOG",           GLUSTER_CLI_FSM_LOG,          glusterd_handle_fsm_log,               NULL, 0, DRC_NA},
+        [GLUSTER_CLI_GSYNC_SET]        = { "GSYNC_SET",         GLUSTER_CLI_GSYNC_SET,        glusterd_handle_gsync_set,             NULL, 0, DRC_NA},
+        [GLUSTER_CLI_PROFILE_VOLUME]   = { "STATS_VOLUME",      GLUSTER_CLI_PROFILE_VOLUME,   glusterd_handle_cli_profile_volume,    NULL, 0, DRC_NA},
+        [GLUSTER_CLI_QUOTA]            = { "QUOTA",             GLUSTER_CLI_QUOTA,            glusterd_handle_quota,                 NULL, 0, DRC_NA},
+        [GLUSTER_CLI_GETWD]            = { "GETWD",             GLUSTER_CLI_GETWD,            glusterd_handle_getwd,                 NULL, 1, DRC_NA},
+        [GLUSTER_CLI_STATUS_VOLUME]    = { "STATUS_VOLUME",     GLUSTER_CLI_STATUS_VOLUME,    glusterd_handle_status_volume,         NULL, 0, DRC_NA},
+        [GLUSTER_CLI_MOUNT]            = { "MOUNT",             GLUSTER_CLI_MOUNT,            glusterd_handle_mount,                 NULL, 1, DRC_NA},
+        [GLUSTER_CLI_UMOUNT]           = { "UMOUNT",            GLUSTER_CLI_UMOUNT,           glusterd_handle_umount,                NULL, 1, DRC_NA},
+        [GLUSTER_CLI_HEAL_VOLUME]      = { "HEAL_VOLUME",       GLUSTER_CLI_HEAL_VOLUME,      glusterd_handle_cli_heal_volume,       NULL, 0, DRC_NA},
+        [GLUSTER_CLI_STATEDUMP_VOLUME] = { "STATEDUMP_VOLUME",  GLUSTER_CLI_STATEDUMP_VOLUME, glusterd_handle_cli_statedump_volume,  NULL, 0, DRC_NA},
+        [GLUSTER_CLI_LIST_VOLUME]      = { "LIST_VOLUME",       GLUSTER_CLI_LIST_VOLUME,      glusterd_handle_cli_list_volume,       NULL, 0, DRC_NA},
+        [GLUSTER_CLI_CLRLOCKS_VOLUME]  = { "CLEARLOCKS_VOLUME", GLUSTER_CLI_CLRLOCKS_VOLUME,  glusterd_handle_cli_clearlocks_volume, NULL, 0, DRC_NA},
 #ifdef HAVE_BD_XLATOR
-        [GLUSTER_CLI_BD_OP]       = {"BD_OP", GLUSTER_CLI_BD_OP, glusterd_handle_cli_bd_op, NULL, 0},
+        [GLUSTER_CLI_BD_OP]            = { "BD_OP",             GLUSTER_CLI_BD_OP,            glusterd_handle_cli_bd_op,             NULL, 0, DRC_NA},
 #endif
-        [GLUSTER_CLI_COPY_FILE]     = {"COPY_FILE", GLUSTER_CLI_COPY_FILE, glusterd_handle_copy_file, NULL, 0},
-        [GLUSTER_CLI_SYS_EXEC]      = {"SYS_EXEC", GLUSTER_CLI_SYS_EXEC, glusterd_handle_sys_exec, NULL, 0},
+        [GLUSTER_CLI_COPY_FILE]        = { "COPY_FILE",         GLUSTER_CLI_COPY_FILE,        glusterd_handle_copy_file,             NULL, 0, DRC_NA},
+        [GLUSTER_CLI_SYS_EXEC]         = { "SYS_EXEC",          GLUSTER_CLI_SYS_EXEC,         glusterd_handle_sys_exec,              NULL, 0, DRC_NA},
 };
 
 struct rpcsvc_program gd_svc_cli_prog = {
@@ -3973,5 +3975,26 @@ struct rpcsvc_program gd_svc_cli_prog = {
         .progver   = GLUSTER_CLI_VERSION,
         .numactors = GLUSTER_CLI_MAXVALUE,
         .actors    = gd_svc_cli_actors,
+	.synctask  = _gf_true,
+};
+
+/* This is a minimal RPC prog, which contains only the readonly RPC procs from
+ * the cli rpcsvc
+ */
+rpcsvc_actor_t gd_svc_cli_actors_ro[] = {
+        [GLUSTER_CLI_LIST_FRIENDS]       = { "LIST_FRIENDS",      GLUSTER_CLI_LIST_FRIENDS,     glusterd_handle_cli_list_friends,      NULL, 0, DRC_NA},
+        [GLUSTER_CLI_UUID_GET]           = { "UUID_GET",          GLUSTER_CLI_UUID_GET,         glusterd_handle_cli_uuid_get,          NULL, 0, DRC_NA},
+        [GLUSTER_CLI_GET_VOLUME]         = { "GET_VOLUME",        GLUSTER_CLI_GET_VOLUME,       glusterd_handle_cli_get_volume,        NULL, 0, DRC_NA},
+        [GLUSTER_CLI_GETWD]              = { "GETWD",             GLUSTER_CLI_GETWD,            glusterd_handle_getwd,                 NULL, 1, DRC_NA},
+        [GLUSTER_CLI_STATUS_VOLUME]      = {"STATUS_VOLUME",      GLUSTER_CLI_STATUS_VOLUME,    glusterd_handle_status_volume,         NULL, 0, DRC_NA},
+        [GLUSTER_CLI_LIST_VOLUME]        = {"LIST_VOLUME",        GLUSTER_CLI_LIST_VOLUME,      glusterd_handle_cli_list_volume,       NULL, 0, DRC_NA},
+};
+
+struct rpcsvc_program gd_svc_cli_prog_ro = {
+        .progname  = "GlusterD svc cli read-only",
+        .prognum   = GLUSTER_CLI_PROGRAM,
+        .progver   = GLUSTER_CLI_VERSION,
+        .numactors = GLUSTER_CLI_MAXVALUE,
+        .actors    = gd_svc_cli_actors_ro,
 	.synctask  = _gf_true,
 };

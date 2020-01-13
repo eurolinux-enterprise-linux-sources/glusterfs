@@ -38,6 +38,11 @@
 #define MAX_IOVEC 16
 #endif
 
+#define RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT 64 /* Default for protocol/server */
+#define RPCSVC_DEF_NFS_OUTSTANDING_RPC_LIMIT 16 /* Default for nfs/server */
+#define RPCSVC_MAX_OUTSTANDING_RPC_LIMIT 65536
+#define RPCSVC_MIN_OUTSTANDING_RPC_LIMIT 0 /* No limit i.e. Unlimited */
+
 #define GF_RPCSVC       "rpc-service"
 #define RPCSVC_THREAD_STACK_SIZE ((size_t)(1024 * GF_UNIT_KB))
 
@@ -140,6 +145,9 @@ typedef struct rpcsvc_auth_data {
 
 #define rpcsvc_auth_flavour(au)    ((au).flavour)
 
+typedef struct drc_client drc_client_t;
+typedef struct drc_cached_op drc_cached_op_t;
+
 /* The container for the RPC call handed up to an actor.
  * Dynamically allocated. Lives till the call reply is completely
  * transmitted.
@@ -241,6 +249,9 @@ struct rpcsvc_request {
 
         /* we need to ref the 'iobuf' in case of 'synctasking' it */
         struct iobuf            *hdr_iobuf;
+
+        /* pointer to cached reply for use in DRC */
+        drc_cached_op_t         *reply;
 };
 
 #define rpcsvc_request_program(req) ((rpcsvc_program_t *)((req)->prog))
@@ -316,7 +327,6 @@ typedef void *(*rpcsvc_encode_reply) (void *msg);
  */
 typedef void (*rpcsvc_deallocate_reply) (void *msg);
 
-
 #define RPCSVC_NAME_MAX            32
 /* The descriptor for each procedure/actor that runs
  * over the RPC service.
@@ -338,6 +348,7 @@ typedef struct rpcsvc_actor_desc {
 
         /* Can actor be ran on behalf an unprivileged requestor? */
         gf_boolean_t            unprivileged;
+        drc_op_type_t           op_type;
 } rpcsvc_actor_t;
 
 /* Describes a program and its version along with the function pointers
@@ -431,6 +442,9 @@ extern int
 rpcsvc_program_register_portmap (rpcsvc_program_t *newprog, uint32_t port);
 
 extern int
+rpcsvc_program_unregister_portmap (rpcsvc_program_t *newprog);
+
+extern int
 rpcsvc_register_portmap_enabled (rpcsvc_t *svc);
 
 /* Inits the global RPC service data structures.
@@ -440,6 +454,9 @@ extern rpcsvc_t *
 rpcsvc_init (xlator_t *xl, glusterfs_ctx_t *ctx, dict_t *options,
              uint32_t poolcount);
 
+extern int
+rpcsvc_reconfigure_options (rpcsvc_t *svc, dict_t *options);
+
 int
 rpcsvc_register_notify (rpcsvc_t *svc, rpcsvc_notify_t notify, void *mydata);
 
@@ -448,6 +465,13 @@ rpcsvc_register_notify (rpcsvc_t *svc, rpcsvc_notify_t notify, void *mydata);
  */
 int
 rpcsvc_unregister_notify (rpcsvc_t *svc, rpcsvc_notify_t notify, void *mydata);
+
+int
+rpcsvc_transport_submit (rpc_transport_t *trans, struct iovec *rpchdr,
+                         int rpchdrcount, struct iovec *proghdr,
+                         int proghdrcount, struct iovec *progpayload,
+                         int progpayloadcount, struct iobref *iobref,
+                         void *priv);
 
 int
 rpcsvc_submit_message (rpcsvc_request_t *req, struct iovec *proghdr,
@@ -475,8 +499,7 @@ rpcsvc_transport_peeraddr (rpc_transport_t *trans, char *addrstr, int addrlen,
                            struct sockaddr_storage *returnsa, socklen_t sasize);
 
 extern int
-rpcsvc_auth_check (dict_t *options, char *volname,
-                   rpc_transport_t *trans);
+rpcsvc_auth_check (rpcsvc_t *svc, char *volname, rpc_transport_t *trans);
 
 extern int
 rpcsvc_transport_privport_check (rpcsvc_t *svc, char *volname,
@@ -537,6 +560,9 @@ extern int
 rpcsvc_auth_init (rpcsvc_t *svc, dict_t *options);
 
 extern int
+rpcsvc_auth_reconf (rpcsvc_t *svc, dict_t *options);
+
+extern int
 rpcsvc_auth_transport_init (rpc_transport_t *xprt);
 
 extern int
@@ -560,18 +586,22 @@ int rpcsvc_callback_submit (rpcsvc_t *rpc, rpc_transport_t *trans,
                             rpcsvc_cbk_program_t *prog, int procnum,
                             struct iovec *proghdr, int proghdrcount);
 
+rpcsvc_actor_t *
+rpcsvc_program_actor (rpcsvc_request_t *req);
+
 int
 rpcsvc_transport_unix_options_build (dict_t **options, char *filepath);
 int
 rpcsvc_set_allow_insecure (rpcsvc_t *svc, dict_t *options);
 int
+rpcsvc_set_addr_namelookup (rpcsvc_t *svc, dict_t *options);
+int
 rpcsvc_set_root_squash (rpcsvc_t *svc, dict_t *options);
 int
+rpcsvc_set_outstanding_rpc_limit (rpcsvc_t *svc, dict_t *options, int defvalue);
+int
 rpcsvc_auth_array (rpcsvc_t *svc, char *volname, int *autharr, int arrlen);
-char *
-rpcsvc_volume_allowed (dict_t *options, char *volname);
 rpcsvc_vector_sizer
 rpcsvc_get_program_vector_sizer (rpcsvc_t *svc, uint32_t prognum,
                                  uint32_t progver, uint32_t procnum);
-
 #endif

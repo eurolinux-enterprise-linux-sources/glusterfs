@@ -337,6 +337,10 @@ class Server(object):
                 raise
 
     @classmethod
+    def gfid_mnt(cls, gfidpath):
+        return errno_wrap(Xattr.lgetxattr, [gfidpath, 'glusterfs.gfid.string', cls.GX_GFID_CANONICAL_LEN], [ENOENT])
+
+    @classmethod
     @_pathguard
     def purge(cls, path, entries=None):
         """force-delete subtrees
@@ -533,7 +537,7 @@ class Server(object):
             # to be purged is the GFID gotten from the changelog.
             # (a stat(changelog_gfid) would also be valid here)
             # The race here is between the GFID check and the purge.
-            disk_gfid = cls.gfid(entry)
+            disk_gfid = cls.gfid_mnt(entry)
             if isinstance(disk_gfid, int):
                 return
             if not gfid == disk_gfid:
@@ -768,7 +772,7 @@ class SlaveRemote(object):
         logging.debug("files: " + ", ".join(files))
         (host, rdir) = slaveurl.split(':')
         tar_cmd = ["tar", "-cf", "-", "--files-from", "-"]
-        ssh_cmd = gconf.ssh_command.split() +  [host, "tar", "-xf", "-", "-C", rdir]
+        ssh_cmd = gconf.ssh_command_tar.split() +  [host, "tar", "--overwrite", "-xf", "-", "-C", rdir]
         p0 = Popen(tar_cmd, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         p1 = Popen(ssh_cmd, stdin=p0.stdout, stderr=subprocess.PIPE)
         for f in files:
@@ -1232,9 +1236,15 @@ class SSH(AbstractUrl, SlaveRemote):
         """
         if go_daemon == 'done':
             return self.start_fd_client(*self.fd_pair)
-        gconf.setup_ssh_ctl(tempfile.mkdtemp(prefix='gsyncd-aux-ssh-'))
+
+        syncdutils.setup_ssh_ctl(tempfile.mkdtemp(prefix='gsyncd-aux-ssh-'),
+                                 self.remote_addr,
+                                 self.inner_rsc.url)
+
         deferred = go_daemon == 'postconn'
-        ret = sup(self, gconf.ssh_command.split() + gconf.ssh_ctl_args + [self.remote_addr], slave=self.inner_rsc.url, deferred=deferred)
+        ret = sup(self, gconf.ssh_command.split() + gconf.ssh_ctl_args + [self.remote_addr],
+                  slave=self.inner_rsc.url, deferred=deferred)
+
         if deferred:
             # send a message to peer so that we can wait for
             # the answer from which we know connection is

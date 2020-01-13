@@ -1706,7 +1706,7 @@ glusterd_op_create_volume (dict_t *dict, char **op_errstr)
 out:
         GF_FREE(free_ptr);
         if (!vol_added && volinfo)
-                glusterd_volinfo_delete (volinfo);
+                glusterd_volinfo_unref (volinfo);
         return ret;
 }
 

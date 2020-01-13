@@ -53,6 +53,12 @@ mnt1svc_init (xlator_t *nfsx);
 extern int
 mount_init_state (xlator_t *nfsx);
 
+extern int
+mount_reconfigure_state (xlator_t *nfsx, dict_t *options);
+
+void
+mount_rewrite_rmtab (struct mount3_state *ms, char *new_rmtab);
+
 /* Data structure used to store the list of mounts points currently
  * in use by NFS clients.
  */
@@ -68,6 +74,13 @@ struct mountentry {
 #define MNT3_EXPTYPE_VOLUME     1
 #define MNT3_EXPTYPE_DIR        2
 
+/* Structure to hold export-dir AUTH parameter */
+struct host_auth_spec {
+        char                    *host_addr;    /* Allowed IP or host name */
+        int                     routeprefix;   /* Routing prefix */
+        struct host_auth_spec   *next;         /* Pointer to next AUTH struct */
+};
+
 struct mnt3_export {
         struct list_head        explist;
 
@@ -75,6 +88,11 @@ struct mnt3_export {
          * is exported or the subdirectory in the volume.
          */
         char                    *expname;
+        /*
+         * IP address, hostname or subnets who are allowed to connect to expname
+         * subvolume or subdirectory
+         */
+        struct host_auth_spec*  hostspec;
         xlator_t                *vol;
         int                     exptype;
 
@@ -101,8 +119,8 @@ struct mount3_state {
         gf_lock_t               mountlock;
 
         /* Set to 0 if exporting full volumes is disabled. On by default. */
-        int                     export_volumes;
-        int                     export_dirs;
+        gf_boolean_t            export_volumes;
+        gf_boolean_t            export_dirs;
 };
 
 #define gf_mnt3_export_dirs(mst)        ((mst)->export_dirs)

@@ -782,6 +782,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
           .option      = "statedump-path",
           .op_version  = 1
         },
+        { .key         = "server.outstanding-rpc-limit",
+          .voltype     = "protocol/server",
+          .option      = "rpc.outstanding-rpc-limit",
+          .type        = GLOBAL_DOC,
+          .op_version  = 2
+        },
         { .key         = "features.lock-heal",
           .voltype     = "protocol/server",
           .option      = "lk-heal",
@@ -1118,6 +1124,12 @@ struct volopt_map_entry glusterd_volopt_map[] = {
           .type        = GLOBAL_DOC,
           .op_version  = 1
         },
+        { .key         = "nfs.outstanding-rpc-limit",
+          .voltype     = "nfs/server",
+          .option      = "rpc.outstanding-rpc-limit",
+          .type        = GLOBAL_DOC,
+          .op_version  = 2
+        },
         { .key         = "nfs.port",
           .voltype     = "nfs/server",
           .option      = "nfs.port",
@@ -1200,10 +1212,46 @@ struct volopt_map_entry glusterd_volopt_map[] = {
           .type        = GLOBAL_DOC,
           .op_version  = 1
         },
+        { .key         = "nfs.mount-rmtab",
+          .voltype     = "nfs/server",
+          .option      = "nfs.mount-rmtab",
+          .type        = GLOBAL_DOC,
+          .op_version  = 1
+        },
         { .key         = "nfs.server-aux-gids",
           .voltype     = "nfs/server",
           .option      = "nfs.server-aux-gids",
           .type        = NO_DOC,
+          .op_version  = 2
+        },
+        { .key         = "nfs.drc",
+          .voltype     = "nfs/server",
+          .option      = "nfs.drc",
+          .type        = NO_DOC,
+          .op_version  = 1
+        },
+        { .key         = "nfs.drc-size",
+          .voltype     = "nfs/server",
+          .option      = "nfs.drc-size",
+          .type        = NO_DOC,
+          .op_version  = 1
+        },
+        { .key         = "nfs.read-size",
+          .voltype     = "nfs/server",
+          .option      = "nfs3.read-size",
+          .type        = GLOBAL_DOC,
+          .op_version  = 2
+        },
+        { .key         = "nfs.write-size",
+          .voltype     = "nfs/server",
+          .option      = "nfs3.write-size",
+          .type        = GLOBAL_DOC,
+          .op_version  = 2
+        },
+        { .key         = "nfs.readdir-size",
+          .voltype     = "nfs/server",
+          .option      = "nfs3.readdir-size",
+          .type        = GLOBAL_DOC,
           .op_version  = 2
         },
 

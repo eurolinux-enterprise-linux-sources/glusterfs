@@ -83,12 +83,15 @@
 #define GF_XATTR_NODE_UUID_KEY  "trusted.glusterfs.node-uuid"
 #define GF_XATTR_VOL_ID_KEY   "trusted.glusterfs.volume-id"
 #define GF_XATTR_LOCKINFO_KEY   "trusted.glusterfs.lockinfo"
-#define GF_XATTR_GET_REAL_FILENAME_KEY "user.glusterfs.get_real_filename:"
+#define GF_XATTR_GET_REAL_FILENAME_KEY "glusterfs.get_real_filename:"
+#define GF_XATTR_USER_PATHINFO_KEY   "glusterfs.pathinfo"
 
 #define GF_READDIR_SKIP_DIRS       "readdir-filter-directories"
 
-#define XATTR_IS_PATHINFO(x)  (strncmp (x, GF_XATTR_PATHINFO_KEY,       \
-                                        strlen (GF_XATTR_PATHINFO_KEY)) == 0)
+#define XATTR_IS_PATHINFO(x)  ((strncmp (x, GF_XATTR_PATHINFO_KEY,       \
+                                        strlen (x)) == 0) ||             \
+                              (strncmp (x, GF_XATTR_USER_PATHINFO_KEY,   \
+                                         strlen (x)) == 0))
 #define XATTR_IS_NODE_UUID(x) (strncmp (x, GF_XATTR_NODE_UUID_KEY,      \
                                         strlen (GF_XATTR_NODE_UUID_KEY)) == 0)
 #define XATTR_IS_LOCKINFO(x) (strncmp (x, GF_XATTR_LOCKINFO_KEY,        \
@@ -110,6 +113,7 @@
 #define ZR_FILE_CONTENT_STR     "glusterfs.file."
 #define ZR_FILE_CONTENT_STRLEN 15
 
+#define GLUSTERFS_WRITE_IS_APPEND "glusterfs.write-is-append"
 #define GLUSTERFS_OPEN_FD_COUNT "glusterfs.open-fd-count"
 #define GLUSTERFS_INODELK_COUNT "glusterfs.inodelk-count"
 #define GLUSTERFS_ENTRYLK_COUNT "glusterfs.entrylk-count"
@@ -133,9 +137,6 @@
 #define RB_PUMP_CMD_ABORT       "glusterfs.pump.abort"
 #define RB_PUMP_CMD_STATUS      "glusterfs.pump.status"
 
-#define POSIX_ACL_DEFAULT_XATTR "system.posix_acl_default"
-#define POSIX_ACL_ACCESS_XATTR "system.posix_acl_access"
-
 #define GLUSTERFS_MARKER_DONT_ACCOUNT_KEY "glusters.marker.dont-account"
 #define GLUSTERFS_RDMA_INLINE_THRESHOLD       (2048)
 #define GLUSTERFS_RDMA_MAX_HEADER_SIZE        (228) /* (sizeof (rdma_header_t)                 \
@@ -155,7 +156,7 @@
 /* TODO: Keeping it to 200, so that we can fit in 2KB buffer for auth data
  * in RPC server code, if there is ever need for having more aux-gids, then
  * we have to add aux-gid in payload of actors */
-#define GF_MAX_AUX_GROUPS   200
+#define GF_MAX_AUX_GROUPS   65536
 
 #define GF_UUID_BUF_SIZE 50
 
@@ -164,6 +165,11 @@
 #define GF_REPLACE_BRICK_TID_KEY "replace-brick-id"
 
 #define UUID_CANONICAL_FORM_LEN  36
+
+/* Adding this here instead of any glusterd*.h files as it is also required by
+ * cli
+ */
+#define DEFAULT_GLUSTERD_SOCKFILE             DATADIR "/run/glusterd.socket"
 
 /* NOTE: add members ONLY at the end (just before _MAXVALUE) */
 typedef enum {
@@ -334,8 +340,9 @@ struct _cmd_args {
         int              enable_ino32;
         int              worm;
         int              mac_compat;
-	int		 fopen_keep_cache;
-	int		 gid_timeout;
+        int              fopen_keep_cache;
+        int              gid_timeout;
+        char             gid_timeout_set;
         int              aux_gfid_mount;
 	struct list_head xlator_options;  /* list of xlator_option_t */
 

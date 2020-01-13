@@ -102,7 +102,7 @@ typedef struct clnt_conf {
         uint16_t               lk_version; /* this variable is used to distinguish
                                               client-server transaction while
                                               performing lock healing */
-        struct timeval         grace_tv;
+        struct timespec        grace_ts;
         gf_timer_t            *grace_timer;
         gf_boolean_t           grace_timer_needed; /* The state of this flag will
                                                       be used to decide whether
@@ -121,6 +121,11 @@ typedef struct clnt_conf {
 
         char                  *server_version; /* set if server sends its
                                                   package version */
+        /* set volume is the op which results in creating/re-using
+         * the conn-id and is called once per connection, this remembers
+         * how manytimes set_volume is called
+         */
+        uint64_t               setvol_count;
 } clnt_conf_t;
 
 typedef struct _client_fd_ctx {

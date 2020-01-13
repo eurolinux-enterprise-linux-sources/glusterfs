@@ -26,6 +26,9 @@ server_decode_groups (call_frame_t *frame, rpcsvc_request_t *req)
         GF_VALIDATE_OR_GOTO ("server", frame, out);
         GF_VALIDATE_OR_GOTO ("server", req, out);
 
+	if (call_stack_alloc_groups (frame->root, req->auxgidcount) != 0)
+		return -1;
+
         frame->root->ngrps = req->auxgidcount;
         if (frame->root->ngrps == 0)
                 return 0;
@@ -820,7 +823,6 @@ get_frame_from_request (rpcsvc_request_t *req)
                 goto out;
 
         frame->root->op       = req->procnum;
-        frame->root->type     = req->type;
 
         frame->root->unique   = req->xid;
 

@@ -20,7 +20,8 @@
 #include "event-history.h"
 
 typedef enum {
-        STOP_CRAWL_ON_SINGLE_SUBVOL = 1
+        STOP_CRAWL_ON_SINGLE_SUBVOL = 1,
+        STOP_INDEX_CRAWL_ON_PENDING_FULL_CRAWL = 2
 } afr_crawl_flags_t;
 
 typedef enum {
@@ -431,11 +432,26 @@ afr_crawl_done  (int ret, call_frame_t *sync_frame, void *data)
         return 0;
 }
 
+int
+_get_heal_op_flags (shd_crawl_op op, afr_crawl_type_t crawl)
+{
+        int crawl_flags = 0;
+
+        if (HEAL == op) {
+                crawl_flags |= STOP_CRAWL_ON_SINGLE_SUBVOL;
+
+                if (crawl == INDEX)
+                        crawl_flags |= STOP_INDEX_CRAWL_ON_PENDING_FULL_CRAWL;
+        }
+
+        return crawl_flags;
+}
+
 void
 _do_self_heal_on_subvol (xlator_t *this, int child, afr_crawl_type_t crawl)
 {
         afr_start_crawl (this, child, crawl, _self_heal_entry,
-                         NULL, _gf_true, STOP_CRAWL_ON_SINGLE_SUBVOL,
+                         NULL, _gf_true, _get_heal_op_flags (HEAL, crawl),
                          afr_crawl_done);
 }
 
@@ -454,6 +470,7 @@ _crawl_proceed (xlator_t *this, int child, int crawl_flags, char **reason)
                 gf_log (this->name, GF_LOG_DEBUG, "%s", msg);
                 goto out;
         }
+
         if (!priv->child_up[child]) {
                 gf_log (this->name, GF_LOG_DEBUG, "Stopping crawl for %s , "
                         "subvol went down", priv->children[child]->name);
@@ -470,6 +487,17 @@ _crawl_proceed (xlator_t *this, int child, int crawl_flags, char **reason)
                         goto out;
                 }
         }
+
+        if (crawl_flags & STOP_INDEX_CRAWL_ON_PENDING_FULL_CRAWL) {
+                if (shd->pending[child] == FULL) {
+                        gf_log (this->name, GF_LOG_INFO, "Stopping index "
+                                "self-heal as Full self-heal is pending on %s",
+                                priv->children[child]->name);
+                        msg = "Full crawl is pending";
+                        goto out;
+                }
+        }
+
         proceed = _gf_true;
 out:
         if (reason)
@@ -493,8 +521,7 @@ _do_crawl_op_on_local_subvols (xlator_t *this, afr_crawl_type_t crawl,
         int                 crawl_flags = 0;
 
         priv = this->private;
-        if (op == HEAL)
-                crawl_flags |= STOP_CRAWL_ON_SINGLE_SUBVOL;
+        crawl_flags = _get_heal_op_flags (op, crawl);
 
         if (output) {
                 ret = dict_get_int32 (output, this->name, &xl_id);
@@ -642,7 +669,7 @@ afr_poll_self_heal (void *data)
 {
         afr_private_t    *priv = NULL;
         afr_self_heald_t *shd = NULL;
-        struct timeval   timeout = {0};
+        struct timespec  timeout = {0};
         xlator_t         *this = NULL;
         long             child = (long)data;
         gf_timer_t       *old_timer = NULL;
@@ -666,7 +693,7 @@ afr_poll_self_heal (void *data)
         if (shd->enabled && (shd->pos[child] == AFR_POS_LOCAL))
                 _do_self_heal_on_subvol (this, child, INDEX);
         timeout.tv_sec = shd->timeout;
-        timeout.tv_usec = 0;
+        timeout.tv_nsec = 0;
         //notify and previous timer should be synchronized.
         LOCK (&priv->lock);
         {
@@ -1147,6 +1174,22 @@ out:
         return ret;
 }
 
+char *
+get_crawl_type_in_string (afr_crawl_type_t crawl)
+{
+        char    *index = "INDEX";
+        char    *full  = "FULL";
+        char    *crawl_type = NULL;
+
+        if (crawl == INDEX){
+                crawl_type = index;
+        } else if (crawl == FULL) {
+                crawl_type = full;
+        }
+
+        return  crawl_type;
+}
+
 static int
 afr_dir_exclusive_crawl (void *data)
 {
@@ -1177,7 +1220,10 @@ afr_dir_exclusive_crawl (void *data)
 
         if (!crawl) {
                 gf_log (this->name, GF_LOG_INFO, "Another crawl is in progress "
-                        "for %s", priv->children[child]->name);
+                        "for %s while attempting %s heal on %s",
+                        priv->children[child]->name,
+                        get_crawl_type_in_string (crawl_data->crawl),
+                        priv->children[child]->name);
                 goto out;
         }
 
@@ -1270,4 +1316,3 @@ afr_set_root_gfid (dict_t *dict)
 
         return ret;
 }
-

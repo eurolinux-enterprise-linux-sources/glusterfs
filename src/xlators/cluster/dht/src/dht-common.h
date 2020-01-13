@@ -212,6 +212,10 @@ enum gf_defrag_status_t {
         GF_DEFRAG_STATUS_STOPPED,
         GF_DEFRAG_STATUS_COMPLETE,
         GF_DEFRAG_STATUS_FAILED,
+        GF_DEFRAG_STATUS_LAYOUT_FIX_STARTED,
+        GF_DEFRAG_STATUS_LAYOUT_FIX_STOPPED,
+        GF_DEFRAG_STATUS_LAYOUT_FIX_COMPLETE,
+        GF_DEFRAG_STATUS_LAYOUT_FIX_FAILED,
 };
 typedef enum gf_defrag_status_t gf_defrag_status_t;
 
@@ -724,7 +728,8 @@ int
 gf_defrag_status_get (gf_defrag_info_t *defrag, dict_t *dict);
 
 int
-gf_defrag_stop (gf_defrag_info_t *defrag, dict_t *output);
+gf_defrag_stop (gf_defrag_info_t *defrag, gf_defrag_status_t status,
+                dict_t *output);
 
 void*
 gf_defrag_start (void *this);
@@ -770,5 +775,8 @@ int32_t
 dht_priv_dump (xlator_t *this);
 int32_t
 dht_inodectx_dump (xlator_t *this, inode_t *inode);
+
+int
+dht_inode_ctx_get1 (xlator_t *this, inode_t *inode, xlator_t **subvol);
 
 #endif/* _DHT_H */

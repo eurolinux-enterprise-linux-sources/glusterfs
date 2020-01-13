@@ -1,14 +1,14 @@
 # if you make changes, the it is advised to increment this number, and provide
 # a descriptive suffix to identify who owns or what the change represents
 # e.g. release_version 2.MSW
-%global release 2%{?dist}
+%global release 1%{?dist}
 %global _sharedstatedir /var/lib
 
-%global version 3.4.0.40rhs
+%global version 3.4.0.59rhs
 
 
 # if you wish to build the server rpms, compile like this...
-# rpmbuild -ta glusterfs-3.4.0.30rhs.tar.gz --with server
+# rpmbuild -ta glusterfs-VERSION.tar.gz --with server
 %if "%{?_with_server}"
 %define _build_server 1
 %else
@@ -27,7 +27,7 @@
 # global prereltag beta2
 
 # if you wish to compile an rpm without rdma support, compile like this...
-# rpmbuild -ta glusterfs-3.4.0.30rhs.tar.gz --without rdma
+# rpmbuild -ta glusterfs-VERSION.tar.gz --without rdma
 %{?_without_rdma:%global _without_rdma --disable-ibverbs}
 
 # No RDMA Support on s390(x)
@@ -36,28 +36,28 @@
 %endif
 
 # if you wish to compile an rpm without epoll...
-# rpmbuild -ta glusterfs-3.4.0.30rhs.tar.gz --without epoll
+# rpmbuild -ta glusterfs-VERSION.tar.gz --without epoll
 %{?_without_epoll:%global _without_epoll --disable-epoll}
 
 # if you wish to compile an rpm without fusermount...
-# rpmbuild -ta glusterfs-3.4.0.30rhs.tar.gz --without fusermount
+# rpmbuild -ta glusterfs-VERSION.tar.gz --without fusermount
 %{?_without_fusermount:%global _without_fusermount --disable-fusermount}
 
 %global _can_georeplicate 1
 
 # if you wish to compile an rpm without geo-replication support, compile like this...
-# rpmbuild -ta glusterfs-3.4.0.30rhs.tar.gz --without georeplication
+# rpmbuild -ta glusterfs-VERSION.tar.gz --without georeplication
 %{?_without_georeplication:%global _without_georeplication --disable-geo-replication}
 
 # if you wish to compile an rpm without the OCF resource agents...
-# rpmbuild -ta glusterfs-3.4.0.30rhs.tar.gz --without ocf
+# rpmbuild -ta glusterfs-VERSION.tar.gz --without ocf
 %{?_without_ocf:%global _without_ocf --without-ocf}
 
 # disable ocf as it is not required for rhs
 %global _without_ocf --without-ocf
 
 # if you wish to compile an rpm without the BD map support...
-# rpmbuild -ta glusterfs-3.4.0.30rhs.tar.gz --without bd
+# rpmbuild -ta glusterfs-VERSION.tar.gz --without bd
 %{?_without_bd:%global _without_bd --disable-bd-xlator}
 
 %if ( 0%{?rhel} && 0%{?rhel} < 6 )
@@ -65,7 +65,7 @@
 %endif
 
 # if you wish to build rpms without syslog logging, compile like this
-# rpmbuild -ta glusterfs-3.4.0.30rhstar.gz --without syslog
+# rpmbuild -ta glusterfs-VERSION.tar.gz --without syslog
 %{?_without_syslog:%global _without_syslog --disable-syslog}
 
 # disable syslog if dist is not for RHS and rhel <= 6.  These
@@ -83,11 +83,17 @@
 %global           _with_systemd true
 %endif
 
+# From https://fedoraproject.org/wiki/Packaging:Python#Macros
+%if ( 0%{?rhel} && 0%{?rhel} <= 5 )
+%{!?python_sitelib: %global python_sitelib %(%{__python} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")}
+%{!?python_sitearch: %global python_sitearch %(%{__python} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")}
+%endif
+
 Summary:          Cluster File System
 %if ( 0%{_for_fedora_koji_builds} )
 Name:             glusterfs
 Version:          3.4.0
-Release:          0.5%{?prereltag:.%{prereltag}}%{?dist}
+Release:          0.6%{?prereltag:.%{prereltag}}%{?dist}
 Vendor:           Fedora Project
 %else
 Name:             glusterfs
@@ -318,6 +324,8 @@ Summary:          Clustered file-system api library
 License:          GPLv2 or LGPLv3+
 Group:            System Environment/Daemons
 Requires:         %{name}-libs = %{version}-%{release}
+# we provide the Python package/namespace 'gluster'
+Provides:         python-gluster = %{version}-%{release}
 
 %description api
 GlusterFS is a clustered file-system capable of scaling to several
@@ -443,6 +451,10 @@ This package provides the api include files.
 %{__install} -D -p -m 0644 extras/glusterd-sysconfig \
     %{buildroot}%{_sysconfdir}/sysconfig/glusterd
 %endif
+%if ( 0%{?rhel} && 0%{?rhel} >= 5 )
+%{__mkdir_p} %{buildroot}%{python_sitelib}/gluster
+touch %{buildroot}%{python_sitelib}/gluster/__init__.py
+%endif
 
 %if ( 0%{_for_fedora_koji_builds} )
 %if ( 0%{?rhel} && 0%{?rhel} <= 5 )
@@ -470,6 +482,12 @@ find %{buildroot}%{_libdir} -name '*.la' -delete
 
 # Create working directory
 %{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd
+%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/glustershd
+%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/nfs
+%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/peers
+%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/quotad
+%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/vols
+%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/groups
 
 # Update configuration file to /var/lib working directory
 sed -i 's|option working-directory /etc/glusterd|option working-directory %{_sharedstatedir}/glusterd|g' \
@@ -497,15 +515,15 @@ sed -i 's|option working-directory /etc/glusterd|option working-directory %{_sha
 %else
 %{__install} -D -p -m 0644 extras/glusterfs-logrotate \
     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs
-#geo replication logrotate file.
+# geo replication logrotate file.
 %{__install} -D -p -m 0644 extras/glusterfs-georep-logrotate \
     %{buildroot}%{_sysconfdir}/logrotate.d/glusterfs-georep
 %endif
 
 %if ( 0%{!?_without_georeplication:1} )
 # geo-rep ghosts
-#%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/geo-replication
-#touch %{buildroot}%{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
+%{__mkdir_p} %{buildroot}%{_sharedstatedir}/glusterd/geo-replication
+touch %{buildroot}%{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
 %endif
 
 # Following needed by the hooks interface
@@ -527,6 +545,11 @@ done
     %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/post
 %{__install} -p -m 0744 extras/hook-scripts/add-brick/pre/*.sh   \
     %{buildroot}%{_sharedstatedir}/glusterd/hooks/1/add-brick/pre
+
+%{__install} -p -m 0644 extras/group-virt.example \
+    %{buildroot}%{_sharedstatedir}/glusterd/groups/virt
+%{__install} -p -m 0644 extras/group-small-file-perf.example \
+    %{buildroot}%{_sharedstatedir}/glusterd/groups/small-file-perf
 %endif
 
 %if !0%{?_build_server}
@@ -535,6 +558,7 @@ rm %{buildroot}%{_sysconfdir}/glusterfs/glusterd.vol
 rm %{buildroot}%{_sysconfdir}/init.d/glusterd
 rm %{buildroot}%{_sbindir}/gluster
 rm %{buildroot}%{_sbindir}/glusterd
+rm %{buildroot}%{_sbindir}/glfsheal
 rm %{buildroot}%{_libexecdir}/glusterfs/gsyncd
 rm -rf %{buildroot}%{_libexecdir}/glusterfs/python/syncdaemon
 rm -rf %{buildroot}%{_libexecdir}/glusterfs/quota
@@ -553,12 +577,12 @@ rm %{buildroot}%{_datadir}/glusterfs/scripts/slave-upgrade.sh
 %if ( 0%{!?_without_syslog:1} )
 %if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} > 6 )
 %{__install} -D -p -m 0644 extras/gluster-rsyslog-7.2.conf \
-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf
+    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
 %endif
 
 %if ( 0%{?rhel} && 0%{?rhel} == 6 )
 %{__install} -D -p -m 0644 extras/gluster-rsyslog-5.8.conf \
-    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf
+    %{buildroot}%{_sysconfdir}/rsyslog.d/gluster.conf.example
 %endif
 
 %if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
@@ -616,13 +640,52 @@ rm %{buildroot}%{_sysconfdir}/glusterfs/logger.conf.example
 %clean
 %{__rm} -rf %{buildroot}
 
-%pre
+%if 0%{?_build_server}
+%pretrans -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
+
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
 pidof -c -o %PPID -x glusterfsd &>/dev/null
+
 if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          echo "ERROR: Distribute volumes detected. In-service rolling upgrade requires distribute volume(s) to be stopped."
+          echo "ERROR: Please stop distribute volume(s) before proceeding... exiting!"
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   echo "WARNING: Updating glusterfs requires its processes to be killed. This action does NOT incur downtime."
+   echo "WARNING: Ensure to wait for the upgraded server to finish healing before proceeding."
+   echo "WARNING: Refer upgrade section of install guide for more details"
+   echo "Please run # service glusterd stop; pkill glusterfs; pkill glusterfsd; pkill gsyncd.py;"
+   exit 1;
 fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+%endif
 
 %post
 /sbin/ldconfig
@@ -665,13 +728,46 @@ fi
 %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/mac-compat*
 %exclude %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/testing/performance/symlink-cache*
 
-%pre libs
+%if 0%{?_build_server}
+%pretrans libs -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
+
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
 pidof -c -o %PPID -x glusterfsd &>/dev/null
+
 if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
 fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-libs_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+%endif
 
 %post libs
 /sbin/ldconfig
@@ -693,21 +789,53 @@ fi
 %{_libdir}/*.so.*
 %if ( 0%{!?_without_syslog:1} )
 %if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 )
-%{_sysconfdir}/rsyslog.d/gluster.conf
+%{_sysconfdir}/rsyslog.d/gluster.conf.example
 %endif
 %endif
 %exclude %{_libdir}/libgfapi.*
 
 
 %if ( 0%{!?_without_rdma:1} )
+%if 0%{?_build_server}
+%pretrans rdma -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
 
-%pre rdma
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
 pidof -c -o %PPID -x glusterfsd &>/dev/null
+
 if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
 fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-rdma_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+%endif
 
 %files rdma
 %defattr(-,root,root,-)
@@ -717,14 +845,44 @@ fi
 %if 0%{?_build_server}
 %if 0%{?_can_georeplicate}
 %if ( 0%{!?_without_georeplication:1} )
+%pretrans geo-replication -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
 
-%pre geo-replication
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
 pidof -c -o %PPID -x glusterfsd &>/dev/null
+
 if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
 fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-geo-replication_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
 
 %post geo-replication
 %{__chmod} +x %{_datadir}/glusterfs/scripts/get-gfid.sh
@@ -742,12 +900,18 @@ fi
 %{_libexecdir}/glusterfs/gverify.sh
 %{_libexecdir}/glusterfs/peer_add_secret_pub
 %{_libexecdir}/glusterfs/peer_gsec_create
+%dir %{_sharedstatedir}/glusterd/hooks
+%dir %{_sharedstatedir}/glusterd/hooks/1
+%dir %{_sharedstatedir}/glusterd/hooks/1/gsync-create
+%dir %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post
 %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post/S56glusterd-geo-rep-create-post.sh
 %{_datadir}/glusterfs/scripts/get-gfid.sh
 %{_datadir}/glusterfs/scripts/slave-upgrade.sh
 %{_datadir}/glusterfs/scripts/gsync-upgrade.sh
 %{_datadir}/glusterfs/scripts/generate-gfid-file.sh
 %{_datadir}/glusterfs/scripts/gsync-sync-gfid
+%{_sharedstatedir}/glusterd/geo-replication
+%config(noreplace) %{_sharedstatedir}/glusterd/geo-replication/gsyncd_template.conf
 #%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post
 #%ghost %attr(0644,-,-) %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post/S56glusterd-geo-rep-create-post.sh
 #%ghost %dir %attr(0755,-,-) %{_sharedstatedir}/glusterd/geo-replication
@@ -756,14 +920,6 @@ fi
 # need to copy the upgrade scripts here
 %endif
 %endif
-
-%pre fuse
-pidof -c -o %PPID -x glusterfsd &>/dev/null
-if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
-fi
 
 %files fuse
 %defattr(-,root,root,-)
@@ -782,14 +938,87 @@ fi
 %endif
 
 %if 0%{?_build_server}
-%pre server
-pidof -c -o %PPID -x glusterfsd &>/dev/null
-if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
-fi
+%pretrans fuse -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
 
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
+pidof -c -o %PPID -x glusterfsd &>/dev/null
+
+if [ $? -eq 0 ]; then
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
+fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-fuse_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+%endif
+
+%if 0%{?_build_server}
+%pretrans server -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
+
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
+pidof -c -o %PPID -x glusterfsd &>/dev/null
+
+if [ $? -eq 0 ]; then
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
+fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-server_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+
+%pre server
 # Rename old hookscripts in an RPM-standard way.  These aren't actually
 # overwritten in upgrade setup
 if [ -d /var/lib/glusterd/hooks ]; then
@@ -802,7 +1031,6 @@ if [ -d /var/lib/glusterd/hooks ]; then
         mv ${file} ${newfile}
     done
 fi
-
 
 %files server
 %defattr(-,root,root,-)
@@ -827,12 +1055,16 @@ fi
 # binaries
 %{_sbindir}/gluster
 %{_sbindir}/glusterd
+%{_sbindir}/glfsheal
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/storage*
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/features/posix*
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/protocol/server*
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/mgmt*
 %{_libdir}/glusterfs/%{version}%{?prereltag}/xlator/nfs*
 %{_sharedstatedir}/glusterd
+%dir %{_sharedstatedir}/glusterd/groups
+%config(noreplace) %{_sharedstatedir}/glusterd/groups/virt
+%config(noreplace) %{_sharedstatedir}/glusterd/groups/small-file-perf
 %if 0%{?_can_georeplicate}
 %if ( 0%{!?_without_georeplication:1} )
 %exclude %{_sharedstatedir}/glusterd/hooks/1/gsync-create/post/S56glusterd-geo-rep-create-post.sh
@@ -884,13 +1116,46 @@ fi
 #%ghost      %attr(0600,-,-) %{_sharedstatedir}/glusterd/nfs/run/nfs.pid
 %endif
 
-%pre api
+%if 0%{?_build_server}
+%pretrans api -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
+
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
 pidof -c -o %PPID -x glusterfsd &>/dev/null
+
 if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
 fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-api_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+%endif
 
 %post api
 /sbin/ldconfig
@@ -902,32 +1167,57 @@ fi
 %exclude %{_libdir}/*.so
 %{_libdir}/libgfapi.*
 %{_libdir}/glusterfs/%{version}/xlator/mount/api*
+%{python_sitelib}/*
 
 
 %if 0%{?_build_server}
 %if ( 0%{!?_without_ocf:1} )
-%pre resource-agents
-pidof -c -o %PPID -x glusterfsd &>/dev/null
-if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
-fi
-
 %files resource-agents
 %defattr(-,root,root)
 # /usr/lib is the standard for OCF, also on x86_64
 %{_prefix}/lib/ocf/resource.d/glusterfs
-%endif
-%endif
 
-%pre devel
+%pretrans resource-agents -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
+
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
 pidof -c -o %PPID -x glusterfsd &>/dev/null
+
 if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
 fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-resource-agents_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+
+%endif
+%endif
 
 %files devel
 %defattr(-,root,root,-)
@@ -938,18 +1228,92 @@ fi
 %exclude %{_libdir}/libgfapi.so
 %{_libdir}/*.so
 
-%pre api-devel
+%if 0%{?_build_server}
+%pretrans devel -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
+
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
 pidof -c -o %PPID -x glusterfsd &>/dev/null
+
 if [ $? -eq 0 ]; then
-   echo "ERROR: Please kill gluster processes.. installation cannot proceed"
-   echo "Usage: \$ pkill gluster "
-   exit 1
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
 fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-devel_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+%endif
 
 %files api-devel
 %{_libdir}/pkgconfig/glusterfs-api.pc
 %{_libdir}/libgfapi.so
 %{_includedir}/glusterfs/api/*
+
+%if 0%{?_build_server}
+%pretrans api-devel -p <lua>
+if not posix.access("/bin/bash", "x") then
+    -- initial installation, no shell, no running glusterfsd
+    return 0
+end
+
+-- TODO: move this completely to a lua script
+-- For now, we write a temporary bash script and execute that.
+
+script = [[#!/bin/sh
+pidof -c -o %PPID -x glusterfsd &>/dev/null
+
+if [ $? -eq 0 ]; then
+   pushd . > /dev/null 2>&1
+   for volume in /var/lib/glusterd/vols/*; do cd $volume;
+       vol_type=`grep '^type=' info | awk -F'=' '{print $2}'`
+       volume_started=`grep '^status=' info | awk -F'=' '{print $2}'`
+       if [ $vol_type -eq 0 ] && [ $volume_started -eq 1 ] ; then
+          exit 1;
+       fi
+   done
+
+   popd > /dev/null 2>&1
+   exit 1;
+fi
+]]
+
+-- rpm in RHEL5 does not have os.tmpname()
+-- io.tmpfile() can not be resolved to a filename to pass to bash :-/
+tmpname = "/tmp/glusterfs-api-devel_pretrans_" .. os.date("%s")
+tmpfile = io.open(tmpname, "w")
+tmpfile:write(script)
+tmpfile:close()
+ok, how, val = os.execute("/bin/bash " .. tmpname)
+os.remove(tmpname)
+if not (ok == 0) then
+   error("Detected running glusterfs processes", ok)
+end
+%endif
 
 %if 0%{?_build_server}
 %post server
@@ -979,15 +1343,6 @@ if [ -d /var/lib/glusterd/vols ]; then
         echo "warning: ${file} saved as ${newfile}"
         cp ${file} ${newfile}
     done
-fi
-
-# Need to copy the file.
-mkdir -p /var/lib/glusterd/groups
-if [ ! -r /var/lib/glusterd/groups/virt ]; then
-   cp %{_sysconfdir}/glusterfs/group-virt.example /var/lib/glusterd/groups/virt
-fi
-if [ ! -r /var/lib/glusterd/groups/small-file-perf ]; then
-   cp %{_sysconfdir}/glusterfs/group-small-file-perf.example /var/lib/glusterd/groups/small-file-perf
 fi
 
 # add marker translator
@@ -1029,25 +1384,87 @@ fi
 %endif
 
 %changelog
-* Fri Nov 08 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.40rhs-2
-- add aarch64 build support
-* Thu Nov 07 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.40rhs-1
-- fixes the bug 1016478 1019522 1025358 1025392 1027525 987292
-* Tue Nov 05 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.39rhs-1
-- fixes the bug 1000948 1002987 1010239 1014002 1022830 1025205 1025392
-  1025408 1025476 1025604 1025953 1025954 1025956 1025967
-* Fri Nov 01 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.38rhs-1
-- fixes the bug 1002885 1022830 1025163 1025205 1025333 1025408 1025471
-* Wed Oct 30 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.37rhs-1
-- bug fixes for 1000903 1001895 1012900 1016019 1016019 1019504 1019518
-  1019903 1019930 1019954 1020886 1022518 1022582 1022830 1023124 1023124
-  1023124 1024496 871015 980910 980910 998793 998943
-* Tue Oct 22 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.36rhs-1
-- bug fixes for 1002885 1021808 1007536 1017014 1012216 998786 977544
-  1016385 858434 1001895 1012900 980910 1001556
-* Tue Oct 15 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.35rhs-1
-- bug fixes for 969461 1000948 1000936 1011694 1013556 1016971 979641
-  950314 852140 980778 1006172 1005553 1005478 1007866 998914 981035
+* Tue Feb 04 2014 Ravishankar N <ranaraya@redhat.com> - 3.4.0.59rhs-1
+- fixes bugs in cli, dht, glusterd, afr
+  1059237, 1054782, 1059662, 1056204,1057291
+
+* Tue Jan 28 2014 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.58rhs-2
+- fix /sbin usage properly
+
+* Sat Jan 25 2014 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.58rhs-1
+- fixes bugs 977492 1026787 829734 1056204
+
+* Mon Jan 13 2014 Ravishankar N <ranaraya@redhat.com> - 3.4.0.57rhs-1
+- fixes bugs 1046022, 1044923
+
+* Sat Jan 11 2014 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.56rhs-1
+- fixes bug 1038908 1034479
+
+* Mon Jan 06 2014 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.55rhs-1
+- fixes bug 1047782
+
+* Sun Jan 05 2014 Ravishankar N <ranaraya@redhat.com> - 3.4.0.54rhs-1
+- fixes bugs in afr, glusterd, gNFS, io-cache.
+  1047862, 1047461, 1047747, 1047782, 1047449
+
+* Mon Dec 30 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.53rhs-1
+- fixes bug 916857 1005663 1032034 1046294 1046318 1042830 1045313
+  1046571 1046604 1045991 1022822 1031687 1045374 972021
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 3.4.0.52rhs-2
+- Mass rebuild 2013-12-27
+
+* Thu Dec 19 2013 Ravishankar N<ranaraya@redhat.com> - 3.4.0.52rhs-1
+- fixes bugs in guota, gNFS, glusterd, afr etc.
+  1024371, 1024316, 1021776, 1043535, 1019908, 965400, 1020816
+
+* Wed Dec 18 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.51rhs-1
+- fixes bug 1027128 1031687 1043946 829734 906747 967071
+
+* Mon Dec 16 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.50rhs-1
+- fixes bug 1027699 1039992 1024725 1022822 1040211 989362 1034479
+  1037515 1021776
+
+* Wed Dec 11 2013 Ravishankar N <ranaraya@redhat.com> - 3.4.0.49rhs-1
+- This build has fixes for bugs in cli, glusterd, fuse, dht etc.
+  1023950, 1032081, 923809, 1028995, 1023921, 1037851, 956655, 1015630, 1010975,
+
+* Thu Dec 05 2013 Ravishankar N <ranaraya@redhat.com> - 3.4.0.47.1u2rhs-1
+- This build has fixes for bugs in glusterd, gNFS, dht, afr, gfapi, fuse,
+  cli, gsyncd etc.
+  1035519, 1028325, 1034547, 1037274, 1034238, 1027727, 1030443, 1024316,
+  1028282, 1032359, 1030021, 1020995, 979861, 1032558, 929036, 1033469,
+  916857
+
+* Mon Nov 25 2013 Ravishankar N <ranaraya@redhat.com> - 3.4.0.44.1u2rhs-1
+- This build has fixes for bugs in dht, gfapi, cli, glusterd, gsyncd, gNFS,
+  afr, geo-rep, quota etc.
+  1024228, 1021857, 1022328, 1020850, 1004794, 1019846, 1019846, 929036,
+  1032465, 1032984, 990330, 990331, 999569, 999569, 928784, 1011313, 1029575,
+  1029577, 987292, 1028675, 1028732, 1000948, 1025967, 1028343, 1028299,
+  1019522, 1019522, 1019522, 1019522, 1025358, 987292, 850514, 1027525, 1025392,
+  987272, 1000948, 1025392, 1025953, 1025967, 1025953, 1025954, 1025956, 1002987,
+  1025476, 1014002, 1025408, 987292, 1022830, 1019930, 1023124, 980910, 980910
+  1023124, 1023124, 1019954, 1010239, 924048, 1027364
+
+* Tue Nov 12 2013 Ravishankar N <ranaraya@redhat.com> - 3.4.0.43.1u2rhs-1
+- This build has fixes for bugs in dht, posix, gfapi, glusterd, and libglusterfs.
+  1025471, 1007033, 1025205, 1025240, 1027559
+
+* Mon Nov 11 2013 Krishnan Parthasarathi <kparthas@redhat.com> - 3.4.0.42.1u2rhs-1
+- This build has fixes for bugs in glusterd, geo-replication, quota, glusterfs-nfs etc
+  1000903, 1001895, 1002885, 1007536, 1012216, 1012900, 1016019, 1016385,
+  1016478, 1016608, 1017014, 1017466, 1017993, 1019504, 1019518, 1019903,
+  1020181, 1020331, 1020886, 1021808, 1022518, 1022582, 1022830, 1024496,
+  1025163, 1025333, 1025604, 864867, 871015, 888752, 977492, 977544, 998786,
+  998793, 998943
+
+* Mon Oct 21 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.35.1u2rhs-1
+- bug fixes 1016608 858434 864868 1001895 1019064 1019683 1006354
+  1012900 980910 1001556 956693 923135 904300 969461 1000948 1000936
+  1011694
+* Thu Oct 10 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.34.1u2rhs-1
+- bug fixes 1016971 1013556 1016993
 * Mon Oct 07 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.34rhs-1
 - bug fixes for 852140 950314 980778 998832 998914 998943 1000922
   1000996 1001893 1001895 1002022 1002613 1003580 1005460 1005478
@@ -1084,7 +1501,7 @@ fi
 - fixes a issue with peer probe of newer servers after upgrade (bz#1000986)
 - fixes NFS file handle sizes issue with older clients (bz#902857)
 - geo-replication's session distribution is now more deterministic (bz#980049)
-* Mon Aug 27 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.24rhs-1
+* Tue Aug 27 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.24rhs-1
 - resolves rhbz#1000957 rhbz#999939 rhbz#994351 rhbz#988900 rhbz#999825 rhbz#1000396
 * Mon Aug 26 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.23rhs-1
 - resolves rhbz#982471, rhbz#902857, rhbz#993891, rhbz#999921, rhbz#999921
@@ -1102,17 +1519,17 @@ fi
 - fixed an build issue in RHEL5 (in the source)
 * Wed Aug 14 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.19rhs-2
 - fixed 'Installed (but unpackaged) file(s) found' for non-server builds
-* Mon Aug  13 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.19rhs-1
+* Tue Aug 13 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.19rhs-1
 - resolves bugs (921385 923555 960046 980529 983507 989906 990125 994956 996312 996431)
-* Mon Aug  7 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.18rhs-1
+* Wed Aug  7 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.18rhs-1
 - resolves rhbz#988852, rhbz#989192, rhbz#989435, rhbz#990084, rhbz#992959, rhbz#993583, rhbz#993713
-* Mon Aug  6 2013 Vijay Bellur <vbellur@redhat.com> - 3.4.0.17rhs-1
+* Tue Aug  6 2013 Vijay Bellur <vbellur@redhat.com> - 3.4.0.17rhs-1
 - Enables orthogonal-meta-data option in afr by default.
-* Mon Aug  6 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.16rhs-1
+* Tue Aug  6 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.16rhs-1
 - resolves rhbz#993270
-* Mon Aug  6 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.15rhs-6
+* Tue Aug  6 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.15rhs-6
 - remove /usr/lib/ocf/resource.d/glusterfs for client builds
-* Mon Aug  6 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.15rhs-5
+* Tue Aug  6 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.15rhs-5
 - set correct dependencies between glusterfs subpackages
 * Mon Aug  5 2013 Arumugam Balamurugan <barumuga@redhat.com> - 3.4.0.15rhs-4
 - remove /usr/bin/fusermount dependency for fuse
@@ -1169,7 +1586,7 @@ fi
 - gfapi patches for support vfs_glusterfs for samba are merged
 * Tue Jun 18 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.10rhs
 - fixes to bugs 959208 959869 961250 962510 964020 964054 968289 974913
-* Fri Jun 05 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.9rhs
+* Wed Jun 05 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.9rhs
 - fix lockfile issue with init.d file
 - clients not having /var/run/gluster directory for statedump (bz917544)
 - other bugs from source tarball (bz923466 bz924572 bz956188 bz958076 bz959201 bz959907 bz960390 bz960834 bz960835 bz961271 bz962345 bz962400 bz963122 bz963534 bz963896 bz964020 bz965440 bz967483)
@@ -1180,7 +1597,7 @@ fi
 * Mon May 13 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.7rhs
 - fix a memory corruption issue with RPC layer (bz961198)
 - fix in distribute migration check code (bz960843)
-* Thu May 10 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.6rhs
+* Fri May 10 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.6rhs
 - fix a missing hooks issue (bz960982)
 * Thu May 09 2013 Amar Tumballi <atumball@redhat.com> - 3.4.0.5rhs
 - fix issue with server package installation

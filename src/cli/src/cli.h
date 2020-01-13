@@ -59,6 +59,7 @@ enum argp_option_keys {
 #define GLUSTER_MODE_SCRIPT    (1 << 0)
 #define GLUSTER_MODE_ERR_FATAL (1 << 1)
 #define GLUSTER_MODE_XML       (1 << 2)
+#define GLUSTER_MODE_WIGNORE   (1 << 3)
 
 
 #define GLUSTERD_GET_QUOTA_AUX_MOUNT_PATH(abspath, volname, path)      \
@@ -77,6 +78,7 @@ struct cli_cmd;
 
 extern char *cli_vol_type_str[];
 extern char *cli_vol_status_str[];
+extern char *cli_vol_task_status_str[];
 
 typedef int (cli_cmd_cbk_t)(struct cli_state *state,
                             struct cli_cmd_word *word,
@@ -139,6 +141,8 @@ struct cli_state {
 
         char                 *log_file;
         gf_loglevel_t         log_level;
+
+        char                 *glusterd_sock;
 };
 
 struct cli_local {
@@ -390,6 +394,8 @@ cli_xml_output_generic_volume (char *op, dict_t *dict, int op_ret, int op_errno,
 int
 cli_xml_output_vol_gsync (dict_t *dict, int op_ret, int op_errno,
                           char *op_errstr);
+int
+cli_xml_output_vol_status_tasks_detail (cli_local_t *local, dict_t *dict);
 
 char *
 is_server_debug_xlator (void *myframe);

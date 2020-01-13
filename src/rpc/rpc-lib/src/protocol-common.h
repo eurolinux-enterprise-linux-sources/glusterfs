@@ -207,6 +207,12 @@ enum glusterd_mgmt_hndsk_procnum {
         GD_MGMT_HNDSK_MAXVALUE,
 };
 
+enum glusterd_pingsvc__procnum {
+        GD_PING_NULL,
+        GD_PING_PING,
+        GD_PING_MAXVALUE
+};
+
 typedef enum {
         GF_AFR_OP_INVALID,
         GF_AFR_OP_HEAL_INDEX,
@@ -231,6 +237,7 @@ struct gf_gsync_detailed_status_ {
         char brick[NAME_MAX];
         char slave_node[NAME_MAX];
         char worker_status[NAME_MAX];
+        char checkpoint_status[NAME_MAX];
         char crawl_status[NAME_MAX];
         char files_syncd[NAME_MAX];
         char files_remaining[NAME_MAX];
@@ -274,5 +281,9 @@ typedef struct gf_gsync_detailed_status_ gf_gsync_status_t;
 /* OP-VERSION handshake */
 #define GD_MGMT_HNDSK_PROGRAM    1239873 /* Completely random */
 #define GD_MGMT_HNDSK_VERSION    1
+
+/* Glusterd PING */
+#define GD_PING_PROGRAM 17294873
+#define GD_PING_VERSION 1
 
 #endif /* !_PROTOCOL_COMMON_H */

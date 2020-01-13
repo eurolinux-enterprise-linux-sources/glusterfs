@@ -73,19 +73,6 @@
         } while (0);                                                    \
 
 
-/*
- * Special case: If op_ret is -1, it's very unusual op_errno being
- * 0 which means something came wrong from upper layer(s). If it
- * happens by any means, then set NFS3 status to NFS3ERR_SERVERFAULT.
- */
-static inline nfsstat3 nfs3_cbk_errno_status (int32_t op_ret, int32_t op_errno)
-{
-        if ((op_ret == -1) && (op_errno == 0)){
-                return NFS3ERR_SERVERFAULT;
-        }
-        return nfs3_errno_to_nfsstat3 (op_errno);
-}
-
 struct nfs3_export *
 __nfs3_get_export_by_index (struct nfs3_state *nfs3, uuid_t exportid)
 {
@@ -5124,28 +5111,28 @@ rpcerr:
 
 
 rpcsvc_actor_t          nfs3svc_actors[NFS3_PROC_COUNT] = {
-        {"NULL",        NFS3_NULL,      nfs3svc_null,   NULL,   0},
-        {"GETATTR",     NFS3_GETATTR,   nfs3svc_getattr,NULL,   0},
-        {"SETATTR",     NFS3_SETATTR,   nfs3svc_setattr,NULL,   0},
-        {"LOOKUP",      NFS3_LOOKUP,    nfs3svc_lookup, NULL,   0},
-        {"ACCESS",      NFS3_ACCESS,    nfs3svc_access, NULL,   0},
-        {"READLINK",    NFS3_READLINK,  nfs3svc_readlink,NULL,  0},
-        {"READ",        NFS3_READ,      nfs3svc_read,   NULL,   0},
-        {"WRITE",       NFS3_WRITE,     nfs3svc_write, nfs3svc_write_vecsizer, 0},
-        {"CREATE",      NFS3_CREATE,    nfs3svc_create, NULL,   0},
-        {"MKDIR",       NFS3_MKDIR,     nfs3svc_mkdir,  NULL,   0},
-        {"SYMLINK",     NFS3_SYMLINK,   nfs3svc_symlink,NULL,   0},
-        {"MKNOD",       NFS3_MKNOD,     nfs3svc_mknod,  NULL,   0},
-        {"REMOVE",      NFS3_REMOVE,    nfs3svc_remove, NULL,   0},
-        {"RMDIR",       NFS3_RMDIR,     nfs3svc_rmdir,  NULL,   0},
-        {"RENAME",      NFS3_RENAME,    nfs3svc_rename, NULL,   0},
-        {"LINK",        NFS3_LINK,      nfs3svc_link,   NULL,   0},
-        {"READDIR",     NFS3_READDIR,   nfs3svc_readdir,NULL,   0},
-        {"READDIRPLUS", NFS3_READDIRP,  nfs3svc_readdirp,NULL,  0},
-        {"FSSTAT",      NFS3_FSSTAT,    nfs3svc_fsstat, NULL,   0},
-        {"FSINFO",      NFS3_FSINFO,    nfs3svc_fsinfo, NULL,   0},
-        {"PATHCONF",    NFS3_PATHCONF,  nfs3svc_pathconf,NULL,  0},
-        {"COMMIT",      NFS3_COMMIT,    nfs3svc_commit, NULL,   0}
+        {"NULL",        NFS3_NULL,      nfs3svc_null,      NULL,   0, DRC_IDEMPOTENT},
+        {"GETATTR",     NFS3_GETATTR,   nfs3svc_getattr,   NULL,   0, DRC_IDEMPOTENT},
+        {"SETATTR",     NFS3_SETATTR,   nfs3svc_setattr,   NULL,   0, DRC_NON_IDEMPOTENT},
+        {"LOOKUP",      NFS3_LOOKUP,    nfs3svc_lookup,    NULL,   0, DRC_IDEMPOTENT},
+        {"ACCESS",      NFS3_ACCESS,    nfs3svc_access,    NULL,   0, DRC_IDEMPOTENT},
+        {"READLINK",    NFS3_READLINK,  nfs3svc_readlink,  NULL,   0, DRC_IDEMPOTENT},
+        {"READ",        NFS3_READ,      nfs3svc_read,      NULL,   0, DRC_IDEMPOTENT},
+        {"WRITE",       NFS3_WRITE,     nfs3svc_write,     nfs3svc_write_vecsizer, 0, DRC_NON_IDEMPOTENT},
+        {"CREATE",      NFS3_CREATE,    nfs3svc_create,    NULL,   0, DRC_NON_IDEMPOTENT},
+        {"MKDIR",       NFS3_MKDIR,     nfs3svc_mkdir,     NULL,   0, DRC_NON_IDEMPOTENT},
+        {"SYMLINK",     NFS3_SYMLINK,   nfs3svc_symlink,   NULL,   0, DRC_NON_IDEMPOTENT},
+        {"MKNOD",       NFS3_MKNOD,     nfs3svc_mknod,     NULL,   0, DRC_NON_IDEMPOTENT},
+        {"REMOVE",      NFS3_REMOVE,    nfs3svc_remove,    NULL,   0, DRC_NON_IDEMPOTENT},
+        {"RMDIR",       NFS3_RMDIR,     nfs3svc_rmdir,     NULL,   0, DRC_NON_IDEMPOTENT},
+        {"RENAME",      NFS3_RENAME,    nfs3svc_rename,    NULL,   0, DRC_NON_IDEMPOTENT},
+        {"LINK",        NFS3_LINK,      nfs3svc_link,      NULL,   0, DRC_NON_IDEMPOTENT},
+        {"READDIR",     NFS3_READDIR,   nfs3svc_readdir,   NULL,   0, DRC_IDEMPOTENT},
+        {"READDIRPLUS", NFS3_READDIRP,  nfs3svc_readdirp,  NULL,   0, DRC_IDEMPOTENT},
+        {"FSSTAT",      NFS3_FSSTAT,    nfs3svc_fsstat,    NULL,   0, DRC_IDEMPOTENT},
+        {"FSINFO",      NFS3_FSINFO,    nfs3svc_fsinfo,    NULL,   0, DRC_IDEMPOTENT},
+        {"PATHCONF",    NFS3_PATHCONF,  nfs3svc_pathconf,  NULL,   0, DRC_IDEMPOTENT},
+        {"COMMIT",      NFS3_COMMIT,    nfs3svc_commit,    NULL,   0, DRC_IDEMPOTENT}
 };
 
 
@@ -5162,21 +5149,48 @@ rpcsvc_program_t        nfs3prog = {
                         .min_auth       = AUTH_NULL,
 };
 
+/*
+ * This function rounds up the input value to multiple of 4096. Min and Max
+ * supported I/O size limits are 4KB (GF_NFS3_FILE_IO_SIZE_MIN) and
+ * 1MB (GF_NFS3_FILE_IO_SIZE_MAX).
+ */
+void
+nfs3_iosize_roundup_4KB (uint64_t *ioszptr)
+{
+        uint64_t iosize;
+        uint64_t iopages;
+
+        if (!ioszptr)
+                return;
+
+        iosize  = *ioszptr;
+        iopages = (iosize + GF_NFS3_IO_SIZE -1) >> GF_NFS3_IO_SHIFT;
+        iosize  = (iopages * GF_NFS3_IO_SIZE);
+
+        /* Double check - boundary conditions */
+        if (iosize < GF_NFS3_FILE_IO_SIZE_MIN) {
+                iosize = GF_NFS3_FILE_IO_SIZE_MIN;
+        } else if (iosize > GF_NFS3_FILE_IO_SIZE_MAX) {
+                iosize = GF_NFS3_FILE_IO_SIZE_MAX;
+        }
+
+        *ioszptr = iosize;
+}
 
 int
-nfs3_init_options (struct nfs3_state *nfs3, xlator_t *nfsx)
+nfs3_init_options (struct nfs3_state *nfs3, dict_t *options)
 {
         int      ret = -1;
         char     *optstr = NULL;
         uint64_t size64 = 0;
 
-        if ((!nfs3) || (!nfsx))
+        if ((!nfs3) || (!options))
                 return -1;
 
         /* nfs3.read-size */
         nfs3->readsize = GF_NFS3_RTPREF;
-        if (dict_get (nfsx->options, "nfs3.read-size")) {
-                ret = dict_get_str (nfsx->options, "nfs3.read-size", &optstr);
+        if (dict_get (options, "nfs3.read-size")) {
+                ret = dict_get_str (options, "nfs3.read-size", &optstr);
                 if (ret < 0) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to read "
                                 " option: nfs3.read-size");
@@ -5185,19 +5199,21 @@ nfs3_init_options (struct nfs3_state *nfs3, xlator_t *nfsx)
                 }
 
                 ret = gf_string2bytesize (optstr, &size64);
-                nfs3->readsize = size64;
                 if (ret == -1) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to format"
                                 " option: nfs3.read-size");
                         ret = -1;
                         goto err;
                 }
+
+                nfs3_iosize_roundup_4KB (&size64);
+                nfs3->readsize = size64;
         }
 
         /* nfs3.write-size */
         nfs3->writesize = GF_NFS3_WTPREF;
-        if (dict_get (nfsx->options, "nfs3.write-size")) {
-                ret = dict_get_str (nfsx->options, "nfs3.write-size", &optstr);
+        if (dict_get (options, "nfs3.write-size")) {
+                ret = dict_get_str (options, "nfs3.write-size", &optstr);
                 if (ret < 0) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to read "
                                 " option: nfs3.write-size");
@@ -5206,19 +5222,21 @@ nfs3_init_options (struct nfs3_state *nfs3, xlator_t *nfsx)
                 }
 
                 ret = gf_string2bytesize (optstr, &size64);
-                nfs3->writesize = size64;
                 if (ret == -1) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to format"
                                 " option: nfs3.write-size");
                         ret = -1;
                         goto err;
                 }
+
+                nfs3_iosize_roundup_4KB (&size64);
+                nfs3->writesize = size64;
         }
 
         /* nfs3.readdir.size */
         nfs3->readdirsize = GF_NFS3_DTPREF;
-        if (dict_get (nfsx->options, "nfs3.readdir-size")) {
-                ret = dict_get_str (nfsx->options,"nfs3.readdir-size", &optstr);
+        if (dict_get (options, "nfs3.readdir-size")) {
+                ret = dict_get_str (options,"nfs3.readdir-size", &optstr);
                 if (ret < 0) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to read"
                                 " option: nfs3.readdir-size");
@@ -5227,15 +5245,16 @@ nfs3_init_options (struct nfs3_state *nfs3, xlator_t *nfsx)
                 }
 
                 ret = gf_string2bytesize (optstr, &size64);
-                nfs3->readdirsize = size64;
                 if (ret == -1) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to format"
                                 " option: nfs3.readdir-size");
                         ret = -1;
                         goto err;
                 }
-        }
 
+                nfs3_iosize_roundup_4KB (&size64);
+                nfs3->readdirsize = size64;
+        }
 
         /* We want to use the size of the biggest param for the io buffer size.
          */
@@ -5249,16 +5268,15 @@ nfs3_init_options (struct nfs3_state *nfs3, xlator_t *nfsx)
          * accommodate the NFS headers also in the same buffer. */
         nfs3->iobsize = nfs3->iobsize * 2;
 
-        /* mem-factor */
-        nfs3->memfactor = GF_NFS3_DEFAULT_MEMFACTOR;
         ret = 0;
 err:
         return ret;
 }
 
-
 int
-nfs3_init_subvolume_options (struct nfs3_state *nfs3, struct nfs3_export *exp)
+nfs3_init_subvolume_options (xlator_t *nfsx,
+                             struct nfs3_export *exp,
+                             dict_t *options)
 {
         int             ret = -1;
         char            *optstr = NULL;
@@ -5266,14 +5284,20 @@ nfs3_init_subvolume_options (struct nfs3_state *nfs3, struct nfs3_export *exp)
         char            *name = NULL;
         gf_boolean_t    boolt = _gf_false;
         uuid_t          volumeid = {0, };
-        dict_t          *options = NULL;
 
-        if ((!exp) || (!nfs3))
+        if ((!nfsx) || (!exp))
                 return -1;
 
-        options = nfs3->nfsx->options;
+        /* For init, fetch options from xlator but for
+         * reconfigure, take the parameter */
+        if (!options)
+                options = nfsx->options;
+
+        if (!options)
+                return (-1);
+
         uuid_clear (volumeid);
-        if (gf_nfs_dvm_off (nfs_state (nfs3->nfsx)))
+        if (gf_nfs_dvm_off (nfs_state (nfsx)))
                 goto no_dvm;
 
         ret = snprintf (searchkey, 1024, "nfs3.%s.volume-id",exp->subvol->name);
@@ -5439,7 +5463,7 @@ nfs3_init_subvolume (struct nfs3_state *nfs3, xlator_t *subvol)
         INIT_LIST_HEAD (&exp->explist);
         gf_log (GF_NFS3, GF_LOG_TRACE, "Initing state: %s", exp->subvol->name);
 
-        ret = nfs3_init_subvolume_options (nfs3, exp);
+        ret = nfs3_init_subvolume_options (nfs3->nfsx, exp, NULL);
         if (ret == -1) {
                 gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to init subvol");
                 goto exp_free;
@@ -5493,7 +5517,7 @@ nfs3_init_state (xlator_t *nfsx)
         unsigned int            localpool = 0;
         struct nfs_state        *nfs = NULL;
 
-        if (!nfsx)
+        if ((!nfsx) || (!nfsx->private))
                 return NULL;
 
         nfs3 = (struct nfs3_state *)GF_CALLOC (1, sizeof (*nfs3),
@@ -5504,7 +5528,7 @@ nfs3_init_state (xlator_t *nfsx)
         }
 
         nfs = nfsx->private;
-        ret = nfs3_init_options (nfs3, nfsx);
+        ret = nfs3_init_options (nfs3, nfsx->options);
         if (ret == -1) {
                 gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to init options");
                 goto ret;
@@ -5512,7 +5536,7 @@ nfs3_init_state (xlator_t *nfsx)
 
         nfs3->iobpool = nfsx->ctx->iobuf_pool;
 
-        localpool = nfs3->memfactor * GF_NFS_CONCURRENT_OPS_MULT;
+        localpool = nfs->memfactor * GF_NFS_CONCURRENT_OPS_MULT;
         gf_log (GF_NFS3, GF_LOG_TRACE, "local pool: %d", localpool);
         nfs3->localpool = mem_pool_new (nfs3_call_state_t, localpool);
         if (!nfs3->localpool) {
@@ -5578,4 +5602,39 @@ nfs3svc_init (xlator_t *nfsx)
         return &nfs3prog;
 }
 
+int
+nfs3_reconfigure_state (xlator_t *nfsx, dict_t *options)
+{
+        int                   ret   = -1;
+        struct nfs3_export    *exp  = NULL;
+        struct nfs_state      *nfs  = NULL;
+        struct nfs3_state     *nfs3 = NULL;
 
+        if ((!nfsx) || (!nfsx->private) || (!options))
+                goto out;
+
+        nfs = (struct nfs_state *)nfsx->private;
+        nfs3 = nfs->nfs3state;
+        if (!nfs3)
+                goto out;
+
+        ret = nfs3_init_options (nfs3, options);
+        if (ret) {
+                gf_log (GF_NFS3, GF_LOG_ERROR,
+                        "Failed to reconfigure options");
+                goto out;
+        }
+
+        list_for_each_entry (exp, &nfs3->exports, explist) {
+                ret = nfs3_init_subvolume_options (nfsx, exp, options);
+                if (ret) {
+                        gf_log (GF_NFS3, GF_LOG_ERROR,
+                                "Failed to reconfigure subvol options");
+                        goto out;
+                }
+        }
+
+        ret = 0;
+out:
+        return ret;
+}

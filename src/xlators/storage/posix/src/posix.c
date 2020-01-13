@@ -51,6 +51,7 @@
 #include "glusterfs3-xdr.h"
 #include "hashfn.h"
 #include "posix-aio.h"
+#include "glusterfs-acl.h"
 
 extern char *marker_xattrs[];
 #define ALIGN_SIZE 4096
@@ -2265,7 +2266,7 @@ err:
 }
 
 dict_t*
-_fill_open_fd_count (fd_t *fd, dict_t *xdata, xlator_t *this)
+_fill_writev_xdata (fd_t *fd, dict_t *xdata, xlator_t *this, int is_append)
 {
         dict_t  *rsp_xdata = NULL;
         int32_t ret = 0;
@@ -2295,6 +2296,14 @@ _fill_open_fd_count (fd_t *fd, dict_t *xdata, xlator_t *this)
                         "dictionary value for %s", uuid_utoa (fd->inode->gfid),
                         GLUSTERFS_OPEN_FD_COUNT);
         }
+
+        ret = dict_set_uint32 (rsp_xdata, GLUSTERFS_WRITE_IS_APPEND,
+                               is_append);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_WARNING, "%s: Failed to set "
+                        "dictionary value for %s", uuid_utoa (fd->inode->gfid),
+                        GLUSTERFS_WRITE_IS_APPEND);
+        }
 out:
         return rsp_xdata;
 }
@@ -2313,6 +2322,8 @@ posix_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         struct iatt            postop    = {0,};
         int                      ret      = -1;
         dict_t                *rsp_xdata = NULL;
+	int                    is_append = 0;
+	gf_boolean_t           locked = _gf_false;
 
         VALIDATE_OR_GOTO (frame, out);
         VALIDATE_OR_GOTO (this, out);
@@ -2334,6 +2345,17 @@ posix_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
         _fd = pfd->fd;
 
+	if (xdata && dict_get (xdata, GLUSTERFS_WRITE_IS_APPEND)) {
+		/* The write_is_append check and write must happen
+		   atomically. Else another write can overtake this
+		   write after the check and get written earlier.
+
+		   So lock before preop-stat and unlock after write.
+		*/
+		locked = _gf_true;
+		LOCK(&fd->inode->lock);
+	}
+
         op_ret = posix_fdstat (this, _fd, &preop);
         if (op_ret == -1) {
                 op_errno = errno;
@@ -2343,8 +2365,19 @@ posix_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
                 goto out;
         }
 
+	if (locked) {
+		if (preop.ia_size == offset || (fd->flags & O_APPEND))
+			is_append = 1;
+	}
+
         op_ret = __posix_writev (_fd, vector, count, offset,
                                  (pfd->flags & O_DIRECT));
+
+	if (locked) {
+		UNLOCK (&fd->inode->lock);
+		locked = _gf_false;
+	}
+
         if (op_ret < 0) {
                 op_errno = -op_ret;
                 op_ret = -1;
@@ -2360,7 +2393,7 @@ posix_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         UNLOCK (&priv->lock);
 
         if (op_ret >= 0) {
-                rsp_xdata = _fill_open_fd_count (fd, xdata, this);
+                rsp_xdata = _fill_writev_xdata (fd, xdata, this, is_append);
                 /* wiretv successful, we also need to get the stat of
                  * the file we wrote to
                  */
@@ -2389,6 +2422,11 @@ posix_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         }
 
 out:
+
+	if (locked) {
+		UNLOCK (&fd->inode->lock);
+		locked = _gf_false;
+	}
 
         STACK_UNWIND_STRICT (writev, frame, op_ret, op_errno, &preop, &postop,
                              rsp_xdata);
@@ -3160,8 +3198,9 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
 		if (ret < 0) {
 			op_ret = -1;
 			op_errno = -ret;
-			gf_log (this->name, GF_LOG_WARNING,
-				"Failed to get rea filename (%s, %s): %s",
+			gf_log (this->name, (op_errno == ENOENT) ?
+                                GF_LOG_DEBUG : GF_LOG_WARNING,
+				"Failed to get real filename (%s, %s): %s",
 				loc->path, name, strerror (op_errno));
 			goto out;
 		}
@@ -3186,8 +3225,7 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
                 }
                 goto done;
         }
-        if (loc->inode && name &&
-            (strcmp (name, GF_XATTR_PATHINFO_KEY) == 0)) {
+        if (loc->inode && name && (XATTR_IS_PATHINFO (name))) {
                 if (LOC_HAS_ABSPATH (loc))
                         MAKE_REAL_PATH (rpath, this, loc->path);
                 else
@@ -3207,8 +3245,7 @@ posix_getxattr (call_frame_t *frame, xlator_t *this,
                         goto done;
                 }
                 size = strlen (dyn_rpath) + 1;
-                ret = dict_set_dynstr (dict, GF_XATTR_PATHINFO_KEY,
-                                       dyn_rpath);
+                ret = dict_set_dynstr (dict, (char *)name, dyn_rpath);
                 if (ret < 0) {
                         gf_log (this->name, GF_LOG_WARNING,
                                 "could not set value (%s) in dictionary",
@@ -4811,8 +4848,21 @@ posix_set_owner (xlator_t *this, uid_t uid, gid_t gid)
 {
         struct posix_private *priv = NULL;
         int                   ret  = -1;
+	struct stat st = {0,};
 
         priv = this->private;
+
+	ret = sys_lstat (priv->base_path, &st);
+	if (ret) {
+		gf_log (this->name, GF_LOG_ERROR, "Failed to stat "
+			"brick path %s (%s)",
+			priv->base_path, strerror (errno));
+		return ret;
+	}
+
+	if ((uid == -1 || st.st_uid == uid) &&
+	    (gid == -1 || st.st_gid == gid))
+		return 0;
 
         ret = sys_chown (priv->base_path, uid, gid);
         if (ret)
@@ -4849,15 +4899,16 @@ reconfigure (xlator_t *this, dict_t *options)
 {
 	int                   ret = -1;
 	struct posix_private *priv = NULL;
-        uid_t                 uid = -1;
-        gid_t                 gid = -1;
+        int32_t               uid = -1;
+        int32_t               gid = -1;
 	char                 *batch_fsync_mode_str = NULL;
 
 	priv = this->private;
 
-        GF_OPTION_RECONF ("brick-uid", uid, options, uint32, out);
-        GF_OPTION_RECONF ("brick-gid", gid, options, uint32, out);
-        posix_set_owner (this, uid, gid);
+        GF_OPTION_RECONF ("brick-uid", uid, options, int32, out);
+        GF_OPTION_RECONF ("brick-gid", gid, options, int32, out);
+	if (uid != -1 || gid != -1)
+		posix_set_owner (this, uid, gid);
 
 	GF_OPTION_RECONF ("batch-fsync-delay-usec", priv->batch_fsync_delay_usec,
 			  options, uint32, out);
@@ -4923,8 +4974,8 @@ init (xlator_t *this)
         uuid_t                gfid          = {0,};
         uuid_t                rootgfid      = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
         char                 *guuid         = NULL;
-        uid_t                 uid           = -1;
-        gid_t                 gid           = -1;
+        int32_t               uid           = -1;
+        int32_t               gid           = -1;
 	char                 *batch_fsync_mode_str;
 
         dir_data = dict_get (this->options, "directory");
@@ -5078,7 +5129,7 @@ init (xlator_t *this)
                 }
         }
 
-        size = sys_lgetxattr (dir_data->data, "system.posix_acl_access",
+        size = sys_lgetxattr (dir_data->data, POSIX_ACL_ACCESS_XATTR,
                               NULL, 0);
         if ((size < 0) && (errno == ENOTSUP))
                 gf_log (this->name, GF_LOG_WARNING,
@@ -5259,9 +5310,10 @@ init (xlator_t *this)
 	_private->aio_init_done = _gf_false;
 	_private->aio_capable = _gf_false;
 
-        GF_OPTION_INIT ("brick-uid", uid, uint32, out);
-        GF_OPTION_INIT ("brick-gid", gid, uint32, out);
-        posix_set_owner (this, uid, gid);
+        GF_OPTION_INIT ("brick-uid", uid, int32, out);
+        GF_OPTION_INIT ("brick-gid", gid, int32, out);
+	if (uid != -1 || gid != -1)
+		posix_set_owner (this, uid, gid);
 
 	GF_OPTION_INIT ("linux-aio", _private->aio_configured, bool, out);
 
@@ -5419,15 +5471,17 @@ struct volume_options options[] = {
         {
           .key = {"brick-uid"},
           .type = GF_OPTION_TYPE_INT,
-          .min = 0,
+          .min = -1,
           .validate = GF_OPT_VALIDATE_MIN,
+	  .default_value = "-1",
           .description = "Support for setting uid of brick's owner"
         },
         {
           .key = {"brick-gid"},
           .type = GF_OPTION_TYPE_INT,
-          .min = 0,
+          .min = -1,
           .validate = GF_OPT_VALIDATE_MIN,
+	  .default_value = "-1",
           .description = "Support for setting gid of brick's owner"
         },
         { .key = {"node-uuid-pathinfo"},
