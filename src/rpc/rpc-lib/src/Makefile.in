@@ -75,11 +75,15 @@ libgfrpc_la_DEPENDENCIES =  \
 	$(top_builddir)/libglusterfs/src/libglusterfs.la
 am_libgfrpc_la_OBJECTS = auth-unix.lo rpcsvc-auth.lo rpcsvc.lo \
 	auth-null.lo rpc-transport.lo xdr-rpc.lo xdr-rpcclnt.lo \
-	rpc-clnt.lo auth-glusterfs.lo rpc-drc.lo
+	rpc-clnt.lo auth-glusterfs.lo rpc-drc.lo xdr_sizeof.lo \
+	rpc-clnt-ping.lo
 libgfrpc_la_OBJECTS = $(am_libgfrpc_la_OBJECTS)
 AM_V_lt = $(am__v_lt_$(V))
 am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
 am__v_lt_0 = --silent
+libgfrpc_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
+	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
+	$(libgfrpc_la_LDFLAGS) $(LDFLAGS) -o $@
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__depfiles_maybe = depfiles
@@ -119,11 +123,14 @@ AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
 AM_MAKEFLAGS = @AM_MAKEFLAGS@
 AR = @AR@
 ARGP_STANDALONE_CPPFLAGS = @ARGP_STANDALONE_CPPFLAGS@
+ARGP_STANDALONE_DIR = @ARGP_STANDALONE_DIR@
 ARGP_STANDALONE_LDADD = @ARGP_STANDALONE_LDADD@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
+BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
+BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -149,11 +156,15 @@ GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_CFLAGS = @GF_GLUSTERFS_CFLAGS@
 GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
+GLIB_CFLAGS = @GLIB_CFLAGS@
+GLIB_LIBS = @GLIB_LIBS@
+GLUPY_SUBDIR = @GLUPY_SUBDIR@
+GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
+GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -175,6 +186,8 @@ LIBAIO = @LIBAIO@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
+LIBZ_CFLAGS = @LIBZ_CFLAGS@
+LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -190,11 +203,16 @@ OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
 PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_RELEASE = @PACKAGE_RELEASE@
 PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
+PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
+PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
+PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
@@ -202,6 +220,7 @@ PYTHON_VERSION = @PYTHON_VERSION@
 RANLIB = @RANLIB@
 RDMA_SUBDIR = @RDMA_SUBDIR@
 RLLIBS = @RLLIBS@
+RPCGEN = @RPCGEN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -218,6 +237,8 @@ XML_CPPFLAGS = @XML_CPPFLAGS@
 XML_LIBS = @XML_LIBS@
 YACC = @YACC@
 YFLAGS = @YFLAGS@
+ZLIB_CFLAGS = @ZLIB_CFLAGS@
+ZLIB_LIBS = @ZLIB_LIBS@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
@@ -275,6 +296,7 @@ sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
+systemddir = @systemddir@
 target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
@@ -282,11 +304,12 @@ top_srcdir = @top_srcdir@
 lib_LTLIBRARIES = libgfrpc.la
 libgfrpc_la_SOURCES = auth-unix.c rpcsvc-auth.c rpcsvc.c auth-null.c \
 	rpc-transport.c xdr-rpc.c xdr-rpcclnt.c rpc-clnt.c auth-glusterfs.c \
-	rpc-drc.c
+	rpc-drc.c $(CONTRIBDIR)/sunrpc/xdr_sizeof.c  rpc-clnt-ping.c
 
 libgfrpc_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la
+libgfrpc_la_LDFLAGS = $(GF_LDFLAGS)
 noinst_HEADERS = rpcsvc.h rpc-transport.h xdr-common.h xdr-rpc.h xdr-rpcclnt.h \
-	rpc-clnt.h rpcsvc-common.h protocol-common.h rpc-drc.h
+	rpc-clnt.h rpcsvc-common.h protocol-common.h rpc-drc.h rpc-clnt-ping.h
 
 AM_CPPFLAGS = $(GF_CPPFLAGS) -I$(top_srcdir)/libglusterfs/src \
 	-I$(top_srcdir)/rpc/xdr/src \
@@ -361,7 +384,7 @@ clean-libLTLIBRARIES:
 	  rm -f "$${dir}/so_locations"; \
 	done
 libgfrpc.la: $(libgfrpc_la_OBJECTS) $(libgfrpc_la_DEPENDENCIES) 
-	$(AM_V_CCLD)$(LINK) -rpath $(libdir) $(libgfrpc_la_OBJECTS) $(libgfrpc_la_LIBADD) $(LIBS)
+	$(AM_V_CCLD)$(libgfrpc_la_LINK) -rpath $(libdir) $(libgfrpc_la_OBJECTS) $(libgfrpc_la_LIBADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -372,6 +395,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/auth-glusterfs.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/auth-null.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/auth-unix.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rpc-clnt-ping.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rpc-clnt.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rpc-drc.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rpc-transport.Plo@am__quote@
@@ -379,6 +403,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rpcsvc.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xdr-rpc.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xdr-rpcclnt.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xdr_sizeof.Plo@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(COMPILE) -MT $@ -MD -MP -MF $(DEPDIR)/$*.Tpo -c -o $@ $<
@@ -403,6 +428,14 @@ distclean-compile:
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$<' object='$@' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LTCOMPILE) -c -o $@ $<
+
+xdr_sizeof.lo: $(CONTRIBDIR)/sunrpc/xdr_sizeof.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT xdr_sizeof.lo -MD -MP -MF $(DEPDIR)/xdr_sizeof.Tpo -c -o xdr_sizeof.lo `test -f '$(CONTRIBDIR)/sunrpc/xdr_sizeof.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/sunrpc/xdr_sizeof.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/xdr_sizeof.Tpo $(DEPDIR)/xdr_sizeof.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/sunrpc/xdr_sizeof.c' object='xdr_sizeof.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o xdr_sizeof.lo `test -f '$(CONTRIBDIR)/sunrpc/xdr_sizeof.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/sunrpc/xdr_sizeof.c
 
 mostlyclean-libtool:
 	-rm -f *.lo

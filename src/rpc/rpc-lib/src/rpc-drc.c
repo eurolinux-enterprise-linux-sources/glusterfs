@@ -127,14 +127,14 @@ int
 drc_compare_reqs (const void *item, const void *rb_node_data, void *param)
 {
         int               ret      = -1;
-        rpcsvc_request_t *req      = NULL;
+        drc_cached_op_t  *req      = NULL;
         drc_cached_op_t  *reply    = NULL;
 
         GF_ASSERT (item);
         GF_ASSERT (rb_node_data);
         GF_ASSERT (param);
 
-        req = (rpcsvc_request_t *)item;
+        req = (drc_cached_op_t *)item;
         reply = (drc_cached_op_t *)rb_node_data;
 
         ret = req->xid - reply->xid;
@@ -143,7 +143,7 @@ drc_compare_reqs (const void *item, const void *rb_node_data, void *param)
 
         if (req->prognum == reply->prognum &&
             req->procnum == reply->procnum &&
-            req->progver == reply->progversion)
+            req->progversion == reply->progversion)
                 return 0;
 
         return 1;
@@ -331,6 +331,12 @@ rpcsvc_drc_lookup (rpcsvc_request_t *req)
 {
         drc_client_t           *client = NULL;
         drc_cached_op_t        *reply  = NULL;
+        drc_cached_op_t        new = {
+                .xid            = req->xid,
+                .prognum        = req->prognum,
+                .progversion    = req->progver,
+                .procnum        = req->procnum,
+        };
 
         GF_ASSERT (req);
 
@@ -347,7 +353,7 @@ rpcsvc_drc_lookup (rpcsvc_request_t *req)
         if (client->op_count == 0)
                 goto out;
 
-        reply = rb_find (client->rbtree, req);
+        reply = rb_find (client->rbtree, &new);
 
  out:
         if (client)
@@ -460,7 +466,7 @@ rpcsvc_vacate_drc_entries (rpcsvc_drc_globals_t *drc)
 
                 client = reply->client;
 
-                (void *)rb_delete (client->rbtree, reply);
+                rb_delete (client->rbtree, reply);
 
                 rpcsvc_drc_op_destroy (drc, reply);
                 rpcsvc_drc_client_unref (drc, client);
@@ -712,26 +718,9 @@ rpcsvc_drc_init (rpcsvc_t *svc, dict_t *options)
         GF_ASSERT (svc);
         GF_ASSERT (options);
 
-        if (!svc->drc) {
-                drc = GF_CALLOC (1, sizeof (rpcsvc_drc_globals_t),
-                                 gf_common_mt_drc_globals_t);
-                if (!drc)
-                        return -1;
-
-                svc->drc = drc;
-                LOCK_INIT (&drc->lock);
-        } else {
-                drc = svc->drc;
-        }
-
-        LOCK (&drc->lock);
-        if (drc->type != DRC_TYPE_NONE) {
-                ret = 0;
-                goto out;
-        }
-
         /* Toggle DRC on/off, when more drc types(persistent/cluster)
-           are added, we shouldn't treat this as boolean */
+         * are added, we shouldn't treat this as boolean.
+         * NB:  DRC is OFF by default in downstream, ON in upstream */
         ret = dict_get_str_boolean (options, "nfs.drc", _gf_false);
         if (ret == -1) {
                 gf_log (GF_RPCSVC, GF_LOG_INFO,
@@ -739,12 +728,21 @@ rpcsvc_drc_init (rpcsvc_t *svc, dict_t *options)
                 ret = _gf_false;
         }
 
-        gf_log (GF_RPCSVC, GF_LOG_INFO, "DRC is turned %s", ret ? "ON":"OFF");
+        gf_log (GF_RPCSVC, GF_LOG_INFO, "DRC is turned %s", (ret?"ON":"OFF"));
 
-        if (ret == _gf_false) { /* drc off */
-                ret = 0;
-                goto out;
-        }
+        /*DRC off, nothing to do */
+        if (ret == _gf_false)
+                return (0);
+
+        drc = GF_CALLOC (1, sizeof (rpcsvc_drc_globals_t),
+                         gf_common_mt_drc_globals_t);
+        if (!drc)
+                return (-1);
+
+        LOCK_INIT (&drc->lock);
+        svc->drc = drc;
+
+        LOCK (&drc->lock);
 
         /* Specify type of DRC to be used */
         ret = dict_get_uint32 (options, "nfs.drc-type", &drc_type);
@@ -872,13 +870,15 @@ rpcsvc_drc_reconfigure (rpcsvc_t *svc, dict_t *options)
          *
          *     case 2: DRC is "OFF"
          *         ACTION: rpcsvc_drc_deinit()
+         *
+         * NB:  DRC is OFF by default in downstream, ON in upstream.
          */
-        ret = dict_get_str_boolean (options, "nfs.drc", _gf_true);
-        if (ret < 0) {
-                enable_drc = _gf_true;
-        } else {
-                enable_drc = ret;
-        }
+        ret = dict_get_str_boolean (options, "nfs.drc", _gf_false);
+        if (ret < 0)
+                ret = _gf_false;
+
+        enable_drc = ret;
+        gf_log (GF_RPCSVC, GF_LOG_INFO, "DRC is turned %s", (ret?"ON":"OFF"));
 
         /* case 1: DRC is "ON"*/
         if (enable_drc) {
@@ -896,6 +896,5 @@ rpcsvc_drc_reconfigure (rpcsvc_t *svc, dict_t *options)
         }
 
         /* case 2: DRC is "OFF" */
-        gf_log (GF_RPCSVC, GF_LOG_INFO, "DRC is manually turned OFF");
         return rpcsvc_drc_deinit (svc);
 }

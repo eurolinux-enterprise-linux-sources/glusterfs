@@ -144,11 +144,14 @@ AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
 AM_MAKEFLAGS = @AM_MAKEFLAGS@
 AR = @AR@
 ARGP_STANDALONE_CPPFLAGS = @ARGP_STANDALONE_CPPFLAGS@
+ARGP_STANDALONE_DIR = @ARGP_STANDALONE_DIR@
 ARGP_STANDALONE_LDADD = @ARGP_STANDALONE_LDADD@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
+BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
+BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -174,11 +177,15 @@ GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_CFLAGS = @GF_GLUSTERFS_CFLAGS@
 GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
+GLIB_CFLAGS = @GLIB_CFLAGS@
+GLIB_LIBS = @GLIB_LIBS@
+GLUPY_SUBDIR = @GLUPY_SUBDIR@
+GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
+GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -200,6 +207,8 @@ LIBAIO = @LIBAIO@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
+LIBZ_CFLAGS = @LIBZ_CFLAGS@
+LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -215,11 +224,16 @@ OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
 PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_RELEASE = @PACKAGE_RELEASE@
 PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
+PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
+PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
+PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
@@ -227,6 +241,7 @@ PYTHON_VERSION = @PYTHON_VERSION@
 RANLIB = @RANLIB@
 RDMA_SUBDIR = @RDMA_SUBDIR@
 RLLIBS = @RLLIBS@
+RPCGEN = @RPCGEN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -243,6 +258,8 @@ XML_CPPFLAGS = @XML_CPPFLAGS@
 XML_LIBS = @XML_LIBS@
 YACC = @YACC@
 YFLAGS = @YFLAGS@
+ZLIB_CFLAGS = @ZLIB_CFLAGS@
+ZLIB_LIBS = @ZLIB_LIBS@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
@@ -300,6 +317,7 @@ sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
+systemddir = @systemddir@
 target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
@@ -308,10 +326,15 @@ EXTRA_DIST = autogen.sh \
 	COPYING-GPLV2 COPYING-LGPLV3 \
 	INSTALL README AUTHORS THANKS NEWS \
 	glusterfs.spec glusterfs-api.pc.in libgfchangelog.pc.in \
-	error-codes.json gf-error-codes.h.template gen-headers.py
+	error-codes.json gf-error-codes.h.template \
+	gen-headers.py run-tests.sh \
+	build-aux/pkg-version \
+	build-aux/xdrgen \
+        contrib/argp-standalone \
+	$(shell find $(top_srcdir)/tests -type f -print)
 
-SUBDIRS = argp-standalone libglusterfs rpc api xlators glusterfsd \
-	$(FUSERMOUNT_SUBDIR) doc extras cli heal @SYNCDAEMON_SUBDIR@
+SUBDIRS = $(ARGP_STANDALONE_DIR) libglusterfs rpc api xlators glusterfsd \
+        $(FUSERMOUNT_SUBDIR) doc extras cli heal @SYNCDAEMON_SUBDIR@
 
 pkgconfig_DATA = glusterfs-api.pc libgfchangelog.pc
 CLEANFILES = 
@@ -852,14 +875,25 @@ gitclean: distclean
 	find . -name mount.glusterfs -exec rm -f {} \;
 	rm -fr autom4te.cache
 	rm -f missing aclocal.m4 config.h.in config.guess config.sub ltmain.sh install-sh configure depcomp
-	rm -fr argp-standalone/autom4te.cache
-	rm -f argp-standalone/aclocal.m4 argp-standalone/config.h.in
-	rm -f argp-standalone/configure argp-standalone/depcomp
-	rm -f argp-standalone/install-sh argp-standalone/missing
+	-rm -fr $(CONTRIBDIR)/argp-standalone/autom4te.cache
+	-rm -f $(CONTRIBDIR)/argp-standalone/aclocal.m4
+	-rm -f $(CONTRIBDIR)/argp-standalone/config.h.in
+	-rm -f $(CONTRIBDIR)/argp-standalone/configure
+	-rm -f $(CONTRIBDIR)/argp-standalone/depcomp
+	-rm -f $(CONTRIBDIR)/argp-standalone/install-sh
+	-rm -f $(CONTRIBDIR)/argp-standalone/missing
 
-dist-hook:
+dist-hook: gen-VERSION gen-ChangeLog
+.PHONY: gen-VERSION gen-ChangeLog
+
+gen-ChangeLog:
 	(cd $(srcdir) && git diff && echo ===== git log ==== && git log) > $(distdir)/ChangeLog
-	tar czf gluster-swift-ufo-$(VERSION).tar.gz ufo
+
+gen-VERSION:
+	if test -d .git; then                           \
+	  $(top_srcdir)/build-aux/pkg-version --full    \
+	    > $(distdir)/VERSION;                       \
+	fi
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

@@ -1,3 +1,13 @@
+#
+# Copyright (c) 2011-2014 Red Hat, Inc. <http://www.redhat.com>
+# This file is part of GlusterFS.
+
+# This file is licensed to you under your choice of the GNU Lesser
+# General Public License, version 3 or any later version (LGPLv3 or
+# later), or the GNU General Public License, version 2 (GPLv2), in all
+# cases as published by the Free Software Foundation.
+#
+
 try:
     import ConfigParser
 except ImportError:
@@ -9,6 +19,8 @@ import os
 import errno
 import sys
 from stat import ST_DEV, ST_INO, ST_MTIME
+import tempfile
+import shutil
 
 from syncdutils import escape, unescape, norm, update_file, GsyncdError
 
@@ -19,8 +31,84 @@ config_version = 2.0
 re_type = type(re.compile(''))
 
 
+# (SECTION, OPTION, OLD VALUE, NEW VALUE)
+CONFIGS = (
+    ("peersrx . .",
+     "georep_session_working_dir",
+     "",
+     "/var/lib/glusterd/geo-replication/${mastervol}_${remotehost}_"
+     "${slavevol}/"),
+    ("peersrx .",
+     "gluster_params",
+     "aux-gfid-mount xlator-option=\*-dht.assert-no-child-down=true",
+     "aux-gfid-mount"),
+    ("peersrx . .",
+     "ssh_command_tar",
+     "",
+     "ssh -oPasswordAuthentication=no -oStrictHostKeyChecking=no "
+     "-i /var/lib/glusterd/geo-replication/tar_ssh.pem"),
+    ("peersrx . .",
+     "changelog_log_file",
+     "",
+     "${iprefix}/log/glusterfs/geo-replication/${mastervol}"
+     "/${eSlave}${local_id}-changes.log"),
+    ("peersrx . .",
+     "working_dir",
+     "/var/run/gluster/${mastervol}/${eSlave}",
+     "${iprefix}/lib/misc/glusterfsd/${mastervol}/${eSlave}"),
+    ("peersrx . .",
+     "working_dir",
+     "/usr/local/var/run/gluster/${mastervol}/${eSlave}",
+     "${iprefix}/lib/misc/glusterfsd/${mastervol}/${eSlave}"),
+)
+
+
+def upgrade_config_file(path):
+    config_change = False
+    config = ConfigParser.RawConfigParser()
+    config.read(path)
+
+    for sec, opt, oldval, newval in CONFIGS:
+        try:
+            val = config.get(sec, opt)
+        except ConfigParser.NoOptionError:
+            # if new config opt not exists
+            config_change = True
+            config.set(sec, opt, newval)
+            continue
+        except ConfigParser.Error:
+            """
+            When gsyncd invoked at the time of create, config file
+            will not be their. Ignore any ConfigParser errors
+            """
+            continue
+
+        if val == newval:
+            # value is same as new val
+            continue
+
+        if val == oldval:
+            # config value needs update
+            config_change = True
+            config.set(sec, opt, newval)
+
+    if config_change:
+        tempConfigFile = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+        with open(tempConfigFile.name, 'wb') as configFile:
+            config.write(configFile)
+
+        # If src and dst are two different file system, then os.rename
+        # fails, In this case if temp file created in /tmp and if /tmp is
+        # seperate fs then os.rename gives following error, so use shutil
+        # OSError: [Errno 18] Invalid cross-device link
+        # mail.python.org/pipermail/python-list/2005-February/342893.html
+        shutil.move(tempConfigFile.name, path)
+
+
 class MultiDict(object):
-    """a virtual dict-like class which functions as the union of underlying dicts"""
+
+    """a virtual dict-like class which functions as the union
+    of underlying dicts"""
 
     def __init__(self, *dd):
         self.dicts = dd
@@ -28,14 +116,15 @@ class MultiDict(object):
     def __getitem__(self, key):
         val = None
         for d in self.dicts:
-            if d.get(key) != None:
+            if d.get(key) is not None:
                 val = d[key]
-        if val == None:
+        if val is None:
             raise KeyError(key)
         return val
 
 
 class GConffile(object):
+
     """A high-level interface to ConfigParser which flattens the two-tiered
        config layout by implenting automatic section dispatch based on initial
        parameters.
@@ -103,7 +192,8 @@ class GConffile(object):
         return self.get(opt, printValue=False)
 
     def section(self, rx=False):
-        """get the section name of the section representing .peers in .config"""
+        """get the section name of the section representing .peers
+        in .config"""
         peers = self.peers
         if not peers:
             peers = ['.', '.']
@@ -157,6 +247,7 @@ class GConffile(object):
                 continue
             so2[s] = tv
             tv += 1
+
         def scmp(x, y):
             return cmp(*(so2[s] for s in (x, y)))
         ss.sort(scmp)
@@ -166,12 +257,13 @@ class GConffile(object):
         """update @dct from key/values of ours.
 
         key/values are collected from .config by filtering the regexp sections
-        according to match, and from .section. The values are treated as templates,
-        which are substituted from .auxdicts and (in case of regexp sections)
-        match groups.
+        according to match, and from .section. The values are treated as
+        templates, which are substituted from .auxdicts and (in case of regexp
+        sections) match groups.
         """
         if not self.peers:
             raise GsyncdError('no peers given, cannot select matching options')
+
         def update_from_sect(sect, mud):
             for k, v in self.config._sections[sect].items():
                 if k == '__name__':
@@ -191,7 +283,7 @@ class GConffile(object):
                         match = False
                         break
                     for j in range(len(m.groups())):
-                        mad['match%d_%d' % (i+1, j+1)] = m.groups()[j]
+                        mad['match%d_%d' % (i + 1, j + 1)] = m.groups()[j]
                 if match:
                     update_from_sect(sect, MultiDict(dct, mad, *self.auxdicts))
         if self.config.has_section(self.section()):
@@ -203,7 +295,7 @@ class GConffile(object):
            logic described in .update_to)
         """
         d = {}
-        self.update_to(d, allow_unresolved = True)
+        self.update_to(d, allow_unresolved=True)
         if opt:
             opt = norm(opt)
             v = d.get(opt)
@@ -231,6 +323,7 @@ class GConffile(object):
                 self.config.add_section(SECT_META)
             self.config.set(SECT_META, 'version', config_version)
             return trfn(norm(opt), *a, **kw)
+
         def updateconf(f):
             self.config.write(f)
         update_file(self.path, updateconf, mergeconf)
@@ -243,7 +336,8 @@ class GConffile(object):
             # regarding SECT_ORD, cf. ord_sections
             if not self.config.has_section(SECT_ORD):
                 self.config.add_section(SECT_ORD)
-            self.config.set(SECT_ORD, sect, len(self.config._sections[SECT_ORD]))
+            self.config.set(
+                SECT_ORD, sect, len(self.config._sections[SECT_ORD]))
         self.config.set(sect, opt, val)
         return True
 

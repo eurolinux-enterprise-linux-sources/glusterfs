@@ -26,7 +26,7 @@
 inline void
 __delete_inode_lock (pl_inode_lock_t *lock)
 {
-        list_del (&lock->list);
+        list_del_init (&lock->list);
 }
 
 static inline void
@@ -39,8 +39,10 @@ inline void
 __pl_inodelk_unref (pl_inode_lock_t *lock)
 {
         lock->ref--;
-        if (!lock->ref)
+        if (!lock->ref) {
+                GF_FREE (lock->connection_id);
                 GF_FREE (lock);
+        }
 }
 
 /* Check if 2 inodelks are conflicting on type. Only 2 shared locks don't conflict */
@@ -122,7 +124,7 @@ static inline int
 same_inodelk_owner (pl_inode_lock_t *l1, pl_inode_lock_t *l2)
 {
         return (is_same_lkowner (&l1->owner, &l2->owner) &&
-                (l1->transport  == l2->transport));
+                (l1->client == l2->client));
 }
 
 /* Returns true if the 2 inodelks conflict with each other */
@@ -202,7 +204,7 @@ __lock_inodelk (xlator_t *this, pl_inode_t *pl_inode, pl_inode_lock_t *lock,
         int ret = -EINVAL;
 
         conf = __inodelk_grantable (dom, lock);
-        if (conf){
+        if (conf) {
                 ret = -EAGAIN;
                 if (can_block == 0)
                         goto out;
@@ -230,7 +232,7 @@ __lock_inodelk (xlator_t *this, pl_inode_t *pl_inode, pl_inode_lock_t *lock,
                 gettimeofday (&lock->blkd_time, NULL);
                 list_add_tail (&lock->blocked_locks, &dom->blocked_inodelks);
 
-                gf_log (this->name, GF_LOG_TRACE,
+                gf_log (this->name, GF_LOG_DEBUG,
                         "Lock is grantable, but blocking to prevent starvation");
                 gf_log (this->name, GF_LOG_TRACE,
                         "%s (pid=%d) (lk-owner=%s) %"PRId64" - %"PRId64" => Blocked",
@@ -292,7 +294,7 @@ __inode_unlock_lock (xlator_t *this, pl_inode_lock_t *lock, pl_dom_list_t *dom)
                         " Matching lock not found for unlock %llu-%llu, by %s "
                         "on %p", (unsigned long long)lock->fl_start,
                         (unsigned long long)lock->fl_end,
-                        lkowner_utoa (&lock->owner), lock->transport);
+                        lkowner_utoa (&lock->owner), lock->client);
                 goto out;
         }
         __delete_inode_lock (conf);
@@ -300,11 +302,13 @@ __inode_unlock_lock (xlator_t *this, pl_inode_lock_t *lock, pl_dom_list_t *dom)
                 " Matching lock found for unlock %llu-%llu, by %s on %p",
                 (unsigned long long)lock->fl_start,
                 (unsigned long long)lock->fl_end, lkowner_utoa (&lock->owner),
-                lock->transport);
+                lock->client);
 
 out:
         return conf;
 }
+
+
 static void
 __grant_blocked_inode_locks (xlator_t *this, pl_inode_t *pl_inode,
                              struct list_head *granted, pl_dom_list_t *dom)
@@ -333,7 +337,8 @@ __grant_blocked_inode_locks (xlator_t *this, pl_inode_t *pl_inode,
 
 /* Grant all inodelks blocked on a lock */
 void
-grant_blocked_inode_locks (xlator_t *this, pl_inode_t *pl_inode, pl_dom_list_t *dom)
+grant_blocked_inode_locks (xlator_t *this, pl_inode_t *pl_inode,
+                           pl_dom_list_t *dom)
 {
         struct list_head granted;
         pl_inode_lock_t *lock;
@@ -360,6 +365,7 @@ grant_blocked_inode_locks (xlator_t *this, pl_inode_t *pl_inode, pl_dom_list_t *
                               &lock->user_flock, 0, 0, lock->volume);
 
                 STACK_UNWIND_STRICT (inodelk, lock->frame, 0, 0, NULL);
+		lock->frame = NULL;
         }
 
         pthread_mutex_lock (&pl_inode->mutex);
@@ -372,108 +378,166 @@ grant_blocked_inode_locks (xlator_t *this, pl_inode_t *pl_inode, pl_dom_list_t *
         pthread_mutex_unlock (&pl_inode->mutex);
 }
 
-/* Release all inodelks from this transport */
-static int
-release_inode_locks_of_transport (xlator_t *this, pl_dom_list_t *dom,
-                                  inode_t *inode, void *trans)
+
+static void
+pl_inodelk_log_cleanup (pl_inode_lock_t *lock)
+{
+	pl_inode_t *pl_inode = NULL;
+
+	pl_inode = lock->pl_inode;
+
+        gf_log (THIS->name, GF_LOG_WARNING, "releasing lock on %s held by "
+                "{client=%p, pid=%"PRId64" lk-owner=%s}",
+                uuid_utoa (pl_inode->gfid), lock->client,
+                (uint64_t) lock->client_pid, lkowner_utoa (&lock->owner));
+}
+
+
+/* Release all inodelks from this client */
+int
+pl_inodelk_client_cleanup (xlator_t *this, pl_ctx_t *ctx)
 {
         pl_inode_lock_t *tmp = NULL;
         pl_inode_lock_t *l = NULL;
-
-        pl_inode_t * pinode = NULL;
+	pl_dom_list_t *dom = NULL;
+        pl_inode_t *pl_inode = NULL;
 
         struct list_head released;
-
-        char *path = NULL;
-        char *file = NULL;
+        struct list_head unwind;
 
         INIT_LIST_HEAD (&released);
+        INIT_LIST_HEAD (&unwind);
 
-        pinode = pl_inode_get (this, inode);
-
-        pthread_mutex_lock (&pinode->mutex);
+	pthread_mutex_lock (&ctx->lock);
         {
+                list_for_each_entry_safe (l, tmp, &ctx->inodelk_lockers,
+					  client_list) {
+                        list_del_init (&l->client_list);
 
-                list_for_each_entry_safe (l, tmp, &dom->blocked_inodelks, blocked_locks) {
-                        if (l->transport != trans)
-                                continue;
+			pl_inodelk_log_cleanup (l);
 
-                        list_del_init (&l->blocked_locks);
+			pl_inode = l->pl_inode;
 
-                        inode_path (inode, NULL, &path);
-                        if (path)
-                                file = path;
-                        else
-                                file = uuid_utoa (inode->gfid);
-
-                        gf_log (this->name, GF_LOG_DEBUG,
-                                "releasing blocking lock on %s held by "
-                                "{transport=%p, pid=%"PRId64" lk-owner=%s}",
-                                file, trans, (uint64_t) l->client_pid,
-                                lkowner_utoa (&l->owner));
-
-                        list_add (&l->blocked_locks, &released);
-                        if (path) {
-                                GF_FREE (path);
-                                path = NULL;
+			pthread_mutex_lock (&pl_inode->mutex);
+			{
+                        /* If the inodelk object is part of granted list but not
+                         * blocked list, then perform the following actions:
+                         * i.   delete the object from granted list;
+                         * ii.  grant other locks (from other clients) that may
+                         *      have been blocked on this inodelk; and
+                         * iii. unref the object.
+                         *
+                         * If the inodelk object (L1) is part of both granted
+                         * and blocked lists, then this means that a parallel
+                         * unlock on another inodelk (L2 say) may have 'granted'
+                         * L1 and added it to 'granted' list in
+                         * __grant_blocked_node_locks() (although using the
+                         * 'blocked_locks' member). In that case, the cleanup
+                         * codepath must try and grant other overlapping
+                         * blocked inodelks from other clients, now that L1 is
+                         * out of their way and then unref L1 in the end, and
+                         * leave it to the other thread (the one executing
+                         * unlock codepath) to unwind L1's frame, delete it from
+                         * blocked_locks list, and perform the last unref on L1.
+                         *
+                         * If the inodelk object (L1) is part of blocked list
+                         * only, the cleanup code path must:
+                         * i.   delete it from the blocked_locks list inside
+                         *      this critical section,
+                         * ii.  unwind its frame with EAGAIN,
+                         * iii. try and grant blocked inode locks from other
+                         *      clients that were otherwise grantable, but just
+                         *      got blocked to avoid leaving L1 to starve
+                         *      forever.
+                         * iv.  unref the object.
+                         */
+                                if (!list_empty (&l->list)) {
+                                        __delete_inode_lock (l);
+                                        list_add_tail (&l->client_list,
+                                                       &released);
+                                } else {
+                                        list_del_init(&l->blocked_locks);
+                                        list_add_tail (&l->client_list,
+                                                       &unwind);
+                                }
                         }
+			pthread_mutex_unlock (&pl_inode->mutex);
                 }
+	}
+        pthread_mutex_unlock (&ctx->lock);
 
-                list_for_each_entry_safe (l, tmp, &dom->inodelk_list, list) {
-                        if (l->transport != trans)
-                                continue;
+        list_for_each_entry_safe (l, tmp, &unwind, client_list) {
+                list_del_init (&l->client_list);
 
-                        inode_path (inode, NULL, &path);
-                        if (path)
-                                file = path;
-                        else
-                                file = uuid_utoa (inode->gfid);
+                if (l->frame)
+			STACK_UNWIND_STRICT (inodelk, l->frame, -1, EAGAIN,
+					     NULL);
+                list_add_tail (&l->client_list, &released);
 
-                        gf_log (this->name, GF_LOG_DEBUG,
-                                "releasing granted lock on %s held by "
-                                "{transport=%p, pid=%"PRId64" lk-owner=%s}",
-                                file, trans, (uint64_t) l->client_pid,
-                                lkowner_utoa (&l->owner));
-
-                        if (path) {
-                                GF_FREE (path);
-                                path = NULL;
-                        }
-
-                        __delete_inode_lock (l);
-                        __pl_inodelk_unref (l);
-                }
-        }
-        GF_FREE (path);
-
-        pthread_mutex_unlock (&pinode->mutex);
-
-        list_for_each_entry_safe (l, tmp, &released, blocked_locks) {
-                list_del_init (&l->blocked_locks);
-
-                STACK_UNWIND_STRICT (inodelk, l->frame, -1, EAGAIN, NULL);
-                //No need to take lock as the locks are only in one list
-                __pl_inodelk_unref (l);
         }
 
-        grant_blocked_inode_locks (this, pinode, dom);
+        list_for_each_entry_safe (l, tmp, &released, client_list) {
+                list_del_init (&l->client_list);
+
+		pl_inode = l->pl_inode;
+
+		dom = get_domain (pl_inode, l->volume);
+
+		grant_blocked_inode_locks (this, pl_inode, dom);
+
+		pthread_mutex_lock (&pl_inode->mutex);
+		{
+			__pl_inodelk_unref (l);
+		}
+		pthread_mutex_unlock (&pl_inode->mutex);
+                inode_unref (pl_inode->inode);
+        }
+
         return 0;
 }
 
 
 static int
-pl_inode_setlk (xlator_t *this, pl_inode_t *pl_inode, pl_inode_lock_t *lock,
-                int can_block,  pl_dom_list_t *dom)
+pl_inode_setlk (xlator_t *this, pl_ctx_t *ctx, pl_inode_t *pl_inode,
+		pl_inode_lock_t *lock, int can_block, pl_dom_list_t *dom,
+                inode_t *inode)
 {
-        int ret = -EINVAL;
-        pl_inode_lock_t *retlock = NULL;
-        gf_boolean_t    unref = _gf_true;
+        int               ret              = -EINVAL;
+        pl_inode_lock_t  *retlock          =  NULL;
+        gf_boolean_t      unref            =  _gf_true;
+        gf_boolean_t      need_inode_unref =  _gf_false;
+        short             fl_type;
 
+	lock->pl_inode = pl_inode;
+        fl_type = lock->fl_type;
+
+        /* Ideally, AFTER a successful lock (both blocking and non-blocking) or
+         * an unsuccessful blocking lock operation, the inode needs to be ref'd.
+         *
+         * But doing so might give room to a race where the lock-requesting
+         * client could send a DISCONNECT just before this thread refs the inode
+         * after the locking is done, and the epoll thread could unref the inode
+         * in cleanup which means the inode's refcount would come down to 0, and
+         * the call to pl_forget() at this point destroys @pl_inode. Now when
+         * the io-thread executing this function tries to access pl_inode,
+         * it could crash on account of illegal memory access.
+         *
+         * To get around this problem, the inode is ref'd once even before
+         * adding the lock into client_list as a precautionary measure.
+         * This way even if there are DISCONNECTs, there will always be 1 extra
+         * ref on the inode, so @pl_inode is still alive until after the
+         * current stack unwinds.
+         */
+        pl_inode->inode = inode_ref (inode);
+
+	if (ctx)
+		pthread_mutex_lock (&ctx->lock);
         pthread_mutex_lock (&pl_inode->mutex);
         {
                 if (lock->fl_type != F_UNLCK) {
                         ret = __lock_inodelk (this, pl_inode, lock, can_block, dom);
                         if (ret == 0) {
+				lock->frame = NULL;
                                 gf_log (this->name, GF_LOG_TRACE,
                                         "%s (pid=%d) (lk-owner=%s) %"PRId64" - %"PRId64" => OK",
                                         lock->fl_type == F_UNLCK ? "Unlock" : "Lock",
@@ -491,8 +555,24 @@ pl_inode_setlk (xlator_t *this, pl_inode_t *pl_inode, pl_inode_lock_t *lock,
                                         lock->user_flock.l_len);
                                 if (can_block)
                                         unref = _gf_false;
+                                /* For all but the case where a non-blocking
+                                 * lock attempt fails, the extra ref taken at
+                                 * the start of this function must be negated.
+                                 */
+                                else
+                                        need_inode_unref = _gf_true;
                         }
+
+			if (ctx && (!ret || can_block))
+				list_add_tail (&lock->client_list,
+					       &ctx->inodelk_lockers);
                 } else {
+                        /* Irrespective of whether unlock succeeds or not,
+                         * the extra inode ref that was done at the start of
+                         * this function must be negated. Towards this,
+                         * @need_inode_unref flag is set unconditionally here.
+                         */
+                        need_inode_unref = _gf_true;
                         retlock = __inode_unlock_lock (this, lock, dom);
                         if (!retlock) {
                                 gf_log (this->name, GF_LOG_DEBUG,
@@ -500,23 +580,38 @@ pl_inode_setlk (xlator_t *this, pl_inode_t *pl_inode, pl_inode_lock_t *lock,
                                 ret = -EINVAL;
                                 goto out;
                         }
-                        __pl_inodelk_unref (retlock);
+			list_del_init (&retlock->client_list);
+			__pl_inodelk_unref (retlock);
 
                         ret = 0;
                 }
-        }
 out:
-        if (unref)
-                __pl_inodelk_unref (lock);
+		if (unref)
+			__pl_inodelk_unref (lock);
+        }
         pthread_mutex_unlock (&pl_inode->mutex);
-        grant_blocked_inode_locks (this, pl_inode, dom);
+	if (ctx)
+		pthread_mutex_unlock (&ctx->lock);
+
+        if (need_inode_unref)
+                inode_unref (pl_inode->inode);
+
+        /* The following (extra) unref corresponds to the ref that
+         * was done at the time the lock was granted.
+         */
+        if ((fl_type == F_UNLCK) && (ret == 0)) {
+                inode_unref (pl_inode->inode);
+                grant_blocked_inode_locks (this, pl_inode, dom);
+        }
+
         return ret;
 }
 
 /* Create a new inode_lock_t */
 pl_inode_lock_t *
-new_inode_lock (struct gf_flock *flock, void *transport, pid_t client_pid,
-                gf_lkowner_t *owner, const char *volume)
+new_inode_lock (struct gf_flock *flock, client_t *client, pid_t client_pid,
+                call_frame_t *frame, xlator_t *this, const char *volume,
+                char *conn_id)
 
 {
         pl_inode_lock_t *lock = NULL;
@@ -535,13 +630,20 @@ new_inode_lock (struct gf_flock *flock, void *transport, pid_t client_pid,
         else
                 lock->fl_end = flock->l_start + flock->l_len - 1;
 
-        lock->transport  = transport;
+        lock->client     = client;
         lock->client_pid = client_pid;
         lock->volume     = volume;
-        lock->owner      = *owner;
+        lock->owner      = frame->root->lk_owner;
+        lock->frame      = frame;
+        lock->this       = this;
+
+        if (conn_id) {
+                lock->connection_id = gf_strdup (conn_id);
+        }
 
         INIT_LIST_HEAD (&lock->list);
         INIT_LIST_HEAD (&lock->blocked_locks);
+	INIT_LIST_HEAD (&lock->client_list);
         __pl_inodelk_ref (lock);
 
         return lock;
@@ -582,19 +684,23 @@ _pl_convert_volume_for_special_range (struct gf_flock *flock,
 int
 pl_common_inodelk (call_frame_t *frame, xlator_t *this,
                    const char *volume, inode_t *inode, int32_t cmd,
-                   struct gf_flock *flock, loc_t *loc, fd_t *fd)
+                   struct gf_flock *flock, loc_t *loc, fd_t *fd, dict_t *xdata)
 {
         int32_t           op_ret     = -1;
         int32_t           op_errno   = 0;
         int               ret        = -1;
+        GF_UNUSED int     dict_ret   = -1;
         int               can_block  = 0;
-        pid_t             client_pid = -1;
-        void *            transport  = NULL;
         pl_inode_t *      pinode     = NULL;
         pl_inode_lock_t * reqlock    = NULL;
         pl_dom_list_t *   dom        = NULL;
         char             *res        = NULL;
         char             *res1       = NULL;
+        char             *conn_id    = NULL;
+        pl_ctx_t         *ctx        = NULL;
+
+        if (xdata)
+                dict_ret = dict_get_str (xdata, "connection-id", &conn_id);
 
         VALIDATE_OR_GOTO (frame, out);
         VALIDATE_OR_GOTO (inode, unwind);
@@ -613,8 +719,14 @@ pl_common_inodelk (call_frame_t *frame, xlator_t *this,
 
         pl_trace_in (this, frame, fd, loc, cmd, flock, volume);
 
-        transport  = frame->root->trans;
-        client_pid = frame->root->pid;
+	if (frame->root->client) {
+		ctx = pl_ctx_get (frame->root->client, this);
+		if (!ctx) {
+			op_errno = ENOMEM;
+			gf_log (this->name, GF_LOG_INFO, "pl_ctx_get() failed");
+			goto unwind;
+		}
+	}
 
         pinode = pl_inode_get (this, inode);
         if (!pinode) {
@@ -628,29 +740,8 @@ pl_common_inodelk (call_frame_t *frame, xlator_t *this,
                 goto unwind;
         }
 
-        if (frame->root->lk_owner.len == 0) {
-                /*
-                  special case: this means release all locks
-                  from this transport
-                */
-                gf_log (this->name, GF_LOG_TRACE,
-                        "Releasing all locks from transport %p", transport);
-
-                release_inode_locks_of_transport (this, dom, inode, transport);
-                _pl_convert_volume (volume, &res1);
-                if (res1) {
-                        dom = get_domain (pinode, res1);
-                        if (dom)
-                                release_inode_locks_of_transport (this, dom,
-                                                        inode, transport);
-                }
-
-                op_ret = 0;
-                goto unwind;
-        }
-
-        reqlock = new_inode_lock (flock, transport, client_pid,
-                                  &frame->root->lk_owner, volume);
+        reqlock = new_inode_lock (flock, frame->root->client, frame->root->pid,
+                                  frame, this, dom->domain, conn_id);
 
         if (!reqlock) {
                 op_ret = -1;
@@ -658,21 +749,17 @@ pl_common_inodelk (call_frame_t *frame, xlator_t *this,
                 goto unwind;
         }
 
-        reqlock->frame = frame;
-        reqlock->this  = this;
 
         switch (cmd) {
         case F_SETLKW:
                 can_block = 1;
-                reqlock->frame = frame;
-                reqlock->this  = this;
 
                 /* fall through */
 
         case F_SETLK:
                 memcpy (&reqlock->user_flock, flock, sizeof (struct gf_flock));
-                ret = pl_inode_setlk (this, pinode, reqlock,
-                                      can_block, dom);
+                ret = pl_inode_setlk (this, ctx, pinode, reqlock, can_block,
+				      dom, inode);
 
                 if (ret < 0) {
                         if ((can_block) && (F_UNLCK != flock->l_type)) {
@@ -698,10 +785,9 @@ pl_common_inodelk (call_frame_t *frame, xlator_t *this,
         op_ret = 0;
 
 unwind:
-        if ((inode != NULL) && (flock !=NULL)) {
-                pl_update_refkeeper (this, inode);
-                pl_trace_out (this, frame, fd, loc, cmd, flock, op_ret, op_errno, volume);
-        }
+        if (flock != NULL)
+                pl_trace_out (this, frame, fd, loc, cmd, flock, op_ret,
+                              op_errno, volume);
 
         STACK_UNWIND_STRICT (inodelk, frame, op_ret, op_errno, NULL);
 out:
@@ -712,20 +798,22 @@ out:
 
 int
 pl_inodelk (call_frame_t *frame, xlator_t *this,
-            const char *volume, loc_t *loc, int32_t cmd, struct gf_flock *flock)
+            const char *volume, loc_t *loc, int32_t cmd, struct gf_flock *flock,
+            dict_t *xdata)
 {
-
-        pl_common_inodelk (frame, this, volume, loc->inode, cmd, flock, loc, NULL);
+        pl_common_inodelk (frame, this, volume, loc->inode, cmd, flock,
+                           loc, NULL, xdata);
 
         return 0;
 }
 
 int
 pl_finodelk (call_frame_t *frame, xlator_t *this,
-             const char *volume, fd_t *fd, int32_t cmd, struct gf_flock *flock)
+             const char *volume, fd_t *fd, int32_t cmd, struct gf_flock *flock,
+             dict_t *xdata)
 {
-
-        pl_common_inodelk (frame, this, volume, fd->inode, cmd, flock, NULL, fd);
+        pl_common_inodelk (frame, this, volume, fd->inode, cmd, flock,
+                           NULL, fd, xdata);
 
         return 0;
 

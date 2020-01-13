@@ -1,5 +1,10 @@
 #! /bin/bash
 
+#Need to be copied to hooks/<HOOKS_VER>/stop/pre
+
+#TODO: All gluster and samba paths are assumed for fedora like systems.
+#Some efforts are required to make it work on other distros.
+
 #The preferred way of creating a smb share of a gluster volume has changed.
 #The old method was to create a fuse mount of the volume and share the mount
 #point through samba.
@@ -13,6 +18,8 @@
 PROGNAME="Ssamba-stop"
 OPTSPEC="volname:"
 VOL=
+CONFIGFILE=
+PIDDIR=
 
 function parse_args () {
         ARGS=$(getopt -l $OPTSPEC  -name $PROGNAME $@)
@@ -33,13 +40,23 @@ function parse_args () {
         done
 }
 
+function find_config_info () {
+        cmdout=`smbd -b | grep smb.conf`
+        if [ $? -ne 0 ];then
+                echo "Samba is not installed"
+                exit 1
+        fi
+        CONFIGFILE=`echo $cmdout | awk {'print $2'}`
+        PIDDIR=`smbd -b | grep PIDDIR | awk {'print $2'}`
+}
+
 function del_samba_share () {
         volname=$1
-        sed -i "/\[gluster-$volname\]/,/^$/d" /etc/samba/smb.conf
+        sed -i "/\[gluster-$volname\]/,/^$/d" ${CONFIGFILE}
 }
 
 function sighup_samba () {
-        pid=`cat /var/run/smbd.pid`
+        pid=`cat ${PIDDIR}/smbd.pid`
         if [ "x$pid" != "x" ]
         then
                 kill -HUP $pid;
@@ -49,5 +66,6 @@ function sighup_samba () {
 }
 
 parse_args $@
+find_config_info
 del_samba_share $VOL
 sighup_samba

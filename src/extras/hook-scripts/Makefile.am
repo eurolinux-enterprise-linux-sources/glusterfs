@@ -1,3 +1,2 @@
-EXTRA_DIST = S56glusterd-geo-rep-create-post.sh
-SUBDIRS = start stop set add-brick
-CLEANFILES =
+EXTRA_DIST = S40ufo-stop.py S56glusterd-geo-rep-create-post.sh
+SUBDIRS = add-brick set start stop reset

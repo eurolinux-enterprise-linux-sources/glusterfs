@@ -20,7 +20,6 @@
 #include "defaults.h"
 #include "uuid.h"
 #include "call-stub.h"
-#include "common-utils.h"
 
 #define MARKER_XATTR_PREFIX "trusted.glusterfs"
 #define XTIME               "xtime"

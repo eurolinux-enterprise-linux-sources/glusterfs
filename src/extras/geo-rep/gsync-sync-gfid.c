@@ -7,12 +7,7 @@
 #include <libgen.h>
 #include <ctype.h>
 #include <stdlib.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <dirent.h>
-#include <sys/uio.h>
-#include <sys/statvfs.h>
-
+#include "glusterfs.h"
 #include "syscall.h"
 
 #ifndef UUID_CANONICAL_FORM_LEN
@@ -92,8 +87,8 @@ main (int argc, char *argv[])
 
                 memcpy (tmp_blob, bname, strlen (bname));
 
-                ret = sys_lsetxattr (parent_dir, GF_FUSE_AUX_GFID_HEAL,
-                                     blob, len, 0);
+                ret = sys_lsetxattr (parent_dir, GF_FUSE_AUX_GFID_HEAL, 
+                                blob, len, 0);
                 if (ret < 0) {
                         fprintf (stderr, "setxattr on %s/%s failed (%s)\n",
                                  parent_dir, bname, strerror (errno));

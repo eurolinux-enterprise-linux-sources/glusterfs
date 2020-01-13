@@ -23,6 +23,11 @@ typedef struct ob_conf {
 					   like mandatory locks
 					*/
 	gf_boolean_t  lazy_open; /* delay backend open as much as possible */
+        gf_boolean_t  read_after_open; /* instead of sending readvs on
+                                               anonymous fds, open the file
+                                               first and then send readv i.e
+                                               similar to what writev does
+                                            */
 } ob_conf_t;
 
 
@@ -367,8 +372,14 @@ ob_readv (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 {
 	call_stub_t  *stub = NULL;
 	fd_t         *wind_fd = NULL;
+        ob_conf_t    *conf = NULL;
 
-	wind_fd = ob_get_wind_fd (this, fd);
+        conf = this->private;
+
+        if (!conf->read_after_open)
+                wind_fd = ob_get_wind_fd (this, fd);
+        else
+                wind_fd = fd_ref (fd);
 
 	stub = fop_readv_stub (frame, default_readv_resume, wind_fd,
 			       size, offset, flags, xdata);
@@ -681,6 +692,63 @@ err:
 	return 0;
 }
 
+int
+ob_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
+	     off_t offset, size_t len, dict_t *xdata)
+{
+	call_stub_t *stub;
+
+	stub = fop_fallocate_stub(frame, default_fallocate_resume, fd, mode,
+				  offset, len, xdata);
+	if (!stub)
+		goto err;
+
+	open_and_resume(this, fd, stub);
+
+	return 0;
+err:
+	STACK_UNWIND_STRICT(fallocate, frame, -1, ENOMEM, NULL, NULL, NULL);
+	return 0;
+}
+
+int
+ob_discard(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+	   size_t len, dict_t *xdata)
+{
+	call_stub_t *stub;
+
+	stub = fop_discard_stub(frame, default_discard_resume, fd, offset, len,
+				xdata);
+	if (!stub)
+		goto err;
+
+	open_and_resume(this, fd, stub);
+
+	return 0;
+err:
+	STACK_UNWIND_STRICT(discard, frame, -1, ENOMEM, NULL, NULL, NULL);
+	return 0;
+}
+
+int
+ob_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+           off_t len, dict_t *xdata)
+{
+        call_stub_t *stub;
+
+        stub = fop_zerofill_stub(frame, default_zerofill_resume, fd,
+                                 offset, len, xdata);
+        if (!stub)
+                goto err;
+
+        open_and_resume(this, fd, stub);
+
+        return 0;
+err:
+        STACK_UNWIND_STRICT(zerofill, frame, -1, ENOMEM, NULL, NULL, NULL);
+        return 0;
+}
+
 
 int
 ob_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflags,
@@ -837,6 +905,8 @@ reconfigure (xlator_t *this, dict_t *options)
 			  bool, out);
 
         GF_OPTION_RECONF ("lazy-open", conf->lazy_open, options, bool, out);
+        GF_OPTION_RECONF ("read-after-open", conf->read_after_open, options,
+                          bool, out);
 
         ret = 0;
 out:
@@ -867,7 +937,7 @@ init (xlator_t *this)
         GF_OPTION_INIT ("use-anonymous-fd", conf->use_anonymous_fd, bool, err);
 
         GF_OPTION_INIT ("lazy-open", conf->lazy_open, bool, err);
-
+        GF_OPTION_INIT ("read-after-open", conf->read_after_open, bool, err);
         this->private = conf;
 
 	return 0;
@@ -907,6 +977,9 @@ struct xlator_fops fops = {
 	.fentrylk    = ob_fentrylk,
 	.fxattrop    = ob_fxattrop,
 	.fsetattr    = ob_fsetattr,
+	.fallocate   = ob_fallocate,
+	.discard     = ob_discard,
+        .zerofill    = ob_zerofill,
 	.unlink      = ob_unlink,
 	.rename      = ob_rename,
 	.lk          = ob_lk,
@@ -926,15 +999,22 @@ struct volume_options options[] = {
         { .key  = {"use-anonymous-fd"},
           .type = GF_OPTION_TYPE_BOOL,
           .default_value = "yes",
-	  .description = "For read operations, use anonymous FD when "
-	  "original FD is open-behind and not yet opened in the backend.",
+          .description = "For read operations, use anonymous FD when "
+          "original FD is open-behind and not yet opened in the backend.",
         },
         { .key  = {"lazy-open"},
           .type = GF_OPTION_TYPE_BOOL,
           .default_value = "yes",
-	  .description = "Perform open in the backend only when a necessary "
-	  "FOP arrives (e.g writev on the FD, unlink of the file). When option "
-	  "is disabled, perform backend open right after unwinding open().",
+          .description = "Perform open in the backend only when a necessary "
+          "FOP arrives (e.g writev on the FD, unlink of the file). When option "
+          "is disabled, perform backend open right after unwinding open().",
         },
+        { .key  = {"read-after-open"},
+          .type = GF_OPTION_TYPE_BOOL,
+          .default_value = "no",
+          .description = "read is sent only after actual open happens and real "
+          "fd is obtained, instead of doing on anonymous fd (similar to write)",
+        },
+        { .key  = {NULL} }
 
 };

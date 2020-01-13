@@ -942,6 +942,106 @@ unwind:
         return 0;
 }
 
+int
+ra_discard_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+               int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
+               struct iatt *postbuf, dict_t *xdata)
+{
+        GF_ASSERT (frame);
+
+        STACK_UNWIND_STRICT (discard, frame, op_ret, op_errno, prebuf,
+                             postbuf, xdata);
+        return 0;
+}
+
+static int
+ra_discard(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+	     size_t len, dict_t *xdata)
+{
+        ra_file_t *file    = NULL;
+        fd_t      *iter_fd = NULL;
+        inode_t   *inode   = NULL;
+        uint64_t  tmp_file = 0;
+        int32_t   op_errno = EINVAL;
+
+        GF_ASSERT (frame);
+        GF_VALIDATE_OR_GOTO (frame->this->name, this, unwind);
+        GF_VALIDATE_OR_GOTO (frame->this->name, fd, unwind);
+
+        inode = fd->inode;
+
+        LOCK (&inode->lock);
+        {
+                list_for_each_entry (iter_fd, &inode->fd_list, inode_list) {
+                        fd_ctx_get (iter_fd, this, &tmp_file);
+                        file = (ra_file_t *)(long)tmp_file;
+                        if (!file)
+                                continue;
+
+                        flush_region(frame, file, offset, len, 1);
+                }
+        }
+        UNLOCK (&inode->lock);
+
+        STACK_WIND (frame, ra_discard_cbk, FIRST_CHILD (this),
+                    FIRST_CHILD (this)->fops->discard, fd, offset, len, xdata);
+        return 0;
+
+unwind:
+        STACK_UNWIND_STRICT (discard, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+int
+ra_zerofill_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+               int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
+               struct iatt *postbuf, dict_t *xdata)
+{
+        GF_ASSERT (frame);
+
+        STACK_UNWIND_STRICT (zerofill, frame, op_ret, op_errno, prebuf,
+                             postbuf, xdata);
+        return 0;
+}
+
+static int
+ra_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+             off_t len, dict_t *xdata)
+{
+        ra_file_t *file    = NULL;
+        fd_t      *iter_fd = NULL;
+        inode_t   *inode   = NULL;
+        uint64_t  tmp_file = 0;
+        int32_t   op_errno = EINVAL;
+
+        GF_ASSERT (frame);
+        GF_VALIDATE_OR_GOTO (frame->this->name, this, unwind);
+        GF_VALIDATE_OR_GOTO (frame->this->name, fd, unwind);
+
+        inode = fd->inode;
+
+        LOCK (&inode->lock);
+        {
+                list_for_each_entry (iter_fd, &inode->fd_list, inode_list) {
+                        fd_ctx_get (iter_fd, this, &tmp_file);
+                        file = (ra_file_t *)(long)tmp_file;
+                        if (!file)
+                                continue;
+
+                        flush_region(frame, file, offset, len, 1);
+                }
+        }
+        UNLOCK (&inode->lock);
+
+        STACK_WIND (frame, ra_zerofill_cbk, FIRST_CHILD (this),
+                    FIRST_CHILD (this)->fops->zerofill, fd,
+                    offset, len, xdata);
+        return 0;
+
+unwind:
+        STACK_UNWIND_STRICT (zerofill, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
 
 int
 ra_priv_dump (xlator_t *this)
@@ -1024,7 +1124,8 @@ reconfigure (xlator_t *this, dict_t *options)
 
         GF_OPTION_RECONF ("page-count", conf->page_count, options, uint32, out);
 
-	GF_OPTION_RECONF ("page-size", conf->page_size, options, size, out);
+        GF_OPTION_RECONF ("page-size", conf->page_size, options, size_uint64,
+                          out);
 
         ret = 0;
  out:
@@ -1058,7 +1159,7 @@ init (xlator_t *this)
 
         conf->page_size = this->ctx->page_size;
 
-	GF_OPTION_INIT ("page-size", conf->page_size, size, out);
+        GF_OPTION_INIT ("page-size", conf->page_size, size_uint64, out);
 
         GF_OPTION_INIT ("page-count", conf->page_count, uint32, out);
 
@@ -1123,6 +1224,8 @@ struct xlator_fops fops = {
         .truncate    = ra_truncate,
         .ftruncate   = ra_ftruncate,
         .fstat       = ra_fstat,
+	.discard     = ra_discard,
+        .zerofill    = ra_zerofill,
 };
 
 struct xlator_cbks cbks = {

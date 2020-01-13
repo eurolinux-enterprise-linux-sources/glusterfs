@@ -1,5 +1,5 @@
 #
-# Sample logger.conf file to configure enhanced Logging in RHS
+# Sample logger.conf file to configure enhanced Logging in GlusterFS
 #
 # To enable enhanced logging capabilities,
 #

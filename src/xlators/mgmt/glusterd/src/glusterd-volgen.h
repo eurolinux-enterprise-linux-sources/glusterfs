@@ -76,6 +76,7 @@ typedef enum {
         GF_XLATOR_INDEX,
         GF_XLATOR_MARKER,
         GF_XLATOR_IO_STATS,
+        GF_XLATOR_BD,
         GF_XLATOR_NONE,
 } glusterd_server_xlator_t;
 
@@ -113,6 +114,8 @@ struct volopt_map_entry {
 int glusterd_create_rb_volfiles (glusterd_volinfo_t *volinfo,
                                  glusterd_brickinfo_t *brickinfo);
 
+int glusterd_create_volfiles (glusterd_volinfo_t *volinfo);
+
 int glusterd_create_volfiles_and_notify_services (glusterd_volinfo_t *volinfo);
 
 void glusterd_get_nfs_filepath (char *filename);
@@ -122,9 +125,14 @@ void glusterd_get_shd_filepath (char *filename);
 int glusterd_create_nfs_volfile ();
 int glusterd_create_shd_volfile ();
 int glusterd_create_quotad_volfile ();
+int glusterd_create_snapd_volfile (glusterd_volinfo_t *volinfo);
 
 int glusterd_delete_volfile (glusterd_volinfo_t *volinfo,
                              glusterd_brickinfo_t *brickinfo);
+int
+glusterd_delete_snap_volfile (glusterd_volinfo_t *volinfo,
+                              glusterd_volinfo_t *snap_volinfo,
+                              glusterd_brickinfo_t *brickinfo);
 
 int glusterd_volinfo_get (glusterd_volinfo_t *volinfo, char *key, char **value);
 int glusterd_volinfo_get_boolean (glusterd_volinfo_t *volinfo, char *key);
@@ -138,8 +146,15 @@ glusterd_check_voloption_flags (char *key, int32_t flags);
 gf_boolean_t
 glusterd_is_valid_volfpath (char *volname, char *brick);
 int generate_brick_volfiles (glusterd_volinfo_t *volinfo);
+int generate_snap_brick_volfiles (glusterd_volinfo_t *volinfo,
+                                  glusterd_volinfo_t *snap_volinfo);
 int generate_client_volfiles (glusterd_volinfo_t *volinfo,
                               glusterd_client_type_t client_type);
+int
+generate_snap_client_volfiles (glusterd_volinfo_t *actual_volinfo,
+                               glusterd_volinfo_t *snap_volinfo,
+                               glusterd_client_type_t client_type,
+                               gf_boolean_t vol_restore);
 int glusterd_get_volopt_content (dict_t *dict, gf_boolean_t xml_out);
 char*
 glusterd_get_trans_type_rb (gf_transport_type ttype);

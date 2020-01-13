@@ -19,6 +19,7 @@
 #include "glusterfs.h"
 #include "xlator.h"
 #include "dht-common.h"
+#include "dht-messages.h"
 #include "defaults.h"
 
 #include <sys/time.h>
@@ -70,14 +71,15 @@ dht_du_info_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 				conf->du_stats[i].avail_percent = percent;
 				conf->du_stats[i].avail_space   = bytes;
 				conf->du_stats[i].avail_inodes  = percent_inodes;
-				gf_log (this->name, GF_LOG_DEBUG,
-					"on subvolume '%s': avail_percent is: "
-					"%.2f and avail_space is: %"PRIu64" "
-					"and avail_inodes is: %.2f",
-					prev->this->name,
-					conf->du_stats[i].avail_percent,
-					conf->du_stats[i].avail_space,
-					conf->du_stats[i].avail_inodes);
+				gf_msg_debug (this->name, 0,
+				              "subvolume '%s': avail_percent "
+					      "is: %.2f and avail_space "
+                                              "is: %" PRIu64" and avail_inodes"
+                                              " is: %.2f",
+					      prev->this->name,
+					      conf->du_stats[i].avail_percent,
+					      conf->du_stats[i].avail_space,
+					      conf->du_stats[i].avail_inodes);
 			}
 	}
 	UNLOCK (&conf->subvolume_lock);
@@ -135,6 +137,7 @@ int
 dht_get_du_info (call_frame_t *frame, xlator_t *this, loc_t *loc)
 {
 	int            i            = 0;
+        int            ret          = -1;
 	dht_conf_t    *conf         = NULL;
 	call_frame_t  *statfs_frame = NULL;
 	dht_local_t   *statfs_local = NULL;
@@ -164,12 +167,25 @@ dht_get_du_info (call_frame_t *frame, xlator_t *this, loc_t *loc)
 			goto err;
 		}
 
+                statfs_local->params = dict_new ();
+                if (!statfs_local->params)
+                        goto err;
+
+                ret = dict_set_int8 (statfs_local->params,
+                                     GF_INTERNAL_IGNORE_DEEM_STATFS, 1);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to set "
+                                GF_INTERNAL_IGNORE_DEEM_STATFS" in dict");
+                        goto err;
+                }
+
 		statfs_local->call_cnt = conf->subvolume_cnt;
 		for (i = 0; i < conf->subvolume_cnt; i++) {
 			STACK_WIND (statfs_frame, dht_du_info_cbk,
 				    conf->subvolumes[i],
 				    conf->subvolumes[i]->fops->statfs,
-				    &tmp_loc, NULL);
+				    &tmp_loc, statfs_local->params);
 		}
 
 		conf->last_stat_fetch.tv_sec = tv.tv_sec;
@@ -225,7 +241,8 @@ dht_is_subvol_filled (xlator_t *this, xlator_t *subvol)
 
 	if (subvol_filled_space && conf->subvolume_status[i]) {
 		if (!(conf->du_stats[i].log++ % (GF_UNIVERSAL_ANSWER * 10))) {
-			gf_log (this->name, GF_LOG_WARNING,
+			gf_msg (this->name, GF_LOG_WARNING, 0,
+                                DHT_MSG_SUBVOL_INSUFF_SPACE,
 				"disk space on subvolume '%s' is getting "
 				"full (%.2f %%), consider adding more nodes",
 				subvol->name,
@@ -235,7 +252,8 @@ dht_is_subvol_filled (xlator_t *this, xlator_t *subvol)
 
 	if (subvol_filled_inodes && conf->subvolume_status[i]) {
 		if (!(conf->du_stats[i].log++ % (GF_UNIVERSAL_ANSWER * 10))) {
-			gf_log (this->name, GF_LOG_CRITICAL,
+			gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                                DHT_MSG_SUBVOL_INSUFF_INODES,
 				"inodes on subvolume '%s' are at "
 				"(%.2f %%), consider adding more nodes",
 				subvol->name,
@@ -267,9 +285,10 @@ dht_free_disk_available_subvol (xlator_t *this, xlator_t *subvol,
                 layout = dht_layout_get (this, loc->parent);
 
                 if (!layout) {
-                        gf_log (this->name, GF_LOG_DEBUG,
-                                "layout missing path=%s parent=%s",
-                                loc->path, uuid_utoa (loc->parent->gfid));
+                        gf_msg_debug (this->name, 0,
+                                      "Missing layout. path=%s,"
+                                      " parent gfid = %s", loc->path,
+                                      uuid_utoa (loc->parent->gfid));
                         goto out;
                 }
         } else {
@@ -291,10 +310,9 @@ dht_free_disk_available_subvol (xlator_t *this, xlator_t *subvol,
 	UNLOCK (&conf->subvolume_lock);
 out:
 	if (!avail_subvol) {
-		gf_log (this->name,
-                        GF_LOG_DEBUG,
-			"no subvolume has enough free space and/or inodes\
-                         to create");
+		gf_msg_debug (this->name, 0,
+		              "No subvolume has enough free space \
+                              and/or inodes to create");
                 avail_subvol = subvol;
 	}
 

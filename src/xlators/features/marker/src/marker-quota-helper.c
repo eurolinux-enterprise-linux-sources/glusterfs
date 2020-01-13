@@ -164,6 +164,7 @@ __mq_add_new_contribution_node (xlator_t *this, quota_inode_ctx_t *ctx,
                 if (!uuid_is_null (loc->pargfid))
                         loc->parent = inode_find (loc->inode->table,
                                                   loc->pargfid);
+
                 if (!loc->parent)
                         loc->parent = inode_parent (loc->inode, loc->pargfid,
                                                     loc->name);

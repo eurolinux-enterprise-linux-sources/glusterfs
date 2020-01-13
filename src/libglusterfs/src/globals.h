@@ -17,19 +17,31 @@
 #define GD_MIN_OP_VERSION_KEY "minimum-operating-version"
 #define GD_MAX_OP_VERSION_KEY "maximum-operating-version"
 
-/* Gluster versions - OP-VERSION mapping
+/* RHS versions - OP-VERSION mapping
  *
- * 3.3.0                - 1
- * 3.3.Next/3.Next      - 2
+ * RHS-2.0 Z    - 1
+ * RHS-2.1 Z    - 2
+ * RHS-2.1 u5   - 20105
+ * RHS-3.0 Z    - 30000
  *
- * TODO: Change above comment once gluster version is finalised
- * TODO: Finalize the op-version ranges
+ *
+ * Starting with RHS-3.0, the op-version will be multi-digit integer values
+ * based on the RHS version, instead of a simply incrementing integer value. The
+ * op-version for a given RHS X(Major).Y(Minor).Z(Update) release will be an
+ * integer with digits XYZ. The Y and Z values will be 2 digits wide always
+ * padded with 0 as needed. This should allow for some gaps between two Y
+ * releases for backports of features in Z releases.
  */
 #define GD_OP_VERSION_MIN  1 /* MIN is the fresh start op-version, mostly
                                 should not change */
-#define GD_OP_VERSION_MAX  2 /* MAX VERSION is the maximum count in VME table,
+#define GD_OP_VERSION_MAX  30000 /* MAX VERSION is the maximum count in VME table,
                                 should keep changing with introduction of newer
                                 versions */
+
+#define GD_OP_VERSION_RHS_3_0    30000 /* Op-Version of RHS 3.0 */
+#define GD_OP_VER_PERSISTENT_AFR_XATTRS GD_OP_VERSION_RHS_3_0
+
+#define GD_OP_VERSION_RHS_2_1_5  20105 /* RHS 2.1 update 5 */
 
 #include "xlator.h"
 

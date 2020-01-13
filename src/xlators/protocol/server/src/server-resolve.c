@@ -45,6 +45,7 @@ resolve_loc_touchup (call_frame_t *frame)
         if (!loc->path) {
                 if (loc->parent && resolve->bname) {
                         ret = inode_path (loc->parent, resolve->bname, &path);
+                        loc->name = resolve->bname;
                 } else if (loc->inode) {
                         ret = inode_path (loc->inode, NULL, &path);
                 }
@@ -123,14 +124,28 @@ resolve_gfid_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto out;
         }
 
-        loc_wipe (resolve_loc);
-
         link_inode = inode_link (inode, NULL, NULL, buf);
 
-        if (!link_inode)
+        if (!link_inode) {
+                loc_wipe (resolve_loc);
                 goto out;
+        }
 
         inode_lookup (link_inode);
+
+        /* wipe the loc only after the inode has been linked to the inode
+           table. Otherwise before inode gets linked to the inode table,
+           inode would have been unrefed (this might have been destroyed
+           if refcount becomes 0, and put back to mempool). So once the
+           inode gets destroyed, inode_link is a redundant operation. But
+           without knowing that the destroyed inode's pointer is saved in
+           the resolved_loc as parent (while constructing loc for resolving
+           the entry) and the inode_new call for resolving the entry will
+           return the same pointer to the inode as the parent (because in
+           reality the inode is a free inode present in cold list of the
+           inode mem-pool).
+        */
+        loc_wipe (resolve_loc);
 
         if (uuid_is_null (resolve->pargfid)) {
                 inode_unref (link_inode);
@@ -143,12 +158,14 @@ resolve_gfid_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         resolve_loc->name = resolve->bname;
 
         resolve_loc->inode = inode_new (state->itable);
+
         inode_path (resolve_loc->parent, resolve_loc->name,
                     (char **) &resolve_loc->path);
 
         STACK_WIND (frame, resolve_gfid_entry_cbk,
-                    BOUND_XL (frame), BOUND_XL (frame)->fops->lookup,
-                    &resolve->resolve_loc, NULL);
+                    frame->root->client->bound_xl,
+                    frame->root->client->bound_xl->fops->lookup,
+                    &resolve->resolve_loc, state->xdata);
         return 0;
 out:
         resolve_continue (frame);
@@ -179,8 +196,9 @@ resolve_gfid (call_frame_t *frame)
         ret = loc_path (resolve_loc, NULL);
 
         STACK_WIND (frame, resolve_gfid_cbk,
-                    BOUND_XL (frame), BOUND_XL (frame)->fops->lookup,
-                    &resolve->resolve_loc, NULL);
+                    frame->root->client->bound_xl,
+                    frame->root->client->bound_xl->fops->lookup,
+                    &resolve->resolve_loc, state->xdata);
         return 0;
 }
 
@@ -244,7 +262,7 @@ resolve_entry_simple (call_frame_t *frame)
                 /* simple resolution is indecisive. need to perform
                    deep resolution */
                 resolve->op_ret   = -1;
-                resolve->op_errno = ENOENT;
+                resolve->op_errno = ESTALE;
                 ret = 1;
                 goto out;
         }
@@ -336,12 +354,11 @@ resolve_inode_simple (call_frame_t *frame)
 
         state = CALL_STATE (frame);
         resolve = state->resolve_now;
-
         inode = inode_find (state->itable, resolve->gfid);
 
         if (!inode) {
                 resolve->op_ret   = -1;
-                resolve->op_errno = ENOENT;
+                resolve->op_errno = ESTALE;
                 ret = 1;
                 goto out;
         }
@@ -449,14 +466,14 @@ server_resolve_anonfd (call_frame_t *frame)
 int
 server_resolve_fd (call_frame_t *frame)
 {
-        server_state_t       *state = NULL;
-        server_resolve_t     *resolve = NULL;
-        server_connection_t  *conn = NULL;
-        uint64_t              fd_no = -1;
+        server_ctx_t         *serv_ctx = NULL;
+        server_state_t       *state    = NULL;
+        client_t             *client   = NULL;
+        server_resolve_t     *resolve  = NULL;
+        uint64_t              fd_no    = -1;
 
         state = CALL_STATE (frame);
         resolve = state->resolve_now;
-        conn  = SERVER_CONNECTION (frame);
 
         fd_no = resolve->fd_no;
 
@@ -465,7 +482,18 @@ server_resolve_fd (call_frame_t *frame)
                 return 0;
         }
 
-        state->fd = gf_fd_fdptr_get (conn->fdtable, fd_no);
+        client = frame->root->client;
+
+        serv_ctx = server_ctx_get (client, client->this);
+
+        if (serv_ctx == NULL) {
+                gf_log ("", GF_LOG_INFO, "server_ctx_get() failed");
+                resolve->op_ret   = -1;
+                resolve->op_errno = ENOMEM;
+                return 0;
+        }
+
+        state->fd = gf_fd_fdptr_get (serv_ctx->fdtable, fd_no);
 
         if (!state->fd) {
                 gf_log ("", GF_LOG_INFO, "fd not found in context");
@@ -520,14 +548,12 @@ int
 server_resolve_done (call_frame_t *frame)
 {
         server_state_t    *state = NULL;
-        xlator_t          *bound_xl = NULL;
 
         state = CALL_STATE (frame);
-        bound_xl = BOUND_XL (frame);
 
         server_print_request (frame);
 
-        state->resume_fn (frame, bound_xl);
+        state->resume_fn (frame, frame->root->client->bound_xl);
 
         return 0;
 }

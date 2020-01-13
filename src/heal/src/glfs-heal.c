@@ -1,3 +1,13 @@
+/*
+ Copyright (c) 2014 Red Hat, Inc. <http://www.redhat.com>
+ This file is part of GlusterFS.
+
+ This file is licensed to you under your choice of the GNU Lesser
+ General Public License, version 3 or any later version (LGPLv3 or
+ later), or the GNU General Public License, version 2 (GPLv2), in all
+ cases as published by the Free Software Foundation.
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -359,7 +369,7 @@ glfsh_print_pending_heals (xlator_t *xl, loc_t *rootloc)
         ret = glfsh_print_brick (xl, rootloc);
         if (ret < 0) {
                 glfsh_print_brick_from_xl (xl);
-                printf ("Status: %s\n", strerror (errno));
+                printf ("Status: %s\n", strerror (-ret));
                 goto out;
         }
 

@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2007-2014 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -8,12 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
-#include "xdr-common.h"
 #include "compat.h"
+#include "xdr-common.h"
+#include "xdr-nfs3.h"
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 
@@ -436,7 +438,7 @@ typedef struct gfs3_statfs_rsp gfs3_statfs_rsp;
 
 struct gfs3_lk_req {
 	char gfid[16];
-	quad_t fd;
+	int64_t fd;
 	u_int cmd;
 	u_int type;
 	struct gf_proto_flock flock;
@@ -534,7 +536,7 @@ typedef struct gfs3_setxattr_req gfs3_setxattr_req;
 
 struct gfs3_fsetxattr_req {
 	char gfid[16];
-	quad_t fd;
+	int64_t fd;
 	u_int flags;
 	struct {
 		u_int dict_len;
@@ -887,6 +889,79 @@ struct gfs3_fsetattr_rsp {
 };
 typedef struct gfs3_fsetattr_rsp gfs3_fsetattr_rsp;
 
+struct gfs3_fallocate_req {
+	char gfid[16];
+	quad_t fd;
+	u_int flags;
+	u_quad_t offset;
+	u_quad_t size;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_fallocate_req gfs3_fallocate_req;
+
+struct gfs3_fallocate_rsp {
+	int op_ret;
+	int op_errno;
+	struct gf_iatt statpre;
+	struct gf_iatt statpost;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_fallocate_rsp gfs3_fallocate_rsp;
+
+struct gfs3_discard_req {
+	char gfid[16];
+	quad_t fd;
+	u_quad_t offset;
+	u_quad_t size;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_discard_req gfs3_discard_req;
+
+struct gfs3_discard_rsp {
+	int op_ret;
+	int op_errno;
+	struct gf_iatt statpre;
+	struct gf_iatt statpost;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_discard_rsp gfs3_discard_rsp;
+
+struct gfs3_zerofill_req {
+	char gfid[16];
+	quad_t fd;
+	u_quad_t offset;
+	u_quad_t size;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_zerofill_req gfs3_zerofill_req;
+
+struct gfs3_zerofill_rsp {
+	int op_ret;
+	int op_errno;
+	struct gf_iatt statpre;
+	struct gf_iatt statpost;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gfs3_zerofill_rsp gfs3_zerofill_rsp;
+
 struct gfs3_rchecksum_req {
 	quad_t fd;
 	u_quad_t offset;
@@ -951,6 +1026,25 @@ struct gf_getspec_rsp {
 	} xdata;
 };
 typedef struct gf_getspec_rsp gf_getspec_rsp;
+
+struct gf_get_volume_info_req {
+	struct {
+		u_int dict_len;
+		char *dict_val;
+	} dict;
+};
+typedef struct gf_get_volume_info_req gf_get_volume_info_req;
+
+struct gf_get_volume_info_rsp {
+	int op_ret;
+	int op_errno;
+	char *op_errstr;
+	struct {
+		u_int dict_len;
+		char *dict_val;
+	} dict;
+};
+typedef struct gf_get_volume_info_rsp gf_get_volume_info_rsp;
 
 struct gf_mgmt_hndsk_req {
 	struct {
@@ -1019,16 +1113,6 @@ struct gfs3_release_req {
 	} xdata;
 };
 typedef struct gfs3_release_req gfs3_release_req;
-
-struct gf_common_rsp {
-	int op_ret;
-	int op_errno;
-	struct {
-		u_int xdata_len;
-		char *xdata_val;
-	} xdata;
-};
-typedef struct gf_common_rsp gf_common_rsp;
 
 struct gfs3_dirlist {
 	u_quad_t d_ino;
@@ -1109,6 +1193,25 @@ struct gf_event_notify_rsp {
 };
 typedef struct gf_event_notify_rsp gf_event_notify_rsp;
 
+struct gf_getsnap_name_uuid_req {
+	struct {
+		u_int dict_len;
+		char *dict_val;
+	} dict;
+};
+typedef struct gf_getsnap_name_uuid_req gf_getsnap_name_uuid_req;
+
+struct gf_getsnap_name_uuid_rsp {
+	int op_ret;
+	int op_errno;
+	char *op_errstr;
+	struct {
+		u_int dict_len;
+		char *dict_val;
+	} dict;
+};
+typedef struct gf_getsnap_name_uuid_rsp gf_getsnap_name_uuid_rsp;
+
 /* the xdr functions */
 
 #if defined(__STDC__) || defined(__cplusplus)
@@ -1182,12 +1285,20 @@ extern  bool_t xdr_gfs3_setattr_req (XDR *, gfs3_setattr_req*);
 extern  bool_t xdr_gfs3_setattr_rsp (XDR *, gfs3_setattr_rsp*);
 extern  bool_t xdr_gfs3_fsetattr_req (XDR *, gfs3_fsetattr_req*);
 extern  bool_t xdr_gfs3_fsetattr_rsp (XDR *, gfs3_fsetattr_rsp*);
+extern  bool_t xdr_gfs3_fallocate_req (XDR *, gfs3_fallocate_req*);
+extern  bool_t xdr_gfs3_fallocate_rsp (XDR *, gfs3_fallocate_rsp*);
+extern  bool_t xdr_gfs3_discard_req (XDR *, gfs3_discard_req*);
+extern  bool_t xdr_gfs3_discard_rsp (XDR *, gfs3_discard_rsp*);
+extern  bool_t xdr_gfs3_zerofill_req (XDR *, gfs3_zerofill_req*);
+extern  bool_t xdr_gfs3_zerofill_rsp (XDR *, gfs3_zerofill_rsp*);
 extern  bool_t xdr_gfs3_rchecksum_req (XDR *, gfs3_rchecksum_req*);
 extern  bool_t xdr_gfs3_rchecksum_rsp (XDR *, gfs3_rchecksum_rsp*);
 extern  bool_t xdr_gf_setvolume_req (XDR *, gf_setvolume_req*);
 extern  bool_t xdr_gf_setvolume_rsp (XDR *, gf_setvolume_rsp*);
 extern  bool_t xdr_gf_getspec_req (XDR *, gf_getspec_req*);
 extern  bool_t xdr_gf_getspec_rsp (XDR *, gf_getspec_rsp*);
+extern  bool_t xdr_gf_get_volume_info_req (XDR *, gf_get_volume_info_req*);
+extern  bool_t xdr_gf_get_volume_info_rsp (XDR *, gf_get_volume_info_rsp*);
 extern  bool_t xdr_gf_mgmt_hndsk_req (XDR *, gf_mgmt_hndsk_req*);
 extern  bool_t xdr_gf_mgmt_hndsk_rsp (XDR *, gf_mgmt_hndsk_rsp*);
 extern  bool_t xdr_gf_log_req (XDR *, gf_log_req*);
@@ -1195,7 +1306,6 @@ extern  bool_t xdr_gf_notify_req (XDR *, gf_notify_req*);
 extern  bool_t xdr_gf_notify_rsp (XDR *, gf_notify_rsp*);
 extern  bool_t xdr_gfs3_releasedir_req (XDR *, gfs3_releasedir_req*);
 extern  bool_t xdr_gfs3_release_req (XDR *, gfs3_release_req*);
-extern  bool_t xdr_gf_common_rsp (XDR *, gf_common_rsp*);
 extern  bool_t xdr_gfs3_dirlist (XDR *, gfs3_dirlist*);
 extern  bool_t xdr_gfs3_readdir_rsp (XDR *, gfs3_readdir_rsp*);
 extern  bool_t xdr_gfs3_dirplist (XDR *, gfs3_dirplist*);
@@ -1204,6 +1314,8 @@ extern  bool_t xdr_gf_set_lk_ver_rsp (XDR *, gf_set_lk_ver_rsp*);
 extern  bool_t xdr_gf_set_lk_ver_req (XDR *, gf_set_lk_ver_req*);
 extern  bool_t xdr_gf_event_notify_req (XDR *, gf_event_notify_req*);
 extern  bool_t xdr_gf_event_notify_rsp (XDR *, gf_event_notify_rsp*);
+extern  bool_t xdr_gf_getsnap_name_uuid_req (XDR *, gf_getsnap_name_uuid_req*);
+extern  bool_t xdr_gf_getsnap_name_uuid_rsp (XDR *, gf_getsnap_name_uuid_rsp*);
 
 #else /* K&R C */
 extern bool_t xdr_gf_statfs ();
@@ -1276,12 +1388,20 @@ extern bool_t xdr_gfs3_setattr_req ();
 extern bool_t xdr_gfs3_setattr_rsp ();
 extern bool_t xdr_gfs3_fsetattr_req ();
 extern bool_t xdr_gfs3_fsetattr_rsp ();
+extern bool_t xdr_gfs3_fallocate_req ();
+extern bool_t xdr_gfs3_fallocate_rsp ();
+extern bool_t xdr_gfs3_discard_req ();
+extern bool_t xdr_gfs3_discard_rsp ();
+extern bool_t xdr_gfs3_zerofill_req ();
+extern bool_t xdr_gfs3_zerofill_rsp ();
 extern bool_t xdr_gfs3_rchecksum_req ();
 extern bool_t xdr_gfs3_rchecksum_rsp ();
 extern bool_t xdr_gf_setvolume_req ();
 extern bool_t xdr_gf_setvolume_rsp ();
 extern bool_t xdr_gf_getspec_req ();
 extern bool_t xdr_gf_getspec_rsp ();
+extern bool_t xdr_gf_get_volume_info_req ();
+extern bool_t xdr_gf_get_volume_info_rsp ();
 extern bool_t xdr_gf_mgmt_hndsk_req ();
 extern bool_t xdr_gf_mgmt_hndsk_rsp ();
 extern bool_t xdr_gf_log_req ();
@@ -1289,7 +1409,6 @@ extern bool_t xdr_gf_notify_req ();
 extern bool_t xdr_gf_notify_rsp ();
 extern bool_t xdr_gfs3_releasedir_req ();
 extern bool_t xdr_gfs3_release_req ();
-extern bool_t xdr_gf_common_rsp ();
 extern bool_t xdr_gfs3_dirlist ();
 extern bool_t xdr_gfs3_readdir_rsp ();
 extern bool_t xdr_gfs3_dirplist ();
@@ -1298,6 +1417,8 @@ extern bool_t xdr_gf_set_lk_ver_rsp ();
 extern bool_t xdr_gf_set_lk_ver_req ();
 extern bool_t xdr_gf_event_notify_req ();
 extern bool_t xdr_gf_event_notify_rsp ();
+extern bool_t xdr_gf_getsnap_name_uuid_req ();
+extern bool_t xdr_gf_getsnap_name_uuid_rsp ();
 
 #endif /* K&R C */
 

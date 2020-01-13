@@ -2,19 +2,10 @@
   Copyright (c) 2010-2011 Gluster, Inc. <http://www.gluster.com>
   This file is part of GlusterFS.
 
-  GlusterFS is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published
-  by the Free Software Foundation; either version 3 of the License,
-  or (at your option) any later version.
-
-  GlusterFS is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see
-  <http://www.gnu.org/licenses/>.
+  This file is licensed to you under your choice of the GNU Lesser
+  General Public License, version 3 or any later version (LGPLv3 or
+  later), or the GNU General Public License, version 2 (GPLv2), in all
+  cases as published by the Free Software Foundation.
 */
 
 #ifndef _CONFIG_H
@@ -226,20 +217,22 @@ out:
                         uuid_unparse (handle->exportid, exportid);      \
                         uuid_unparse (handle->gfid, gfid);              \
                         trans = rpcsvc_request_transport (req);         \
-                        gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to map " \
-                                "FH to vol: client=%s, exportid=%s, gfid=%s",\
-                                trans->peerinfo.identifier, exportid,   \
-                                gfid);                                  \
-                        gf_log (GF_NFS3, GF_LOG_ERROR,                   \
-                                "Stale nfs client %s must be trying to "\
-                                "connect to a deleted volume, please "  \
-                                "unmount it.", trans->peerinfo.identifier);\
+                        GF_LOG_OCCASIONALLY (nfs3state->occ_logger,     \
+                                GF_NFS3, GF_LOG_ERROR, "Failed to map " \
+                                "FH to vol: client=%s, exportid=%s, "   \
+                                "gfid=%s", trans->peerinfo.identifier,  \
+                                exportid, gfid);                        \
+                        GF_LOG_OCCASIONALLY (nfs3state->occ_logger,     \
+                                GF_NFS3, GF_LOG_ERROR, "Stale nfs "     \
+                                "client %s must be trying to connect to"\
+                                " a deleted volume, please unmount it.",\
+                                trans->peerinfo.identifier);            \
                         status = NFS3ERR_STALE;                         \
                         goto label;                                     \
                 } else {                                                \
-                        gf_log (GF_NFS3, GF_LOG_TRACE, "FH to Volume: %s"\
-                                ,volume->name);                         \
-                        rpcsvc_request_set_private (req, volume);   \
+                        gf_log (GF_NFS3, GF_LOG_TRACE, "FH to Volume:"  \
+                                "%s", volume->name);                    \
+                        rpcsvc_request_set_private (req, volume);       \
                 }                                                       \
         } while (0);                                                    \
 
@@ -263,8 +256,10 @@ out:
                         xlatorp = nfs3_fh_to_xlator (cst->nfs3state,    \
                                                      &cst->resolvefh);  \
                         uuid_unparse (cst->resolvefh.gfid, gfid);       \
-                        sprintf (buf, "(%s) %s : %s", trans->peerinfo.identifier,\
-                        xlatorp ? xlatorp->name : "ERR", gfid);         \
+                        snprintf (buf, sizeof (buf), "(%s) %s : %s",             \
+                                  trans->peerinfo.identifier,           \
+                                  xlatorp ? xlatorp->name : "ERR",      \
+                                  gfid );                                \
                         gf_log (GF_NFS3, GF_LOG_ERROR, "%s: %s",        \
                                 strerror(cst->resolve_errno), buf);     \
                         nfstat = nfs3_errno_to_nfsstat3 (cst->resolve_errno);\
@@ -283,8 +278,10 @@ out:
                         xlatorp = nfs3_fh_to_xlator (cst->nfs3state,    \
                                                      &cst->resolvefh);  \
                         uuid_unparse (cst->resolvefh.gfid, gfid);       \
-                        sprintf (buf, "(%s) %s : %s", trans->peerinfo.identifier,\
-                        xlatorp ? xlatorp->name : "ERR", gfid);         \
+                        snprintf (buf, sizeof (buf), "(%s) %s : %s",             \
+                                  trans->peerinfo.identifier,     \
+                                  xlatorp ? xlatorp->name : "ERR",      \
+                                  gfid);         \
                         gf_log (GF_NFS3, GF_LOG_ERROR, "%s: %s",        \
                                 strerror(cst->resolve_errno), buf);     \
                         nfstat = nfs3_errno_to_nfsstat3 (cs->resolve_errno);\
@@ -975,7 +972,8 @@ nfs3svc_setattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
          * truncation and also only if this is not a directory.
          */
         if ((gf_attr_size_set (cs->setattr_valid)) &&
-            (!IA_ISDIR (postop->ia_type))) {
+            (!IA_ISDIR (postop->ia_type)) &&
+            (preop->ia_size != cs->stbuf.ia_size)) {
                 nfs_request_user_init (&nfu, cs->req);
                 ret = nfs_truncate (cs->nfsx, cs->vol, &nfu, &cs->resolvedloc,
                                     cs->stbuf.ia_size, nfs3svc_truncate_cbk,cs);
@@ -1316,7 +1314,11 @@ nfs3_lookup_parentdir_resume (void *carg)
         nfs3_call_state_t               *cs = NULL;
         inode_t                         *parent = NULL;
 
-        GF_VALIDATE_OR_GOTO (GF_NFS3, carg, nfs3err);
+        if (!carg) {
+                gf_log (GF_NFS3, GF_LOG_ERROR, "Invalid argument,"
+                        " carg value NULL");
+                return EINVAL;
+        }
 
         cs = (nfs3_call_state_t *)carg;
         nfs3_check_fh_resolve_status (cs, stat, nfs3err);
@@ -1387,7 +1389,11 @@ nfs3_lookup_resume (void *carg)
         nfs3_call_state_t               *cs = NULL;
         struct nfs3_fh                  newfh = {{0},};
 
-        GF_VALIDATE_OR_GOTO (GF_NFS3, carg, nfs3err);
+        if (!carg) {
+                gf_log (GF_NFS3, GF_LOG_ERROR, "Invalid argument,"
+                        " carg value NULL");
+                return EINVAL;
+        }
 
         cs = (nfs3_call_state_t *)carg;
         nfs3_check_fh_resolve_status (cs, stat, nfs3err);
@@ -1542,7 +1548,11 @@ nfs3_access_resume (void *carg)
         nfs_user_t              nfu = {0, };
         nfs3_call_state_t       *cs = NULL;
 
-        GF_VALIDATE_OR_GOTO (GF_NFS3, carg, nfs3err);
+        if (!carg) {
+                gf_log (GF_NFS3, GF_LOG_ERROR, "Invalid argument,"
+                        " carg value NULL");
+                return EINVAL;
+        }
 
         cs = (nfs3_call_state_t *)carg;
         nfs3_check_fh_resolve_status (cs, stat, nfs3err);
@@ -2634,13 +2644,7 @@ nfs3svc_create (rpcsvc_request_t *req)
         }
 
         cval = (uint64_t *)args.how.createhow3_u.verf;
-        if (cval)
-                cverf = *cval;
-        else {
-                gf_log(GF_NFS3, GF_LOG_ERROR,
-                       "Error getting createverf3 from args");
-                goto rpcerr;
-        }
+        cverf = *cval;
 
         ret = nfs3_create (req, &dirfh, name, args.how.mode,
                            &args.how.createhow3_u.obj_attributes, cverf);
@@ -4385,16 +4389,8 @@ nfs3svc_readdir (rpcsvc_request_t *req)
                 rpcsvc_request_seterr (req, GARBAGE_ARGS);
                 goto rpcerr;
         }
-
         cval = (uint64_t *) ra.cookieverf;
-
-        if (cval)
-                verf =  *cval;
-        else {
-                gf_log(GF_NFS3, GF_LOG_ERROR,
-                       "Error getting cookieverf from readdir args");
-                goto rpcerr;
-        }
+        verf =  *cval;
 
         ret = nfs3_readdir (req, &fh, ra.cookie, verf, ra.count, 0);
         if ((ret < 0) && (ret != RPCSVC_ACTOR_IGNORE)) {
@@ -4425,16 +4421,8 @@ nfs3svc_readdirp (rpcsvc_request_t *req)
                 rpcsvc_request_seterr (req, GARBAGE_ARGS);
                 goto rpcerr;
         }
-
         cval = (uint64_t *) ra.cookieverf;
-
-        if (cval)
-                cverf = *cval;
-        else {
-                gf_log (GF_NFS3, GF_LOG_ERROR,
-                        "Error getting cookieverf from readdirp args");
-                goto rpcerr;
-	}
+        cverf = *cval;
 
         ret = nfs3_readdir (req, &fh, ra.cookie, cverf, ra.dircount,
                             ra.maxcount);
@@ -5198,7 +5186,7 @@ nfs3_init_options (struct nfs3_state *nfs3, dict_t *options)
                         goto err;
                 }
 
-                ret = gf_string2bytesize (optstr, &size64);
+                ret = gf_string2uint64 (optstr, &size64);
                 if (ret == -1) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to format"
                                 " option: nfs3.read-size");
@@ -5221,7 +5209,7 @@ nfs3_init_options (struct nfs3_state *nfs3, dict_t *options)
                         goto err;
                 }
 
-                ret = gf_string2bytesize (optstr, &size64);
+                ret = gf_string2uint64 (optstr, &size64);
                 if (ret == -1) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to format"
                                 " option: nfs3.write-size");
@@ -5244,7 +5232,7 @@ nfs3_init_options (struct nfs3_state *nfs3, dict_t *options)
                         goto err;
                 }
 
-                ret = gf_string2bytesize (optstr, &size64);
+                ret = gf_string2uint64 (optstr, &size64);
                 if (ret == -1) {
                         gf_log (GF_NFS3, GF_LOG_ERROR, "Failed to format"
                                 " option: nfs3.readdir-size");
@@ -5560,7 +5548,7 @@ nfs3_init_state (xlator_t *nfsx)
         LOCK_INIT (&nfs3->fdlrulock);
         nfs3->fdcount = 0;
 
-        rpcsvc_create_listeners (nfs->rpcsvc, nfsx->options, nfsx->name);
+        ret = rpcsvc_create_listeners (nfs->rpcsvc, nfsx->options, nfsx->name);
         if (ret == -1) {
                 gf_log (GF_NFS, GF_LOG_ERROR, "Unable to create listeners");
                 goto free_localpool;

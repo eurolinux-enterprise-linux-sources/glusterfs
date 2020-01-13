@@ -111,8 +111,8 @@ __glusterd_handle_quota (rpcsvc_request_t *req)
         if ((conf->op_version == GD_OP_VERSION_MIN) &&
             (type > GF_QUOTA_OPTION_TYPE_VERSION)) {
                 snprintf (msg, sizeof (msg), "Cannot execute command. The "
-                         "cluster is operating at version 1. Executing command "
-                         "%s is disallowed in this state",
+                         "cluster is operating at version %d. Quota command %s "
+                         "is unavailable in this version", conf->op_version,
                          gd_quota_op_list[type]);
                 ret = -1;
                 goto out;
@@ -159,108 +159,6 @@ out:
         return ret;
 }
 
-/* At the end of the function, the variable @found will be set
- * to true if the path to be removed was present in the limit-list,
- * else will be false.
- *
- * In addition, the function does the following things:
- *
- * a. places the path to be removed, if found, in @removed_path,
- * b. places the new limit list formed after removing @path's entry, in
- *    @new_list. If @path is not found, the input limit string @quota_limits is
- *    dup'd as is and placed in @new_list.
- */
-int32_t
-_glusterd_quota_remove_limits (char *quota_limits, char *path,
-                               gf_boolean_t *found, char **new_list,
-                               char **removed_path)
-{
-        int      ret      = 0;
-        int      i        = 0;
-        int      size     = 0;
-        int      len      = 0;
-        int      pathlen  = 0;
-        int      skiplen  = 0;
-        int      flag     = 0;
-        char    *limits   = NULL;
-        char    *qlimits  = NULL;
-        char    *rp       = NULL;
-
-        if (found != NULL)
-                *found = _gf_false;
-
-        if (quota_limits == NULL)
-                return -1;
-
-        qlimits = quota_limits;
-
-        pathlen = strlen (path);
-
-        len = strlen (qlimits);
-
-        limits = GF_CALLOC (len + 1, sizeof (char), gf_gld_mt_char);
-        if (!limits)
-                return -1;
-
-        while (i < len) {
-                if (!memcmp ((void *) &qlimits [i], (void *)path, pathlen))
-                        if (qlimits [i + pathlen] == ':') {
-                                flag = 1;
-                                if (found != NULL)
-                                        *found = _gf_true;
-                        }
-
-                while (qlimits [i + size] != ',' &&
-                       qlimits [i + size] != '\0')
-                        size++;
-
-                if (!flag) {
-                        memcpy ((void *) &limits [i], (void *) &qlimits [i], size + 1);
-                } else {
-                        skiplen = size + 1;
-                        size = len - i - size;
-                        if (removed_path) {
-                                rp = GF_CALLOC (skiplen, sizeof (char), gf_gld_mt_char);
-                                if (!rp) {
-                                        ret = -1;
-                                        goto out;
-                                }
-                                strncpy (rp, &qlimits[i], skiplen - 1);
-                                *removed_path = rp;
-                        }
-                        memcpy ((void *) &limits [i], (void *) &qlimits [i + skiplen], size);
-                        break;
-                }
-
-                i += size + 1;
-                size = 0;
-        }
-
-        len = strlen (limits);
-        if (len == 0)
-                goto out;
-
-        if (limits[len - 1] == ',') {
-                limits[len - 1] = '\0';
-                len --;
-        }
-
-        *new_list = GF_CALLOC (len + 1, sizeof (char), gf_gld_mt_char);
-        if (!*new_list) {
-                ret = -1;
-                goto out;
-        }
-
-        memcpy ((void *) *new_list, (void *) limits, len + 1);
-        ret = 0;
-out:
-        GF_FREE (limits);
-        if (ret != -1)
-                ret = flag ? 0 : 1;
-
-        return ret;
-}
-
 int32_t
 glusterd_quota_initiate_fs_crawl (glusterd_conf_t *priv, char *volname,
                                   int type)
@@ -270,7 +168,6 @@ glusterd_quota_initiate_fs_crawl (glusterd_conf_t *priv, char *volname,
         int                        status           = 0;
         char                       mountdir[]       = "/tmp/mntXXXXXX";
         runner_t                   runner           = {0};
-        char                       script [PATH_MAX]= {0,};
 
         if (mkdtemp (mountdir) == NULL) {
                 gf_log ("glusterd", GF_LOG_DEBUG,
@@ -319,23 +216,19 @@ glusterd_quota_initiate_fs_crawl (glusterd_conf_t *priv, char *volname,
                 runinit (&runner);
 
                 if (type == GF_QUOTA_OPTION_TYPE_ENABLE)
+
                         runner_add_args (&runner, "/usr/bin/find", "find", ".",
                                          NULL);
-                else if (type == GF_QUOTA_OPTION_TYPE_DISABLE) {
-                        ret = sprintf (script, QUOTAEXECDIR_PREFIX
-                                       "/quota-remove-xattr.sh");
-                        if (ret == -1) {
-                                gf_log ("glusterd", GF_LOG_ERROR, "Couldn't "
-                                        "get the remove script, aborting");
-                                exit (EXIT_FAILURE);
-                        }
 
-                        runner_add_args (&runner, script, mountdir, NULL);
-                }
+                else if (type == GF_QUOTA_OPTION_TYPE_DISABLE)
+
+                        runner_add_args (&runner, "/usr/bin/find", ".",
+                                         "-exec", "/usr/bin/setfattr", "-n",
+                                         VIRTUAL_QUOTA_XATTR_CLEANUP_KEY, "-v",
+                                         "1", "{}", "\\", ";", NULL);
 
                 if (runner_start (&runner) == -1)
                         _exit (EXIT_FAILURE);
-                sleep (2);
 
 #ifndef GF_LINUX_HOST_OS
                 runner_end (&runner); /* blocks in waitpid */
@@ -351,73 +244,6 @@ glusterd_quota_initiate_fs_crawl (glusterd_conf_t *priv, char *volname,
 
 out:
         return ret;
-}
-
-char *
-glusterd_quota_get_limit_value (char *quota_limits, char *path)
-{
-        int32_t i, j, k, l, len;
-        int32_t pat_len, diff;
-        char   *ret_str = NULL;
-
-        len = strlen (quota_limits);
-        pat_len = strlen (path);
-        i = 0;
-        j = 0;
-
-        while (i < len) {
-                j = i;
-                k = 0;
-                while (path [k] == quota_limits [j]) {
-                        j++;
-                        k++;
-                }
-
-                l = j;
-
-                while (quota_limits [j] != ',' &&
-                       quota_limits [j] != '\0')
-                        j++;
-
-                if (quota_limits [l] == ':' && pat_len == (l - i)) {
-                        diff = j - i;
-                        ret_str = GF_CALLOC (diff + 1, sizeof (char),
-                                             gf_gld_mt_char);
-
-                        strncpy (ret_str, &quota_limits [i], diff);
-
-                        break;
-                }
-                i = ++j; //skip ','
-        }
-
-        return ret_str;
-}
-
-char*
-_glusterd_quota_get_limit_usages (glusterd_volinfo_t *volinfo,
-                                  char *path, char **op_errstr)
-{
-        int32_t  ret          = 0;
-        char    *quota_limits = NULL;
-        char    *ret_str      = NULL;
-
-        if (volinfo == NULL)
-                return NULL;
-
-        ret = glusterd_volinfo_get (volinfo, VKEY_FEATURES_LIMIT_USAGE,
-                                    &quota_limits);
-        if (ret)
-                return NULL;
-        if (quota_limits == NULL) {
-                ret_str = NULL;
-                *op_errstr = gf_strdup ("Limit not set on any directory");
-        } else if (path == NULL)
-                ret_str = gf_strdup (quota_limits);
-        else
-                ret_str = glusterd_quota_get_limit_value (quota_limits, path);
-
-        return ret_str;
 }
 
 int32_t
@@ -648,7 +474,7 @@ glusterd_set_quota_limit (char *volname, char *path, char *hard_limit,
 
         new_limit.sl = hton64 (new_limit.sl);
 
-        ret = gf_string2bytesize (hard_limit, (uint64_t*)&new_limit.hl);
+        ret = gf_string2bytesize_uint64 (hard_limit, (uint64_t*)&new_limit.hl);
         if (ret)
                 goto out;
 
@@ -920,10 +746,6 @@ out:
                 close (conf_fd);
         }
 
-        if (fd != -1) {
-                close (fd);
-        }
-
         if (ret && (fd > 0)) {
                 gf_store_unlink_tmppath (volinfo->quota_conf_shandle);
         } else if (!ret) {
@@ -933,16 +755,14 @@ out:
                         if (ret) {
                                 gf_log (this->name, GF_LOG_ERROR, "Failed to "
                                         "compute cksum for quota conf file");
-                                goto out;
+                                return ret;
                         }
 
                         ret = glusterd_store_save_quota_version_and_cksum
                                                                       (volinfo);
-                        if (ret) {
+                        if (ret)
                                 gf_log (this->name, GF_LOG_ERROR, "Failed to "
                                         "store quota version and cksum");
-                                goto out;
-                        }
                 }
         }
 
@@ -998,7 +818,7 @@ glusterd_quota_limit_usage (glusterd_volinfo_t *volinfo, dict_t *dict,
                 }
         }
 
-        if (is_origin_glusterd ()) {
+        if (is_origin_glusterd (dict)) {
                 ret = glusterd_set_quota_limit (volinfo->volname, path,
                                                 hard_limit, soft_limit,
                                                 op_errstr);
@@ -1093,7 +913,7 @@ glusterd_quota_remove_limits (glusterd_volinfo_t *volinfo, dict_t *dict,
         if (ret)
                 goto out;
 
-        if (is_origin_glusterd ()) {
+        if (is_origin_glusterd (dict)) {
                 ret = glusterd_remove_quota_limit (volinfo->volname, path,
                                                    op_errstr);
                 if (ret)
@@ -1167,15 +987,8 @@ glusterd_quotad_op (int opcode)
                         if (glusterd_all_volumes_with_quota_stopped ())
                                 ret = glusterd_quotad_stop ();
                         else
-                                ret = glusterd_check_generate_start_quotad ();
-                        break;
-
-                case GF_QUOTA_OPTION_TYPE_DEFAULT_SOFT_LIMIT:
-                case GF_QUOTA_OPTION_TYPE_HARD_TIMEOUT:
-                case GF_QUOTA_OPTION_TYPE_SOFT_TIMEOUT:
-                case GF_QUOTA_OPTION_TYPE_ALERT_TIME:
-
-                        ret = glusterd_reconfigure_quotad ();
+                                ret = glusterd_check_generate_start_quotad_wait
+                                        ();
                         break;
 
                 default:
@@ -1221,8 +1034,8 @@ glusterd_op_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
         if ((priv->op_version == GD_OP_VERSION_MIN) &&
             (type > GF_QUOTA_OPTION_TYPE_VERSION)) {
                 gf_asprintf (op_errstr, "Volume quota failed. The cluster is "
-                                        "operating at version %d. Option %s "
-                                        "is disallowed in this state.",
+                                        "operating at version %d. Quota command"
+                                        " %s is unavailable in this version.",
                                         priv->op_version,
                                         gd_quota_op_list[type]);
                 ret = -1;
@@ -1305,6 +1118,12 @@ glusterd_op_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                         goto out;
         }
 
+        if (priv->op_version > GD_OP_VERSION_MIN) {
+                ret = glusterd_quotad_op (type);
+                if (ret)
+                        goto out;
+        }
+
         ret = glusterd_create_volfiles_and_notify_services (volinfo);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "Unable to re-create "
@@ -1325,11 +1144,6 @@ glusterd_op_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
         if (rsp_dict && start_crawl == _gf_true)
                 glusterd_quota_initiate_fs_crawl (priv, volname, type);
 
-        if (priv->op_version > GD_OP_VERSION_MIN) {
-                ret = glusterd_quotad_op (type);
-                if (ret)
-                        goto out;
-        }
         ret = 0;
 out:
         return ret;
@@ -1378,7 +1192,7 @@ glusterd_get_gfid_from_brick (dict_t *dict, glusterd_volinfo_t *volinfo,
                 if (uuid_compare (brickinfo->uuid, MY_UUID))
                         continue;
 
-                if (volinfo->backend == GD_VOL_BK_BD)
+                if (brickinfo->vg[0])
                         continue;
 
                 snprintf (backend_path, sizeof (backend_path), "%s%s",
@@ -1521,9 +1335,10 @@ glusterd_op_stage_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                 goto out;
         }
 
-        if (_gf_false == glusterd_is_volume_started (volinfo)) {
+        if (!glusterd_is_volume_started (volinfo)) {
+                *op_errstr = gf_strdup ("Volume is stopped, start volume "
+                                        "before executing quota command.");
                 ret = -1;
-                gf_asprintf (op_errstr, "Volume %s is not started.", volname);
                 goto out;
         }
 
@@ -1534,11 +1349,19 @@ glusterd_op_stage_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                 goto out;
         }
 
+        if ((!glusterd_is_volume_quota_enabled (volinfo)) &&
+            (type != GF_QUOTA_OPTION_TYPE_ENABLE)) {
+                *op_errstr = gf_strdup ("Quota is disabled, please enable "
+                                        "quota");
+                ret = -1;
+                goto out;
+        }
+
         if ((priv->op_version == GD_OP_VERSION_MIN) &&
             (type > GF_QUOTA_OPTION_TYPE_VERSION)) {
                 gf_asprintf (op_errstr, "Volume quota failed. The cluster is "
-                                        "operating at version %d. Option %s "
-                                        "is disallowed in this state.",
+                                        "operating at version %d. Quota command"
+                                        " %s is unavailable in this version.",
                                          priv->op_version,
                                          gd_quota_op_list[type]);
                 ret = -1;
@@ -1557,13 +1380,14 @@ glusterd_op_stage_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
         case GF_QUOTA_OPTION_TYPE_ENABLE:
         case GF_QUOTA_OPTION_TYPE_LIST:
                 /* Fuse mount req. only for enable & list-usage options*/
-                if (is_origin_glusterd () &&
+                if (is_origin_glusterd (dict) &&
                     !glusterd_is_fuse_available ()) {
                         *op_errstr = gf_strdup ("Fuse unavailable");
                         ret = -1;
                         goto out;
                 }
                 break;
+
         case GF_QUOTA_OPTION_TYPE_LIMIT_USAGE:
                 ret = dict_get_str (dict, "hard-limit", &hard_limit_str);
                 if (ret) {
@@ -1571,13 +1395,13 @@ glusterd_op_stage_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                                 "Faild to get hard-limit from dict");
                         goto out;
                 }
-                ret = gf_string2bytesize (hard_limit_str, &hard_limit);
+                ret = gf_string2bytesize_uint64 (hard_limit_str, &hard_limit);
                 if (ret) {
                         gf_log (this->name, GF_LOG_ERROR,
                                 "Failed to convert hard-limit string to value");
                         goto out;
                 }
-                if (hard_limit > INT64_MAX) {
+                if (hard_limit > UINT64_MAX) {
                         ret = -1;
                         ret = gf_asprintf (op_errstr, "Hard-limit %s is greater"
                                            " than %"PRId64"bytes. Please set a "
@@ -1587,6 +1411,9 @@ glusterd_op_stage_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                                 "greater than INT64_MAX", hard_limit_str);
                         goto out;
                 }
+                /*The break statement is missing here to allow intentional fall
+                 * through of code execution to the next switch case
+                 */
 
         case GF_QUOTA_OPTION_TYPE_REMOVE:
                 ret = glusterd_get_gfid_from_brick (dict, volinfo, rsp_dict,
@@ -1594,6 +1421,7 @@ glusterd_op_stage_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                 if (ret)
                         goto out;
                 break;
+
         case GF_QUOTA_OPTION_TYPE_SOFT_TIMEOUT:
         case GF_QUOTA_OPTION_TYPE_HARD_TIMEOUT:
         case GF_QUOTA_OPTION_TYPE_ALERT_TIME:
@@ -1602,9 +1430,11 @@ glusterd_op_stage_quota (dict_t *dict, char **op_errstr, dict_t *rsp_dict)
                 if (ret)
                         goto out;
                 break;
+
         default:
                 break;
         }
+
         ret = 0;
 
  out:

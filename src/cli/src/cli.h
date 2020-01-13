@@ -18,6 +18,7 @@
 #include "rpc-clnt.h"
 #include "glusterfs.h"
 #include "protocol-common.h"
+#include "logging.h"
 
 #include "cli1-xdr.h"
 
@@ -32,24 +33,9 @@
 #define CLI_DEFAULT_CMD_TIMEOUT              120
 #define CLI_TEN_MINUTES_TIMEOUT              600 //Longer timeout for volume top
 #define DEFAULT_CLI_LOG_FILE_DIRECTORY     DATADIR "/log/glusterfs"
-#define DEFAULT_LOG_FILE_DIRECTORY         DATADIR "/log/glusterfs"
-#define DEFAULT_VAR_RUN_DIRECTORY          DATADIR "/run/gluster"
 #define CLI_VOL_STATUS_BRICK_LEN              55
 #define CLI_TAB_LENGTH                         8
 #define CLI_BRICK_STATUS_LINE_LEN             78
-
-#define CLI_LOCAL_INIT(local, words, frame, dictionary) \
-        do {                                                 \
-                local = cli_local_get ();                    \
-                                                             \
-                if (local) {                                 \
-                        local->words = words;                \
-                        if (dictionary)                      \
-                                local->dict = dictionary;    \
-                        if (frame)                           \
-                                frame->local = local;        \
-                }                                            \
-        } while (0)
 
 enum argp_option_keys {
 	ARGP_DEBUG_KEY = 133,
@@ -178,6 +164,11 @@ struct cli_volume_status {
         char          *device;
         char          *inode_size;
 #endif
+};
+
+struct snap_config_opt_vals_ {
+        char           *op_name;
+        char           *question;
 };
 
 typedef struct cli_volume_status cli_volume_status_t;
@@ -399,4 +390,9 @@ cli_xml_output_vol_status_tasks_detail (cli_local_t *local, dict_t *dict);
 
 char *
 is_server_debug_xlator (void *myframe);
+
+int32_t
+cli_cmd_snapshot_parse (const char **words, int wordcount, dict_t **options,
+                        struct cli_state *state);
+
 #endif /* __CLI_H__ */

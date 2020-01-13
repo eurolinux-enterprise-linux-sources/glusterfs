@@ -32,6 +32,7 @@ extern struct cli_cmd cli_probe_cmds[];
 extern struct cli_cmd cli_log_cmds[];
 extern struct cli_cmd cli_system_cmds[];
 extern struct cli_cmd cli_bd_cmds[];
+extern struct cli_cmd snapshot_cmds[];
 struct cli_cmd cli_misc_cmds[];
 
 int
@@ -46,10 +47,7 @@ cli_cmd_display_help (struct cli_state *state, struct cli_cmd_word *in_word,
                       const char **words, int wordcount)
 {
         struct cli_cmd        *cmd[] = {volume_cmds, cli_probe_cmds,
-                                       cli_misc_cmds,
-#ifdef HAVE_BD_XLATOR
-                                       cli_bd_cmds,
-#endif
+                                       cli_misc_cmds, snapshot_cmds,
                                        NULL};
         struct cli_cmd        *cmd_ind = NULL;
         int                   i = 0;

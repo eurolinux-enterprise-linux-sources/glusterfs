@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2006-2012 Red Hat, Inc. <http://www.redhat.com>
+   Copyright (c) 2006-2013 Red Hat, Inc. <http://www.redhat.com>
    This file is part of GlusterFS.
 
    This file is licensed to you under your choice of the GNU Lesser
@@ -30,14 +30,17 @@
 #include "dict.h"
 #include "compat.h"
 #include "compat-errno.h"
+#include "syscall.h"
 #include "statedump.h"
 #include "glusterd-sm.h"
 #include "glusterd-op-sm.h"
 #include "glusterd-store.h"
 #include "glusterd-hooks.h"
 #include "glusterd-utils.h"
+#include "glusterd-locks.h"
 #include "common-utils.h"
 #include "run.h"
+#include "rpc-clnt-ping.h"
 
 #include "syncop.h"
 
@@ -48,12 +51,14 @@ extern struct rpcsvc_program gluster_cli_getspec_prog;
 extern struct rpcsvc_program gluster_pmap_prog;
 extern glusterd_op_info_t opinfo;
 extern struct rpcsvc_program gd_svc_mgmt_prog;
+extern struct rpcsvc_program gd_svc_mgmt_v3_prog;
 extern struct rpcsvc_program gd_svc_peer_prog;
 extern struct rpcsvc_program gd_svc_cli_prog;
-extern struct rpcsvc_program gd_svc_cli_prog_ro;
+extern struct rpcsvc_program gd_svc_cli_trusted_progs;
 extern struct rpc_clnt_program gd_brick_prog;
 extern struct rpcsvc_program glusterd_mgmt_hndsk_prog;
-extern struct rpcsvc_program glusterd_pingsvc;
+
+extern char snap_mount_folder[PATH_MAX];
 
 rpcsvc_cbk_program_t glusterd_cbk_prog = {
         .progname  = "Gluster Callback",
@@ -63,12 +68,12 @@ rpcsvc_cbk_program_t glusterd_cbk_prog = {
 
 struct rpcsvc_program *gd_inet_programs[] = {
         &gd_svc_peer_prog,
-        &gd_svc_cli_prog_ro,
+        &gd_svc_cli_trusted_progs,
         &gd_svc_mgmt_prog,
+        &gd_svc_mgmt_v3_prog,
         &gluster_pmap_prog,
         &gluster_handshake_prog,
         &glusterd_mgmt_hndsk_prog,
-        &glusterd_pingsvc
 };
 int gd_inet_programs_count = (sizeof (gd_inet_programs) /
                               sizeof (gd_inet_programs[0]));
@@ -109,6 +114,7 @@ const char *gd_op_list[GD_OP_MAX + 1] = {
         [GD_OP_COPY_FILE]               = "Copy File",
         [GD_OP_SYS_EXEC]                = "Execute system commands",
         [GD_OP_GSYNC_CREATE]            = "Geo-replication Create",
+        [GD_OP_SNAP]                    = "Snapshot",
         [GD_OP_MAX]                     = "Invalid op"
 };
 
@@ -134,12 +140,12 @@ glusterd_uuid_init ()
         GF_ASSERT (this);
         priv = this->private;
 
-	ret = glusterd_retrieve_uuid ();
-	if (ret == 0) {
-		gf_log (this->name, GF_LOG_INFO,
-			"retrieved UUID: %s", uuid_utoa (priv->uuid));
-		return 0;
-	}
+        ret = glusterd_retrieve_uuid ();
+        if (ret == 0) {
+                gf_log (this->name, GF_LOG_INFO,
+                        "retrieved UUID: %s", uuid_utoa (priv->uuid));
+                return 0;
+        }
 
         ret = glusterd_uuid_generate_save ();
 
@@ -193,20 +199,32 @@ glusterd_options_init (xlator_t *this)
                 goto out;
 
         ret = glusterd_store_retrieve_options (this);
-        if (ret == 0)
-                goto out;
+        if (ret == 0) {
+                goto set;
+        }
 
         ret = dict_set_str (priv->opts, GLUSTERD_GLOBAL_OPT_VERSION,
                             initial_version);
         if (ret)
                 goto out;
+
         ret = glusterd_store_options (this, priv->opts);
         if (ret) {
                 gf_log (this->name, GF_LOG_ERROR, "Unable to store version");
                 return ret;
         }
-out:
 
+set:
+        if (priv->op_version >= GD_OP_VERSION_RHS_3_0) {
+                ret = glusterd_check_and_set_config_limit (priv);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR, "Failed "
+                                "to set config limit in options");
+                        return ret;
+                }
+        }
+
+out:
         return 0;
 }
 int
@@ -307,7 +325,7 @@ out:
 }
 
 
-inline int32_t
+static inline int32_t
 glusterd_program_register (xlator_t *this, rpcsvc_t *svc,
                            rpcsvc_program_t *prog)
 {
@@ -800,7 +818,7 @@ check_prepare_mountbroker_root (char *mountbroker_root)
         dfd0 = dup (dfd);
 
         for (;;) {
-                ret = openat (dfd, "..", O_RDONLY);
+                ret = sys_openat (dfd, "..", O_RDONLY);
                 if (ret != -1) {
                         dfd2 = ret;
                         ret = fstat (dfd2, &st2);
@@ -835,11 +853,11 @@ check_prepare_mountbroker_root (char *mountbroker_root)
                 st = st2;
         }
 
-        ret = mkdirat (dfd0, MB_HIVE, 0711);
+        ret = sys_mkdirat (dfd0, MB_HIVE, 0711);
         if (ret == -1 && errno == EEXIST)
                 ret = 0;
         if (ret != -1)
-                ret = fstatat (dfd0, MB_HIVE, &st, AT_SYMLINK_NOFOLLOW);
+                ret = sys_fstatat (dfd0, MB_HIVE, &st, AT_SYMLINK_NOFOLLOW);
         if (ret == -1 || st.st_mode != (S_IFDIR|0711)) {
                 gf_log ("", GF_LOG_ERROR,
                         "failed to set up mountbroker-root directory %s",
@@ -936,35 +954,17 @@ _install_mount_spec (dict_t *opts, char *key, data_t *value, void *data)
                 "adding %smount spec failed: label: %s desc: %s",
                 georep ? GEOREP" " : "", label, pdesc);
 
+        if (mspec) {
+                if (mspec->patterns) {
+                        GF_FREE (mspec->patterns->components);
+                        GF_FREE (mspec->patterns);
+                }
+                GF_FREE (mspec);
+        }
+
         return -1;
 }
 
-
-static int
-gd_default_synctask_cbk (int ret, call_frame_t *frame, void *opaque)
-{
-        glusterd_conf_t     *priv = THIS->private;
-        synclock_unlock (&priv->big_lock);
-        return ret;
-}
-
-static void
-glusterd_launch_synctask (synctask_fn_t fn, void *opaque)
-{
-        xlator_t        *this = NULL;
-        glusterd_conf_t *priv = NULL;
-        int             ret   = -1;
-
-        this = THIS;
-        priv = this->private;
-
-        synclock_lock (&priv->big_lock);
-        ret = synctask_new (this->ctx->env, fn, gd_default_synctask_cbk, NULL,
-                            opaque);
-        if (ret)
-                gf_log (this->name, GF_LOG_CRITICAL, "Failed to spawn bricks"
-                        " and other volume related services");
-}
 
 int
 glusterd_uds_rpcsvc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
@@ -1083,6 +1083,71 @@ glusterd_stop_uds_listener (xlator_t *this)
         return;
 }
 
+static int
+glusterd_init_snap_folder (xlator_t *this)
+{
+        int             ret = -1;
+        struct stat     buf = {0,};
+
+        GF_ASSERT (this);
+
+        /* Snapshot volumes are mounted under /var/run/gluster/snaps folder.
+         * But /var/run is normally a symbolic link to /run folder, which
+         * creates problems as the entry point in the mtab for the mount point
+         * and glusterd maintained entry point will be different. Therefore
+         * identify the correct run folder and use it for snap volume mounting.
+         */
+        ret = lstat (GLUSTERD_VAR_RUN_DIR, &buf);
+        if (ret != 0) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "stat fails on %s, exiting. (errno = %d)",
+                        GLUSTERD_VAR_RUN_DIR, errno);
+                goto out;
+        }
+
+        /* If /var/run is symlink then use /run folder */
+        if (S_ISLNK (buf.st_mode)) {
+                strcpy (snap_mount_folder, GLUSTERD_RUN_DIR);
+        } else {
+                strcpy (snap_mount_folder, GLUSTERD_VAR_RUN_DIR);
+        }
+
+        strcat (snap_mount_folder, GLUSTERD_DEFAULT_SNAPS_BRICK_DIR);
+
+        ret = stat (snap_mount_folder, &buf);
+        if ((ret != 0) && (ENOENT != errno)) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "stat fails on %s, exiting. (errno = %d)",
+                        snap_mount_folder, errno);
+                ret = -1;
+                goto out;
+        }
+
+        if ((!ret) && (!S_ISDIR(buf.st_mode))) {
+                gf_log (this->name, GF_LOG_CRITICAL,
+                        "Provided snap path %s is not a directory,"
+                        "exiting", snap_mount_folder);
+                ret = -1;
+                goto out;
+        }
+
+        if ((-1 == ret) && (ENOENT == errno)) {
+                /* Create missing folders */
+                ret = mkdir_p (snap_mount_folder, 0777, _gf_true);
+
+                if (-1 == ret) {
+                        gf_log (this->name, GF_LOG_CRITICAL,
+                                "Unable to create directory %s"
+                                " ,errno = %d", snap_mount_folder, errno);
+                        goto out;
+                }
+        }
+
+out:
+        return ret;
+}
+
+
 /*
  * init - called during glusterd initialization
  *
@@ -1107,6 +1172,24 @@ init (xlator_t *this)
         int                i                 = 0;
         char              *valgrind_str      = NULL;
 
+#ifndef GF_DARWIN_HOST_OS
+        {
+                struct rlimit lim;
+                lim.rlim_cur = 65536;
+                lim.rlim_max = 65536;
+
+                if (setrlimit (RLIMIT_NOFILE, &lim) == -1) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to set 'ulimit -n "
+                                " 65536': %s", strerror(errno));
+                } else {
+                        gf_log (this->name, GF_LOG_INFO,
+                                "Maximum allowed open file descriptors "
+                                "set to 65536");
+                }
+        }
+#endif
+
         dir_data = dict_get (this->options, "working-directory");
 
         if (!dir_data) {
@@ -1120,7 +1203,7 @@ init (xlator_t *this)
         if ((ret != 0) && (ENOENT != errno)) {
                 gf_log (this->name, GF_LOG_ERROR,
                         "stat fails on %s, exiting. (errno = %d)",
-			workdir, errno);
+                        workdir, errno);
                 exit (1);
         }
 
@@ -1149,6 +1232,14 @@ init (xlator_t *this)
         gf_log (this->name, GF_LOG_INFO, "Using %s as working directory",
                 workdir);
 
+        ret = glusterd_init_snap_folder (this);
+
+        if (ret) {
+                gf_log (this->name, GF_LOG_CRITICAL, "Unable to create "
+                        "snap backend folder");
+                exit (1);
+        }
+
         snprintf (cmd_log_filename, PATH_MAX,"%s/.cmd_log_history",
                   DEFAULT_LOG_FILE_DIRECTORY);
         ret = gf_cmd_log_init (cmd_log_filename);
@@ -1166,6 +1257,17 @@ init (xlator_t *this)
         if ((-1 == ret) && (errno != EEXIST)) {
                 gf_log (this->name, GF_LOG_CRITICAL,
                         "Unable to create volume directory %s"
+                        " ,errno = %d", storedir, errno);
+                exit (1);
+        }
+
+        snprintf (storedir, PATH_MAX, "%s/snaps", workdir);
+
+        ret = mkdir (storedir, 0777);
+
+        if ((-1 == ret) && (errno != EEXIST)) {
+                gf_log (this->name, GF_LOG_CRITICAL,
+                        "Unable to create snaps directory %s"
                         " ,errno = %d", storedir, errno);
                 exit (1);
         }
@@ -1292,6 +1394,9 @@ init (xlator_t *this)
 
         INIT_LIST_HEAD (&conf->peers);
         INIT_LIST_HEAD (&conf->volumes);
+        INIT_LIST_HEAD (&conf->snapshots);
+        INIT_LIST_HEAD (&conf->missed_snaps_list);
+
         pthread_mutex_init (&conf->mutex, NULL);
         conf->rpc = rpc;
         conf->uds_rpc = uds_rpc;
@@ -1312,6 +1417,12 @@ init (xlator_t *this)
         if (ret)
                 goto out;
 
+         conf->base_port = GF_IANA_PRIV_PORTS_START;
+         if (dict_get_uint32(this->options, "base-port", &conf->base_port) == 0) {
+                 gf_log (this->name, GF_LOG_INFO,
+                         "base-port override: %d", conf->base_port);
+         }
+
         /* Set option to run bricks on valgrind if enabled in glusterd.vol */
         conf->valgrind = _gf_false;
         ret = dict_get_str (this->options, "run-with-valgrind", &valgrind_str);
@@ -1327,6 +1438,8 @@ init (xlator_t *this)
         }
 
         this->private = conf;
+        glusterd_mgmt_v3_lock_init ();
+        glusterd_txn_opinfo_dict_init ();
         (void) glusterd_nodesvc_set_online_status ("glustershd", _gf_false);
 
         GLUSTERD_GET_HOOKS_DIR (hooks_dir, GLUSTERD_HOOK_VER, conf);
@@ -1418,6 +1531,8 @@ fini (xlator_t *this)
         if (conf->handle)
                 gf_store_handle_destroy (conf->handle);
         glusterd_sm_tr_log_delete (&conf->op_sm_log);
+        glusterd_mgmt_v3_lock_fini ();
+        glusterd_txn_opinfo_dict_fini ();
         GF_FREE (conf);
 
         this->private = NULL;
@@ -1512,8 +1627,13 @@ struct volume_options options[] = {
         { .key = {"server-quorum-type"},
           .type = GF_OPTION_TYPE_STR,
           .value = { "none", "server"},
-          .description = "If set to server, enables the specified "
-          "volume to participate in quorum."
+          .description = "This feature is on the server-side i.e. in glusterd."
+                         " Whenever the glusterd on a machine observes that "
+                         "the quorum is not met, it brings down the bricks to "
+                         "prevent data split-brains. When the network "
+                         "connections are brought back up and the quorum is "
+                         "restored the bricks in the volume are brought back "
+                         "up."
         },
         { .key = {"server-quorum-ratio"},
           .type = GF_OPTION_TYPE_PERCENT,
@@ -1524,6 +1644,20 @@ struct volume_options options[] = {
           .type = GF_OPTION_TYPE_PATH,
           .description = "The socket file on which glusterd should listen for "
                         "cli requests. Default is "DEFAULT_GLUSTERD_SOCKFILE "."
+        },
+        { .key = {"base-port"},
+          .type = GF_OPTION_TYPE_INT,
+          .description = "Sets the base port for portmap query"
+        },
+        { .key = {"snap-brick-path"},
+          .type = GF_OPTION_TYPE_STR,
+          .description = "directory where the bricks for the snapshots will be created"
+        },
+        { .key  = {"ping-timeout"},
+          .type = GF_OPTION_TYPE_TIME,
+          .min  = 0,
+          .max  = 300,
+          .default_value = TOSTRING(RPC_DEFAULT_PING_TIMEOUT),
         },
         { .key   = {NULL} },
 };

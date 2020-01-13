@@ -179,7 +179,7 @@ logging_init (glusterfs_ctx_t *ctx, struct cli_state *state)
 
         /* CLI should not have something to DEBUG after the release,
            hence defaulting to INFO loglevel */
-        gf_log_set_loglevel ((state->log_level == -1) ? GF_LOG_INFO :
+        gf_log_set_loglevel ((state->log_level == GF_LOG_NONE) ? GF_LOG_INFO :
                              state->log_level);
 
         return 0;
@@ -278,7 +278,6 @@ cli_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
                 break;
         }
 
-        case RPC_CLNT_DESTROY:
         default:
                 gf_log (this->name, GF_LOG_TRACE,
                         "got some other RPC event %d", event);
@@ -554,9 +553,9 @@ cli_rpc_init (struct cli_state *state)
         if (!options)
                 goto out;
 
-        /* Connect using to glusterd using the specified method, giving
-         * preference to unix socket connection. If nothing is specified connect
-         * to the default glusterd socket
+        /* Connect to glusterd using the specified method, giving preference
+         * to a unix socket connection.  If nothing is specified, connect to
+         * the default glusterd socket.
          */
         if (state->glusterd_sock) {
                 gf_log ("cli", GF_LOG_INFO, "Connecting to glusterd using "

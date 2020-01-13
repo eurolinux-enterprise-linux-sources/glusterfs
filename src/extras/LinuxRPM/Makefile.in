@@ -61,11 +61,14 @@ AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
 AM_MAKEFLAGS = @AM_MAKEFLAGS@
 AR = @AR@
 ARGP_STANDALONE_CPPFLAGS = @ARGP_STANDALONE_CPPFLAGS@
+ARGP_STANDALONE_DIR = @ARGP_STANDALONE_DIR@
 ARGP_STANDALONE_LDADD = @ARGP_STANDALONE_LDADD@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
+BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
+BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -91,11 +94,15 @@ GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_CFLAGS = @GF_GLUSTERFS_CFLAGS@
 GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
+GLIB_CFLAGS = @GLIB_CFLAGS@
+GLIB_LIBS = @GLIB_LIBS@
+GLUPY_SUBDIR = @GLUPY_SUBDIR@
+GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
+GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -117,6 +124,8 @@ LIBAIO = @LIBAIO@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
+LIBZ_CFLAGS = @LIBZ_CFLAGS@
+LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -132,11 +141,16 @@ OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
 PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_RELEASE = @PACKAGE_RELEASE@
 PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
+PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
+PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
+PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
@@ -144,6 +158,7 @@ PYTHON_VERSION = @PYTHON_VERSION@
 RANLIB = @RANLIB@
 RDMA_SUBDIR = @RDMA_SUBDIR@
 RLLIBS = @RLLIBS@
+RPCGEN = @RPCGEN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -160,6 +175,8 @@ XML_CPPFLAGS = @XML_CPPFLAGS@
 XML_LIBS = @XML_LIBS@
 YACC = @YACC@
 YFLAGS = @YFLAGS@
+ZLIB_CFLAGS = @ZLIB_CFLAGS@
+ZLIB_LIBS = @ZLIB_LIBS@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
@@ -217,15 +234,12 @@ sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
+systemddir = @systemddir@
 target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-GFS_TAR = ../../glusterfs-*git.tar.gz
-UFO_TAR = ../../gluster-swift-ufo-*git.tar.gz
-GFS_SPEC = ../../glusterfs.spec
-GRIZZLY_TAR = swift-1.8.0.tar.gz
-GRIZZLY_URL = https://launchpad.net/swift/grizzly/1.8.0/+download/$(GRIZZLY_TAR)
+GFS_TAR = ../../glusterfs-$(VERSION).tar.gz
 all: all-am
 
 .SUFFIXES:
@@ -419,42 +433,18 @@ all:
 glusterrpms: prep srcrpm rpms
 	-rm -rf rpmbuild
 
-glusterrpmswithoutufo: prep srcrpm rpmswithoutufo
-	-rm -rf rpmbuild
-
-prep::
-	if [ ! -e $(GFS_TAR) -a ! -e $(UFO_TAR) -a ! -e $(GFS_SPEC) ]; then \
-		$(MAKE) -c ../.. dist; \
+prep:
+	if [ ! -e $(GFS_TAR) ]; then \
+		$(MAKE) -C ../.. dist; \
 	fi
+	-mkdir -p rpmbuild/BUILD
 	-mkdir -p rpmbuild/SPECS
 	-mkdir -p rpmbuild/RPMS
 	-mkdir -p rpmbuild/SRPMS
-	-rm -rf rpmbuild/SOURCES
-	@if [ -d /d/cache/glusterfs -a -e /d/cache/glusterfs/sources ]; then \
-		echo "copying glusterfs rpm files from local cache..."  ; \
-		mkdir -p ./rpmbuild/SOURCES; \
-		cp /d/cache/glusterfs/* ./rpmbuild/SOURCES/ ; \
-	elif [ -x /usr/bin/git ]; then \
-		echo "fetching glusterfs rpm files from fedora git repo..."; \
-		cd ./rpmbuild && git clone git://pkgs.fedoraproject.org/glusterfs.git > /dev/null && mv glusterfs SOURCES; \
-	else \
-		echo "glusterfs rpm files not fetched, you don't have git installed!" ; \
-		exit 1 ; \
-	fi
+	-mkdir -p rpmbuild/SOURCES
+	-rm -rf rpmbuild/SOURCES/*
 	cp ../../*.tar.gz ./rpmbuild/SOURCES
 	cp ../../glusterfs.spec ./rpmbuild/SPECS
-
-prep::
-	@if [ -d /d/cache -a -f /d/cache/$(GRIZZLY_TAR) -a -d ./rpmbuild/SOURCES ]; then \
-		echo "copying swift source tarball from local cache..." ; \
-		cp /d/cache/$(GRIZZLY_TAR) ./rpmbuild/SOURCES/ ; \
-	elif [ -x /usr/bin/curl -a -d ./rpmbuild/SOURCES ]; then \
-		echo "fetching swift from launchpad.net..." ; \
-		cd ./rpmbuild/SOURCES && /usr/bin/curl -sOL $(GRIZZLY_URL) ; \
-	else \
-		echo "swift source not fetched, you don't have curl installed!" ; \
-		exit 1 ; \
-	fi
 
 srcrpm:
 	rpmbuild --define '_topdir $(shell pwd)/rpmbuild' -bs rpmbuild/SPECS/glusterfs.spec
@@ -462,10 +452,6 @@ srcrpm:
 
 rpms:
 	rpmbuild --define '_topdir $(shell pwd)/rpmbuild' -bb rpmbuild/SPECS/glusterfs.spec
-	mv rpmbuild/RPMS/*/* .
-
-rpmswithoutufo:
-	rpmbuild --define '_topdir $(shell pwd)/rpmbuild' -bb rpmbuild/SPECS/glusterfs.spec --without ufo
 	mv rpmbuild/RPMS/*/* .
 
 # EPEL-5 does not like new versions of rpmbuild and requires some

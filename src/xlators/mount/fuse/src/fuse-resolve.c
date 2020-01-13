@@ -163,9 +163,9 @@ fuse_resolve_gfid_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto out;
         }
 
-        loc_wipe (&resolve->resolve_loc);
-
         link_inode = inode_link (inode, NULL, NULL, buf);
+
+        loc_wipe (&resolve->resolve_loc);
 
         if (!link_inode)
                 goto out;
@@ -329,8 +329,8 @@ fuse_resolve_inode_simple (fuse_state_t *state)
 	inode = resolve->hint;
 	if (inode->table == state->itable)
 		inode_ref (inode);
-        else
-                inode = inode_find (state->itable, resolve->gfid);
+	else
+		inode = inode_find (state->itable, resolve->gfid);
 
         if (inode) {
 		if (!fuse_inode_needs_lookup (inode, THIS))
@@ -381,6 +381,8 @@ fuse_migrate_fd_task (void *data)
         basefd = state->fd;
 
         basefd_ctx = fuse_fd_ctx_get (state->this, basefd);
+        if (!basefd_ctx)
+                goto out;
 
         LOCK (&basefd->lock);
         {

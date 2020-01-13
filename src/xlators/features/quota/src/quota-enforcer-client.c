@@ -76,7 +76,7 @@ quota_enforcer_submit_request (void *req, call_frame_t *frame,
                 iobuf = iobuf_get2 (this->ctx->iobuf_pool, xdr_size);
                 if (!iobuf) {
                         goto out;
-                };
+                }
 
                 if (!iobref) {
                         iobref = iobref_new ();
@@ -210,7 +210,6 @@ quota_enforcer_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc,
         gfs3_lookup_req         req        = {{0,},};
         int                     ret        = 0;
         int                     op_errno   = ESTALE;
-        struct iovec     vector[MAX_IOVEC] = {{0}, };
         quota_priv_t           *priv       = NULL;
 
         if (!frame || !this || !loc)
@@ -218,8 +217,6 @@ quota_enforcer_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc,
 
         local = frame->local;
         local->validate_cbk = validate_cbk;
-
-        memset (vector, 0, sizeof (vector));
 
         priv = this->private;
 
@@ -298,9 +295,40 @@ quota_enforcer_notify (struct rpc_clnt *rpc, void *mydata,
         return ret;
 }
 
-//Sets quota priv->rpc_clnt to a started rpc_clnt.
-//Creates a new rpc_clnt if quota_priv doesn't have one already
 int
+quota_enforcer_blocking_connect (rpc_clnt_t *rpc)
+{
+        dict_t *options = NULL;
+        int     ret     = -1;
+
+        options = dict_new ();
+        if (options == NULL)
+                goto out;
+
+        ret = dict_set_str (options, "non-blocking-io", "no");
+        if (ret)
+                goto out;
+
+        rpc->conn.trans->reconfigure (rpc->conn.trans, options);
+
+        rpc_clnt_start (rpc);
+
+        ret = dict_set_str (options, "non-blocking-io", "yes");
+        if (ret)
+                goto out;
+
+        rpc->conn.trans->reconfigure (rpc->conn.trans, options);
+
+        ret = 0;
+out:
+        dict_unref (options);
+
+        return ret;
+}
+
+//Returns a started rpc_clnt. Creates a new rpc_clnt if quota_priv doesn't have
+//one already
+struct rpc_clnt *
 quota_enforcer_init (xlator_t *this, dict_t *options)
 {
         struct rpc_clnt *rpc  = NULL;
@@ -308,14 +336,21 @@ quota_enforcer_init (xlator_t *this, dict_t *options)
         int              ret  = -1;
 
         priv = this->private;
-        if (priv->rpc_clnt) {
-                gf_log (this->name, GF_LOG_TRACE, "quota enforcer clnt already "
-                        "inited");
-                //Turns out to be a NOP if the clnt is already connected.
-                return rpc_clnt_start (priv->rpc_clnt);
+
+        LOCK (&priv->lock);
+        {
+                if (priv->rpc_clnt) {
+                        ret = 0;
+                        rpc = priv->rpc_clnt;
+                }
         }
+        UNLOCK (&priv->lock);
+
+        if (rpc)
+                goto out;
 
         priv->quota_enforcer = &quota_enforcer_clnt;
+
         ret = dict_set_str (options, "transport.address-family", "unix");
         if (ret)
                 goto out;
@@ -341,22 +376,19 @@ quota_enforcer_init (xlator_t *this, dict_t *options)
                 goto out;
         }
 
-        ret = rpc_clnt_start (rpc);
-        if (ret) {
-                gf_log (this->name, GF_LOG_ERROR, "Failed to start quota"
-                        "enforcer client");
+        ret = quota_enforcer_blocking_connect (rpc);
+        if (ret)
                 goto out;
-        }
 
-        priv->rpc_clnt = rpc;
         ret = 0;
 out:
         if (ret) {
                 if (rpc)
                         rpc_clnt_unref (rpc);
+                rpc = NULL;
         }
 
-        return ret;
+        return rpc;
 }
 
 struct rpc_clnt_procedure quota_enforcer_actors[GF_AGGREGATOR_MAXVALUE] = {

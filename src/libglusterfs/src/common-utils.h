@@ -27,6 +27,7 @@
 #ifndef GF_BSD_HOST_OS
 #include <alloca.h>
 #endif
+#include <limits.h>
 
 void trap (void);
 
@@ -41,7 +42,8 @@ void trap (void);
 #include "mem-pool.h"
 #include "uuid.h"
 
-
+#define STRINGIFY(val) #val
+#define TOSTRING(val) STRINGIFY(val)
 
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
@@ -86,6 +88,9 @@ void trap (void);
 #define GF_DAY_IN_SECONDS (24*60*60)
 #define GF_WEEK_IN_SECONDS (7*24*60*60)
 
+/* Default timeout for both barrier and changelog translator */
+#define BARRIER_TIMEOUT "120"
+
 enum _gf_boolean
 {
 	_gf_false = 0,
@@ -101,12 +106,13 @@ enum _gf_boolean
  */
 enum _gf_client_pid
 {
-        GF_CLIENT_PID_MAX    =  0,
-        GF_CLIENT_PID_GSYNCD = -1,
-        GF_CLIENT_PID_HADOOP = -2,
-        GF_CLIENT_PID_DEFRAG = -3,
-        GF_CLIENT_PID_NO_ROOT_SQUASH = -4,
-        GF_CLIENT_PID_QUOTA  = -5,
+        GF_CLIENT_PID_MAX               =  0,
+        GF_CLIENT_PID_GSYNCD            = -1,
+        GF_CLIENT_PID_HADOOP            = -2,
+        GF_CLIENT_PID_DEFRAG            = -3,
+        GF_CLIENT_PID_NO_ROOT_SQUASH    = -4,
+        GF_CLIENT_PID_QUOTA_MOUNT       = -5,
+        GF_CLIENT_PID_AFR_SELF_HEALD    = -6,
 };
 
 typedef enum _gf_boolean gf_boolean_t;
@@ -115,10 +121,13 @@ typedef int (*gf_cmp) (void *, void *);
 
 void gf_global_variable_init(void);
 
-in_addr_t gf_resolve_ip (const char *hostname, void **dnscache);
+int32_t gf_resolve_ip6 (const char *hostname, uint16_t port, int family,
+                        void **dnscache, struct addrinfo **addr_info);
 
 void gf_log_dump_graph (FILE *specfp, glusterfs_graph_t *graph);
 void gf_print_trace (int32_t signal, glusterfs_ctx_t *ctx);
+int  gf_set_log_file_path (cmd_args_t *cmd_args);
+int  gf_set_log_ident (cmd_args_t *cmd_args);
 
 #define VECTORSIZE(count) (count * (sizeof (struct iovec)))
 
@@ -213,7 +222,6 @@ void gf_print_trace (int32_t signal, glusterfs_ctx_t *ctx);
                 }                                                       \
         } while (0)
 
-
 #define GF_IF_NATIVE_XATTR_GOTO(pattern, key, op_errno, label)          \
         do {                                                            \
                 if (!key) {                                             \
@@ -259,6 +267,8 @@ union gf_sock_union {
 };
 
 #define GF_HIDDEN_PATH ".glusterfs"
+
+#define IOV_MIN(n) min(IOV_MAX,n)
 
 static inline void
 iov_free (struct iovec *vector, int count)
@@ -476,6 +486,7 @@ typedef enum {
         gf_timefmt_Ymd_T,   /* YYYY/MM-DD-hh:mm:ss */
         gf_timefmt_bdT,     /* ddd DD hh:mm:ss */
         gf_timefmt_F_HMS,   /* YYYY-MM-DD hhmmss */
+	gf_timefmt_dirent,
         gf_timefmt_last
 } gf_timefmts;
 
@@ -483,12 +494,12 @@ static inline void
 gf_time_fmt (char *dst, size_t sz_dst, time_t utime, unsigned int fmt)
 {
         extern void _gf_timestuff (gf_timefmts *, const char ***, const char ***);
-        static gf_timefmts timefmt_last = (gf_timefmts) -1;
+        static gf_timefmts timefmt_last = (gf_timefmts) - 1;
         static const char **fmts;
         static const char **zeros;
         struct tm tm;
 
-        if (timefmt_last == -1)
+        if (timefmt_last == (gf_timefmts) - 1)
                 _gf_timestuff (&timefmt_last, &fmts, &zeros);
         if (timefmt_last < fmt) fmt = gf_timefmt_default;
         if (utime && gmtime_r (&utime, &tm) != NULL) {
@@ -547,8 +558,9 @@ int gf_string2uint8_base10 (const char *str, uint8_t *n);
 int gf_string2uint16_base10 (const char *str, uint16_t *n);
 int gf_string2uint32_base10 (const char *str, uint32_t *n);
 int gf_string2uint64_base10 (const char *str, uint64_t *n);
-
 int gf_string2bytesize (const char *str, uint64_t *n);
+int gf_string2bytesize_size (const char *str, size_t *n);
+int gf_string2bytesize_uint64 (const char *str, uint64_t *n);
 int gf_string2percent_or_bytesize (const char *str, uint64_t *n,
 				   gf_boolean_t *is_percent);
 
@@ -575,9 +587,8 @@ char valid_host_name (char *address, int length);
 char valid_ipv4_address (char *address, int length, gf_boolean_t wildcard_acc);
 char valid_ipv6_address (char *address, int length, gf_boolean_t wildcard_acc);
 char valid_internet_address (char *address, gf_boolean_t wildcard_acc);
-char valid_ipv4_wildcard_check (char *address);
-char valid_ipv6_wildcard_check (char *address);
-char valid_wildcard_internet_address (char *address);
+gf_boolean_t valid_mount_auth_address (char *address);
+gf_boolean_t valid_ipv4_subnetwork (const char *address);
 gf_boolean_t gf_sock_union_equal_addr (union gf_sock_union *a,
                                        union gf_sock_union *b);
 
@@ -606,16 +617,30 @@ int gf_get_hostname_from_ip (char *client_ip, char **hostname);
 gf_boolean_t gf_is_local_addr (char *hostname);
 gf_boolean_t gf_is_same_address (char *host1, char *host2);
 void md5_wrapper(const unsigned char *data, size_t len, char *md5);
+int gf_set_timestamp  (const char *src, const char* dest);
 
-int gf_get_soft_limit (char *limit, char **soft_limit);
-int gf_get_hard_limit (char *limit, char **hard_limit);
+int gf_thread_create (pthread_t *thread, const pthread_attr_t *attr,
+		      void *(*start_routine)(void *), void *arg);
+#ifdef __NetBSD__
+size_t backtrace(void **, size_t);
+char **backtrace_symbols(void *const *, size_t);
+#endif
 
 gf_boolean_t
 gf_is_service_running (char *pidfile, int *pid);
 int
 gf_skip_header_section (int fd, int header_len);
+
+struct iatt;
+struct _dict;
+
+gf_boolean_t
+dht_is_linkfile (struct iatt *buf, struct _dict *dict);
+
 int
-gf_thread_create (pthread_t *thread, const pthread_attr_t *attr,
-		      void *(*start_routine)(void *), void *arg);
+gf_check_log_format (const char *value);
+
+int
+gf_check_logger (const char *value);
 
 #endif /* _COMMON_UTILS_H */

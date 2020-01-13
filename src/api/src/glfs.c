@@ -20,7 +20,6 @@
   - handle SEEK_END failure in _lseek()
   - handle umask (per filesystem?)
   - make itables LRU based
-  - implement glfs_fini()
   - 0-copy for readv/writev
   - reconcile the open/creat mess
 */
@@ -67,7 +66,11 @@ glusterfs_ctx_defaults_init (glusterfs_ctx_t *ctx)
 	call_pool_t   *pool = NULL;
 	int	       ret = -1;
 
-	xlator_mem_acct_init (THIS, glfs_mt_end);
+	xlator_mem_acct_init (THIS, glfs_mt_end + 1);
+
+	if (!ctx) {
+		goto err;
+	}
 
 	ctx->process_uuid = generate_glusterfs_ctx_id ();
 	if (!ctx->process_uuid) {
@@ -86,7 +89,7 @@ glusterfs_ctx_defaults_init (glusterfs_ctx_t *ctx)
 		goto err;
 	}
 
-	ctx->env = syncenv_new (0);
+	ctx->env = syncenv_new (0, 0, 0);
 	if (!ctx->env) {
 		goto err;
 	}
@@ -126,8 +129,15 @@ glusterfs_ctx_defaults_init (glusterfs_ctx_t *ctx)
 	if (!ctx->dict_data_pool)
 		goto err;
 
+        ctx->logbuf_pool = mem_pool_new (log_buf_t,
+                                         GF_MEMPOOL_COUNT_OF_LRU_BUF_T);
+        if (!ctx->logbuf_pool)
+                goto err;
+
 	INIT_LIST_HEAD (&pool->all_frames);
 	INIT_LIST_HEAD (&ctx->cmd_args.xlator_options);
+        INIT_LIST_HEAD (&ctx->cmd_args.volfile_servers);
+
 	LOCK_INIT (&pool->lock);
 	ctx->pool = pool;
 
@@ -152,6 +162,8 @@ err:
 			mem_pool_destroy (ctx->dict_data_pool);
 		if (ctx->dict_pair_pool)
 			mem_pool_destroy (ctx->dict_pair_pool);
+                if (ctx->logbuf_pool)
+                        mem_pool_destroy (ctx->logbuf_pool);
 	}
 
 	return ret;
@@ -211,19 +223,10 @@ err:
 static FILE *
 get_volfp (struct glfs *fs)
 {
-	int	     ret = 0;
 	cmd_args_t  *cmd_args = NULL;
 	FILE	    *specfp = NULL;
-	struct stat  statbuf;
 
 	cmd_args = &fs->ctx->cmd_args;
-
-	ret = lstat (cmd_args->volfile, &statbuf);
-	if (ret == -1) {
-		gf_log ("glfs", GF_LOG_ERROR,
-			"%s: %s", cmd_args->volfile, strerror (errno));
-		return NULL;
-	}
 
 	if ((specfp = fopen (cmd_args->volfile, "r")) == NULL) {
 		gf_log ("glfs", GF_LOG_ERROR,
@@ -316,6 +319,108 @@ enomem:
 	GF_FREE (option);
 
 	return -1;
+}
+
+int
+glfs_unset_volfile_server (struct glfs *fs, const char *transport,
+                           const char *host, const int port)
+{
+        cmd_args_t       *cmd_args = NULL;
+        server_cmdline_t *server = NULL;
+        int               ret = -1;
+
+        if (!transport || !host || !port) {
+                errno = EINVAL;
+                return ret;
+        }
+
+        cmd_args = &fs->ctx->cmd_args;
+        list_for_each_entry(server, &cmd_args->curr_server->list, list) {
+                if ((!strcmp(server->volfile_server, host) &&
+                     !strcmp(server->transport, transport) &&
+                     (server->port == port))) {
+                        list_del (&server->list);
+                        ret = 0;
+                        goto out;
+                }
+        }
+
+out:
+        return ret;
+}
+
+int
+glfs_set_volfile_server (struct glfs *fs, const char *transport,
+                         const char *host, int port)
+{
+        cmd_args_t            *cmd_args = NULL;
+        server_cmdline_t      *server = NULL;
+        server_cmdline_t      *tmp = NULL;
+        int                    ret = -1;
+
+        if (!transport || !host) {
+                errno = EINVAL;
+                return ret;
+        }
+
+        cmd_args = &fs->ctx->cmd_args;
+
+        cmd_args->max_connect_attempts = 1;
+
+        server = GF_CALLOC (1, sizeof (server_cmdline_t),
+                            glfs_mt_server_cmdline_t);
+
+        if (!server) {
+                errno = ENOMEM;
+                goto out;
+        }
+
+        INIT_LIST_HEAD (&server->list);
+
+        server->volfile_server = gf_strdup (host);
+        if (!server->volfile_server) {
+                errno = ENOMEM;
+                goto out;
+        }
+
+        server->transport = gf_strdup (transport);
+        if (!server->transport) {
+                errno = ENOMEM;
+                goto out;
+        }
+
+        server->port = port;
+
+        if (!cmd_args->volfile_server) {
+                cmd_args->volfile_server = server->volfile_server;
+                cmd_args->volfile_server_transport = server->transport;
+                cmd_args->volfile_server_port = server->port;
+                cmd_args->curr_server = server;
+        }
+
+        list_for_each_entry(tmp, &cmd_args->volfile_servers, list) {
+                if ((!strcmp(tmp->volfile_server, host) &&
+                     !strcmp(tmp->transport, transport) &&
+                     (tmp->port == port))) {
+                        errno = EEXIST;
+                        ret = -1;
+                        goto out;
+                }
+        }
+
+        list_add_tail (&server->list, &cmd_args->volfile_servers);
+
+        ret = 0;
+out:
+        if (ret == -1) {
+                if (server) {
+                        GF_FREE (server->volfile_server);
+                        GF_FREE (server->transport);
+                        GF_FREE (server);
+                }
+        }
+
+        return ret;
 }
 
 int glfs_setfsuid (uid_t fsuid)
@@ -417,10 +522,6 @@ glfs_new (const char *volname)
 		return NULL;
 	}
 
-#ifdef DEBUG
-        gf_mem_acct_enable_set (ctx);
-#endif
-
 	/* first globals init, for gf_mem_acct_enable_set () */
 	ret = glusterfs_globals_init (ctx);
 	if (ret)
@@ -470,41 +571,34 @@ glfs_set_volfile (struct glfs *fs, const char *volfile)
 
 
 int
-glfs_set_volfile_server (struct glfs *fs, const char *transport,
-			 const char *host, int port)
-{
-	cmd_args_t  *cmd_args = NULL;
-
-	cmd_args = &fs->ctx->cmd_args;
-
-	if (vol_assigned (cmd_args))
-		return -1;
-
-	cmd_args->volfile_server = gf_strdup (host);
-	cmd_args->volfile_server_transport = gf_strdup (transport);
-	cmd_args->volfile_server_port = port;
-	cmd_args->max_connect_attempts = 2;
-
-	return 0;
-}
-
-
-int
 glfs_set_logging (struct glfs *fs, const char *logfile, int loglevel)
 {
-	int  ret = 0;
+        int  ret = 0;
+        char *tmplog = NULL;
 
-	if (logfile) {
-                /* passing ident as NULL means to use default ident for syslog */
-		ret = gf_log_init (fs->ctx, logfile, NULL);
-		if (ret)
-			return ret;
-	}
+        if (!logfile) {
+                ret = gf_set_log_file_path (&fs->ctx->cmd_args);
+                if (ret)
+                        goto out;
+                tmplog = fs->ctx->cmd_args.log_file;
+        } else {
+                tmplog = (char *)logfile;
+        }
 
-	if (loglevel >= 0)
-		gf_log_set_loglevel (loglevel);
+        /* finish log set parameters before init */
+        if (loglevel >= 0)
+                gf_log_set_loglevel (loglevel);
 
-	return ret;
+        ret = gf_log_init (fs->ctx, tmplog, NULL);
+        if (ret)
+                goto out;
+
+        ret = gf_log_inject_timer_event (fs->ctx);
+        if (ret)
+                goto out;
+
+out:
+        return ret;
 }
 
 
@@ -587,6 +681,13 @@ glfs_init_async (struct glfs *fs, glfs_init_cbk cbk)
 {
 	int  ret = -1;
 
+	if (!fs || !fs->ctx) {
+		gf_log ("glfs", GF_LOG_ERROR,
+			"fs is not properly initialized.");
+		errno = EINVAL;
+		return ret;
+	}
+
 	fs->init_cbk = cbk;
 
 	ret = glfs_init_common (fs);
@@ -599,6 +700,13 @@ int
 glfs_init (struct glfs *fs)
 {
 	int  ret = -1;
+
+	if (!fs || !fs->ctx) {
+		gf_log ("glfs", GF_LOG_ERROR,
+			"fs is not properly initialized.");
+		errno = EINVAL;
+		return ret;
+	}
 
 	ret = glfs_init_common (fs);
 	if (ret)
@@ -663,4 +771,24 @@ glfs_fini (struct glfs *fs)
                 ret = -1;
 
         return ret;
+}
+
+ssize_t
+glfs_get_volfile (struct glfs *fs, void *buf, size_t len)
+{
+        ssize_t         res;
+
+        glfs_lock(fs);
+        if (len >= fs->oldvollen) {
+                gf_log ("glfs", GF_LOG_TRACE, "copying %lu to %p", len, buf);
+                memcpy(buf,fs->oldvolfile,len);
+                res = len;
+        }
+        else {
+                res = len - fs->oldvollen;
+                gf_log ("glfs", GF_LOG_TRACE, "buffer is %ld too short", -res);
+        }
+        glfs_unlock(fs);
+
+        return res;
 }

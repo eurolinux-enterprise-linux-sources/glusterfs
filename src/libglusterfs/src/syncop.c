@@ -14,7 +14,6 @@
 #endif
 
 #include "syncop.h"
-#include "common-utils.h"
 
 int
 syncopctx_setfsuid (void *uid)
@@ -170,6 +169,46 @@ out:
 	return ret;
 }
 
+int
+syncopctx_setfspid (void *pid)
+{
+	struct syncopctx *opctx = NULL;
+	int               ret = 0;
+
+	/* In args check */
+	if (!pid) {
+		ret = -1;
+		errno = EINVAL;
+		goto out;
+	}
+
+	opctx = syncopctx_getctx ();
+
+	/* alloc for this thread the first time */
+	if (!opctx) {
+		opctx = GF_CALLOC (1, sizeof (*opctx), gf_common_mt_syncopctx);
+		if (!opctx) {
+			ret = -1;
+			goto out;
+		}
+
+		ret = syncopctx_setctx (opctx);
+		if (ret != 0) {
+			GF_FREE (opctx);
+			opctx = NULL;
+			goto out;
+		}
+	}
+
+out:
+	if (opctx && pid) {
+		opctx->pid = *(pid_t *)pid;
+		opctx->valid |= SYNCOPCTX_PID;
+	}
+
+	return ret;
+}
+
 static void
 __run (struct synctask *task)
 {
@@ -183,7 +222,7 @@ __run (struct synctask *task)
         case SYNCTASK_SUSPEND:
                 break;
         case SYNCTASK_RUN:
-                gf_log (task->xl->name, GF_LOG_WARNING,
+                gf_log (task->xl->name, GF_LOG_DEBUG,
                         "re-running already running task");
                 env->runcount--;
                 break;
@@ -193,7 +232,11 @@ __run (struct synctask *task)
         case SYNCTASK_DONE:
                 gf_log (task->xl->name, GF_LOG_WARNING,
                         "running completed task");
-                break;
+		return;
+	case SYNCTASK_ZOMBIE:
+		gf_log (task->xl->name, GF_LOG_WARNING,
+			"attempted to wake up zombie!!");
+		return;
         }
 
         list_add_tail (&task->all_tasks, &env->runq);
@@ -225,7 +268,11 @@ __wait (struct synctask *task)
         case SYNCTASK_DONE:
                 gf_log (task->xl->name, GF_LOG_WARNING,
                         "running completed task");
-                break;
+                return;
+	case SYNCTASK_ZOMBIE:
+		gf_log (task->xl->name, GF_LOG_WARNING,
+			"attempted to sleep a zombie!!");
+		return;
         }
 
         list_add_tail (&task->all_tasks, &env->waitq);
@@ -323,6 +370,7 @@ synctask_done (struct synctask *task)
 
         pthread_mutex_lock (&task->mutex);
         {
+		task->state = SYNCTASK_ZOMBIE;
                 task->done = 1;
                 pthread_cond_broadcast (&task->cond);
         }
@@ -346,20 +394,19 @@ synctask_setid (struct synctask *task, uid_t uid, gid_t gid)
 }
 
 
-int
-synctask_new (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
-              call_frame_t *frame, void *opaque)
+struct synctask *
+synctask_create (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
+		 call_frame_t *frame, void *opaque)
 {
         struct synctask *newtask = NULL;
         xlator_t        *this    = THIS;
-        int              ret     = 0;
 
         VALIDATE_OR_GOTO (env, err);
         VALIDATE_OR_GOTO (fn, err);
 
         newtask = CALLOC (1, sizeof (*newtask));
         if (!newtask)
-                return -ENOMEM;
+                return NULL;
 
         newtask->frame      = frame;
         if (!frame) {
@@ -418,21 +465,7 @@ synctask_new (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
          */
         syncenv_scale(env);
 
-        if (!cbk) {
-                pthread_mutex_lock (&newtask->mutex);
-                {
-                        while (!newtask->done) {
-                                pthread_cond_wait (&newtask->cond, &newtask->mutex);
-                        }
-                }
-                pthread_mutex_unlock (&newtask->mutex);
-
-                ret = newtask->ret;
-
-                synctask_destroy (newtask);
-        }
-
-        return ret;
+	return newtask;
 err:
         if (newtask) {
                 FREE (newtask->stack);
@@ -440,7 +473,46 @@ err:
                         STACK_DESTROY (newtask->opframe->root);
                 FREE (newtask);
         }
-        return -1;
+
+        return NULL;
+}
+
+
+int
+synctask_join (struct synctask *task)
+{
+	int ret = 0;
+
+	pthread_mutex_lock (&task->mutex);
+	{
+		while (!task->done)
+			pthread_cond_wait (&task->cond, &task->mutex);
+	}
+	pthread_mutex_unlock (&task->mutex);
+
+	ret = task->ret;
+
+	synctask_destroy (task);
+
+	return ret;
+}
+
+
+int
+synctask_new (struct syncenv *env, synctask_fn_t fn, synctask_cbk_t cbk,
+              call_frame_t *frame, void *opaque)
+{
+	struct synctask *newtask = NULL;
+	int              ret = 0;
+
+	newtask = synctask_create (env, fn, cbk, frame, opaque);
+	if (!newtask)
+		return -1;
+
+        if (!cbk)
+		ret = synctask_join (newtask);
+
+        return ret;
 }
 
 
@@ -463,7 +535,7 @@ syncenv_task (struct syncproc *proc)
                         if (!list_empty (&env->runq))
                                 break;
                         if ((ret == ETIMEDOUT) &&
-                            (env->procs > SYNCENV_PROC_MIN)) {
+                            (env->procs > env->procmin)) {
                                 task = NULL;
                                 env->procs--;
                                 memset (proc, 0, sizeof (*proc));
@@ -563,13 +635,13 @@ syncenv_scale (struct syncenv *env)
                         goto unlock;
 
                 scale = env->runcount;
-                if (scale > SYNCENV_PROC_MAX)
-                        scale = SYNCENV_PROC_MAX;
+                if (scale > env->procmax)
+                        scale = env->procmax;
                 if (scale > env->procs)
                         diff = scale - env->procs;
                 while (diff) {
                         diff--;
-                        for (; (i < SYNCENV_PROC_MAX); i++) {
+                        for (; (i < env->procmax); i++) {
                                 if (env->proc[i].processor == 0)
                                         break;
                         }
@@ -596,11 +668,19 @@ syncenv_destroy (struct syncenv *env)
 
 
 struct syncenv *
-syncenv_new (size_t stacksize)
+syncenv_new (size_t stacksize, int procmin, int procmax)
 {
         struct syncenv *newenv = NULL;
         int             ret = 0;
         int             i = 0;
+
+	if (!procmin || procmin < 0)
+		procmin = SYNCENV_PROC_MIN;
+	if (!procmax || procmax > SYNCENV_PROC_MAX)
+		procmax = SYNCENV_PROC_MAX;
+
+	if (procmin > procmax)
+		return NULL;
 
         newenv = CALLOC (1, sizeof (*newenv));
 
@@ -616,11 +696,13 @@ syncenv_new (size_t stacksize)
         newenv->stacksize    = SYNCENV_DEFAULT_STACKSIZE;
         if (stacksize)
                 newenv->stacksize = stacksize;
+	newenv->procmin = procmin;
+	newenv->procmax = procmax;
 
-        for (i = 0; i < SYNCENV_PROC_MIN; i++) {
+        for (i = 0; i < newenv->procmin; i++) {
                 newenv->proc[i].env = newenv;
                 ret = gf_thread_create (&newenv->proc[i].processor, NULL,
-                                         syncenv_processor, &newenv->proc[i]);
+					syncenv_processor, &newenv->proc[i]);
                 if (ret)
                         break;
                 newenv->procs++;
@@ -941,7 +1023,8 @@ syncop_lookup (xlator_t *subvol, loc_t *loc, dict_t *xdata_req,
         else if (args.xdata)
                 dict_unref (args.xdata);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1017,7 +1100,8 @@ syncop_readdirp (xlator_t *subvol,
                 list_splice_init (&args.entries.list, &entries->list);
         /* TODO: need to free all the 'args.entries' in 'else' case */
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1076,7 +1160,8 @@ syncop_readdir (xlator_t *subvol,
                 list_splice_init (&args.entries.list, &entries->list);
         /* TODO: need to free all the 'args.entries' in 'else' case */
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1111,7 +1196,8 @@ syncop_opendir (xlator_t *subvol,
         SYNCOP (subvol, (&args), syncop_opendir_cbk, subvol->fops->opendir,
                 loc, fd, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1140,7 +1226,8 @@ syncop_fsyncdir (xlator_t *subvol, fd_t *fd, int datasync)
         SYNCOP (subvol, (&args), syncop_fsyncdir_cbk, subvol->fops->fsyncdir,
                 fd, datasync, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1161,14 +1248,15 @@ syncop_removexattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_removexattr (xlator_t *subvol, loc_t *loc, const char *name)
+syncop_removexattr (xlator_t *subvol, loc_t *loc, const char *name, dict_t *xdata)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_removexattr_cbk, subvol->fops->removexattr,
-                loc, name, NULL);
+                loc, name, xdata);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1189,14 +1277,15 @@ syncop_fremovexattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_fremovexattr (xlator_t *subvol, fd_t *fd, const char *name)
+syncop_fremovexattr (xlator_t *subvol, fd_t *fd, const char *name, dict_t *xdata)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_fremovexattr_cbk,
-                subvol->fops->fremovexattr, fd, name, NULL);
+                subvol->fops->fremovexattr, fd, name, xdata);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1225,7 +1314,8 @@ syncop_setxattr (xlator_t *subvol, loc_t *loc, dict_t *dict, int32_t flags)
         SYNCOP (subvol, (&args), syncop_setxattr_cbk, subvol->fops->setxattr,
                 loc, dict, flags, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1254,7 +1344,8 @@ syncop_fsetxattr (xlator_t *subvol, fd_t *fd, dict_t *dict, int32_t flags)
         SYNCOP (subvol, (&args), syncop_fsetxattr_cbk, subvol->fops->fsetxattr,
                 fd, dict, flags, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1289,7 +1380,8 @@ syncop_listxattr (xlator_t *subvol, loc_t *loc, dict_t **dict)
         else if (args.xattr)
                 dict_unref (args.xattr);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1306,7 +1398,8 @@ syncop_getxattr (xlator_t *subvol, loc_t *loc, dict_t **dict, const char *key)
         else if (args.xattr)
                 dict_unref (args.xattr);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1323,7 +1416,8 @@ syncop_fgetxattr (xlator_t *subvol, fd_t *fd, dict_t **dict, const char *key)
         else if (args.xattr)
                 dict_unref (args.xattr);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1362,7 +1456,8 @@ syncop_statfs (xlator_t *subvol, loc_t *loc, struct statvfs *buf)
         if (buf)
                 *buf = args.statvfs_buf;
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1403,7 +1498,8 @@ syncop_setattr (xlator_t *subvol, loc_t *loc, struct iatt *iatt, int valid,
         if (postop)
                 *postop = args.iatt2;
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1422,7 +1518,8 @@ syncop_fsetattr (xlator_t *subvol, fd_t *fd, struct iatt *iatt, int valid,
         if (postop)
                 *postop = args.iatt2;
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1451,7 +1548,8 @@ syncop_open (xlator_t *subvol, loc_t *loc, int32_t flags, fd_t *fd)
         SYNCOP (subvol, (&args), syncop_open_cbk, subvol->fops->open,
                 loc, flags, fd, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1513,7 +1611,8 @@ syncop_readv (xlator_t *subvol, fd_t *fd, size_t size, off_t off,
                 iobref_unref (args.iobref);
 
 out:
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1546,7 +1645,8 @@ syncop_writev (xlator_t *subvol, fd_t *fd, const struct iovec *vector,
                 fd, (struct iovec *) vector, count, offset, flags, iobref,
                 NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1562,7 +1662,8 @@ int syncop_write (xlator_t *subvol, fd_t *fd, const char *buf, int size,
         SYNCOP (subvol, (&args), syncop_writev_cbk, subvol->fops->writev,
                 fd, &vec, 1, offset, flags, iobref, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1605,10 +1706,11 @@ syncop_create (xlator_t *subvol, loc_t *loc, int32_t flags, mode_t mode,
         SYNCOP (subvol, (&args), syncop_create_cbk, subvol->fops->create,
                 loc, flags, mode, 0, fd, xdata);
 
-        errno = args.op_errno;
 	if (iatt)
 		*iatt = args.iatt1;
 
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1638,7 +1740,8 @@ syncop_unlink (xlator_t *subvol, loc_t *loc)
         SYNCOP (subvol, (&args), syncop_unlink_cbk, subvol->fops->unlink, loc,
                 0, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1660,14 +1763,15 @@ syncop_rmdir_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 }
 
 int
-syncop_rmdir (xlator_t *subvol, loc_t *loc)
+syncop_rmdir (xlator_t *subvol, loc_t *loc, int flags)
 {
         struct syncargs args = {0, };
 
         SYNCOP (subvol, (&args), syncop_rmdir_cbk, subvol->fops->rmdir, loc,
-                0, NULL);
+                flags, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1699,7 +1803,8 @@ syncop_link (xlator_t *subvol, loc_t *oldloc, loc_t *newloc)
         SYNCOP (subvol, (&args), syncop_link_cbk, subvol->fops->link,
                 oldloc, newloc, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
 
         return args.op_ret;
 }
@@ -1733,7 +1838,8 @@ syncop_rename (xlator_t *subvol, loc_t *oldloc, loc_t *newloc)
         SYNCOP (subvol, (&args), syncop_rename_cbk, subvol->fops->rename,
                 oldloc, newloc, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
 
         return args.op_ret;
 }
@@ -1764,7 +1870,8 @@ syncop_ftruncate (xlator_t *subvol, fd_t *fd, off_t offset)
         SYNCOP (subvol, (&args), syncop_ftruncate_cbk, subvol->fops->ftruncate,
                 fd, offset, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1776,7 +1883,8 @@ syncop_truncate (xlator_t *subvol, loc_t *loc, off_t offset)
         SYNCOP (subvol, (&args), syncop_ftruncate_cbk, subvol->fops->truncate,
                 loc, offset, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1806,7 +1914,8 @@ syncop_fsync (xlator_t *subvol, fd_t *fd, int dataonly)
         SYNCOP (subvol, (&args), syncop_fsync_cbk, subvol->fops->fsync,
                 fd, dataonly, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1837,7 +1946,8 @@ syncop_flush (xlator_t *subvol, fd_t *fd)
         SYNCOP (subvol, (&args), syncop_flush_cbk, subvol->fops->flush,
                 fd, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1872,7 +1982,8 @@ syncop_fstat (xlator_t *subvol, fd_t *fd, struct iatt *stbuf)
         if (stbuf)
                 *stbuf = args.iatt1;
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1888,7 +1999,8 @@ syncop_stat (xlator_t *subvol, loc_t *loc, struct iatt *stbuf)
         if (stbuf)
                 *stbuf = args.iatt1;
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1922,10 +2034,11 @@ syncop_symlink (xlator_t *subvol, loc_t *loc, const char *newpath, dict_t *dict,
         SYNCOP (subvol, (&args), syncop_symlink_cbk, subvol->fops->symlink,
                 newpath, loc, 0, dict);
 
-        errno = args.op_errno;
 	if (iatt)
 		*iatt = args.iatt1;
 
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -1962,7 +2075,8 @@ syncop_readlink (xlator_t *subvol, loc_t *loc, char **buffer, size_t size)
                 *buffer = args.buffer;
         else GF_FREE (args.buffer);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -1996,10 +2110,11 @@ syncop_mknod (xlator_t *subvol, loc_t *loc, mode_t mode, dev_t rdev,
         SYNCOP (subvol, (&args), syncop_mknod_cbk, subvol->fops->mknod,
                 loc, mode, rdev, 0, dict);
 
-        errno = args.op_errno;
 	if (iatt)
 		*iatt = args.iatt1;
 
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -2035,10 +2150,11 @@ syncop_mkdir (xlator_t *subvol, loc_t *loc, mode_t mode, dict_t *dict,
         SYNCOP (subvol, (&args), syncop_mkdir_cbk, subvol->fops->mkdir,
                 loc, mode, 0, dict);
 
-        errno = args.op_errno;
 	if (iatt)
 		*iatt = args.iatt1;
 
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 
 }
@@ -2058,6 +2174,21 @@ syncop_access_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         return 0;
 }
 
+/* posix_acl xlator will respond in different ways for access calls from
+   fuse and access calls from nfs. For fuse, checking op_ret is sufficient
+   to check whether the access call is successful or not. But for nfs the
+   mode of the access that is permitted is put into op_errno before unwind.
+   With syncop, the caller of syncop_access will not be able to get the
+   mode of the access despite call being successul (since syncop_access
+   returns only the op_ret collected in args).
+   Now, if access call is failed, then args.op_ret is returned to recognise
+   the failure. But if op_ret is zero, then the mode of access which is
+   set in args.op_errno is returned. Thus the caller of syncop_access
+   has to check whether the return value is less than zero or not. If the
+   return value it got is less than zero, then access call is failed.
+   If it is not, then the access call is successful and the value the caller
+   got is the mode of the access.
+*/
 int
 syncop_access (xlator_t *subvol, loc_t *loc, int32_t mask)
 {
@@ -2066,7 +2197,101 @@ syncop_access (xlator_t *subvol, loc_t *loc, int32_t mask)
         SYNCOP (subvol, (&args), syncop_access_cbk, subvol->fops->access,
                 loc, mask, NULL);
 
-        errno = args.op_errno;
+        if (args.op_ret < 0)
+                return -args.op_errno;
+        return args.op_errno;
+}
+
+
+int
+syncop_fallocate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                      int op_ret, int op_errno, struct iatt *prebuf,
+                      struct iatt *postbuf, dict_t *xdata)
+{
+	struct syncargs *args = NULL;
+
+        args = cookie;
+
+        args->op_ret   = op_ret;
+        args->op_errno = op_errno;
+
+        __wake (args);
+
+	return 0;
+}
+
+int
+syncop_fallocate(xlator_t *subvol, fd_t *fd, int32_t keep_size, off_t offset,
+		 size_t len)
+{
+        struct syncargs args = {0, };
+
+        SYNCOP (subvol, (&args), syncop_fallocate_cbk, subvol->fops->fallocate,
+                fd, keep_size, offset, len, NULL);
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
+        return args.op_ret;
+}
+
+
+int
+syncop_discard_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                    int op_ret, int op_errno, struct iatt *prebuf,
+                    struct iatt *postbuf, dict_t *xdata)
+{
+	struct syncargs *args = NULL;
+
+        args = cookie;
+
+        args->op_ret   = op_ret;
+        args->op_errno = op_errno;
+
+        __wake (args);
+
+	return 0;
+}
+
+int
+syncop_discard(xlator_t *subvol, fd_t *fd, off_t offset, size_t len)
+{
+        struct syncargs args = {0, };
+
+        SYNCOP (subvol, (&args), syncop_discard_cbk, subvol->fops->discard,
+                fd, offset, len, NULL);
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
+        return args.op_ret;
+}
+
+int
+syncop_zerofill_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                    int op_ret, int op_errno, struct iatt *prebuf,
+                    struct iatt *postbuf, dict_t *xdata)
+{
+        struct syncargs *args = NULL;
+
+        args = cookie;
+
+        args->op_ret   = op_ret;
+        args->op_errno = op_errno;
+
+        __wake (args);
+
+        return 0;
+}
+
+int
+syncop_zerofill(xlator_t *subvol, fd_t *fd, off_t offset, off_t len)
+{
+        struct syncargs args = {0, };
+
+        SYNCOP (subvol, (&args), syncop_zerofill_cbk, subvol->fops->zerofill,
+                fd, offset, len, NULL);
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
         return args.op_ret;
 }
 
@@ -2098,8 +2323,49 @@ syncop_lk (xlator_t *subvol, fd_t *fd, int cmd, struct gf_flock *flock)
         SYNCOP (subvol, (&args), syncop_lk_cbk, subvol->fops->lk,
                 fd, cmd, flock, NULL);
 
-        errno = args.op_errno;
 	*flock = args.flock;
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
+        return args.op_ret;
+}
+
+int32_t
+syncop_inodelk_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
+                    int32_t op_ret, int32_t op_errno, dict_t *xdata)
+{
+        struct syncargs *args = NULL;
+
+        args = cookie;
+
+        args->op_ret   = op_ret;
+        args->op_errno = op_errno;
+
+        if (xdata)
+                args->xdata = dict_ref (xdata);
+
+        __wake (args);
+
+        return 0;
+
+}
+
+int
+syncop_inodelk (xlator_t *subvol, const char *volume, loc_t *loc, int32_t cmd,
+                struct gf_flock *lock, dict_t *xdata_req, dict_t **xdata_rsp)
+{
+        struct syncargs args = {0, };
+
+        SYNCOP (subvol, (&args), syncop_inodelk_cbk, subvol->fops->inodelk,
+                volume, loc, cmd, lock, xdata_req);
+
+        if (xdata_rsp)
+                *xdata_rsp = args.xdata;
+        else
+                dict_unref (args.xdata);
+
+        if (args.op_ret < 0)
+                return -args.op_errno;
 
         return args.op_ret;
 }

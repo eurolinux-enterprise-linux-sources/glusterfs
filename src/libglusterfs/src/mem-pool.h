@@ -20,6 +20,19 @@
 #include <string.h>
 #include <stdarg.h>
 
+/*
+ * Need this for unit tests since inline functions
+ * access memory allocation and need to use the
+ * unit test versions
+ */
+#ifdef UNIT_TESTING
+#include <cmockery/cmockery_override.h>
+#endif
+
+#define GF_MEM_HEADER_SIZE  (4 + sizeof (size_t) + sizeof (xlator_t *) + 4 + 8)
+#define GF_MEM_TRAILER_SIZE 8
+#define GF_MEM_HEADER_MAGIC  0xCAFEBABE
+#define GF_MEM_TRAILER_MAGIC 0xBAADF00D
 
 struct mem_acct {
         uint32_t            num_types;
@@ -27,6 +40,7 @@ struct mem_acct {
 };
 
 struct mem_acct_rec {
+	const char     *typestr;
         size_t          size;
         size_t          max_size;
         uint32_t        num_allocs;
@@ -37,10 +51,10 @@ struct mem_acct_rec {
 
 
 void *
-__gf_calloc (size_t cnt, size_t size, uint32_t type);
+__gf_calloc (size_t cnt, size_t size, uint32_t type, const char *typestr);
 
 void *
-__gf_malloc (size_t size, uint32_t type);
+__gf_malloc (size_t size, uint32_t type, const char *typestr);
 
 void *
 __gf_realloc (void *ptr, size_t size);
@@ -62,7 +76,7 @@ void* __gf_default_malloc (size_t size)
 
         ptr = malloc (size);
         if (!ptr)
-                gf_log_nomem ("", GF_LOG_ALERT, size);
+                gf_msg_nomem ("", GF_LOG_ALERT, size);
 
         return ptr;
 }
@@ -74,7 +88,7 @@ void* __gf_default_calloc (int cnt, size_t size)
 
         ptr = calloc (cnt, size);
         if (!ptr)
-                gf_log_nomem ("", GF_LOG_ALERT, (cnt * size));
+                gf_msg_nomem ("", GF_LOG_ALERT, (cnt * size));
 
         return ptr;
 }
@@ -86,7 +100,7 @@ void* __gf_default_realloc (void *oldptr, size_t size)
 
         ptr = realloc (oldptr, size);
         if (!ptr)
-                gf_log_nomem ("", GF_LOG_ALERT, size);
+                gf_msg_nomem ("", GF_LOG_ALERT, size);
 
         return ptr;
 }
@@ -101,9 +115,9 @@ void* __gf_default_realloc (void *oldptr, size_t size)
                 ptr = (void *)0xeeeeeeee;       \
         }
 
-#define GF_CALLOC(nmemb, size, type) __gf_calloc (nmemb, size, type)
+#define GF_CALLOC(nmemb, size, type) __gf_calloc (nmemb, size, type, #type)
 
-#define GF_MALLOC(size, type)  __gf_malloc (size, type)
+#define GF_MALLOC(size, type)  __gf_malloc (size, type, #type)
 
 #define GF_REALLOC(ptr, size)  __gf_realloc (ptr, size)
 
@@ -148,7 +162,7 @@ char * gf_strdup (const char *src)
 }
 
 static inline void *
-gf_memdup (const void *src, void *dst, size_t size)
+gf_memdup (const void *src, size_t size)
 {
         void *dup_mem = NULL;
 

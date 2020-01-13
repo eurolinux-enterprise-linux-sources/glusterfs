@@ -72,15 +72,14 @@ am__base_list = \
 am__installdirs = "$(DESTDIR)$(libdir)"
 LTLIBRARIES = $(lib_LTLIBRARIES)
 libgfxdr_la_DEPENDENCIES =  \
-	$(top_builddir)/libglusterfs/src/libglusterfs.la \
-	$(top_builddir)/rpc/rpc-lib/src/libgfrpc.la
-am_libgfxdr_la_OBJECTS = libgfxdr_la-xdr-generic.lo \
-	libgfxdr_la-rpc-common-xdr.lo libgfxdr_la-glusterfs3-xdr.lo \
-	libgfxdr_la-cli1-xdr.lo libgfxdr_la-glusterd1-xdr.lo \
-	libgfxdr_la-portmap-xdr.lo libgfxdr_la-nlm4-xdr.lo \
-	libgfxdr_la-xdr-nfs3.lo libgfxdr_la-msg-nfs3.lo \
-	libgfxdr_la-nsm-xdr.lo libgfxdr_la-nlmcbk-xdr.lo \
-	libgfxdr_la-acl3-xdr.lo
+	$(top_builddir)/libglusterfs/src/libglusterfs.la
+am__objects_1 = libgfxdr_la-glusterfs3-xdr.lo libgfxdr_la-cli1-xdr.lo \
+	libgfxdr_la-nlm4-xdr.lo libgfxdr_la-nsm-xdr.lo \
+	libgfxdr_la-rpc-common-xdr.lo libgfxdr_la-glusterd1-xdr.lo \
+	libgfxdr_la-acl3-xdr.lo libgfxdr_la-portmap-xdr.lo \
+	libgfxdr_la-mount3udp.lo
+am_libgfxdr_la_OBJECTS = $(am__objects_1) libgfxdr_la-xdr-generic.lo \
+	libgfxdr_la-xdr-nfs3.lo libgfxdr_la-msg-nfs3.lo
 libgfxdr_la_OBJECTS = $(am_libgfxdr_la_OBJECTS)
 AM_V_lt = $(am__v_lt_$(V))
 am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
@@ -127,11 +126,14 @@ AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
 AM_MAKEFLAGS = @AM_MAKEFLAGS@
 AR = @AR@
 ARGP_STANDALONE_CPPFLAGS = @ARGP_STANDALONE_CPPFLAGS@
+ARGP_STANDALONE_DIR = @ARGP_STANDALONE_DIR@
 ARGP_STANDALONE_LDADD = @ARGP_STANDALONE_LDADD@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
+BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
+BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -157,11 +159,15 @@ GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_CFLAGS = @GF_GLUSTERFS_CFLAGS@
 GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
+GLIB_CFLAGS = @GLIB_CFLAGS@
+GLIB_LIBS = @GLIB_LIBS@
+GLUPY_SUBDIR = @GLUPY_SUBDIR@
+GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
+GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -183,6 +189,8 @@ LIBAIO = @LIBAIO@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
+LIBZ_CFLAGS = @LIBZ_CFLAGS@
+LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -198,11 +206,16 @@ OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
 PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_RELEASE = @PACKAGE_RELEASE@
 PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
+PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
+PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
+PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
@@ -210,6 +223,7 @@ PYTHON_VERSION = @PYTHON_VERSION@
 RANLIB = @RANLIB@
 RDMA_SUBDIR = @RDMA_SUBDIR@
 RLLIBS = @RLLIBS@
+RPCGEN = @RPCGEN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -226,6 +240,8 @@ XML_CPPFLAGS = @XML_CPPFLAGS@
 XML_LIBS = @XML_LIBS@
 YACC = @YACC@
 YFLAGS = @YFLAGS@
+ZLIB_CFLAGS = @ZLIB_CFLAGS@
+ZLIB_LIBS = @ZLIB_LIBS@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
@@ -283,34 +299,26 @@ sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
+systemddir = @systemddir@
 target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
+XDRSOURCES = glusterfs3-xdr.c cli1-xdr.c nlm4-xdr.c nsm-xdr.c \
+	rpc-common-xdr.c glusterd1-xdr.c acl3-xdr.c portmap-xdr.c mount3udp.c
+
+XDRHEADERS = $(XDRSOURCES:.c=.h)
+XDRGENFILES = $(XDRSOURCES:.c=.x)
 lib_LTLIBRARIES = libgfxdr.la
 libgfxdr_la_CFLAGS = -Wall $(GF_CFLAGS) $(GF_DARWIN_LIBGLUSTERFS_CFLAGS)
 libgfxdr_la_CPPFLAGS = $(GF_CPPFLAGS) -D__USE_FILE_OFFSET64 \
 			-I$(top_srcdir)/libglusterfs/src -I$(top_srcdir)/rpc/rpc-lib/src
 
-libgfxdr_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la \
-		$(top_builddir)/rpc/rpc-lib/src/libgfrpc.la
-
-libgfxdr_la_SOURCES = xdr-generic.c rpc-common-xdr.c \
-			glusterfs3-xdr.c \
-			cli1-xdr.c \
-			glusterd1-xdr.c \
-			portmap-xdr.c \
-			nlm4-xdr.c xdr-nfs3.c msg-nfs3.c nsm-xdr.c \
-			nlmcbk-xdr.c acl3-xdr.c
-
-noinst_HEADERS = xdr-generic.h rpc-common-xdr.h \
-		glusterfs3-xdr.h glusterfs3.h \
-		cli1-xdr.h \
-		glusterd1-xdr.h \
-		portmap-xdr.h \
-		nlm4-xdr.h xdr-nfs3.h msg-nfs3.h nsm-xdr.h \
-		nlmcbk-xdr.h acl3-xdr.h
-
+libgfxdr_la_LIBADD = $(top_builddir)/libglusterfs/src/libglusterfs.la
+libgfxdr_la_SOURCES = $(XDRSOURCES) xdr-generic.c xdr-nfs3.c msg-nfs3.c
+noinst_HEADERS = $(XDRHEADERS) xdr-generic.h xdr-nfs3.h msg-nfs3.h glusterfs3.h
+CLEANFILES = $(XDRSOURCES) $(XDRHEADERS)
+EXTRA_DIST = $(XDRGENFILES)
 all: all-am
 
 .SUFFIXES:
@@ -389,9 +397,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-cli1-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-glusterd1-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-glusterfs3-xdr.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-mount3udp.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-msg-nfs3.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-nlm4-xdr.Plo@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-nlmcbk-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-nsm-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-portmap-xdr.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfxdr_la-rpc-common-xdr.Plo@am__quote@
@@ -422,22 +430,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LTCOMPILE) -c -o $@ $<
 
-libgfxdr_la-xdr-generic.lo: xdr-generic.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-xdr-generic.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-xdr-generic.Tpo -c -o libgfxdr_la-xdr-generic.lo `test -f 'xdr-generic.c' || echo '$(srcdir)/'`xdr-generic.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-xdr-generic.Tpo $(DEPDIR)/libgfxdr_la-xdr-generic.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='xdr-generic.c' object='libgfxdr_la-xdr-generic.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-xdr-generic.lo `test -f 'xdr-generic.c' || echo '$(srcdir)/'`xdr-generic.c
-
-libgfxdr_la-rpc-common-xdr.lo: rpc-common-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-rpc-common-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-rpc-common-xdr.Tpo -c -o libgfxdr_la-rpc-common-xdr.lo `test -f 'rpc-common-xdr.c' || echo '$(srcdir)/'`rpc-common-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-rpc-common-xdr.Tpo $(DEPDIR)/libgfxdr_la-rpc-common-xdr.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='rpc-common-xdr.c' object='libgfxdr_la-rpc-common-xdr.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-rpc-common-xdr.lo `test -f 'rpc-common-xdr.c' || echo '$(srcdir)/'`rpc-common-xdr.c
-
 libgfxdr_la-glusterfs3-xdr.lo: glusterfs3-xdr.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-glusterfs3-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-glusterfs3-xdr.Tpo -c -o libgfxdr_la-glusterfs3-xdr.lo `test -f 'glusterfs3-xdr.c' || echo '$(srcdir)/'`glusterfs3-xdr.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-glusterfs3-xdr.Tpo $(DEPDIR)/libgfxdr_la-glusterfs3-xdr.Plo
@@ -454,6 +446,30 @@ libgfxdr_la-cli1-xdr.lo: cli1-xdr.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-cli1-xdr.lo `test -f 'cli1-xdr.c' || echo '$(srcdir)/'`cli1-xdr.c
 
+libgfxdr_la-nlm4-xdr.lo: nlm4-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-nlm4-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-nlm4-xdr.Tpo -c -o libgfxdr_la-nlm4-xdr.lo `test -f 'nlm4-xdr.c' || echo '$(srcdir)/'`nlm4-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-nlm4-xdr.Tpo $(DEPDIR)/libgfxdr_la-nlm4-xdr.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='nlm4-xdr.c' object='libgfxdr_la-nlm4-xdr.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-nlm4-xdr.lo `test -f 'nlm4-xdr.c' || echo '$(srcdir)/'`nlm4-xdr.c
+
+libgfxdr_la-nsm-xdr.lo: nsm-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-nsm-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-nsm-xdr.Tpo -c -o libgfxdr_la-nsm-xdr.lo `test -f 'nsm-xdr.c' || echo '$(srcdir)/'`nsm-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-nsm-xdr.Tpo $(DEPDIR)/libgfxdr_la-nsm-xdr.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='nsm-xdr.c' object='libgfxdr_la-nsm-xdr.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-nsm-xdr.lo `test -f 'nsm-xdr.c' || echo '$(srcdir)/'`nsm-xdr.c
+
+libgfxdr_la-rpc-common-xdr.lo: rpc-common-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-rpc-common-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-rpc-common-xdr.Tpo -c -o libgfxdr_la-rpc-common-xdr.lo `test -f 'rpc-common-xdr.c' || echo '$(srcdir)/'`rpc-common-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-rpc-common-xdr.Tpo $(DEPDIR)/libgfxdr_la-rpc-common-xdr.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='rpc-common-xdr.c' object='libgfxdr_la-rpc-common-xdr.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-rpc-common-xdr.lo `test -f 'rpc-common-xdr.c' || echo '$(srcdir)/'`rpc-common-xdr.c
+
 libgfxdr_la-glusterd1-xdr.lo: glusterd1-xdr.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-glusterd1-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-glusterd1-xdr.Tpo -c -o libgfxdr_la-glusterd1-xdr.lo `test -f 'glusterd1-xdr.c' || echo '$(srcdir)/'`glusterd1-xdr.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-glusterd1-xdr.Tpo $(DEPDIR)/libgfxdr_la-glusterd1-xdr.Plo
@@ -461,6 +477,14 @@ libgfxdr_la-glusterd1-xdr.lo: glusterd1-xdr.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='glusterd1-xdr.c' object='libgfxdr_la-glusterd1-xdr.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-glusterd1-xdr.lo `test -f 'glusterd1-xdr.c' || echo '$(srcdir)/'`glusterd1-xdr.c
+
+libgfxdr_la-acl3-xdr.lo: acl3-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-acl3-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-acl3-xdr.Tpo -c -o libgfxdr_la-acl3-xdr.lo `test -f 'acl3-xdr.c' || echo '$(srcdir)/'`acl3-xdr.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-acl3-xdr.Tpo $(DEPDIR)/libgfxdr_la-acl3-xdr.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='acl3-xdr.c' object='libgfxdr_la-acl3-xdr.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-acl3-xdr.lo `test -f 'acl3-xdr.c' || echo '$(srcdir)/'`acl3-xdr.c
 
 libgfxdr_la-portmap-xdr.lo: portmap-xdr.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-portmap-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-portmap-xdr.Tpo -c -o libgfxdr_la-portmap-xdr.lo `test -f 'portmap-xdr.c' || echo '$(srcdir)/'`portmap-xdr.c
@@ -470,13 +494,21 @@ libgfxdr_la-portmap-xdr.lo: portmap-xdr.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-portmap-xdr.lo `test -f 'portmap-xdr.c' || echo '$(srcdir)/'`portmap-xdr.c
 
-libgfxdr_la-nlm4-xdr.lo: nlm4-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-nlm4-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-nlm4-xdr.Tpo -c -o libgfxdr_la-nlm4-xdr.lo `test -f 'nlm4-xdr.c' || echo '$(srcdir)/'`nlm4-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-nlm4-xdr.Tpo $(DEPDIR)/libgfxdr_la-nlm4-xdr.Plo
+libgfxdr_la-mount3udp.lo: mount3udp.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-mount3udp.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-mount3udp.Tpo -c -o libgfxdr_la-mount3udp.lo `test -f 'mount3udp.c' || echo '$(srcdir)/'`mount3udp.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-mount3udp.Tpo $(DEPDIR)/libgfxdr_la-mount3udp.Plo
 @am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='nlm4-xdr.c' object='libgfxdr_la-nlm4-xdr.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='mount3udp.c' object='libgfxdr_la-mount3udp.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-nlm4-xdr.lo `test -f 'nlm4-xdr.c' || echo '$(srcdir)/'`nlm4-xdr.c
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-mount3udp.lo `test -f 'mount3udp.c' || echo '$(srcdir)/'`mount3udp.c
+
+libgfxdr_la-xdr-generic.lo: xdr-generic.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-xdr-generic.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-xdr-generic.Tpo -c -o libgfxdr_la-xdr-generic.lo `test -f 'xdr-generic.c' || echo '$(srcdir)/'`xdr-generic.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-xdr-generic.Tpo $(DEPDIR)/libgfxdr_la-xdr-generic.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='xdr-generic.c' object='libgfxdr_la-xdr-generic.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-xdr-generic.lo `test -f 'xdr-generic.c' || echo '$(srcdir)/'`xdr-generic.c
 
 libgfxdr_la-xdr-nfs3.lo: xdr-nfs3.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-xdr-nfs3.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-xdr-nfs3.Tpo -c -o libgfxdr_la-xdr-nfs3.lo `test -f 'xdr-nfs3.c' || echo '$(srcdir)/'`xdr-nfs3.c
@@ -493,30 +525,6 @@ libgfxdr_la-msg-nfs3.lo: msg-nfs3.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='msg-nfs3.c' object='libgfxdr_la-msg-nfs3.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-msg-nfs3.lo `test -f 'msg-nfs3.c' || echo '$(srcdir)/'`msg-nfs3.c
-
-libgfxdr_la-nsm-xdr.lo: nsm-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-nsm-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-nsm-xdr.Tpo -c -o libgfxdr_la-nsm-xdr.lo `test -f 'nsm-xdr.c' || echo '$(srcdir)/'`nsm-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-nsm-xdr.Tpo $(DEPDIR)/libgfxdr_la-nsm-xdr.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='nsm-xdr.c' object='libgfxdr_la-nsm-xdr.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-nsm-xdr.lo `test -f 'nsm-xdr.c' || echo '$(srcdir)/'`nsm-xdr.c
-
-libgfxdr_la-nlmcbk-xdr.lo: nlmcbk-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-nlmcbk-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-nlmcbk-xdr.Tpo -c -o libgfxdr_la-nlmcbk-xdr.lo `test -f 'nlmcbk-xdr.c' || echo '$(srcdir)/'`nlmcbk-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-nlmcbk-xdr.Tpo $(DEPDIR)/libgfxdr_la-nlmcbk-xdr.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='nlmcbk-xdr.c' object='libgfxdr_la-nlmcbk-xdr.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-nlmcbk-xdr.lo `test -f 'nlmcbk-xdr.c' || echo '$(srcdir)/'`nlmcbk-xdr.c
-
-libgfxdr_la-acl3-xdr.lo: acl3-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -MT libgfxdr_la-acl3-xdr.lo -MD -MP -MF $(DEPDIR)/libgfxdr_la-acl3-xdr.Tpo -c -o libgfxdr_la-acl3-xdr.lo `test -f 'acl3-xdr.c' || echo '$(srcdir)/'`acl3-xdr.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfxdr_la-acl3-xdr.Tpo $(DEPDIR)/libgfxdr_la-acl3-xdr.Plo
-@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='acl3-xdr.c' object='libgfxdr_la-acl3-xdr.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfxdr_la_CPPFLAGS) $(CPPFLAGS) $(libgfxdr_la_CFLAGS) $(CFLAGS) -c -o libgfxdr_la-acl3-xdr.lo `test -f 'acl3-xdr.c' || echo '$(srcdir)/'`acl3-xdr.c
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -630,6 +638,7 @@ install-strip:
 mostlyclean-generic:
 
 clean-generic:
+	-test -z "$(CLEANFILES)" || rm -f $(CLEANFILES)
 
 distclean-generic:
 	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
@@ -725,6 +734,96 @@ uninstall-am: uninstall-libLTLIBRARIES
 	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
 	tags uninstall uninstall-am uninstall-libLTLIBRARIES
 
+
+glusterfs3-xdr.c: glusterfs3-xdr.x glusterfs3-xdr.h
+	@if test -f $<; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+glusterfs3-xdr.h: glusterfs3-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+cli1-xdr.c: cli1-xdr.x cli1-xdr.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+cli1-xdr.h: cli1-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+nlm4-xdr.c: nlm4-xdr.x nlm4-xdr.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+nlm4-xdr.h: nlm4-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+nsm-xdr.c: nsm-xdr.x nsm-xdr.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+nsm-xdr.h: nsm-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+rpc-common-xdr.c: rpc-common-xdr.x rpc-common-xdr.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+rpc-common-xdr.h: rpc-common-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+glusterd1-xdr.c: glusterd1-xdr.x glusterd1-xdr.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+glusterd1-xdr.h: glusterd1-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+acl3-xdr.c: acl3-xdr.x acl3-xdr.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+acl3-xdr.h: acl3-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+portmap-xdr.c: portmap-xdr.x portmap-xdr.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+portmap-xdr.h: portmap-xdr.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
+
+mount3udp.c: mount3udp.x mount3udp.h
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen source $< ; \
+	fi
+
+mount3udp.h: mount3udp.x
+	@if test -f $< ; then \
+		$(top_srcdir)/build-aux/xdrgen header $< ; \
+	fi
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

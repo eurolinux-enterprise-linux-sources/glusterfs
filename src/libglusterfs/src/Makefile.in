@@ -95,9 +95,11 @@ am_libglusterfs_la_OBJECTS = libglusterfs_la-dict.lo \
 	libglusterfs_la-run.lo libglusterfs_la-options.lo \
 	libglusterfs_la-fd-lk.lo libglusterfs_la-circ-buff.lo \
 	libglusterfs_la-event-history.lo libglusterfs_la-gidcache.lo \
-	libglusterfs_la-ctx.lo libglusterfs_la-basename_r.lo \
-	libglusterfs_la-dirname_r.lo libglusterfs_la-gf_mkostemp.lo \
-	libglusterfs_la-event-poll.lo libglusterfs_la-event-epoll.lo
+	libglusterfs_la-ctx.lo libglusterfs_la-client_t.lo \
+	libglusterfs_la-event-poll.lo libglusterfs_la-event-epoll.lo \
+	libglusterfs_la-basename_r.lo libglusterfs_la-dirname_r.lo \
+	libglusterfs_la-gf_mkostemp.lo libglusterfs_la-strfd.lo \
+	libglusterfs_la-mntent.lo
 nodist_libglusterfs_la_OBJECTS = libglusterfs_la-y.tab.lo \
 	libglusterfs_la-graph.lex.lo
 libglusterfs_la_OBJECTS = $(am_libglusterfs_la_OBJECTS) \
@@ -148,11 +150,14 @@ AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
 AM_MAKEFLAGS = @AM_MAKEFLAGS@
 AR = @AR@
 ARGP_STANDALONE_CPPFLAGS = @ARGP_STANDALONE_CPPFLAGS@
+ARGP_STANDALONE_DIR = @ARGP_STANDALONE_DIR@
 ARGP_STANDALONE_LDADD = @ARGP_STANDALONE_LDADD@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
+BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
+BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -178,11 +183,15 @@ GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_CFLAGS = @GF_GLUSTERFS_CFLAGS@
 GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
+GLIB_CFLAGS = @GLIB_CFLAGS@
+GLIB_LIBS = @GLIB_LIBS@
+GLUPY_SUBDIR = @GLUPY_SUBDIR@
+GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
+GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -204,6 +213,8 @@ LIBAIO = @LIBAIO@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
+LIBZ_CFLAGS = @LIBZ_CFLAGS@
+LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -219,11 +230,16 @@ OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
 PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_RELEASE = @PACKAGE_RELEASE@
 PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
+PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
+PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
+PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
@@ -231,6 +247,7 @@ PYTHON_VERSION = @PYTHON_VERSION@
 RANLIB = @RANLIB@
 RDMA_SUBDIR = @RDMA_SUBDIR@
 RLLIBS = @RLLIBS@
+RPCGEN = @RPCGEN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -247,6 +264,8 @@ XML_CPPFLAGS = @XML_CPPFLAGS@
 XML_LIBS = @XML_LIBS@
 YACC = @YACC@
 YFLAGS = @YFLAGS@
+ZLIB_CFLAGS = @ZLIB_CFLAGS@
+ZLIB_LIBS = @ZLIB_LIBS@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
@@ -304,6 +323,7 @@ sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
+systemddir = @systemddir@
 target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
@@ -314,7 +334,7 @@ libglusterfs_la_CFLAGS = -Wall $(GF_CFLAGS) \
 
 libglusterfs_la_CPPFLAGS = $(GF_CPPFLAGS) -D__USE_FILE_OFFSET64 \
 	-DXLATORDIR=\"$(libdir)/glusterfs/$(PACKAGE_VERSION)/xlator\" \
-	-I$(CONTRIBDIR)/rbtree
+	-I$(top_srcdir)/rpc/rpc-lib/src/ -I$(CONTRIBDIR)/rbtree
 
 libglusterfs_la_LIBADD = @LEXLIB@
 lib_LTLIBRARIES = libglusterfs.la
@@ -330,10 +350,10 @@ libglusterfs_la_SOURCES = dict.c xlator.c logging.c \
 	$(CONTRIBDIR)/uuid/uuid_time.c $(CONTRIBDIR)/uuid/compare.c \
 	$(CONTRIBDIR)/uuid/isnull.c $(CONTRIBDIR)/uuid/unpack.c syncop.c \
 	graph-print.c trie.c run.c options.c fd-lk.c circ-buff.c \
-	event-history.c gidcache.c ctx.c \
+	event-history.c gidcache.c ctx.c client_t.c event-poll.c event-epoll.c \
 	$(CONTRIBDIR)/libgen/basename_r.c $(CONTRIBDIR)/libgen/dirname_r.c \
-	$(CONTRIBDIR)/stdlib/gf_mkostemp.c \
-	event-poll.c event-epoll.c
+	$(CONTRIBDIR)/stdlib/gf_mkostemp.c strfd.c \
+	$(CONTRIBDIR)/mount/mntent.c
 
 nodist_libglusterfs_la_SOURCES = y.tab.c graph.lex.c gf-error-codes.h
 BUILT_SOURCES = graph.lex.c
@@ -344,9 +364,11 @@ noinst_HEADERS = common-utils.h defaults.h dict.h glusterfs.h hashfn.h timespec.
 	checksum.h daemon.h $(CONTRIBDIR)/rbtree/rb.h store.h\
 	rbthash.h iatt.h latency.h mem-types.h $(CONTRIBDIR)/uuid/uuidd.h \
 	$(CONTRIBDIR)/uuid/uuid.h $(CONTRIBDIR)/uuid/uuidP.h \
-	$(CONTRIB_BUILDDIR)/uuid/uuid_types.h syncop.h graph-utils.h trie.h run.h \
-	options.h lkowner.h fd-lk.h circ-buff.h event-history.h gidcache.h \
-	glusterfs-acl.h
+	$(CONTRIB_BUILDDIR)/uuid/uuid_types.h syncop.h graph-utils.h trie.h \
+	run.h options.h lkowner.h fd-lk.h circ-buff.h event-history.h \
+	gidcache.h client_t.h glusterfs-acl.h glfs-message-id.h \
+	template-component-messages.h strfd.h \
+	$(CONTRIBDIR)/mount/mntent_compat.h lvm-defaults.h
 
 EXTRA_DIST = graph.l graph.y
 CLEANFILES = graph.lex.c y.tab.c y.tab.h
@@ -431,6 +453,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-checksum.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-circ-buff.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-clear.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-client_t.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-common-utils.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-compare.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-compat-errno.Plo@am__quote@
@@ -462,6 +485,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-latency.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-logging.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-mem-pool.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-mntent.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-options.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-pack.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-parse.Plo@am__quote@
@@ -471,6 +495,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-stack.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-statedump.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-store.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-strfd.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-syncop.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-syscall.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libglusterfs_la-timer.Plo@am__quote@
@@ -890,6 +915,30 @@ libglusterfs_la-ctx.lo: ctx.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-ctx.lo `test -f 'ctx.c' || echo '$(srcdir)/'`ctx.c
 
+libglusterfs_la-client_t.lo: client_t.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-client_t.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-client_t.Tpo -c -o libglusterfs_la-client_t.lo `test -f 'client_t.c' || echo '$(srcdir)/'`client_t.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-client_t.Tpo $(DEPDIR)/libglusterfs_la-client_t.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='client_t.c' object='libglusterfs_la-client_t.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-client_t.lo `test -f 'client_t.c' || echo '$(srcdir)/'`client_t.c
+
+libglusterfs_la-event-poll.lo: event-poll.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-event-poll.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-event-poll.Tpo -c -o libglusterfs_la-event-poll.lo `test -f 'event-poll.c' || echo '$(srcdir)/'`event-poll.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-event-poll.Tpo $(DEPDIR)/libglusterfs_la-event-poll.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='event-poll.c' object='libglusterfs_la-event-poll.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-event-poll.lo `test -f 'event-poll.c' || echo '$(srcdir)/'`event-poll.c
+
+libglusterfs_la-event-epoll.lo: event-epoll.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-event-epoll.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-event-epoll.Tpo -c -o libglusterfs_la-event-epoll.lo `test -f 'event-epoll.c' || echo '$(srcdir)/'`event-epoll.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-event-epoll.Tpo $(DEPDIR)/libglusterfs_la-event-epoll.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='event-epoll.c' object='libglusterfs_la-event-epoll.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-event-epoll.lo `test -f 'event-epoll.c' || echo '$(srcdir)/'`event-epoll.c
+
 libglusterfs_la-basename_r.lo: $(CONTRIBDIR)/libgen/basename_r.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-basename_r.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-basename_r.Tpo -c -o libglusterfs_la-basename_r.lo `test -f '$(CONTRIBDIR)/libgen/basename_r.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/libgen/basename_r.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-basename_r.Tpo $(DEPDIR)/libglusterfs_la-basename_r.Plo
@@ -914,21 +963,21 @@ libglusterfs_la-gf_mkostemp.lo: $(CONTRIBDIR)/stdlib/gf_mkostemp.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-gf_mkostemp.lo `test -f '$(CONTRIBDIR)/stdlib/gf_mkostemp.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/stdlib/gf_mkostemp.c
 
-libglusterfs_la-event-poll.lo: event-poll.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-event-poll.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-event-poll.Tpo -c -o libglusterfs_la-event-poll.lo `test -f 'event-poll.c' || echo '$(srcdir)/'`event-poll.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-event-poll.Tpo $(DEPDIR)/libglusterfs_la-event-poll.Plo
+libglusterfs_la-strfd.lo: strfd.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-strfd.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-strfd.Tpo -c -o libglusterfs_la-strfd.lo `test -f 'strfd.c' || echo '$(srcdir)/'`strfd.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-strfd.Tpo $(DEPDIR)/libglusterfs_la-strfd.Plo
 @am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='event-poll.c' object='libglusterfs_la-event-poll.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='strfd.c' object='libglusterfs_la-strfd.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-event-poll.lo `test -f 'event-poll.c' || echo '$(srcdir)/'`event-poll.c
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-strfd.lo `test -f 'strfd.c' || echo '$(srcdir)/'`strfd.c
 
-libglusterfs_la-event-epoll.lo: event-epoll.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-event-epoll.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-event-epoll.Tpo -c -o libglusterfs_la-event-epoll.lo `test -f 'event-epoll.c' || echo '$(srcdir)/'`event-epoll.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-event-epoll.Tpo $(DEPDIR)/libglusterfs_la-event-epoll.Plo
+libglusterfs_la-mntent.lo: $(CONTRIBDIR)/mount/mntent.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-mntent.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-mntent.Tpo -c -o libglusterfs_la-mntent.lo `test -f '$(CONTRIBDIR)/mount/mntent.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/mount/mntent.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libglusterfs_la-mntent.Tpo $(DEPDIR)/libglusterfs_la-mntent.Plo
 @am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='event-epoll.c' object='libglusterfs_la-event-epoll.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='$(CONTRIBDIR)/mount/mntent.c' object='libglusterfs_la-mntent.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-event-epoll.lo `test -f 'event-epoll.c' || echo '$(srcdir)/'`event-epoll.c
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -c -o libglusterfs_la-mntent.lo `test -f '$(CONTRIBDIR)/mount/mntent.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/mount/mntent.c
 
 libglusterfs_la-y.tab.lo: y.tab.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libglusterfs_la_CPPFLAGS) $(CPPFLAGS) $(libglusterfs_la_CFLAGS) $(CFLAGS) -MT libglusterfs_la-y.tab.lo -MD -MP -MF $(DEPDIR)/libglusterfs_la-y.tab.Tpo -c -o libglusterfs_la-y.tab.lo `test -f 'y.tab.c' || echo '$(srcdir)/'`y.tab.c
@@ -1159,11 +1208,11 @@ uninstall-am: uninstall-libLTLIBRARIES
 
 
 graph.lex.c: graph.l y.tab.h
-	$(LEX) -t $(srcdir)/graph.l > $@
+	$(LEX) -Pgraphyy -t $(srcdir)/graph.l > $@
 
 y.tab.c: y.tab.h
 y.tab.h: graph.y
-	$(YACC) -d $(srcdir)/graph.y
+	$(YACC) -p graphyy -d $(srcdir)/graph.y
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

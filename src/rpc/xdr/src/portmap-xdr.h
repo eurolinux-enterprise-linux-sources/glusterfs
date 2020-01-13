@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2007-2014 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -8,12 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
-#include "xdr-common.h"
 #include "compat.h"
+#include "xdr-common.h"
+#include "xdr-nfs3.h"
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 

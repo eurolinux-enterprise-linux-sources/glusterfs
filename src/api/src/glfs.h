@@ -79,7 +79,7 @@ typedef struct glfs glfs_t;
 
 */
 
-glfs_t *glfs_new (const char *volname);
+glfs_t *glfs_new (const char *volname) __THROW;
 
 
 /*
@@ -115,12 +115,12 @@ int glfs_set_volfile (glfs_t *fs, const char *volfile);
 /*
   SYNOPSIS
 
-  glfs_set_volfile_server: Specify the address of management server.
+  glfs_set_volfile_server: Specify the list of addresses for management server.
 
   DESCRIPTION
 
-  This function specifies the address of the management server (glusterd)
-  to connect, and establish the volume configuration. The @volname
+  This function specifies the list of addresses for the management server
+  (glusterd) to connect, and establish the volume configuration. The @volname
   parameter passed to glfs_new() is the volume which will be virtually
   mounted as the glfs_t object. All operations performed by the CLI at
   the management server will automatically be reflected in the 'virtual
@@ -136,19 +136,22 @@ int glfs_set_volfile (glfs_t *fs, const char *volfile);
 
   @transport: String specifying the transport used to connect to the
               management daemon. Specifying NULL will result in the usage
-	      of the default (tcp) transport type. Permitted values
-	      are those what you specify as transport-type in a volume
-	      specification file (e.g "tcp", "rdma", "unix".)
+              of the default (tcp) transport type. Permitted values
+              are those what you specify as transport-type in a volume
+              specification file (e.g "tcp", "rdma" etc.)
 
-  @host: String specifying the address of where to find the management
-         daemon. Depending on the transport type this would either be
-	 an FQDN (e.g: "storage01.company.com"), ASCII encoded IP
-	 address "192.168.22.1", or a UNIX domain socket path (e.g
-	 "/tmp/glusterd.socket".)
+  @host:      String specifying the address where to find the management daemon.
+              This would either be
+              - FQDN (e.g: "storage01.company.com") or
+              - ASCII (e.g: "192.168.22.1")
+
+  NOTE: This API is special, multiple calls to this function with different
+        volfile servers, port or transport-type would create a list of volfile
+        servers which would be polled during `volfile_fetch_attempts()`
 
   @port: The TCP port number where gluster management daemon is listening.
          Specifying 0 uses the default port number GF_DEFAULT_BASE_PORT.
-	 This parameter is unused if you are using a UNIX domain socket.
+         This parameter is unused if you are using a UNIX domain socket.
 
   RETURN VALUES
 
@@ -158,9 +161,9 @@ int glfs_set_volfile (glfs_t *fs, const char *volfile);
 */
 
 int glfs_set_volfile_server (glfs_t *fs, const char *transport,
-			     const char *host, int port);
-
-
+                             const char *host, int port) __THROW;
+int glfs_unset_volfile_server (glfs_t *fs, const char *transport,
+                               const char *host, int port) __THROW;
 /*
   SYNOPSIS
 
@@ -176,7 +179,9 @@ int glfs_set_volfile_server (glfs_t *fs, const char *transport,
   @fs: The 'virtual mount' object to be configured with the logging parameters.
 
   @logfile: The logfile to be used for logging. Will be created if it does not
-            already exist (provided system permissions allow.)
+            already exist (provided system permissions allow). If NULL, a new
+            logfile will be created in default log directory associated with
+            the glusterfs installation.
 
   @loglevel: Numerical value specifying the degree of verbosity. Higher the
              value, more verbose the logging.
@@ -188,7 +193,7 @@ int glfs_set_volfile_server (glfs_t *fs, const char *transport,
 
 */
 
-int glfs_set_logging (glfs_t *fs, const char *logfile, int loglevel);
+int glfs_set_logging (glfs_t *fs, const char *logfile, int loglevel) __THROW;
 
 
 /*
@@ -215,10 +220,102 @@ int glfs_set_logging (glfs_t *fs, const char *logfile, int loglevel);
 
 */
 
-int glfs_init (glfs_t *fs);
+int glfs_init (glfs_t *fs) __THROW;
 
 
-int glfs_fini (glfs_t *fs);
+/*
+  SYNOPSIS
+
+  glfs_fini: Cleanup and destroy the 'virtual mount'
+
+  DESCRIPTION
+
+  This function attempts to gracefully destroy glfs_t object. An attempt is
+  made to wait for all background processing to complete before returning.
+
+  glfs_fini() must be called after all operations on glfs_t is finished.
+
+  IMPORTANT
+
+  IT IS NECESSARY TO CALL glfs_fini() ON ALL THE INITIALIZED glfs_t
+  OBJECTS BEFORE TERMINATING THE PROGRAM. THERE MAY BE CACHED AND
+  UNWRITTEN / INCOMPLETE OPERATIONS STILL IN PROGRESS EVEN THOUGH THE
+  API CALLS HAVE RETURNED. glfs_fini() WILL WAIT FOR BACKGROUND OPERATIONS
+  TO COMPLETE BEFORE RETURNING, THEREBY MAKING IT SAFE FOR THE PROGRAM TO
+  EXIT.
+
+  PARAMETERS
+
+  @fs: The 'virtual mount' object to be destroyed.
+
+  RETURN VALUES
+
+   0 : Success.
+*/
+
+int glfs_fini (glfs_t *fs) __THROW;
+
+/*
+  SYNOPSIS
+
+      glfs_getvol: Get the volfile associated with a 'virtual mount'
+
+  DESCRIPTION
+
+      Sometimes it's useful e.g. for scripts to see the volfile, so that they
+      can parse it and find subvolumes to do things like split-brain resolution
+      or custom layouts.  The API here was specifically intended to make access
+      e.g. from Python as simple as possible.
+
+      Note that the volume must be started (not necessarily mounted) for this
+      to work.
+
+  PARAMETERS
+
+      @fs:  The 'virtual mount' object for which a volfile is desired
+      @buf: Pointer to a place for the volfile length to be stored
+      @len: Length of @buf
+
+  RETURN VALUES
+
+      >0: filled N bytes of buffer
+       0: no volfile available
+      <0: volfile length exceeds @len by N bytes (@buf unchanged)
+*/
+
+ssize_t glfs_get_volfile (glfs_t *fs, void *buf, size_t len) __THROW;
+
+
+/*
+  SYNOPSIS
+
+       glfs_get_volumeid: Copy the Volume UUID stored in the glfs object fs.
+
+  DESCRIPTION
+
+       This function when invoked for the first time sends RPC call to the
+       the management server (glusterd) to fetch volume uuid and stores it
+       in the glusterfs_context linked to the glfs object fs which can be used
+       in the subsequent calls. Later it parses that UUID to convert it from
+       cannonical string format into an opaque byte array and copy it into
+       the volid array. Incase if either of the input parameters, volid or size,
+       is NULL, number of bytes required to copy the volume UUID is returned.
+
+  PARAMETERS
+
+       @fs: The 'virtual mount' object to be used to retrieve and store
+            volume's UUID.
+       @volid: Pointer to a place for the volume UUID to be stored
+       @size: Length of @volid
+
+  RETURN VALUES
+
+       -1 : Failure. @errno will be set with the type of failure.
+        Others : length of the volume UUID stored.
+*/
+
+int glfs_get_volumeid (struct glfs *fs, char *volid, size_t size);
+
 
 /*
  * FILE OPERATION
@@ -262,9 +359,9 @@ typedef struct glfs_fd glfs_fd_t;
  *    reverted to global process defaults as required.
  *
  */
-int glfs_setfsuid (uid_t fsuid);
-int glfs_setfsgid (gid_t fsgid);
-int glfs_setfsgroups (size_t size, const gid_t *list);
+int glfs_setfsuid (uid_t fsuid) __THROW;
+int glfs_setfsgid (gid_t fsgid) __THROW;
+int glfs_setfsgroups (size_t size, const gid_t *list) __THROW;
 
 /*
   SYNOPSIS
@@ -291,7 +388,7 @@ int glfs_setfsgroups (size_t size, const gid_t *list);
 
  */
 
-glfs_fd_t *glfs_open (glfs_t *fs, const char *path, int flags);
+glfs_fd_t *glfs_open (glfs_t *fs, const char *path, int flags) __THROW;
 
 
 /*
@@ -321,97 +418,125 @@ glfs_fd_t *glfs_open (glfs_t *fs, const char *path, int flags);
  */
 
 glfs_fd_t *glfs_creat (glfs_t *fs, const char *path, int flags,
-		       mode_t mode);
+		       mode_t mode) __THROW;
 
-int glfs_close (glfs_fd_t *fd);
+int glfs_close (glfs_fd_t *fd) __THROW;
 
-glfs_t *glfs_from_glfd (glfs_fd_t *fd);
+glfs_t *glfs_from_glfd (glfs_fd_t *fd) __THROW;
 
 int glfs_set_xlator_option (glfs_t *fs, const char *xlator, const char *key,
-			    const char *value);
+			    const char *value) __THROW;
+
+/*
+
+  glfs_io_cbk
+
+  The following is the function type definition of the callback
+  function pointer which has to be provided by the caller to the
+  *_async() versions of the IO calls.
+
+  The callback function is called on completion of the requested
+  IO, and the appropriate return value is returned in @ret.
+
+  In case of an error in completing the IO, @ret will be -1 and
+  @errno will be set with the appropriate error.
+
+  @ret will be same as the return value of the non _async() variant
+  of the particular call
+
+  @data is the same context pointer provided by the caller at the
+  time of issuing the async IO call. This can be used by the
+  caller to differentiate different instances of the async requests
+  in a common callback function.
+*/
 
 typedef void (*glfs_io_cbk) (glfs_fd_t *fd, ssize_t ret, void *data);
 
 // glfs_{read,write}[_async]
 
-ssize_t glfs_read (glfs_fd_t *fd, void *buf, size_t count, int flags);
-ssize_t glfs_write (glfs_fd_t *fd, const void *buf, size_t count, int flags);
+ssize_t glfs_read (glfs_fd_t *fd, void *buf,
+                   size_t count, int flags) __THROW;
+ssize_t glfs_write (glfs_fd_t *fd, const void *buf,
+                    size_t count, int flags) __THROW;
 int glfs_read_async (glfs_fd_t *fd, void *buf, size_t count, int flags,
-		     glfs_io_cbk fn, void *data);
+		     glfs_io_cbk fn, void *data) __THROW;
 int glfs_write_async (glfs_fd_t *fd, const void *buf, size_t count, int flags,
-		      glfs_io_cbk fn, void *data);
+		      glfs_io_cbk fn, void *data) __THROW;
 
 // glfs_{read,write}v[_async]
 
 ssize_t glfs_readv (glfs_fd_t *fd, const struct iovec *iov, int iovcnt,
-		    int flags);
+		    int flags) __THROW;
 ssize_t glfs_writev (glfs_fd_t *fd, const struct iovec *iov, int iovcnt,
-		     int flags);
+		     int flags) __THROW;
 int glfs_readv_async (glfs_fd_t *fd, const struct iovec *iov, int count,
-		      int flags, glfs_io_cbk fn, void *data);
+		      int flags, glfs_io_cbk fn, void *data) __THROW;
 int glfs_writev_async (glfs_fd_t *fd, const struct iovec *iov, int count,
-		       int flags, glfs_io_cbk fn, void *data);
+		       int flags, glfs_io_cbk fn, void *data) __THROW;
 
 // glfs_p{read,write}[_async]
 
 ssize_t glfs_pread (glfs_fd_t *fd, void *buf, size_t count, off_t offset,
-		    int flags);
+		    int flags) __THROW;
 ssize_t glfs_pwrite (glfs_fd_t *fd, const void *buf, size_t count,
-		     off_t offset, int flags);
+		     off_t offset, int flags) __THROW;
 int glfs_pread_async (glfs_fd_t *fd, void *buf, size_t count, off_t offset,
-		      int flags, glfs_io_cbk fn, void *data);
+		      int flags, glfs_io_cbk fn, void *data) __THROW;
 int glfs_pwrite_async (glfs_fd_t *fd, const void *buf, int count, off_t offset,
-		       int flags, glfs_io_cbk fn, void *data);
+		       int flags, glfs_io_cbk fn, void *data) __THROW;
 
 // glfs_p{read,write}v[_async]
 
 ssize_t glfs_preadv (glfs_fd_t *fd, const struct iovec *iov, int iovcnt,
-		     off_t offset, int flags);
+		     off_t offset, int flags) __THROW;
 ssize_t glfs_pwritev (glfs_fd_t *fd, const struct iovec *iov, int iovcnt,
-		      off_t offset, int flags);
-int glfs_preadv_async (glfs_fd_t *fd, const struct iovec *iov, int count,
-		       off_t offset, int flags, glfs_io_cbk fn, void *data);
-int glfs_pwritev_async (glfs_fd_t *fd, const struct iovec *iov, int count,
-			off_t offset, int flags, glfs_io_cbk fn, void *data);
+		      off_t offset, int flags) __THROW;
+int glfs_preadv_async (glfs_fd_t *fd, const struct iovec *iov,
+                       int count, off_t offset, int flags,
+                       glfs_io_cbk fn, void *data) __THROW;
+int glfs_pwritev_async (glfs_fd_t *fd, const struct iovec *iov,
+                        int count, off_t offset, int flags,
+                        glfs_io_cbk fn, void *data) __THROW;
 
 
-off_t glfs_lseek (glfs_fd_t *fd, off_t offset, int whence);
+off_t glfs_lseek (glfs_fd_t *fd, off_t offset, int whence) __THROW;
 
-int glfs_truncate (glfs_t *fs, const char *path, off_t length);
+int glfs_truncate (glfs_t *fs, const char *path, off_t length) __THROW;
 
-int glfs_ftruncate (glfs_fd_t *fd, off_t length);
+int glfs_ftruncate (glfs_fd_t *fd, off_t length) __THROW;
 int glfs_ftruncate_async (glfs_fd_t *fd, off_t length, glfs_io_cbk fn,
-			  void *data);
+			  void *data) __THROW;
 
-int glfs_lstat (glfs_t *fs, const char *path, struct stat *buf);
-int glfs_stat (glfs_t *fs, const char *path, struct stat *buf);
-int glfs_fstat (glfs_fd_t *fd, struct stat *buf);
+int glfs_lstat (glfs_t *fs, const char *path, struct stat *buf) __THROW;
+int glfs_stat (glfs_t *fs, const char *path, struct stat *buf) __THROW;
+int glfs_fstat (glfs_fd_t *fd, struct stat *buf) __THROW;
 
-int glfs_fsync (glfs_fd_t *fd);
-int glfs_fsync_async (glfs_fd_t *fd, glfs_io_cbk fn, void *data);
+int glfs_fsync (glfs_fd_t *fd) __THROW;
+int glfs_fsync_async (glfs_fd_t *fd, glfs_io_cbk fn, void *data) __THROW;
 
-int glfs_fdatasync (glfs_fd_t *fd);
-int glfs_fdatasync_async (glfs_fd_t *fd, glfs_io_cbk fn, void *data);
+int glfs_fdatasync (glfs_fd_t *fd) __THROW;
+int glfs_fdatasync_async (glfs_fd_t *fd, glfs_io_cbk fn, void *data) __THROW;
 
-int glfs_access (glfs_t *fs, const char *path, int mode);
+int glfs_access (glfs_t *fs, const char *path, int mode) __THROW;
 
-int glfs_symlink (glfs_t *fs, const char *oldpath, const char *newpath);
+int glfs_symlink (glfs_t *fs, const char *oldpath, const char *newpath) __THROW;
 
-int glfs_readlink (glfs_t *fs, const char *path, char *buf, size_t bufsiz);
+int glfs_readlink (glfs_t *fs, const char *path,
+                   char *buf, size_t bufsiz) __THROW;
 
-int glfs_mknod (glfs_t *fs, const char *path, mode_t mode, dev_t dev);
+int glfs_mknod (glfs_t *fs, const char *path, mode_t mode, dev_t dev) __THROW;
 
-int glfs_mkdir (glfs_t *fs, const char *path, mode_t mode);
+int glfs_mkdir (glfs_t *fs, const char *path, mode_t mode) __THROW;
 
-int glfs_unlink (glfs_t *fs, const char *path);
+int glfs_unlink (glfs_t *fs, const char *path) __THROW;
 
-int glfs_rmdir (glfs_t *fs, const char *path);
+int glfs_rmdir (glfs_t *fs, const char *path) __THROW;
 
-int glfs_rename (glfs_t *fs, const char *oldpath, const char *newpath);
+int glfs_rename (glfs_t *fs, const char *oldpath, const char *newpath) __THROW;
 
-int glfs_link (glfs_t *fs, const char *oldpath, const char *newpath);
+int glfs_link (glfs_t *fs, const char *oldpath, const char *newpath) __THROW;
 
-glfs_fd_t *glfs_opendir (glfs_t *fs, const char *path);
+glfs_fd_t *glfs_opendir (glfs_t *fs, const char *path) __THROW;
 
 /*
  * @glfs_readdir_r and @glfs_readdirplus_r ARE thread safe AND re-entrant,
@@ -422,10 +547,10 @@ glfs_fd_t *glfs_opendir (glfs_t *fs, const char *path);
  */
 
 int glfs_readdir_r (glfs_fd_t *fd, struct dirent *dirent,
-		    struct dirent **result);
+		    struct dirent **result) __THROW;
 
 int glfs_readdirplus_r (glfs_fd_t *fd, struct stat *stat, struct dirent *dirent,
-			struct dirent **result);
+			struct dirent **result) __THROW;
 
 /*
  * @glfs_readdir and @glfs_readdirplus are NEITHER thread safe NOR re-entrant
@@ -434,79 +559,96 @@ int glfs_readdirplus_r (glfs_fd_t *fd, struct stat *stat, struct dirent *dirent,
  * referring to the same directory too.)
  */
 
-struct dirent *glfs_readdir (glfs_fd_t *fd);
+struct dirent *glfs_readdir (glfs_fd_t *fd) __THROW;
 
-struct dirent *glfs_readdirplus (glfs_fd_t *fd, struct stat *stat);
+struct dirent *glfs_readdirplus (glfs_fd_t *fd, struct stat *stat) __THROW;
 
-long glfs_telldir (glfs_fd_t *fd);
+long glfs_telldir (glfs_fd_t *fd) __THROW;
 
-void glfs_seekdir (glfs_fd_t *fd, long offset);
+void glfs_seekdir (glfs_fd_t *fd, long offset) __THROW;
 
-int glfs_closedir (glfs_fd_t *fd);
+int glfs_closedir (glfs_fd_t *fd) __THROW;
 
-int glfs_statvfs (glfs_t *fs, const char *path, struct statvfs *buf);
+int glfs_statvfs (glfs_t *fs, const char *path, struct statvfs *buf) __THROW;
 
-int glfs_chmod (glfs_t *fs, const char *path, mode_t mode);
+int glfs_chmod (glfs_t *fs, const char *path, mode_t mode) __THROW;
 
-int glfs_fchmod (glfs_fd_t *fd, mode_t mode);
+int glfs_fchmod (glfs_fd_t *fd, mode_t mode) __THROW;
 
-int glfs_chown (glfs_t *fs, const char *path, uid_t uid, gid_t gid);
+int glfs_chown (glfs_t *fs, const char *path, uid_t uid, gid_t gid) __THROW;
 
-int glfs_lchown (glfs_t *fs, const char *path, uid_t uid, gid_t gid);
+int glfs_lchown (glfs_t *fs, const char *path, uid_t uid, gid_t gid) __THROW;
 
-int glfs_fchown (glfs_fd_t *fd, uid_t uid, gid_t gid);
+int glfs_fchown (glfs_fd_t *fd, uid_t uid, gid_t gid) __THROW;
 
-int glfs_utimens (glfs_t *fs, const char *path, struct timespec times[2]);
+int glfs_utimens (glfs_t *fs, const char *path,
+                  struct timespec times[2]) __THROW;
 
-int glfs_lutimens (glfs_t *fs, const char *path, struct timespec times[2]);
+int glfs_lutimens (glfs_t *fs, const char *path,
+                   struct timespec times[2]) __THROW;
 
-int glfs_futimens (glfs_fd_t *fd, struct timespec times[2]);
+int glfs_futimens (glfs_fd_t *fd, struct timespec times[2]) __THROW;
 
 ssize_t glfs_getxattr (glfs_t *fs, const char *path, const char *name,
-		       void *value, size_t size);
+		       void *value, size_t size) __THROW;
 
 ssize_t glfs_lgetxattr (glfs_t *fs, const char *path, const char *name,
-			void *value, size_t size);
+			void *value, size_t size) __THROW;
 
 ssize_t glfs_fgetxattr (glfs_fd_t *fd, const char *name,
-			void *value, size_t size);
+			void *value, size_t size) __THROW;
 
-ssize_t glfs_listxattr (glfs_t *fs, const char *path, void *value, size_t size);
+ssize_t glfs_listxattr (glfs_t *fs, const char *path,
+                        void *value, size_t size) __THROW;
 
 ssize_t glfs_llistxattr (glfs_t *fs, const char *path, void *value,
-			 size_t size);
+			 size_t size) __THROW;
 
-ssize_t glfs_flistxattr (glfs_fd_t *fd, void *value, size_t size);
+ssize_t glfs_flistxattr (glfs_fd_t *fd, void *value, size_t size) __THROW;
 
 int glfs_setxattr (glfs_t *fs, const char *path, const char *name,
-		   const void *value, size_t size, int flags);
+		   const void *value, size_t size, int flags) __THROW;
 
 int glfs_lsetxattr (glfs_t *fs, const char *path, const char *name,
-		    const void *value, size_t size, int flags);
+		    const void *value, size_t size, int flags) __THROW;
 
 int glfs_fsetxattr (glfs_fd_t *fd, const char *name,
-		    const void *value, size_t size, int flags);
+		    const void *value, size_t size, int flags) __THROW;
 
-int glfs_removexattr (glfs_t *fs, const char *path, const char *name);
+int glfs_removexattr (glfs_t *fs, const char *path, const char *name) __THROW;
 
-int glfs_lremovexattr (glfs_t *fs, const char *path, const char *name);
+int glfs_lremovexattr (glfs_t *fs, const char *path, const char *name) __THROW;
 
-int glfs_fremovexattr (glfs_fd_t *fd, const char *name);
+int glfs_fremovexattr (glfs_fd_t *fd, const char *name) __THROW;
 
-char *glfs_getcwd (glfs_t *fs, char *buf, size_t size);
+int glfs_fallocate(glfs_fd_t *fd, int keep_size,
+                   off_t offset, size_t len) __THROW;
 
-int glfs_chdir (glfs_t *fs, const char *path);
+int glfs_discard(glfs_fd_t *fd, off_t offset, size_t len) __THROW;
 
-int glfs_fchdir (glfs_fd_t *fd);
 
-char *glfs_realpath (glfs_t *fs, const char *path, char *resolved_path);
+int glfs_discard_async (glfs_fd_t *fd, off_t length, size_t lent,
+			glfs_io_cbk fn, void *data) __THROW;
+
+int glfs_zerofill(glfs_fd_t *fd, off_t offset, off_t len) __THROW;
+
+int glfs_zerofill_async (glfs_fd_t *fd, off_t length, off_t len,
+                        glfs_io_cbk fn, void *data) __THROW;
+
+char *glfs_getcwd (glfs_t *fs, char *buf, size_t size) __THROW;
+
+int glfs_chdir (glfs_t *fs, const char *path) __THROW;
+
+int glfs_fchdir (glfs_fd_t *fd) __THROW;
+
+char *glfs_realpath (glfs_t *fs, const char *path, char *resolved_path) __THROW;
 
 /*
  * @cmd and @flock are as specified in man fcntl(2).
  */
-int glfs_posix_lock (glfs_fd_t *fd, int cmd, struct flock *flock);
+int glfs_posix_lock (glfs_fd_t *fd, int cmd, struct flock *flock) __THROW;
 
-glfs_fd_t *glfs_dup (glfs_fd_t *fd);
+glfs_fd_t *glfs_dup (glfs_fd_t *fd) __THROW;
 
 __END_DECLS
 

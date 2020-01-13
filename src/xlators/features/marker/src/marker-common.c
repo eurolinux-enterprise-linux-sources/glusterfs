@@ -60,3 +60,10 @@ unlock: UNLOCK (&inode->lock);
         return ret;
 }
 
+int
+marker_filter_quota_xattr (dict_t *dict, char *key,
+                           data_t *value, void *data)
+{
+        dict_del (dict, key);
+        return 0;
+}

@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2007-2014 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -8,12 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
-#include "xdr-common.h"
 #include "compat.h"
+#include "xdr-common.h"
+#include "xdr-nfs3.h"
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 
@@ -28,7 +30,6 @@ bool_t
 xdr_gf_statfs (XDR *xdrs, gf_statfs *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_quad_t (xdrs, &objp->bsize))
 		 return FALSE;
@@ -59,7 +60,6 @@ bool_t
 xdr_gf_proto_flock (XDR *xdrs, gf_proto_flock *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_int (xdrs, &objp->type))
 		 return FALSE;
@@ -80,8 +80,8 @@ bool_t
 xdr_gf_iatt (XDR *xdrs, gf_iatt *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 
 	if (xdrs->x_op == XDR_ENCODE) {
 		 if (!xdr_opaque (xdrs, objp->ia_gfid, 16))
@@ -236,8 +236,8 @@ bool_t
 xdr_gfs3_stat_req (XDR *xdrs, gfs3_stat_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
@@ -249,7 +249,6 @@ bool_t
 xdr_gfs3_stat_rsp (XDR *xdrs, gfs3_stat_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -266,8 +265,8 @@ bool_t
 xdr_gfs3_readlink_req (XDR *xdrs, gfs3_readlink_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->size))
@@ -281,7 +280,6 @@ bool_t
 xdr_gfs3_readlink_rsp (XDR *xdrs, gfs3_readlink_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -300,8 +298,8 @@ bool_t
 xdr_gfs3_mknod_req (XDR *xdrs, gfs3_mknod_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->pargfid, 16))
 		 return FALSE;
 	 if (!xdr_u_quad_t (xdrs, &objp->dev))
@@ -321,7 +319,6 @@ bool_t
 xdr_gfs3_mknod_rsp (XDR *xdrs, gfs3_mknod_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -342,8 +339,8 @@ bool_t
 xdr_gfs3_mkdir_req (XDR *xdrs, gfs3_mkdir_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->pargfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->mode))
@@ -361,7 +358,6 @@ bool_t
 xdr_gfs3_mkdir_rsp (XDR *xdrs, gfs3_mkdir_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -382,8 +378,8 @@ bool_t
 xdr_gfs3_unlink_req (XDR *xdrs, gfs3_unlink_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->pargfid, 16))
 		 return FALSE;
 	 if (!xdr_string (xdrs, &objp->bname, ~0))
@@ -399,7 +395,6 @@ bool_t
 xdr_gfs3_unlink_rsp (XDR *xdrs, gfs3_unlink_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -418,8 +413,8 @@ bool_t
 xdr_gfs3_rmdir_req (XDR *xdrs, gfs3_rmdir_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->pargfid, 16))
 		 return FALSE;
 	 if (!xdr_int (xdrs, &objp->xflags))
@@ -435,7 +430,6 @@ bool_t
 xdr_gfs3_rmdir_rsp (XDR *xdrs, gfs3_rmdir_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -454,8 +448,8 @@ bool_t
 xdr_gfs3_symlink_req (XDR *xdrs, gfs3_symlink_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->pargfid, 16))
 		 return FALSE;
 	 if (!xdr_string (xdrs, &objp->bname, ~0))
@@ -473,7 +467,6 @@ bool_t
 xdr_gfs3_symlink_rsp (XDR *xdrs, gfs3_symlink_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -494,8 +487,8 @@ bool_t
 xdr_gfs3_rename_req (XDR *xdrs, gfs3_rename_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->oldgfid, 16))
 		 return FALSE;
 	 if (!xdr_opaque (xdrs, objp->newgfid, 16))
@@ -513,7 +506,6 @@ bool_t
 xdr_gfs3_rename_rsp (XDR *xdrs, gfs3_rename_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -538,8 +530,8 @@ bool_t
 xdr_gfs3_link_req (XDR *xdrs, gfs3_link_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->oldgfid, 16))
 		 return FALSE;
 	 if (!xdr_opaque (xdrs, objp->newgfid, 16))
@@ -555,7 +547,6 @@ bool_t
 xdr_gfs3_link_rsp (XDR *xdrs, gfs3_link_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -576,8 +567,8 @@ bool_t
 xdr_gfs3_truncate_req (XDR *xdrs, gfs3_truncate_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_quad_t (xdrs, &objp->offset))
@@ -591,7 +582,6 @@ bool_t
 xdr_gfs3_truncate_rsp (XDR *xdrs, gfs3_truncate_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -610,8 +600,8 @@ bool_t
 xdr_gfs3_open_req (XDR *xdrs, gfs3_open_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->flags))
@@ -625,7 +615,6 @@ bool_t
 xdr_gfs3_open_rsp (XDR *xdrs, gfs3_open_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -642,8 +631,8 @@ bool_t
 xdr_gfs3_read_req (XDR *xdrs, gfs3_read_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -663,7 +652,6 @@ bool_t
 xdr_gfs3_read_rsp (XDR *xdrs, gfs3_read_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -682,8 +670,8 @@ bool_t
 xdr_gfs3_lookup_req (XDR *xdrs, gfs3_lookup_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_opaque (xdrs, objp->pargfid, 16))
@@ -701,7 +689,6 @@ bool_t
 xdr_gfs3_lookup_rsp (XDR *xdrs, gfs3_lookup_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -720,8 +707,8 @@ bool_t
 xdr_gfs3_write_req (XDR *xdrs, gfs3_write_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -741,7 +728,6 @@ bool_t
 xdr_gfs3_write_rsp (XDR *xdrs, gfs3_write_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -760,8 +746,8 @@ bool_t
 xdr_gfs3_statfs_req (XDR *xdrs, gfs3_statfs_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
@@ -773,7 +759,6 @@ bool_t
 xdr_gfs3_statfs_rsp (XDR *xdrs, gfs3_statfs_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -790,11 +775,11 @@ bool_t
 xdr_gfs3_lk_req (XDR *xdrs, gfs3_lk_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
-	 if (!xdr_quad_t (xdrs, &objp->fd))
+	 if (!xdr_int64_t (xdrs, &objp->fd))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->cmd))
 		 return FALSE;
@@ -811,7 +796,6 @@ bool_t
 xdr_gfs3_lk_rsp (XDR *xdrs, gfs3_lk_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -828,8 +812,8 @@ bool_t
 xdr_gfs3_inodelk_req (XDR *xdrs, gfs3_inodelk_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->cmd))
@@ -849,8 +833,8 @@ bool_t
 xdr_gfs3_finodelk_req (XDR *xdrs, gfs3_finodelk_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -872,8 +856,8 @@ bool_t
 xdr_gfs3_flush_req (XDR *xdrs, gfs3_flush_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -887,8 +871,8 @@ bool_t
 xdr_gfs3_fsync_req (XDR *xdrs, gfs3_fsync_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -904,7 +888,6 @@ bool_t
 xdr_gfs3_fsync_rsp (XDR *xdrs, gfs3_fsync_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -923,8 +906,8 @@ bool_t
 xdr_gfs3_setxattr_req (XDR *xdrs, gfs3_setxattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->flags))
@@ -940,11 +923,11 @@ bool_t
 xdr_gfs3_fsetxattr_req (XDR *xdrs, gfs3_fsetxattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
-	 if (!xdr_quad_t (xdrs, &objp->fd))
+	 if (!xdr_int64_t (xdrs, &objp->fd))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->flags))
 		 return FALSE;
@@ -959,8 +942,8 @@ bool_t
 xdr_gfs3_xattrop_req (XDR *xdrs, gfs3_xattrop_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->flags))
@@ -976,7 +959,6 @@ bool_t
 xdr_gfs3_xattrop_rsp (XDR *xdrs, gfs3_xattrop_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -993,8 +975,8 @@ bool_t
 xdr_gfs3_fxattrop_req (XDR *xdrs, gfs3_fxattrop_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1012,7 +994,6 @@ bool_t
 xdr_gfs3_fxattrop_rsp (XDR *xdrs, gfs3_fxattrop_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1029,8 +1010,8 @@ bool_t
 xdr_gfs3_getxattr_req (XDR *xdrs, gfs3_getxattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->namelen))
@@ -1046,7 +1027,6 @@ bool_t
 xdr_gfs3_getxattr_rsp (XDR *xdrs, gfs3_getxattr_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1063,8 +1043,8 @@ bool_t
 xdr_gfs3_fgetxattr_req (XDR *xdrs, gfs3_fgetxattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1082,7 +1062,6 @@ bool_t
 xdr_gfs3_fgetxattr_rsp (XDR *xdrs, gfs3_fgetxattr_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1099,8 +1078,8 @@ bool_t
 xdr_gfs3_removexattr_req (XDR *xdrs, gfs3_removexattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_string (xdrs, &objp->name, ~0))
@@ -1114,8 +1093,8 @@ bool_t
 xdr_gfs3_fremovexattr_req (XDR *xdrs, gfs3_fremovexattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1131,8 +1110,8 @@ bool_t
 xdr_gfs3_opendir_req (XDR *xdrs, gfs3_opendir_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
@@ -1144,7 +1123,6 @@ bool_t
 xdr_gfs3_opendir_rsp (XDR *xdrs, gfs3_opendir_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1161,8 +1139,8 @@ bool_t
 xdr_gfs3_fsyncdir_req (XDR *xdrs, gfs3_fsyncdir_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1178,8 +1156,8 @@ bool_t
 xdr_gfs3_readdir_req (XDR *xdrs, gfs3_readdir_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1197,8 +1175,8 @@ bool_t
 xdr_gfs3_readdirp_req (XDR *xdrs, gfs3_readdirp_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1216,8 +1194,8 @@ bool_t
 xdr_gfs3_access_req (XDR *xdrs, gfs3_access_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->mask))
@@ -1231,8 +1209,8 @@ bool_t
 xdr_gfs3_create_req (XDR *xdrs, gfs3_create_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 
 	if (xdrs->x_op == XDR_ENCODE) {
 		 if (!xdr_opaque (xdrs, objp->pargfid, 16))
@@ -1299,7 +1277,6 @@ bool_t
 xdr_gfs3_create_rsp (XDR *xdrs, gfs3_create_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1322,8 +1299,8 @@ bool_t
 xdr_gfs3_ftruncate_req (XDR *xdrs, gfs3_ftruncate_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1339,7 +1316,6 @@ bool_t
 xdr_gfs3_ftruncate_rsp (XDR *xdrs, gfs3_ftruncate_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1358,8 +1334,8 @@ bool_t
 xdr_gfs3_fstat_req (XDR *xdrs, gfs3_fstat_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1373,7 +1349,6 @@ bool_t
 xdr_gfs3_fstat_rsp (XDR *xdrs, gfs3_fstat_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1390,8 +1365,8 @@ bool_t
 xdr_gfs3_entrylk_req (XDR *xdrs, gfs3_entrylk_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_u_int (xdrs, &objp->cmd))
@@ -1413,8 +1388,8 @@ bool_t
 xdr_gfs3_fentrylk_req (XDR *xdrs, gfs3_fentrylk_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1438,8 +1413,8 @@ bool_t
 xdr_gfs3_setattr_req (XDR *xdrs, gfs3_setattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_gf_iatt (xdrs, &objp->stbuf))
@@ -1455,7 +1430,6 @@ bool_t
 xdr_gfs3_setattr_rsp (XDR *xdrs, gfs3_setattr_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1474,7 +1448,6 @@ bool_t
 xdr_gfs3_fsetattr_req (XDR *xdrs, gfs3_fsetattr_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_quad_t (xdrs, &objp->fd))
 		 return FALSE;
@@ -1491,7 +1464,119 @@ bool_t
 xdr_gfs3_fsetattr_rsp (XDR *xdrs, gfs3_fsetattr_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
+
+	 if (!xdr_int (xdrs, &objp->op_ret))
+		 return FALSE;
+	 if (!xdr_int (xdrs, &objp->op_errno))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->statpre))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->statpost))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_fallocate_req (XDR *xdrs, gfs3_fallocate_req *objp)
+{
+	register int32_t *buf;
+
+	int i;
+	 if (!xdr_opaque (xdrs, objp->gfid, 16))
+		 return FALSE;
+	 if (!xdr_quad_t (xdrs, &objp->fd))
+		 return FALSE;
+	 if (!xdr_u_int (xdrs, &objp->flags))
+		 return FALSE;
+	 if (!xdr_u_quad_t (xdrs, &objp->offset))
+		 return FALSE;
+	 if (!xdr_u_quad_t (xdrs, &objp->size))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_fallocate_rsp (XDR *xdrs, gfs3_fallocate_rsp *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_int (xdrs, &objp->op_ret))
+		 return FALSE;
+	 if (!xdr_int (xdrs, &objp->op_errno))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->statpre))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->statpost))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_discard_req (XDR *xdrs, gfs3_discard_req *objp)
+{
+	register int32_t *buf;
+
+	int i;
+	 if (!xdr_opaque (xdrs, objp->gfid, 16))
+		 return FALSE;
+	 if (!xdr_quad_t (xdrs, &objp->fd))
+		 return FALSE;
+	 if (!xdr_u_quad_t (xdrs, &objp->offset))
+		 return FALSE;
+	 if (!xdr_u_quad_t (xdrs, &objp->size))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_discard_rsp (XDR *xdrs, gfs3_discard_rsp *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_int (xdrs, &objp->op_ret))
+		 return FALSE;
+	 if (!xdr_int (xdrs, &objp->op_errno))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->statpre))
+		 return FALSE;
+	 if (!xdr_gf_iatt (xdrs, &objp->statpost))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_zerofill_req (XDR *xdrs, gfs3_zerofill_req *objp)
+{
+	register int32_t *buf;
+
+	int i;
+	 if (!xdr_opaque (xdrs, objp->gfid, 16))
+		 return FALSE;
+	 if (!xdr_quad_t (xdrs, &objp->fd))
+		 return FALSE;
+	 if (!xdr_u_quad_t (xdrs, &objp->offset))
+		 return FALSE;
+	 if (!xdr_u_quad_t (xdrs, &objp->size))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gfs3_zerofill_rsp (XDR *xdrs, gfs3_zerofill_rsp *objp)
+{
+	register int32_t *buf;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1510,7 +1595,6 @@ bool_t
 xdr_gfs3_rchecksum_req (XDR *xdrs, gfs3_rchecksum_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_quad_t (xdrs, &objp->fd))
 		 return FALSE;
@@ -1527,7 +1611,6 @@ bool_t
 xdr_gfs3_rchecksum_rsp (XDR *xdrs, gfs3_rchecksum_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 
 	if (xdrs->x_op == XDR_ENCODE) {
@@ -1589,7 +1672,6 @@ bool_t
 xdr_gf_setvolume_req (XDR *xdrs, gf_setvolume_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_bytes (xdrs, (char **)&objp->dict.dict_val, (u_int *) &objp->dict.dict_len, ~0))
 		 return FALSE;
@@ -1600,7 +1682,6 @@ bool_t
 xdr_gf_setvolume_rsp (XDR *xdrs, gf_setvolume_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1615,7 +1696,6 @@ bool_t
 xdr_gf_getspec_req (XDR *xdrs, gf_getspec_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_int (xdrs, &objp->flags))
 		 return FALSE;
@@ -1630,7 +1710,6 @@ bool_t
 xdr_gf_getspec_rsp (XDR *xdrs, gf_getspec_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1644,10 +1723,35 @@ xdr_gf_getspec_rsp (XDR *xdrs, gf_getspec_rsp *objp)
 }
 
 bool_t
+xdr_gf_get_volume_info_req (XDR *xdrs, gf_get_volume_info_req *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_bytes (xdrs, (char **)&objp->dict.dict_val, (u_int *) &objp->dict.dict_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gf_get_volume_info_rsp (XDR *xdrs, gf_get_volume_info_rsp *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_int (xdrs, &objp->op_ret))
+		 return FALSE;
+	 if (!xdr_int (xdrs, &objp->op_errno))
+		 return FALSE;
+	 if (!xdr_string (xdrs, &objp->op_errstr, ~0))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->dict.dict_val, (u_int *) &objp->dict.dict_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
 xdr_gf_mgmt_hndsk_req (XDR *xdrs, gf_mgmt_hndsk_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_bytes (xdrs, (char **)&objp->hndsk.hndsk_val, (u_int *) &objp->hndsk.hndsk_len, ~0))
 		 return FALSE;
@@ -1658,7 +1762,6 @@ bool_t
 xdr_gf_mgmt_hndsk_rsp (XDR *xdrs, gf_mgmt_hndsk_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1673,7 +1776,6 @@ bool_t
 xdr_gf_log_req (XDR *xdrs, gf_log_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_bytes (xdrs, (char **)&objp->msg.msg_val, (u_int *) &objp->msg.msg_len, ~0))
 		 return FALSE;
@@ -1684,7 +1786,6 @@ bool_t
 xdr_gf_notify_req (XDR *xdrs, gf_notify_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_int (xdrs, &objp->flags))
 		 return FALSE;
@@ -1699,7 +1800,6 @@ bool_t
 xdr_gf_notify_rsp (XDR *xdrs, gf_notify_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 
 	if (xdrs->x_op == XDR_ENCODE) {
@@ -1761,8 +1861,8 @@ bool_t
 xdr_gfs3_releasedir_req (XDR *xdrs, gfs3_releasedir_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1776,8 +1876,8 @@ bool_t
 xdr_gfs3_release_req (XDR *xdrs, gfs3_release_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
+	int i;
 	 if (!xdr_opaque (xdrs, objp->gfid, 16))
 		 return FALSE;
 	 if (!xdr_quad_t (xdrs, &objp->fd))
@@ -1788,25 +1888,9 @@ xdr_gfs3_release_req (XDR *xdrs, gfs3_release_req *objp)
 }
 
 bool_t
-xdr_gf_common_rsp (XDR *xdrs, gf_common_rsp *objp)
-{
-	register int32_t *buf;
-        buf = NULL;
-
-	 if (!xdr_int (xdrs, &objp->op_ret))
-		 return FALSE;
-	 if (!xdr_int (xdrs, &objp->op_errno))
-		 return FALSE;
-	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
-		 return FALSE;
-	return TRUE;
-}
-
-bool_t
 xdr_gfs3_dirlist (XDR *xdrs, gfs3_dirlist *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_quad_t (xdrs, &objp->d_ino))
 		 return FALSE;
@@ -1827,7 +1911,6 @@ bool_t
 xdr_gfs3_readdir_rsp (XDR *xdrs, gfs3_readdir_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1844,7 +1927,6 @@ bool_t
 xdr_gfs3_dirplist (XDR *xdrs, gfs3_dirplist *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_quad_t (xdrs, &objp->d_ino))
 		 return FALSE;
@@ -1869,7 +1951,6 @@ bool_t
 xdr_gfs3_readdirp_rsp (XDR *xdrs, gfs3_readdirp_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1886,7 +1967,6 @@ bool_t
 xdr_gf_set_lk_ver_rsp (XDR *xdrs, gf_set_lk_ver_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -1901,7 +1981,6 @@ bool_t
 xdr_gf_set_lk_ver_req (XDR *xdrs, gf_set_lk_ver_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_string (xdrs, &objp->uid, ~0))
 		 return FALSE;
@@ -1914,7 +1993,6 @@ bool_t
 xdr_gf_event_notify_req (XDR *xdrs, gf_event_notify_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op))
 		 return FALSE;
@@ -1927,11 +2005,36 @@ bool_t
 xdr_gf_event_notify_rsp (XDR *xdrs, gf_event_notify_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
 	 if (!xdr_int (xdrs, &objp->op_errno))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->dict.dict_val, (u_int *) &objp->dict.dict_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gf_getsnap_name_uuid_req (XDR *xdrs, gf_getsnap_name_uuid_req *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_bytes (xdrs, (char **)&objp->dict.dict_val, (u_int *) &objp->dict.dict_len, ~0))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gf_getsnap_name_uuid_rsp (XDR *xdrs, gf_getsnap_name_uuid_rsp *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_int (xdrs, &objp->op_ret))
+		 return FALSE;
+	 if (!xdr_int (xdrs, &objp->op_errno))
+		 return FALSE;
+	 if (!xdr_string (xdrs, &objp->op_errstr, ~0))
 		 return FALSE;
 	 if (!xdr_bytes (xdrs, (char **)&objp->dict.dict_val, (u_int *) &objp->dict.dict_len, ~0))
 		 return FALSE;

@@ -31,6 +31,7 @@
 #define SYNCOPCTX_UID    0x00000001
 #define SYNCOPCTX_GID    0x00000002
 #define SYNCOPCTX_GROUPS 0x00000004
+#define SYNCOPCTX_PID    0x00000008
 
 struct synctask;
 struct syncproc;
@@ -48,6 +49,7 @@ typedef enum {
         SYNCTASK_SUSPEND,
         SYNCTASK_WAIT,
         SYNCTASK_DONE,
+	SYNCTASK_ZOMBIE,
 } synctask_state_t;
 
 /* for one sequential execution of @syncfn */
@@ -96,6 +98,9 @@ struct syncenv {
         int                 runcount;
         struct list_head    waitq;
         int                 waitcount;
+
+	int                 procmin;
+	int                 procmax;
 
         pthread_mutex_t     mutex;
         pthread_cond_t      cond;
@@ -160,6 +165,7 @@ struct syncopctx {
         int          grpsize;
         int          ngrps;
         gid_t       *groups;
+	pid_t        pid;
 };
 
 #define __yawn(args) do {                                       \
@@ -234,11 +240,14 @@ struct syncopctx {
 
 #define SYNCENV_DEFAULT_STACKSIZE (2 * 1024 * 1024)
 
-struct syncenv * syncenv_new ();
+struct syncenv * syncenv_new (size_t stacksize, int procmin, int procmax);
 void syncenv_destroy (struct syncenv *);
 void syncenv_scale (struct syncenv *env);
 
 int synctask_new (struct syncenv *, synctask_fn_t, synctask_cbk_t, call_frame_t* frame, void *);
+struct synctask *synctask_create (struct syncenv *, synctask_fn_t,
+				  synctask_cbk_t, call_frame_t *, void *);
+int synctask_join (struct synctask *task);
 void synctask_wake (struct synctask *task);
 void synctask_yield (struct synctask *task);
 void synctask_waitfor (struct synctask *task, int count);
@@ -253,6 +262,7 @@ int synctask_setid (struct synctask *task, uid_t uid, gid_t gid);
 int syncopctx_setfsuid (void *uid);
 int syncopctx_setfsgid (void *gid);
 int syncopctx_setfsgroups (int count, const void *groups);
+int syncopctx_setfspid (void *pid);
 
 static inline call_frame_t *
 syncop_create_frame (xlator_t *this)
@@ -265,9 +275,13 @@ syncop_create_frame (xlator_t *this)
 	if (!frame)
 		return NULL;
 
-	frame->root->pid = getpid ();
-
 	opctx = syncopctx_getctx ();
+
+	if (opctx && (opctx->valid & SYNCOPCTX_PID))
+		frame->root->pid = opctx->pid;
+	else
+		frame->root->pid = getpid ();
+
 	if (opctx && (opctx->valid & SYNCOPCTX_UID))
 		frame->root->uid = opctx->uid;
 	else
@@ -353,8 +367,10 @@ int syncop_fsetxattr (xlator_t *subvol, fd_t *fd, dict_t *dict, int32_t flags);
 int syncop_listxattr (xlator_t *subvol, loc_t *loc, dict_t **dict);
 int syncop_getxattr (xlator_t *xl, loc_t *loc, dict_t **dict, const char *key);
 int syncop_fgetxattr (xlator_t *xl, fd_t *fd, dict_t **dict, const char *key);
-int syncop_removexattr (xlator_t *subvol, loc_t *loc, const char *name);
-int syncop_fremovexattr (xlator_t *subvol, fd_t *fd, const char *name);
+int syncop_removexattr (xlator_t *subvol, loc_t *loc, const char *name,
+			dict_t *xdata);
+int syncop_fremovexattr (xlator_t *subvol, fd_t *fd, const char *name,
+			 dict_t *xdata);
 
 int syncop_create (xlator_t *subvol, loc_t *loc, int32_t flags, mode_t mode,
                    fd_t *fd, dict_t *dict, struct iatt *iatt);
@@ -375,7 +391,7 @@ int syncop_ftruncate (xlator_t *subvol, fd_t *fd, off_t offset);
 int syncop_truncate (xlator_t *subvol, loc_t *loc, off_t offset);
 
 int syncop_unlink (xlator_t *subvol, loc_t *loc);
-int syncop_rmdir (xlator_t *subvol, loc_t *loc);
+int syncop_rmdir (xlator_t *subvol, loc_t *loc, int flags);
 
 int syncop_fsync (xlator_t *subvol, fd_t *fd, int dataonly);
 int syncop_flush (xlator_t *subvol, fd_t *fd);
@@ -392,9 +408,18 @@ int syncop_mkdir (xlator_t *subvol, loc_t *loc, mode_t mode, dict_t *dict,
 int syncop_link (xlator_t *subvol, loc_t *oldloc, loc_t *newloc);
 int syncop_fsyncdir (xlator_t *subvol, fd_t *fd, int datasync);
 int syncop_access (xlator_t *subvol, loc_t *loc, int32_t mask);
+int syncop_fallocate(xlator_t *subvol, fd_t *fd, int32_t keep_size, off_t offset,
+		     size_t len);
+int syncop_discard(xlator_t *subvol, fd_t *fd, off_t offset, size_t len);
+
+int syncop_zerofill(xlator_t *subvol, fd_t *fd, off_t offset, off_t len);
 
 int syncop_rename (xlator_t *subvol, loc_t *oldloc, loc_t *newloc);
 
 int syncop_lk (xlator_t *subvol, fd_t *fd, int cmd, struct gf_flock *flock);
+
+int
+syncop_inodelk (xlator_t *subvol, const char *volume, loc_t *loc, int32_t cmd,
+                struct gf_flock *lock, dict_t *xdata_req, dict_t **xdata_rsp);
 
 #endif /* _SYNCOP_H */

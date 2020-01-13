@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2007-2014 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -8,12 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
-#include "xdr-common.h"
 #include "compat.h"
+#include "xdr-common.h"
+#include "xdr-nfs3.h"
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 
@@ -28,7 +30,6 @@ bool_t
 xdr_pmap_port_by_brick_req (XDR *xdrs, pmap_port_by_brick_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_string (xdrs, &objp->brick, ~0))
 		 return FALSE;
@@ -39,7 +40,6 @@ bool_t
 xdr_pmap_port_by_brick_rsp (XDR *xdrs, pmap_port_by_brick_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 
 	if (xdrs->x_op == XDR_ENCODE) {
@@ -95,7 +95,6 @@ bool_t
 xdr_pmap_brick_by_port_req (XDR *xdrs, pmap_brick_by_port_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->port))
 		 return FALSE;
@@ -106,7 +105,6 @@ bool_t
 xdr_pmap_brick_by_port_rsp (XDR *xdrs, pmap_brick_by_port_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 
 	if (xdrs->x_op == XDR_ENCODE) {
@@ -162,7 +160,6 @@ bool_t
 xdr_pmap_signup_req (XDR *xdrs, pmap_signup_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_string (xdrs, &objp->brick, ~0))
 		 return FALSE;
@@ -175,7 +172,6 @@ bool_t
 xdr_pmap_signup_rsp (XDR *xdrs, pmap_signup_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -188,7 +184,6 @@ bool_t
 xdr_pmap_signin_req (XDR *xdrs, pmap_signin_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_string (xdrs, &objp->brick, ~0))
 		 return FALSE;
@@ -201,7 +196,6 @@ bool_t
 xdr_pmap_signin_rsp (XDR *xdrs, pmap_signin_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;
@@ -214,7 +208,6 @@ bool_t
 xdr_pmap_signout_req (XDR *xdrs, pmap_signout_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_string (xdrs, &objp->brick, ~0))
 		 return FALSE;
@@ -227,7 +220,6 @@ bool_t
 xdr_pmap_signout_rsp (XDR *xdrs, pmap_signout_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_int (xdrs, &objp->op_ret))
 		 return FALSE;

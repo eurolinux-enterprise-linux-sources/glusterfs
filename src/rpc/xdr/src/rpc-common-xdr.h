@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2007-2014 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -8,12 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
-#include "xdr-common.h"
 #include "compat.h"
+#include "xdr-common.h"
+#include "xdr-nfs3.h"
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 
@@ -79,6 +81,16 @@ struct gf_dump_rsp {
 };
 typedef struct gf_dump_rsp gf_dump_rsp;
 
+struct gf_common_rsp {
+	int op_ret;
+	int op_errno;
+	struct {
+		u_int xdata_len;
+		char *xdata_val;
+	} xdata;
+};
+typedef struct gf_common_rsp gf_common_rsp;
+
 /* the xdr functions */
 
 #if defined(__STDC__) || defined(__cplusplus)
@@ -87,6 +99,7 @@ extern  bool_t xdr_auth_glusterfs_parms (XDR *, auth_glusterfs_parms*);
 extern  bool_t xdr_gf_dump_req (XDR *, gf_dump_req*);
 extern  bool_t xdr_gf_prog_detail (XDR *, gf_prog_detail*);
 extern  bool_t xdr_gf_dump_rsp (XDR *, gf_dump_rsp*);
+extern  bool_t xdr_gf_common_rsp (XDR *, gf_common_rsp*);
 
 #else /* K&R C */
 extern bool_t xdr_auth_glusterfs_parms_v2 ();
@@ -94,6 +107,7 @@ extern bool_t xdr_auth_glusterfs_parms ();
 extern bool_t xdr_gf_dump_req ();
 extern bool_t xdr_gf_prog_detail ();
 extern bool_t xdr_gf_dump_rsp ();
+extern bool_t xdr_gf_common_rsp ();
 
 #endif /* K&R C */
 

@@ -801,6 +801,8 @@ data_from_dynstr (char *value)
 
         data_t *data = get_new_data ();
 
+        if (!data)
+                return NULL;
         data->len = strlen (value) + 1;
         data->data = value;
 
@@ -817,6 +819,8 @@ data_from_dynmstr (char *value)
 
         data_t *data = get_new_data ();
 
+        if (!data)
+                return NULL;
         data->len = strlen (value) + 1;
         data->data = value;
         data->is_stdalloc = 1;
@@ -896,7 +900,7 @@ data_to_int32 (data_t *data)
 int16_t
 data_to_int16 (data_t *data)
 {
-	int16_t value = 0;
+        int16_t value = 0;
 
         if (!data) {
                 gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
@@ -910,16 +914,16 @@ data_to_int16 (data_t *data)
         memcpy (str, data->data, data->len);
         str[data->len] = '\0';
 
-	errno = 0;
-	value = strtol (str, NULL, 0);
+        errno = 0;
+        value = strtol (str, NULL, 0);
 
-	if ((SHRT_MAX > value) || (SHRT_MIN < value)) {
-		errno = ERANGE;
+        if ((value > SHRT_MAX) || (value < SHRT_MIN)) {
+                errno = ERANGE;
                 gf_log_callingfn ("dict", GF_LOG_WARNING,
-				  "Error in data conversion: "
-				  "detected overflow");
+                                  "Error in data conversion: "
+                                  "detected overflow");
                 return -1;
-	}
+        }
 
         return (int16_t)value;
 }
@@ -928,7 +932,7 @@ data_to_int16 (data_t *data)
 int8_t
 data_to_int8 (data_t *data)
 {
-	int32_t value = 0;
+        int8_t value = 0;
 
         if (!data) {
                 gf_log_callingfn ("dict", GF_LOG_WARNING, "data is NULL");
@@ -942,16 +946,16 @@ data_to_int8 (data_t *data)
         memcpy (str, data->data, data->len);
         str[data->len] = '\0';
 
-	errno = 0;
-	value = strtol (str, NULL, 0);
+        errno = 0;
+        value = strtol (str, NULL, 0);
 
-	if ((SCHAR_MAX > value) || (SCHAR_MIN < value)) {
-		errno = ERANGE;
+        if ((value > SCHAR_MAX) || (value < SCHAR_MIN)) {
+                errno = ERANGE;
                 gf_log_callingfn ("dict", GF_LOG_WARNING,
-				  "Error in data conversion: "
-				  "detected overflow");
+                                  "Error in data conversion: "
+                                  "detected overflow");
                 return -1;
-	}
+        }
 
         return (int8_t)value;
 }
@@ -1037,7 +1041,7 @@ data_to_uint8 (data_t *data)
 	errno = 0;
 	value = strtol (str, NULL, 0);
 
-	if ((UCHAR_MAX - value) < 0) {
+	if ((UCHAR_MAX - (uint8_t)value) < 0) {
 		errno = ERANGE;
 		gf_log_callingfn ("dict", GF_LOG_WARNING,
 				  "data conversion overflow detected (%s)",
@@ -1121,8 +1125,8 @@ dict_foreach (dict_t *dict,
         while (pairs) {
                 next = pairs->next;
                 ret = fn (dict, pairs->key, pairs->value, data);
-                if (ret == -1)
-                        return -1;
+                if (ret < 0)
+                        return ret;
                 pairs = next;
         }
 
@@ -1598,6 +1602,8 @@ dict_set_int8 (dict_t *this, char *key, int8_t val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1641,6 +1647,8 @@ dict_set_int16 (dict_t *this, char *key, int16_t val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1684,6 +1692,8 @@ dict_set_int32 (dict_t *this, char *key, int32_t val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1727,6 +1737,8 @@ dict_set_int64 (dict_t *this, char *key, int64_t val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1770,6 +1782,8 @@ dict_set_uint16 (dict_t *this, char *key, uint16_t val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1814,6 +1828,8 @@ dict_set_uint32 (dict_t *this, char *key, uint32_t val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1857,6 +1873,8 @@ dict_set_uint64 (dict_t *this, char *key, uint64_t val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1899,6 +1917,8 @@ dict_set_double (dict_t *this, char *key, double val)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1917,6 +1937,8 @@ dict_set_static_ptr (dict_t *this, char *key, void *ptr)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -1935,6 +1957,8 @@ dict_set_dynptr (dict_t *this, char *key, void *ptr, size_t len)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -2011,6 +2035,8 @@ dict_set_ptr (dict_t *this, char *key, void *ptr)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -2057,8 +2083,27 @@ dict_set_str (dict_t *this, char *key, char *str)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
+        return ret;
+}
+
+int
+dict_set_dynstr_with_alloc (dict_t *this, char *key, const char *str)
+{
+        char *alloc_str = NULL;
+        int   ret       = -1;
+
+        alloc_str = gf_strdup (str);
+        if (!alloc_str)
+                return -1;
+
+        ret = dict_set_dynstr (this, key, alloc_str);
+        if (ret == -EINVAL)
+                GF_FREE (alloc_str);
+
         return ret;
 }
 
@@ -2075,6 +2120,8 @@ dict_set_dynstr (dict_t *this, char *key, char *str)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -2096,6 +2143,8 @@ dict_set_dynmstr (dict_t *this, char *key, char *str)
         }
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -2136,7 +2185,7 @@ dict_set_bin (dict_t *this, char *key, void *ptr, size_t size)
         data_t * data = NULL;
         int      ret  = 0;
 
-        if (!ptr || (size < 0)) {
+        if (!ptr || (size > ULONG_MAX)) {
                 ret = -EINVAL;
                 goto err;
         }
@@ -2152,6 +2201,8 @@ dict_set_bin (dict_t *this, char *key, void *ptr, size_t size)
         data->is_static = 0;
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;
@@ -2164,7 +2215,7 @@ dict_set_static_bin (dict_t *this, char *key, void *ptr, size_t size)
         data_t * data = NULL;
         int      ret  = 0;
 
-        if (!ptr || (size < 0)) {
+        if (!ptr || (size > ULONG_MAX)) {
                 ret = -EINVAL;
                 goto err;
         }
@@ -2180,6 +2231,8 @@ dict_set_static_bin (dict_t *this, char *key, void *ptr, size_t size)
         data->is_static = 1;
 
         ret = dict_set (this, key, data);
+        if (ret < 0)
+                data_destroy (data);
 
 err:
         return ret;

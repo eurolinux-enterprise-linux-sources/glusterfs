@@ -45,6 +45,31 @@ list_add_tail (struct list_head *new, struct list_head *head)
 }
 
 
+/* This function will insert the element to the list in a order.
+   Order will be based on the compare function provided as a input.
+   If element to be inserted in ascending order compare should return:
+    0: if both the arguments are equal
+   >0: if first argument is greater than second argument
+   <0: if first argument is less than second argument */
+static inline void
+list_add_order (struct list_head *new, struct list_head *head,
+                int (*compare)(struct list_head *, struct list_head *))
+{
+        struct list_head *pos = head->prev;
+
+        while ( pos != head ) {
+                if (compare(new, pos) >= 0)
+                        break;
+
+                /* Iterate the list in the reverse order. This will have
+                   better efficiency if the elements are inserted in the
+                   ascending order */
+                pos = pos->prev;
+        }
+
+        list_add (new, pos);
+}
+
 static inline void
 list_del (struct list_head *old)
 {
@@ -175,16 +200,15 @@ list_append_init (struct list_head *list, struct list_head *head)
 	     &pos->member != (head); 					\
 	     pos = n, n = list_entry(n->member.next, typeof(*n), member))
 
-
 #define list_for_each_entry_reverse(pos, head, member)                  \
-        for (pos = list_entry((head)->prev, typeof(*pos), member);      \
-	     &pos->member != (head);					\
+	for (pos = list_entry((head)->prev, typeof(*pos), member);      \
+	     &pos->member != (head);                                    \
 	     pos = list_entry(pos->member.prev, typeof(*pos), member))
 
 
 #define list_for_each_entry_safe_reverse(pos, n, head, member)          \
-        for (pos = list_entry((head)->prev, typeof(*pos), member),      \
-		     n = list_entry(pos->member.prev, typeof(*pos), member); \
+	for (pos = list_entry((head)->prev, typeof(*pos), member),      \
+	        n = list_entry(pos->member.prev, typeof(*pos), member); \
 	     &pos->member != (head);                                    \
 	     pos = n, n = list_entry(n->member.prev, typeof(*n), member))
 

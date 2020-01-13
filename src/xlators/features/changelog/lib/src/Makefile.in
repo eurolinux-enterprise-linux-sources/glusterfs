@@ -78,6 +78,7 @@ libgfchangelog_la_DEPENDENCIES =  \
 am_libgfchangelog_la_OBJECTS = libgfchangelog_la-gf-changelog.lo \
 	libgfchangelog_la-gf-changelog-process.lo \
 	libgfchangelog_la-gf-changelog-helpers.lo \
+	libgfchangelog_la-gf-history-changelog.lo \
 	libgfchangelog_la-clear.lo libgfchangelog_la-copy.lo \
 	libgfchangelog_la-gen_uuid.lo libgfchangelog_la-pack.lo \
 	libgfchangelog_la-parse.lo libgfchangelog_la-unparse.lo \
@@ -130,11 +131,14 @@ AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
 AM_MAKEFLAGS = @AM_MAKEFLAGS@
 AR = @AR@
 ARGP_STANDALONE_CPPFLAGS = @ARGP_STANDALONE_CPPFLAGS@
+ARGP_STANDALONE_DIR = @ARGP_STANDALONE_DIR@
 ARGP_STANDALONE_LDADD = @ARGP_STANDALONE_LDADD@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
+BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
+BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -160,11 +164,15 @@ GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_CFLAGS = @GF_GLUSTERFS_CFLAGS@
 GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
+GLIB_CFLAGS = @GLIB_CFLAGS@
+GLIB_LIBS = @GLIB_LIBS@
+GLUPY_SUBDIR = @GLUPY_SUBDIR@
+GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
+GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -186,6 +194,8 @@ LIBAIO = @LIBAIO@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
+LIBZ_CFLAGS = @LIBZ_CFLAGS@
+LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -201,11 +211,16 @@ OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
 PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_RELEASE = @PACKAGE_RELEASE@
 PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
+PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
+PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
+PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
@@ -213,6 +228,7 @@ PYTHON_VERSION = @PYTHON_VERSION@
 RANLIB = @RANLIB@
 RDMA_SUBDIR = @RDMA_SUBDIR@
 RLLIBS = @RLLIBS@
+RPCGEN = @RPCGEN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -229,6 +245,8 @@ XML_CPPFLAGS = @XML_CPPFLAGS@
 XML_LIBS = @XML_LIBS@
 YACC = @YACC@
 YFLAGS = @YFLAGS@
+ZLIB_CFLAGS = @ZLIB_CFLAGS@
+ZLIB_LIBS = @ZLIB_LIBS@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
@@ -286,6 +304,7 @@ sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
+systemddir = @systemddir@
 target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
@@ -306,7 +325,8 @@ libgfchangelogdir = $(includedir)/glusterfs/gfchangelog
 lib_LTLIBRARIES = libgfchangelog.la
 CONTRIB_BUILDDIR = $(top_builddir)/contrib
 libgfchangelog_la_SOURCES = gf-changelog.c gf-changelog-process.c \
-		gf-changelog-helpers.c $(CONTRIBDIR)/uuid/clear.c \
+		gf-changelog-helpers.c gf-history-changelog.c \
+		$(CONTRIBDIR)/uuid/clear.c \
 		$(CONTRIBDIR)/uuid/copy.c $(CONTRIBDIR)/uuid/gen_uuid.c \
 		$(CONTRIBDIR)/uuid/pack.c $(CONTRIBDIR)/uuid/parse.c \
 		$(CONTRIBDIR)/uuid/unparse.c $(CONTRIBDIR)/uuid/uuid_time.c \
@@ -401,6 +421,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfchangelog_la-gf-changelog-helpers.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfchangelog_la-gf-changelog-process.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfchangelog_la-gf-changelog.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfchangelog_la-gf-history-changelog.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfchangelog_la-isnull.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfchangelog_la-pack.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libgfchangelog_la-parse.Plo@am__quote@
@@ -455,6 +476,14 @@ libgfchangelog_la-gf-changelog-helpers.lo: gf-changelog-helpers.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='gf-changelog-helpers.c' object='libgfchangelog_la-gf-changelog-helpers.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfchangelog_la_CPPFLAGS) $(CPPFLAGS) $(libgfchangelog_la_CFLAGS) $(CFLAGS) -c -o libgfchangelog_la-gf-changelog-helpers.lo `test -f 'gf-changelog-helpers.c' || echo '$(srcdir)/'`gf-changelog-helpers.c
+
+libgfchangelog_la-gf-history-changelog.lo: gf-history-changelog.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfchangelog_la_CPPFLAGS) $(CPPFLAGS) $(libgfchangelog_la_CFLAGS) $(CFLAGS) -MT libgfchangelog_la-gf-history-changelog.lo -MD -MP -MF $(DEPDIR)/libgfchangelog_la-gf-history-changelog.Tpo -c -o libgfchangelog_la-gf-history-changelog.lo `test -f 'gf-history-changelog.c' || echo '$(srcdir)/'`gf-history-changelog.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libgfchangelog_la-gf-history-changelog.Tpo $(DEPDIR)/libgfchangelog_la-gf-history-changelog.Plo
+@am__fastdepCC_FALSE@	$(AM_V_CC) @AM_BACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='gf-history-changelog.c' object='libgfchangelog_la-gf-history-changelog.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfchangelog_la_CPPFLAGS) $(CPPFLAGS) $(libgfchangelog_la_CFLAGS) $(CFLAGS) -c -o libgfchangelog_la-gf-history-changelog.lo `test -f 'gf-history-changelog.c' || echo '$(srcdir)/'`gf-history-changelog.c
 
 libgfchangelog_la-clear.lo: $(CONTRIBDIR)/uuid/clear.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libgfchangelog_la_CPPFLAGS) $(CPPFLAGS) $(libgfchangelog_la_CFLAGS) $(CFLAGS) -MT libgfchangelog_la-clear.lo -MD -MP -MF $(DEPDIR)/libgfchangelog_la-clear.Tpo -c -o libgfchangelog_la-clear.lo `test -f '$(CONTRIBDIR)/uuid/clear.c' || echo '$(srcdir)/'`$(CONTRIBDIR)/uuid/clear.c

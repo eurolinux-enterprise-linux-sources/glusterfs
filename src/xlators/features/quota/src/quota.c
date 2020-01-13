@@ -14,6 +14,9 @@
 #include "defaults.h"
 #include "statedump.h"
 
+void
+quota_get_limit_dir (call_frame_t *frame, inode_t *cur_inode, xlator_t *this);
+
 int32_t
 quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
                    char *name, uuid_t par);
@@ -97,6 +100,7 @@ quota_loc_fill (loc_t *loc, inode_t *inode, inode_t *parent, char *path)
 
         if (path != NULL) {
                 loc->path = gf_strdup (path);
+
                 loc->name = strrchr (loc->path, '/');
                 if (loc->name) {
                         loc->name++;
@@ -177,6 +181,10 @@ quota_local_cleanup (xlator_t *this, quota_local_t *local)
         loc_wipe (&local->validate_loc);
 
         inode_unref (local->inode);
+
+        if (local->xdata)
+                dict_unref (local->xdata);
+
         LOCK_DESTROY (&local->lock);
 
         mem_put (local);
@@ -214,6 +222,7 @@ __quota_dentry_new (quota_inode_ctx_t *ctx, char *name, uuid_t par)
         dentry->name = gf_strdup (name);
         if (dentry->name == NULL) {
                 GF_FREE (dentry);
+                dentry = NULL;
                 goto err;
         }
 
@@ -242,8 +251,8 @@ out:
         return;
 }
 
-inline void
-quota_resume_fop_if_validation_done (quota_local_t *local)
+static inline void
+quota_link_count_decrement (quota_local_t *local)
 {
         call_stub_t *stub       = NULL;
         int          link_count = -1;
@@ -253,7 +262,7 @@ quota_resume_fop_if_validation_done (quota_local_t *local)
 
         LOCK (&local->lock);
         {
-                link_count = local->link_count;
+                link_count = --local->link_count;
                 if (link_count == 0) {
                         stub = local->stub;
                         local->stub = NULL;
@@ -268,7 +277,7 @@ out:
         return;
 }
 
-inline void
+static inline void
 quota_handle_validate_error (quota_local_t *local, int32_t op_ret,
                              int32_t op_errno)
 {
@@ -281,13 +290,11 @@ quota_handle_validate_error (quota_local_t *local, int32_t op_ret,
                         local->op_ret = op_ret;
                         local->op_errno = op_errno;
                 }
-
-                /* we abort checking limits on this path to root */
-                local->link_count--;
         }
         UNLOCK (&local->lock);
 
-        quota_resume_fop_if_validation_done (local);
+        /* we abort checking limits on this path to root */
+        quota_link_count_decrement (local);
 out:
         return;
 }
@@ -377,42 +384,71 @@ quota_timeout (struct timeval *tv, int32_t timeout)
         return timed_out;
 }
 
+static inline void
+quota_add_parent (quota_dentry_t *dentry, struct list_head *list)
+{
+        quota_dentry_t *entry = NULL;
+        gf_boolean_t    found = _gf_false;
+
+        if ((dentry == NULL) || (list == NULL)) {
+                goto out;
+        }
+
+        list_for_each_entry (entry, list, next) {
+                if (uuid_compare (dentry->par, entry->par) == 0) {
+                        found = _gf_true;
+                        goto out;
+                }
+        }
+
+        list_add_tail (&dentry->next, list);
+
+out:
+        return;
+}
+
 int32_t
 quota_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
-                          int32_t op_ret, int32_t op_errno, dict_t *dict,
-                          dict_t *xdata)
+                          int32_t op_ret, int32_t op_errno,
+                          gf_dirent_t *entries, dict_t *xdata)
 {
-        quota_local_t     *local   = NULL;
         inode_t           *parent  = NULL, *tmp_parent = NULL;
-        gf_dirent_t       *head    = NULL, *entry = NULL;
+        gf_dirent_t       *entry   = NULL;
         loc_t              loc     = {0, };
-        int                ret     = 0;
         quota_dentry_t    *dentry  = NULL, *tmp = NULL;
         quota_inode_ctx_t *ctx     = NULL;
         struct list_head   parents = {0, };
+        quota_local_t     *local   = NULL;
 
         INIT_LIST_HEAD (&parents);
 
         local = frame->local;
+        frame->local = NULL;
 
         if (op_ret < 0)
                 goto err;
 
-        parent = inode_parent (local->validate_loc.inode, 0, NULL);
+        parent = inode_parent (local->loc.inode, 0, NULL);
         if (parent == NULL) {
                 gf_log (this->name, GF_LOG_WARNING, "parent is NULL");
                 op_errno = EINVAL;
                 goto err;
         }
 
-        gf_log (this->name, GF_LOG_DEBUG, "building ancestry for inode (%s)",
-                uuid_utoa (local->validate_loc.inode->gfid));
-
-        ret = dict_get_bin (dict, GET_ANCESTRY_DENTRY_KEY, (void **)&head);
-
-        if (ret == 0 && head) {
-                list_for_each_entry (entry, &head->list, list) {
+        if ((op_ret > 0) && (entries != NULL)) {
+                list_for_each_entry (entry, &entries->list, list) {
                         if (__is_root_gfid (entry->inode->gfid)) {
+                                /* The list contains a sub-list for each
+                                 * possible path to the target inode. Each
+                                 * sub-list starts with the root entry of the
+                                 * tree and is followed by the child entries
+                                 * for a particular path to the target entry.
+                                 * The root entry is an implied sub-list
+                                 * delimiter, as it denotes we have started
+                                 * processing a new path. Reset the parent
+                                 * pointer and continue
+                                 */
+
                                 tmp_parent = NULL;
                         }
 
@@ -423,7 +459,7 @@ quota_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                         loc.name = entry->d_name;
 
                         quota_fill_inodectx (this, entry->inode, entry->dict,
-                                              &loc, &entry->d_stat, &op_errno);
+                                             &loc, &entry->d_stat, &op_errno);
 
                         tmp_parent = entry->inode;
 
@@ -431,91 +467,186 @@ quota_build_ancestry_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 }
         }
 
-        quota_inode_ctx_get (local->validate_loc.inode, this, &ctx, 0);
+        quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
 
-        if (ctx == NULL) {
-                goto not_hardlink;
-        }
+        if (ctx != NULL) {
+                LOCK (&ctx->lock);
+                {
+                        list_for_each_entry (dentry, &ctx->parents, next) {
+                                /* we built ancestry for a non-directory */
+                                tmp = __quota_dentry_new (NULL, dentry->name,
+                                                          dentry->par);
+                                quota_add_parent (tmp, &parents);
 
-        local->link_count = 0;
-
-        LOCK (&ctx->lock);
-        {
-                list_for_each_entry (dentry, &ctx->parents, next) {
-                        tmp = __quota_dentry_new (NULL, dentry->name,
-                                                  dentry->par);
-                        list_add_tail (&tmp->next, &parents);
-                        local->link_count++;
+                                if (list_empty (&tmp->next)) {
+                                        __quota_dentry_free (tmp);
+                                        tmp = NULL;
+                                }
+                        }
                 }
+                UNLOCK (&ctx->lock);
         }
-        UNLOCK (&ctx->lock);
 
-        if (local->link_count != 0) {
-                list_for_each_entry_safe (dentry, tmp, &parents, next) {
-                        quota_check_limit (frame, local->validate_loc.inode,
-                                           this, dentry->name, dentry->par);
-                        __quota_dentry_free (dentry);
+        if (list_empty (&parents)) {
+                /* we built ancestry for a directory */
+                list_for_each_entry (entry, &entries->list, list) {
+                        if (entry->inode == local->loc.inode)
+                                break;
                 }
 
-                goto done;
+                GF_ASSERT (&entry->list != &entries->list);
+
+                tmp = __quota_dentry_new (NULL, entry->d_name, parent->gfid);
+                quota_add_parent (tmp, &parents);
         }
 
-not_hardlink:
-        local->link_count = 1;
-        quota_check_limit (frame, parent, this, NULL, NULL);
-
-done:
-        inode_unref (parent);
-        return 0;
+        local->ancestry_cbk (&parents, local->loc.inode, 0, 0,
+                             local->ancestry_data);
+        goto cleanup;
 
 err:
-        quota_handle_validate_error (local, -1, op_errno);
+        local->ancestry_cbk (NULL, NULL, -1, op_errno, local->ancestry_data);
+
+cleanup:
+        STACK_DESTROY (frame->root);
+        quota_local_cleanup (this, local);
+
+        if (parent != NULL) {
+                inode_unref (parent);
+                parent = NULL;
+        }
+
+        list_for_each_entry_safe (dentry, tmp, &parents, next) {
+                __quota_dentry_free (dentry);
+        }
+
+        return 0;
+}
+
+int32_t
+quota_build_ancestry_open_cbk (call_frame_t *frame, void *cookie,
+                               xlator_t *this, int32_t op_ret, int32_t op_errno,
+                               fd_t *fd, dict_t *xdata)
+{
+        dict_t        *xdata_req = NULL;
+        quota_local_t *local     = NULL;
+
+        if (op_ret < 0) {
+                goto err;
+        }
+
+        xdata_req = dict_new ();
+        if (xdata_req == NULL) {
+                op_ret = -ENOMEM;
+                goto err;
+        }
+
+        op_ret = dict_set_int8 (xdata_req, QUOTA_LIMIT_KEY, 1);
+        if (op_ret < 0) {
+                op_errno = -op_ret;
+                goto err;
+        }
+
+        op_ret = dict_set_int8 (xdata_req, GET_ANCESTRY_DENTRY_KEY, 1);
+        if (op_ret < 0) {
+                op_errno = -op_ret;
+                goto err;
+        }
+
+        /* This would ask posix layer to construct dentry chain till root */
+        STACK_WIND (frame, quota_build_ancestry_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->readdirp, fd, 0, 0, xdata_req);
+
+        op_ret = 0;
+
+err:
+        fd_unref (fd);
+
+        dict_unref (xdata_req);
+
+        if (op_ret < 0) {
+                local = frame->local;
+                frame->local = NULL;
+
+                local->ancestry_cbk (NULL, NULL, -1, op_errno,
+                                     local->ancestry_data);
+                quota_local_cleanup (this, local);
+                STACK_DESTROY (frame->root);
+        }
+
         return 0;
 }
 
 int
-quota_build_ancestry (call_frame_t *frame, inode_t *inode, xlator_t *this)
+quota_build_ancestry (inode_t *inode, quota_ancestry_built_t ancestry_cbk,
+                      void *data)
 {
-        quota_local_t *local = NULL;
-        int            ret   = -1;
-        dict_t        *xdata = NULL;
+        loc_t          loc       = {0, };
+        fd_t          *fd        = NULL;
+        quota_local_t *local     = NULL;
+        call_frame_t  *new_frame = NULL;
+        int            op_errno  = EINVAL;
+        xlator_t      *this      = NULL;
 
-        local = frame->local;
+        this = THIS;
 
-        LOCK (&local->lock);
-        {
-                loc_wipe (&local->validate_loc);
+        loc.inode = inode_ref (inode);
+        uuid_copy (loc.gfid, inode->gfid);
 
-                ret = quota_inode_loc_fill (inode, &local->validate_loc);
-                if (ret < 0) {
-                        gf_log (this->name, GF_LOG_WARNING,
-                                "cannot fill loc for inode (gfid:%s), hence "
-                                "aborting quota-checks and continuing with fop",
-                                uuid_utoa (inode->gfid));
-                }
-        }
-        UNLOCK (&local->lock);
+        fd = fd_create (inode, 0);
 
-        if (ret < 0) {
-                ret = -ENOMEM;
-                goto out;
+        new_frame = create_frame (this, this->ctx->pool);
+        if (new_frame == NULL) {
+                op_errno = ENOMEM;
+                goto err;
         }
 
-        xdata = dict_new ();
+        new_frame->root->uid = new_frame->root->gid = 0;
 
-        ret = dict_set_int8 (xdata, QUOTA_LIMIT_KEY, 1);
-        if (ret < 0)
-                goto out;
+        local = quota_local_new ();
+        if (local == NULL) {
+                op_errno = ENOMEM;
+                goto err;
+        }
 
-        /* This would ask posix layer to construct dentry chain till root */
-        STACK_WIND (frame, quota_build_ancestry_cbk, FIRST_CHILD(this),
-                    FIRST_CHILD(this)->fops->getxattr, &local->validate_loc,
-                    GET_ANCESTRY_DENTRY_KEY, xdata);
-        ret = 0;
-out:
-        dict_unref (xdata);
+        new_frame->local = local;
+        local->ancestry_cbk = ancestry_cbk;
+        local->ancestry_data = data;
+        local->loc.inode = inode_ref (inode);
 
-        return ret;
+        if (IA_ISDIR (inode->ia_type)) {
+                STACK_WIND (new_frame, quota_build_ancestry_open_cbk,
+                            FIRST_CHILD(this),
+                            FIRST_CHILD(this)->fops->opendir, &loc, fd,
+                            NULL);
+        } else {
+                STACK_WIND (new_frame, quota_build_ancestry_open_cbk,
+                            FIRST_CHILD(this),
+                            FIRST_CHILD(this)->fops->open, &loc, 0, fd,
+                            NULL);
+        }
+
+        loc_wipe (&loc);
+        return 0;
+
+err:
+        ancestry_cbk (NULL, NULL, -1, op_errno, data);
+
+        fd_unref (fd);
+
+        local = new_frame->local;
+        new_frame->local = NULL;
+
+        if (local != NULL) {
+                quota_local_cleanup (this, local);
+        }
+
+        if (new_frame != NULL) {
+                STACK_DESTROY (new_frame->root);
+        }
+
+        loc_wipe (&loc);
+        return 0;
 }
 
 int
@@ -528,7 +659,6 @@ quota_validate (call_frame_t *frame, inode_t *inode, xlator_t *this,
         quota_priv_t      *priv  = NULL;
 
         local = frame->local;
-
         priv = this->private;
 
         LOCK (&local->lock);
@@ -572,7 +702,6 @@ quota_validate (call_frame_t *frame, inode_t *inode, xlator_t *this,
 
         ret = quota_enforcer_lookup (frame, this, &local->validate_loc, xdata,
                                      cbk_fn);
-
         if (ret < 0) {
                 ret = -ENOTCONN;
                 goto err;
@@ -580,7 +709,60 @@ quota_validate (call_frame_t *frame, inode_t *inode, xlator_t *this,
 
         ret = 0;
 err:
+        if (xdata)
+                dict_unref (xdata);
+
         return ret;
+}
+
+void
+quota_check_limit_continuation (struct list_head *parents, inode_t *inode,
+                                int32_t op_ret, int32_t op_errno, void *data)
+{
+        call_frame_t   *frame        = NULL;
+        xlator_t       *this         = NULL;
+        quota_local_t  *local        = NULL;
+        quota_dentry_t *entry        = NULL;
+        inode_t        *parent       = NULL;
+        int             parent_count = 0;
+
+        frame = data;
+        local = frame->local;
+        this = THIS;
+
+        if ((op_ret < 0) || list_empty (parents)) {
+                if (op_ret >= 0) {
+                        gf_log (this->name, GF_LOG_WARNING,
+                                "Couldn't build ancestry for inode (gfid:%s). "
+                                "Without knowing ancestors till root, quota "
+                                "cannot be enforced. "
+                                "Hence, failing fop with EIO",
+                                uuid_utoa (inode->gfid));
+                        op_errno = EIO;
+                }
+
+                quota_handle_validate_error (local, -1, op_errno);
+                goto out;
+        }
+
+        list_for_each_entry (entry, parents, next) {
+                parent_count++;
+        }
+
+        LOCK (&local->lock);
+        {
+                local->link_count += (parent_count - 1);
+        }
+        UNLOCK (&local->lock);
+
+        list_for_each_entry (entry, parents, next) {
+                parent = inode_find (inode->table, entry->par);
+
+                quota_check_limit (frame, parent, this, NULL, NULL);
+        }
+
+out:
+        return;
 }
 
 int32_t
@@ -605,7 +787,7 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
         GF_VALIDATE_OR_GOTO (this->name, frame, err);
         GF_VALIDATE_OR_GOTO (this->name, inode, err);
 
-        local = frame->local;
+        local  = frame->local;
         GF_VALIDATE_OR_GOTO (this->name, local, err);
 
         delta = local->delta;
@@ -621,12 +803,8 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
          */
         if (0 > frame->root->pid) {
                 ret = 0;
-		LOCK (&local->lock);
-		{
-			--local->link_count;
-		}
-		UNLOCK (&local->lock);
-                goto resume;
+                quota_link_count_decrement (local);
+                goto done;
         }
 
         priv = this->private;
@@ -663,15 +841,11 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
                                 if (!just_validated
                                     && quota_timeout (&ctx->tv, timeout)) {
                                         need_validate = 1;
-                                } else if (wouldbe_size > ctx->hard_lim) {
+                                } else if (wouldbe_size >= ctx->hard_lim) {
                                         hard_limit_exceeded = 1;
                                 }
                         }
                         UNLOCK (&ctx->lock);
-
-                        /* We log usage only if quota limit is configured on
-                           that inode. */
-                        quota_log_usage (this, ctx, _inode, delta);
 
                         if (need_validate) {
                                 ret = quota_validate (frame, _inode, this,
@@ -689,6 +863,7 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
                                 local->op_errno = EDQUOT;
 
                                 space_available = ctx->hard_lim - ctx->size;
+
                                 if (space_available < 0)
                                         space_available = 0;
 
@@ -697,6 +872,7 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
                                         > space_available)){
                                         local->space_available
                                                 = space_available;
+
                                 }
 
                                 if (space_available == 0) {
@@ -704,15 +880,14 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
                                         goto err;
                                 }
                         }
+
+                        /* We log usage only if quota limit is configured on
+                           that inode. */
+                        quota_log_usage (this, ctx, _inode, delta);
                 }
 
                 if (__is_root_gfid (_inode->gfid)) {
-                        LOCK (&local->lock);
-                        {
-                                --local->link_count;
-                        }
-                        UNLOCK (&local->lock);
-
+                        quota_link_count_decrement (local);
                         break;
                 }
 
@@ -724,7 +899,9 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
                 }
 
                 if (parent == NULL) {
-                        ret = quota_build_ancestry (frame, _inode, this);
+                        ret = quota_build_ancestry (_inode,
+                                                    quota_check_limit_continuation,
+                                                    frame);
                         if (ret < 0) {
                                 op_errno = -ret;
                                 goto err;
@@ -751,8 +928,7 @@ quota_check_limit (call_frame_t *frame, inode_t *inode, xlator_t *this,
                 _inode = NULL;
         }
 
-resume:
-        quota_resume_fop_if_validation_done (local);
+done:
         return 0;
 
 err:
@@ -762,7 +938,7 @@ err:
         return 0;
 }
 
-inline int
+static inline int
 quota_get_limits (xlator_t *this, dict_t *dict, int64_t *hard_lim,
                   int64_t *soft_lim)
 {
@@ -790,7 +966,7 @@ quota_get_limits (xlator_t *this, dict_t *dict, int64_t *hard_lim,
         }
 
         if ((*hard_lim > 0) && (soft_lim_percent > 0)) {
-                *soft_lim = (soft_lim_percent * *hard_lim)/100;
+                *soft_lim = (soft_lim_percent * (*hard_lim))/100;
         }
 
 out:
@@ -840,7 +1016,8 @@ quota_fill_inodectx (xlator_t *this, inode_t *inode, dict_t *dict,
                         goto unlock;
                 }
 
-                if (loc->name == NULL)
+                /* do nothing if it is a nameless lookup */
+                if (loc->name == NULL || !loc->parent)
                         goto unlock;
 
                 list_for_each_entry (dentry, &ctx->parents, next) {
@@ -903,13 +1080,17 @@ int32_t
 quota_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc,
               dict_t *xattr_req)
 {
-        quota_priv_t  *priv  = NULL;
-        int32_t        ret   = -1;
-        quota_local_t *local = NULL;
+        quota_priv_t  *priv             = NULL;
+        int32_t        ret              = -1;
+        quota_local_t *local            = NULL;
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
+
+        xattr_req = xattr_req ? dict_ref(xattr_req) : dict_new();
+        if (!xattr_req)
+                goto err;
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -919,12 +1100,6 @@ quota_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc,
         frame->local = local;
         loc_copy (&local->loc, loc);
 
-        if (xattr_req == NULL) {
-                xattr_req = dict_new ();
-                if (xattr_req == NULL)
-                        goto err;
-        }
-
         ret = dict_set_int8 (xattr_req, QUOTA_LIMIT_KEY, 1);
         if (ret < 0) {
                 gf_log (this->name, GF_LOG_WARNING,
@@ -932,92 +1107,27 @@ quota_lookup (call_frame_t *frame, xlator_t *this, loc_t *loc,
                 goto err;
         }
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on ? quota_lookup_cbk : default_lookup_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->lookup, loc,
-                    xattr_req);
+        STACK_WIND (frame, quota_lookup_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->lookup, loc, xattr_req);
 
         ret = 0;
 
 err:
+        if (xattr_req)
+                dict_unref (xattr_req);
+
         if (ret < 0) {
                 QUOTA_STACK_UNWIND (lookup, frame, -1, ENOMEM,
                                     NULL, NULL, NULL, NULL);
         }
 
         return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->lookup, loc, xattr_req);
+        return 0;
 }
-
-
-void
-quota_update_size (xlator_t *this, inode_t *inode, char *name, uuid_t par,
-                   int64_t delta)
-{
-        inode_t           *_inode    = NULL;
-        inode_t           *parent    = NULL;
-        uint64_t           value     = 0;
-        quota_inode_ctx_t *ctx       = NULL;
-        uuid_t             trav_uuid = {0,};
-
-        GF_VALIDATE_OR_GOTO ("quota", this, out);
-        GF_VALIDATE_OR_GOTO (this->name, inode, out);
-
-        inode_ctx_get (inode, this, &value);
-        ctx = (quota_inode_ctx_t *)(unsigned long)value;
-
-        _inode = inode_ref (inode);
-
-        if ( par != NULL ) {
-                uuid_copy (trav_uuid, par);
-        }
-
-        do {
-                if ((ctx != NULL) && (ctx->hard_lim >= 0)) {
-                        quota_log_usage (this, ctx, _inode, delta);
-                        LOCK (&ctx->lock);
-                        {
-                                ctx->size += delta;
-                                if (ctx->size < 0)
-                                        ctx->size = 0;
-                        }
-                        UNLOCK (&ctx->lock);
-                }
-
-                if (__is_root_gfid (_inode->gfid)) {
-                        break;
-                }
-
-                parent = inode_parent (_inode, trav_uuid, name);
-                if (parent == NULL) {
-                        gf_log (this->name, GF_LOG_DEBUG,
-                                "cannot find parent for inode (gfid:%s), hence "
-                                "aborting size updation of parents",
-                                uuid_utoa (_inode->gfid));
-                }
-
-                if (name != NULL) {
-                        name = NULL;
-                        uuid_clear (trav_uuid);
-                }
-
-                inode_unref (_inode);
-                _inode = parent;
-
-                if (_inode == NULL) {
-                        break;
-                }
-
-                value = 0;
-                ctx = NULL;
-                inode_ctx_get (_inode, this, &value);
-                ctx = (quota_inode_ctx_t *)(unsigned long)value;
-        } while (1);
-
-out:
-        return;
-}
-
 
 int32_t
 quota_writev_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
@@ -1028,17 +1138,12 @@ quota_writev_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         uint64_t                 ctx_int        = 0;
         quota_inode_ctx_t       *ctx            = NULL;
         quota_local_t           *local          = NULL;
-        quota_dentry_t          *dentry         = NULL, *tmp = NULL;
-        int64_t                  delta          = 0;
-        struct list_head         head           = {0, };
 
         local = frame->local;
 
         if ((op_ret < 0) || (local == NULL)) {
                 goto out;
         }
-
-        INIT_LIST_HEAD (&head);
 
         ret = inode_ctx_get (local->loc.inode, this, &ctx_int);
         if (ret) {
@@ -1059,24 +1164,8 @@ quota_writev_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         LOCK (&ctx->lock);
         {
                 ctx->buf = *postbuf;
-
-                list_for_each_entry (dentry, &ctx->parents, next) {
-                        tmp = __quota_dentry_new (NULL, dentry->name,
-                                                  dentry->par);
-                        list_add_tail (&tmp->next, &head);
-                }
-
         }
         UNLOCK (&ctx->lock);
-
-        if (postbuf->ia_blocks != prebuf->ia_blocks)
-                delta = local->delta;
-
-        list_for_each_entry_safe (dentry, tmp, &head, next) {
-                quota_update_size (this, local->loc.inode, dentry->name,
-                                   dentry->par, delta);
-                __quota_dentry_free (dentry);
-        }
 
 out:
         QUOTA_STACK_UNWIND (writev, frame, op_ret, op_errno, prebuf, postbuf,
@@ -1132,8 +1221,7 @@ quota_writev_helper (call_frame_t *frame, xlator_t *this, fd_t *fd,
                 }
         }
 
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_writev_cbk: default_writev_cbk,
+        STACK_WIND (frame, quota_writev_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->writev, fd,
                     vector, count, off, flags, iobref, xdata);
 
@@ -1165,7 +1253,7 @@ quota_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         INIT_LIST_HEAD (&head);
 
@@ -1183,7 +1271,11 @@ quota_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
         ret = quota_inode_ctx_get (fd->inode, this, &ctx, 0);
         if (ctx == NULL) {
-                goto wind;
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (fd->inode->gfid));
         }
 
         stub = fop_writev_stub (frame, quota_writev_helper, fd, vector, count,
@@ -1197,28 +1289,31 @@ quota_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         GF_VALIDATE_OR_GOTO (this->name, priv, unwind);
 
         size = iov_length (vector, count);
-
-        LOCK (&ctx->lock);
-        {
-                list_for_each_entry (dentry, &ctx->parents, next) {
-                        tmp = __quota_dentry_new (NULL, dentry->name,
-                                                  dentry->par);
-                        list_add_tail (&tmp->next, &head);
-                        parents++;
+        if (ctx != NULL) {
+                LOCK (&ctx->lock);
+                {
+                        list_for_each_entry (dentry, &ctx->parents, next) {
+                                tmp = __quota_dentry_new (NULL, dentry->name,
+                                                          dentry->par);
+                                list_add_tail (&tmp->next, &head);
+                                parents++;
+                        }
                 }
+                UNLOCK (&ctx->lock);
         }
-        UNLOCK (&ctx->lock);
 
-        local->delta = size;
-
-        local->link_count = parents;
-        local->stub = stub;
+        LOCK (&local->lock);
+        {
+                local->delta = size;
+                local->link_count = (parents != 0) ? parents : 1;
+                local->stub = stub;
+        }
+        UNLOCK (&local->lock);
 
         if (parents == 0) {
                 /* nameless lookup on this inode, allow quota to reconstruct
                  * ancestry as part of check_limit.
                  */
-                local->link_count = 1;
                 quota_check_limit (frame, fd->inode, this, NULL, NULL);
         } else {
                 list_for_each_entry_safe (dentry, tmp, &head, next) {
@@ -1234,10 +1329,10 @@ unwind:
         QUOTA_STACK_UNWIND (writev, frame, -1, op_errno, NULL, NULL, NULL);
         return 0;
 
-wind:
-        STACK_WIND (frame, default_writev_cbk, FIRST_CHILD(this),
-                    FIRST_CHILD(this)->fops->writev, fd,
-                    vector, count, off, flags, iobref, xdata);
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->writev, fd,
+                         vector, count, off, flags, iobref, xdata);
         return 0;
 }
 
@@ -1260,7 +1355,6 @@ quota_mkdir_helper (call_frame_t *frame, xlator_t *this, loc_t *loc,
 {
         quota_local_t *local    = NULL;
         int32_t        op_errno = EINVAL;
-        quota_priv_t  *priv     = NULL;
 
         local = frame->local;
         if (local == NULL) {
@@ -1268,15 +1362,13 @@ quota_mkdir_helper (call_frame_t *frame, xlator_t *this, loc_t *loc,
                 goto unwind;
         }
 
-        priv = this->private;
         op_errno = local->op_errno;
 
         if (local->op_ret == -1) {
                 goto unwind;
         }
 
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_mkdir_cbk: default_mkdir_cbk,
+        STACK_WIND (frame, quota_mkdir_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->mkdir, loc,
                     mode, umask, xdata);
 
@@ -1300,7 +1392,7 @@ quota_mkdir (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -1324,9 +1416,13 @@ quota_mkdir (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
                 goto err;
         }
 
-        local->stub = stub;
-        local->delta = 0;
-        local->link_count = 1;
+        LOCK (&local->lock);
+        {
+                local->stub = stub;
+                local->delta = 0;
+                local->link_count = 1;
+        }
+        UNLOCK (&local->lock);
 
         quota_check_limit (frame, loc->parent, this, NULL, NULL);
         return 0;
@@ -1337,11 +1433,10 @@ err:
 
         return 0;
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_mkdir_cbk: default_mkdir_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->mkdir, loc,
-                    mode, umask, xdata);
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->mkdir,
+                         loc, mode, umask, xdata);
 
         return 0;
 }
@@ -1423,8 +1518,7 @@ quota_create_helper (call_frame_t *frame, xlator_t *this, loc_t *loc,
         }
 
 
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_create_cbk: default_create_cbk,
+        STACK_WIND (frame, quota_create_cbk,
                     FIRST_CHILD (this), FIRST_CHILD (this)->fops->create, loc,
                     flags, mode, umask, fd, xdata);
         return 0;
@@ -1448,7 +1542,7 @@ quota_create (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -1471,9 +1565,13 @@ quota_create (call_frame_t *frame, xlator_t *this, loc_t *loc, int32_t flags,
                 goto err;
         }
 
-        local->link_count = 1;
-        local->stub = stub;
-        local->delta = 0;
+        LOCK (&local->lock);
+        {
+                local->link_count = 1;
+                local->stub = stub;
+                local->delta = 0;
+        }
+        UNLOCK (&local->lock);
 
         quota_check_limit (frame, loc->parent, this, NULL, NULL);
         return 0;
@@ -1483,11 +1581,10 @@ err:
 
         return 0;
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_create_cbk: default_create_cbk,
-                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->create, loc,
-                    flags, mode, umask, fd, xdata);
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD (this),
+                         FIRST_CHILD (this)->fops->create, loc,
+                         flags, mode, umask, fd, xdata);
         return 0;
 }
 
@@ -1519,12 +1616,6 @@ quota_unlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto out;
         }
 
-        if (!local->skip_check)
-                quota_update_size (this, local->loc.inode,
-                                   (char *)local->loc.name,
-                                   local->loc.parent->gfid,
-                                   (-(ctx->buf.ia_blocks * 512)));
-
         LOCK (&ctx->lock);
         {
                 list_for_each_entry (dentry, &ctx->parents, next) {
@@ -1552,12 +1643,12 @@ quota_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
               dict_t *xdata)
 {
         quota_priv_t       *priv        = NULL;
-        int32_t        ret = 0;
+        int32_t        ret = -1;
         quota_local_t *local = NULL;
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -1576,11 +1667,8 @@ quota_unlink (call_frame_t *frame, xlator_t *this, loc_t *loc, int xflag,
                 goto err;
         }
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_unlink_cbk: default_unlink_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->unlink, loc,
-                    xflag, xdata);
+        STACK_WIND (frame, quota_unlink_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->unlink, loc, xflag, xdata);
 
         ret = 0;
 
@@ -1589,6 +1677,11 @@ err:
                 QUOTA_STACK_UNWIND (unlink, frame, -1, 0, NULL, NULL, NULL);
         }
 
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->unlink, loc, xflag, xdata);
         return 0;
 }
 
@@ -1614,16 +1707,13 @@ quota_link_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         if (local->skip_check)
                 goto out;
 
-        quota_update_size (this, local->loc.parent, NULL, NULL,
-                           (buf->ia_blocks * 512));
-
         ret = quota_inode_ctx_get (inode, this, &ctx, 0);
         if ((ret == -1) || (ctx == NULL)) {
-                gf_log (this->name, GF_LOG_WARNING, "cannot find quota "
-                        "context in %s (gfid:%s)", local->loc.path,
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
                         uuid_utoa (inode->gfid));
-                op_ret = -1;
-                op_errno = EINVAL;
                 goto out;
         }
 
@@ -1693,7 +1783,7 @@ quota_link_helper (call_frame_t *frame, xlator_t *this, loc_t *oldloc,
                 goto unwind;
         }
 
-        STACK_WIND (frame, priv->is_quota_on? quota_link_cbk: default_link_cbk,
+        STACK_WIND (frame, quota_link_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->link, oldloc,
                     newloc, xdata);
         return 0;
@@ -1717,11 +1807,19 @@ quota_link (call_frame_t *frame, xlator_t *this, loc_t *oldloc, loc_t *newloc,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
+
+        if (xdata && dict_get (xdata, GLUSTERFS_INTERNAL_FOP_KEY)) {
+                goto off;
+        }
 
         quota_inode_ctx_get (oldloc->inode, this, &ctx, 0);
         if (ctx == NULL) {
-                goto wind;
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (oldloc->inode->gfid));
         }
 
         local = quota_local_new ();
@@ -1731,10 +1829,6 @@ quota_link (call_frame_t *frame, xlator_t *this, loc_t *oldloc, loc_t *newloc,
 
         frame->local = (void *) local;
 
-        if (xdata && dict_get (xdata, GLUSTERFS_INTERNAL_FOP_KEY)) {
-                local->skip_check = _gf_true;
-                goto wind;
-        }
 
         ret = loc_copy (&local->loc, newloc);
         if (ret == -1) {
@@ -1747,25 +1841,26 @@ quota_link (call_frame_t *frame, xlator_t *this, loc_t *oldloc, loc_t *newloc,
                 goto err;
         }
 
-        local->link_count = 1;
-        local->stub = stub;
-        local->delta = ctx->buf.ia_blocks * 512;
+        LOCK (&local->lock);
+        {
+                local->link_count = 1;
+                local->stub = stub;
+                local->delta = (ctx != NULL) ? ctx->buf.ia_blocks * 512 : 0;
+        }
+        UNLOCK (&local->lock);
 
         quota_check_limit (frame, newloc->parent, this, NULL, NULL);
         return 0;
 
 err:
-        if (ret < 0) {
-                QUOTA_STACK_UNWIND (link, frame, -1, op_errno, NULL, NULL,
-                                    NULL, NULL, NULL);
-        }
-
+        QUOTA_STACK_UNWIND (link, frame, -1, op_errno, NULL, NULL,
+                            NULL, NULL, NULL);
         return 0;
 
-wind:
-        STACK_WIND (frame, default_link_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->link, oldloc,
-                    newloc, xdata);
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->link, oldloc,
+                         newloc, xdata);
         return 0;
 }
 
@@ -1800,35 +1895,23 @@ quota_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 size = buf->ia_blocks * 512;
         }
 
-        if (local->oldloc.parent != local->newloc.parent) {
-                quota_update_size (this, local->oldloc.parent, NULL, NULL,
-                                   (-size));
-                quota_update_size (this, local->newloc.parent, NULL, NULL,
-                                   size);
-        }
-
         if (!QUOTA_REG_OR_LNK_FILE (local->oldloc.inode->ia_type)) {
                 goto out;
         }
 
         ret = quota_inode_ctx_get (local->oldloc.inode, this, &ctx, 0);
         if ((ret == -1) || (ctx == NULL)) {
-                gf_log (this->name, GF_LOG_WARNING, "quota context not"
-                        "set in inode(gfid:%s)",
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
                         uuid_utoa (local->oldloc.inode->gfid));
-                op_ret = -1;
-                op_errno = EINVAL;
+
                 goto out;
         }
 
         LOCK (&ctx->lock);
         {
-                /* decision of whether to create a context in newloc->inode
-                 * depends on fuse_rename_cbk's choice of inode it retains
-                 * after rename. currently it just associates oldloc->inode
-                 * with new parent and name. If this changes, following code
-                 * should be changed to set a new context in newloc->inode.
-                 */
                 list_for_each_entry (dentry, &ctx->parents, next) {
                         if ((strcmp (dentry->name, local->oldloc.name) == 0) &&
                             (uuid_compare (local->oldloc.parent->gfid,
@@ -1836,16 +1919,18 @@ quota_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                 old_dentry = dentry;
                         } else if ((strcmp (dentry->name,
                                             local->newloc.name) == 0) &&
-                                   (uuid_compare (local->oldloc.parent->gfid,
+                                   (uuid_compare (local->newloc.parent->gfid,
                                                   dentry->par) == 0)) {
                                 new_dentry_found = 1;
                                 gf_log (this->name, GF_LOG_WARNING,
                                         "new entry being linked (name:%s) for "
                                         "inode (gfid:%s) is already present "
                                         "in inode-dentry-list", dentry->name,
-                                        uuid_utoa (local->newloc.inode->gfid));
-                                break;
+                                        uuid_utoa (local->oldloc.inode->gfid));
                         }
+
+                        if (old_dentry && new_dentry_found)
+                                break;
                 }
 
                 if (old_dentry != NULL) {
@@ -1865,7 +1950,7 @@ quota_rename_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                                         "cannot create a new dentry (name:%s) "
                                         "for inode(gfid:%s)",
                                         local->newloc.name,
-                                        uuid_utoa (local->newloc.inode->gfid));
+                                        uuid_utoa (local->oldloc.inode->gfid));
                                 op_ret = -1;
                                 op_errno = ENOMEM;
                                 goto unlock;
@@ -1907,8 +1992,7 @@ quota_rename_helper (call_frame_t *frame, xlator_t *this, loc_t *oldloc,
                 goto unwind;
         }
 
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_rename_cbk: default_rename_cbk,
+        STACK_WIND (frame, quota_rename_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->rename, oldloc,
                     newloc, xdata);
 
@@ -1931,18 +2015,18 @@ quota_rename_get_size_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         int32_t            ret        = 0;
         int64_t           *size       = 0;
 
-        local = frame->local;
-        local->link_count = 1;
-
-        if (op_ret < 0)
-                goto out;
-
-        GF_ASSERT (local);
         GF_ASSERT (frame);
         GF_VALIDATE_OR_GOTO_WITH_ERROR ("quota", this, out, op_errno,
                                         EINVAL);
         GF_VALIDATE_OR_GOTO_WITH_ERROR (this->name, xdata, out, op_errno,
                                         EINVAL);
+        local = frame->local;
+        GF_ASSERT (local);
+        local->link_count = 1;
+
+        if (op_ret < 0)
+                goto out;
+
 
         ret = dict_get_bin (xdata, QUOTA_SIZE_KEY, (void **) &size);
         if (ret < 0) {
@@ -1973,9 +2057,7 @@ quota_rename (call_frame_t *frame, xlator_t *this, loc_t *oldloc,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
-
-        quota_inode_ctx_get (oldloc->inode, this, &ctx, 0);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2002,43 +2084,49 @@ quota_rename (call_frame_t *frame, xlator_t *this, loc_t *oldloc,
                 goto err;
         }
 
-        local->link_count = 1;
-        local->stub = stub;
+        LOCK (&local->lock);
+        {
+                local->link_count = 1;
+                local->stub = stub;
+        }
+        UNLOCK (&local->lock);
 
         if (QUOTA_REG_OR_LNK_FILE (oldloc->inode->ia_type)) {
-
-            /* FIXME: We need to account for the size occupied by this inode on
-             * the target directory. To avoid double accounting, we need to
-             * modify enforcer to perform quota_check_limit only uptil the
-             * least common ancestor directory inode*/
-
-            /* FIXME: The following code assumes that regular files and
-             *linkfiles are present, in their entirety, in a single brick. This
-             *assumption is invalid in the case of stripe.*/
-
-                if (!ctx) {
-                        gf_log (this->name, GF_LOG_DEBUG,
+                ret = quota_inode_ctx_get (oldloc->inode, this, &ctx, 0);
+                if (ctx == NULL) {
+                        gf_log (this->name, GF_LOG_WARNING,
                                 "quota context not set in inode (gfid:%s), "
                                 "considering file size as zero while enforcing "
                                 "quota on new ancestry",
-                                oldloc->inode ? uuid_utoa (oldloc->inode->gfid): "0");
+                                oldloc->inode ? uuid_utoa (oldloc->inode->gfid)
+                                : "0");
                         local->delta = 0;
 
                 } else {
-                        local->delta = ctx->buf.ia_blocks * 512;
+
+                    /* FIXME: We need to account for the size occupied by this
+                     * inode on the target directory. To avoid double
+                     * accounting, we need to modify enforcer to perform
+                     * quota_check_limit only uptil the least common ancestor
+                     * directory inode*/
+
+                    /* FIXME: The following code assumes that regular files and
+                     *linkfiles are present, in their entirety, in a single
+                     brick. This *assumption is invalid in the case of
+                     stripe.*/
+
+                    local->delta = ctx->buf.ia_blocks * 512;
                 }
 
-        } else {
-                local->delta = 0;
-                if (IA_ISDIR (oldloc->inode->ia_type)) {
+        } else if (IA_ISDIR (oldloc->inode->ia_type)) {
                         ret = quota_validate (frame, oldloc->inode, this,
                                               quota_rename_get_size_cbk);
-                        if (ret)
+                        if (ret){
+                                op_errno = -ret;
                                 goto err;
+                        }
 
                         return 0;
-                }
-
         }
 
         quota_check_limit (frame, newloc->parent, this, NULL, NULL);
@@ -2049,10 +2137,10 @@ err:
                             NULL, NULL, NULL, NULL, NULL);
         return 0;
 
-wind:
-        STACK_WIND (frame, default_rename_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->rename, oldloc,
-                    newloc, xdata);
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->rename, oldloc,
+                         newloc, xdata);
 
         return 0;
 }
@@ -2064,7 +2152,6 @@ quota_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                    struct iatt *buf, struct iatt *preparent,
                    struct iatt *postparent, dict_t *xdata)
 {
-        int64_t            size   = 0;
         quota_local_t     *local  = NULL;
         quota_inode_ctx_t *ctx    = NULL;
         quota_dentry_t    *dentry = NULL;
@@ -2074,12 +2161,15 @@ quota_symlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         }
 
         local = frame->local;
-        size = buf->ia_blocks * 512;
-
-        quota_update_size (this, local->loc.parent, NULL, NULL, size);
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 1);
         if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (local->loc.inode->gfid));
+
                 goto out;
         }
 
@@ -2129,8 +2219,7 @@ quota_symlink_helper (call_frame_t *frame, xlator_t *this, const char *linkpath,
                 goto unwind;
         }
 
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_symlink_cbk: default_symlink_cbk,
+        STACK_WIND (frame, quota_symlink_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->symlink,
                     linkpath, loc, umask, xdata);
         return 0;
@@ -2154,7 +2243,7 @@ quota_symlink (call_frame_t *frame, xlator_t *this, const char *linkpath,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2175,9 +2264,13 @@ quota_symlink (call_frame_t *frame, xlator_t *this, const char *linkpath,
                 goto err;
         }
 
-        local->stub = stub;
-        local->delta = strlen (linkpath);
-        local->link_count = 1;
+        LOCK (&local->lock);
+        {
+                local->stub = stub;
+                local->delta = strlen (linkpath);
+                local->link_count = 1;
+        }
+        UNLOCK (&local->lock);
 
         quota_check_limit (frame, loc->parent, this, NULL, NULL);
         return 0;
@@ -2188,11 +2281,10 @@ err:
 
         return 0;
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_symlink_cbk: default_symlink_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->symlink,
-                    linkpath, loc, umask, xdata);
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->symlink,
+                         linkpath, loc, umask, xdata);
         return 0;
 }
 
@@ -2204,7 +2296,6 @@ quota_truncate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         quota_local_t     *local = NULL;
         quota_inode_ctx_t *ctx   = NULL;
-        int64_t            delta = 0;
 
         if (op_ret < 0) {
                 goto out;
@@ -2216,12 +2307,13 @@ quota_truncate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto out;
         }
 
-        delta = (postbuf->ia_blocks - prebuf->ia_blocks) * 512;
-
-        quota_update_size (this, local->loc.inode, NULL, NULL, delta);
-
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (local->loc.inode->gfid));
                 goto out;
         }
 
@@ -2248,8 +2340,7 @@ quota_truncate (call_frame_t *frame, xlator_t *this, loc_t *loc, off_t offset,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
-
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2264,16 +2355,18 @@ quota_truncate (call_frame_t *frame, xlator_t *this, loc_t *loc, off_t offset,
                 goto err;
         }
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_truncate_cbk: default_truncate_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->truncate, loc,
-                    offset, xdata);
+        STACK_WIND (frame, quota_truncate_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->truncate, loc, offset, xdata);
 
         return 0;
+
 err:
         QUOTA_STACK_UNWIND (truncate, frame, -1, ENOMEM, NULL, NULL, NULL);
 
+        return 0;
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->truncate, loc, offset, xdata);
         return 0;
 }
 
@@ -2285,7 +2378,6 @@ quota_ftruncate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 {
         quota_local_t     *local = NULL;
         quota_inode_ctx_t *ctx   = NULL;
-        int64_t            delta = 0;
 
         if (op_ret < 0) {
                 goto out;
@@ -2297,12 +2389,13 @@ quota_ftruncate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                 goto out;
         }
 
-        delta = (postbuf->ia_blocks - prebuf->ia_blocks) * 512;
-
-        quota_update_size (this, local->loc.inode, NULL, NULL, delta);
-
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (local->loc.inode->gfid));
                 goto out;
         }
 
@@ -2328,7 +2421,7 @@ quota_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL)
@@ -2338,9 +2431,7 @@ quota_ftruncate (call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
 
         local->loc.inode = inode_ref (fd->inode);
 
-wind:
-        STACK_WIND (frame, priv->is_quota_on?
-                    quota_ftruncate_cbk: default_ftruncate_cbk,
+        STACK_WIND (frame, quota_ftruncate_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->ftruncate, fd,
                     offset, xdata);
 
@@ -2348,6 +2439,12 @@ wind:
 err:
         QUOTA_STACK_UNWIND (ftruncate, frame, -1, ENOMEM, NULL, NULL, NULL);
 
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->ftruncate, fd,
+                         offset, xdata);
         return 0;
 }
 
@@ -2458,6 +2555,15 @@ quota_stat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                if (!IA_ISDIR (buf->ia_type)) {
+                        gf_log (this->name, GF_LOG_DEBUG,
+                                "quota context is NULL on "
+                                "inode (%s). "
+                                "If quota is not enabled recently and crawler "
+                                "has finished crawling, its an error",
+                                uuid_utoa (local->loc.inode->gfid));
+                }
+
                 goto out;
         }
 
@@ -2483,8 +2589,7 @@ quota_stat (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
-
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2498,14 +2603,19 @@ quota_stat (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
                 goto unwind;
         }
 
-wind:
-        STACK_WIND (frame, priv->is_quota_on? quota_stat_cbk: default_stat_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->stat, loc,
+        STACK_WIND (frame, quota_stat_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->stat, loc,
                     xdata);
         return 0;
 
 unwind:
         QUOTA_STACK_UNWIND (stat, frame, -1, ENOMEM, NULL, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->stat, loc,
+                         xdata);
         return 0;
 }
 
@@ -2530,6 +2640,15 @@ quota_fstat_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                if (!IA_ISDIR (buf->ia_type)) {
+                        gf_log (this->name, GF_LOG_DEBUG,
+                                "quota context is NULL on "
+                                "inode (%s). "
+                                "If quota is not enabled recently and crawler "
+                                "has finished crawling, its an error",
+                                uuid_utoa (local->loc.inode->gfid));
+                }
+
                 goto out;
         }
 
@@ -2554,7 +2673,7 @@ quota_fstat (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *xdata)
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2565,15 +2684,19 @@ quota_fstat (call_frame_t *frame, xlator_t *this, fd_t *fd, dict_t *xdata)
 
         local->loc.inode = inode_ref (fd->inode);
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_fstat_cbk: default_fstat_cbk,
+        STACK_WIND (frame, quota_fstat_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->fstat, fd,
                     xdata);
         return 0;
 
 unwind:
         QUOTA_STACK_UNWIND (fstat, frame, -1, ENOMEM, NULL, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->fstat, fd,
+                         xdata);
         return 0;
 }
 
@@ -2598,6 +2721,11 @@ quota_readlink_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (local->loc.inode->gfid));
                 goto out;
         }
 
@@ -2624,7 +2752,7 @@ quota_readlink (call_frame_t *frame, xlator_t *this, loc_t *loc, size_t size,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2639,15 +2767,19 @@ quota_readlink (call_frame_t *frame, xlator_t *this, loc_t *loc, size_t size,
                 goto unwind;
         }
 
-wind:
-        STACK_WIND (frame, priv->is_quota_on?
-                    quota_readlink_cbk: default_readlink_cbk,
+        STACK_WIND (frame, quota_readlink_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->readlink, loc,
                     size, xdata);
         return 0;
 
 unwind:
         QUOTA_STACK_UNWIND (readlink, frame, -1, ENOMEM, NULL, NULL, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->readlink, loc,
+                         size, xdata);
         return 0;
 }
 
@@ -2673,6 +2805,11 @@ quota_readv_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (local->loc.inode->gfid));
                 goto out;
         }
 
@@ -2698,7 +2835,7 @@ quota_readv (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2709,9 +2846,7 @@ quota_readv (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 
         local->loc.inode = inode_ref (fd->inode);
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_readv_cbk: default_readv_cbk,
+        STACK_WIND (frame, quota_readv_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->readv, fd,
                     size, offset, flags, xdata);
         return 0;
@@ -2719,6 +2854,12 @@ wind:
 unwind:
         QUOTA_STACK_UNWIND (readv, frame, -1, ENOMEM, NULL, -1, NULL, NULL,
                             NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->readv, fd,
+                         size, offset, flags, xdata);
         return 0;
 }
 
@@ -2743,6 +2884,11 @@ quota_fsync_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is NULL on "
+                        "inode (%s). "
+                        "If quota is not enabled recently and crawler has "
+                        "finished crawling, its an error",
+                        uuid_utoa (local->loc.inode->gfid));
                 goto out;
         }
 
@@ -2768,7 +2914,7 @@ quota_fsync (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t flags,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2779,10 +2925,8 @@ quota_fsync (call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t flags,
 
         frame->local = local;
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_fsync_cbk: default_fsync_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->fsync, fd,
+        STACK_WIND (frame, quota_fsync_cbk, FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->fsync, fd,
                     flags, xdata);
         return 0;
 
@@ -2790,6 +2934,11 @@ unwind:
         QUOTA_STACK_UNWIND (fsync, frame, -1, ENOMEM, NULL, NULL, NULL);
         return 0;
 
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->fsync, fd,
+                         flags, xdata);
+        return 0;
 }
 
 
@@ -2813,6 +2962,14 @@ quota_setattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                if (!IA_ISDIR (statpost->ia_type)) {
+                        gf_log (this->name, GF_LOG_DEBUG, "quota context is "
+                                "NULL on inode (%s). "
+                                "If quota is not enabled recently and crawler "
+                                "has finished crawling, its an error",
+                                uuid_utoa (local->loc.inode->gfid));
+                }
+
                 goto out;
         }
 
@@ -2840,7 +2997,7 @@ quota_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2855,15 +3012,19 @@ quota_setattr (call_frame_t *frame, xlator_t *this, loc_t *loc,
                 goto unwind;
         }
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_setattr_cbk: default_setattr_cbk,
-                    FIRST_CHILD (this), FIRST_CHILD (this)->fops->setattr, loc,
+        STACK_WIND (frame, quota_setattr_cbk, FIRST_CHILD (this),
+                    FIRST_CHILD (this)->fops->setattr, loc,
                     stbuf, valid, xdata);
         return 0;
 
 unwind:
         QUOTA_STACK_UNWIND (setattr, frame, -1, ENOMEM, NULL, NULL, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD (this),
+                         FIRST_CHILD (this)->fops->setattr, loc,
+                         stbuf, valid, xdata);
         return 0;
 }
 
@@ -2888,6 +3049,14 @@ quota_fsetattr_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 
         quota_inode_ctx_get (local->loc.inode, this, &ctx, 0);
         if (ctx == NULL) {
+                if (!IA_ISDIR (statpost->ia_type)) {
+                        gf_log (this->name, GF_LOG_DEBUG, "quota context is "
+                                "NULL on inode (%s). "
+                                "If quota is not enabled recently and crawler "
+                                "has finished crawling, its an error",
+                                uuid_utoa (local->loc.inode->gfid));
+                }
+
                 goto out;
         }
 
@@ -2913,8 +3082,7 @@ quota_fsetattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
-
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -2925,15 +3093,19 @@ quota_fsetattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
 
         local->loc.inode = inode_ref (fd->inode);
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_fsetattr_cbk: default_fsetattr_cbk,
+        STACK_WIND (frame, quota_fsetattr_cbk,
                     FIRST_CHILD (this), FIRST_CHILD (this)->fops->fsetattr, fd,
                     stbuf, valid, xdata);
         return 0;
 
 unwind:
         QUOTA_STACK_UNWIND (fsetattr, frame, -1, ENOMEM, NULL, NULL, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD (this),
+                         FIRST_CHILD (this)->fops->fsetattr, fd,
+                         stbuf, valid, xdata);
         return 0;
 }
 
@@ -3010,8 +3182,7 @@ quota_mknod_helper (call_frame_t *frame, xlator_t *this, loc_t *loc,
                 goto unwind;
         }
 
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_mknod_cbk: default_mknod_cbk,
+        STACK_WIND (frame, quota_mknod_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->mknod, loc,
                     mode, rdev, umask, xdata);
 
@@ -3035,7 +3206,7 @@ quota_mknod (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
         if (local == NULL) {
@@ -3050,44 +3221,61 @@ quota_mknod (call_frame_t *frame, xlator_t *this, loc_t *loc, mode_t mode,
                 goto err;
         }
 
-        if (xdata && dict_get (xdata, GLUSTERFS_INTERNAL_FOP_KEY)) {
-                local->skip_check = _gf_true;
-                goto wind;
-        }
-
         stub = fop_mknod_stub (frame, quota_mknod_helper, loc, mode, rdev,
                                umask, xdata);
         if (stub == NULL) {
                 goto err;
         }
 
-        local->link_count = 1;
-        local->stub = stub;
-        local->delta = 0;
+        LOCK (&local->lock);
+        {
+                local->link_count = 1;
+                local->stub = stub;
+                local->delta = 0;
+        }
+        UNLOCK (&local->lock);
 
         quota_check_limit (frame, loc->parent, this, NULL, NULL);
         return 0;
+
 err:
         QUOTA_STACK_UNWIND (mknod, frame, -1, ENOMEM, NULL, NULL, NULL, NULL,
                             NULL);
-
         return 0;
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_mknod_cbk: default_mknod_cbk,
-                    FIRST_CHILD(this), FIRST_CHILD(this)->fops->mknod, loc,
-                    mode, rdev, umask, xdata);
-
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->mknod, loc,
+                         mode, rdev, umask, xdata);
         return 0;
-
 }
-
 
 int
 quota_setxattr_cbk (call_frame_t *frame, void *cookie,
                     xlator_t *this, int op_ret, int op_errno, dict_t *xdata)
 {
+        quota_local_t     *local = NULL;
+        quota_inode_ctx_t *ctx   = NULL;
+        int                ret   = 0;
+
+        local = frame->local;
+        if (!local)
+                goto out;
+
+        ret = quota_inode_ctx_get (local->loc.inode, this, &ctx, 1);
+        if ((ret < 0) || (ctx == NULL)) {
+                op_errno = ENOMEM;
+                goto out;
+        }
+
+        LOCK (&ctx->lock);
+        {
+                ctx->hard_lim = local->limit.hard_lim;
+                ctx->soft_lim = local->limit.soft_lim_percent;
+        }
+        UNLOCK (&ctx->lock);
+
+out:
         QUOTA_STACK_UNWIND (setxattr, frame, op_ret, op_errno, xdata);
         return 0;
 }
@@ -3096,74 +3284,55 @@ int
 quota_setxattr (call_frame_t *frame, xlator_t *this,
                 loc_t *loc, dict_t *dict, int flags, dict_t *xdata)
 {
-        quota_priv_t      *priv     = NULL;
-        int                op_errno = EINVAL;
-        int                op_ret   = -1;
-        quota_inode_ctx_t *ctx      = NULL;
-        int                ret      = -1;
-        int64_t            hard_lim = -1, soft_lim = -1;
-        char              *src = NULL;
-        char              *dst = NULL;
-        int                len = 0;
+        quota_priv_t  *priv     = NULL;
+        int            op_errno = EINVAL;
+        int            op_ret   = -1;
+        int64_t        hard_lim = -1, soft_lim = -1;
+        quota_local_t *local    = NULL;
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         VALIDATE_OR_GOTO (frame, err);
         VALIDATE_OR_GOTO (this, err);
         VALIDATE_OR_GOTO (loc, err);
 
-        if (0 <= frame->root->pid) {
-                ret = dict_get_ptr_and_len (dict, QUOTA_LIMIT_KEY,
-                                            (void **)&src, &len);
-                if (ret) {
-                        gf_log (this->name, GF_LOG_DEBUG, "dict_get on %s "
-                                "failed", QUOTA_LIMIT_KEY);
-                } else {
-                        dst = GF_CALLOC (len, sizeof (char), gf_common_mt_char);
-                        if (dst)
-                                memcpy (dst, src, len);
-                }
-
-                GF_REMOVE_INTERNAL_XATTR ("trusted.glusterfs.quota*",
-                                          dict);
-                if (!ret && IA_ISDIR (loc->inode->ia_type) && dst) {
-                        ret = dict_set_dynptr (dict, QUOTA_LIMIT_KEY,
-                                               dst, len);
-                        if (ret)
-                                gf_log (this->name, GF_LOG_WARNING, "setting "
-                                        "key %s failed", QUOTA_LIMIT_KEY);
-                        else
-                                dst = NULL;
-                }
+        if (frame->root->pid >= 0) {
+                GF_IF_INTERNAL_XATTR_GOTO ("trusted.glusterfs.quota*", dict,
+                                           op_errno, err);
+                GF_IF_INTERNAL_XATTR_GOTO ("trusted.pgfid*", dict, op_errno,
+                                           err);
         }
 
         quota_get_limits (this, dict, &hard_lim, &soft_lim);
 
         if (hard_lim > 0) {
-                ret = quota_inode_ctx_get (loc->inode, this, &ctx, 1);
-                if ((ret < 0) || (ctx == NULL)) {
+                local = quota_local_new ();
+                if (local == NULL) {
                         op_errno = ENOMEM;
                         goto err;
                 }
 
-                LOCK (&ctx->lock);
-                {
-                        ctx->hard_lim = hard_lim;
-                        ctx->soft_lim = soft_lim;
-                }
-                UNLOCK (&ctx->lock);
+                frame->local = local;
+                loc_copy (&local->loc, loc);
+
+                local->limit.hard_lim = hard_lim;
+                local->limit.soft_lim_percent = soft_lim;
         }
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_setxattr_cbk: default_setxattr_cbk,
+        STACK_WIND (frame, quota_setxattr_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->setxattr, loc,
                     dict, flags, xdata);
         return 0;
 err:
         QUOTA_STACK_UNWIND (setxattr, frame, op_ret, op_errno, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->setxattr, loc,
+                         dict, flags, xdata);
         return 0;
 }
 
@@ -3171,6 +3340,27 @@ int
 quota_fsetxattr_cbk (call_frame_t *frame, void *cookie,
                      xlator_t *this, int op_ret, int op_errno, dict_t *xdata)
 {
+        quota_inode_ctx_t *ctx   = NULL;
+        quota_local_t     *local = NULL;
+
+        local = frame->local;
+        if (!local)
+                goto out;
+
+        op_ret = quota_inode_ctx_get (local->loc.inode, this, &ctx, 1);
+        if ((op_ret < 0) || (ctx == NULL)) {
+                op_errno = ENOMEM;
+                goto out;
+        }
+
+        LOCK (&ctx->lock);
+        {
+                ctx->hard_lim = local->limit.hard_lim;
+                ctx->soft_lim = local->limit.soft_lim_percent;
+        }
+        UNLOCK (&ctx->lock);
+
+out:
         QUOTA_STACK_UNWIND (fsetxattr, frame, op_ret, op_errno, xdata);
         return 0;
 }
@@ -3179,30 +3369,54 @@ int
 quota_fsetxattr (call_frame_t *frame, xlator_t *this, fd_t *fd,
                  dict_t *dict, int flags, dict_t *xdata)
 {
-        quota_priv_t       *priv        = NULL;
-        int32_t         op_ret   = -1;
-        int32_t         op_errno = EINVAL;
+        quota_priv_t  *priv     = NULL;
+        int32_t        op_ret   = -1;
+        int32_t        op_errno = EINVAL;
+        quota_local_t *local    = NULL;
+        int64_t        hard_lim = -1, soft_lim = -1;
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         VALIDATE_OR_GOTO (frame, err);
         VALIDATE_OR_GOTO (this, err);
         VALIDATE_OR_GOTO (fd, err);
 
-        if (0 <= frame->root->pid)
-                GF_IF_INTERNAL_XATTR_GOTO ("trusted.glusterfs.quota*", dict,
-                                           op_errno, err);
+        if (0 <= frame->root->pid) {
+                GF_IF_INTERNAL_XATTR_GOTO ("trusted.glusterfs.quota*",
+                                            dict, op_errno, err);
+                GF_IF_INTERNAL_XATTR_GOTO ("trusted.pgfid*", dict,
+                                            op_errno, err);
+        }
 
-wind:
-        STACK_WIND (frame, priv->is_quota_on?
-                    quota_fsetxattr_cbk: default_fsetxattr_cbk,
+        quota_get_limits (this, dict, &hard_lim, &soft_lim);
+
+        if (hard_lim > 0) {
+                local = quota_local_new ();
+                if (local == NULL) {
+                        op_errno = ENOMEM;
+                        goto err;
+                }
+                frame->local = local;
+                local->loc.inode = inode_ref (fd->inode);
+
+                local->limit.hard_lim = hard_lim;
+                local->limit.soft_lim_percent = soft_lim;
+        }
+
+        STACK_WIND (frame, quota_fsetxattr_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->fsetxattr, fd,
                     dict, flags, xdata);
         return 0;
- err:
+err:
         QUOTA_STACK_UNWIND (fsetxattr, frame, op_ret, op_errno, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->fsetxattr, fd,
+                         dict, flags, xdata);
         return 0;
 }
 
@@ -3224,24 +3438,36 @@ quota_removexattr (call_frame_t *frame, xlator_t *this,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         VALIDATE_OR_GOTO (this, err);
 
-        GF_IF_NATIVE_XATTR_GOTO ("trusted.quota*",
-                                 name, op_errno, err);
+        /* all quota xattrs can be cleaned up by doing setxattr on special key.
+         * Hence its ok that we don't allow removexattr on quota keys here.
+         */
+        if (frame->root->pid >= 0) {
+                GF_IF_NATIVE_XATTR_GOTO ("trusted.glusterfs.quota*",
+                                         name, op_errno, err);
+                GF_IF_NATIVE_XATTR_GOTO ("trusted.pgfid*", name,
+                                         op_errno, err);
+        }
 
         VALIDATE_OR_GOTO (frame, err);
         VALIDATE_OR_GOTO (loc, err);
 
-wind:
-        STACK_WIND (frame, priv->is_quota_on?
-                    quota_removexattr_cbk: default_removexattr_cbk,
+        STACK_WIND (frame, quota_removexattr_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->removexattr,
                     loc, name, xdata);
         return 0;
+
 err:
         QUOTA_STACK_UNWIND (removexattr, frame, -1,  op_errno, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->removexattr,
+                         loc, name, xdata);
         return 0;
 }
 
@@ -3264,23 +3490,30 @@ quota_fremovexattr (call_frame_t *frame, xlator_t *this,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         VALIDATE_OR_GOTO (frame, err);
         VALIDATE_OR_GOTO (this, err);
         VALIDATE_OR_GOTO (fd, err);
 
-        GF_IF_NATIVE_XATTR_GOTO ("trusted.quota*",
-                                 name, op_errno, err);
-
-wind:
-        STACK_WIND (frame, priv->is_quota_on?
-                    quota_fremovexattr_cbk: default_fremovexattr_cbk,
+        if (frame->root->pid >= 0) {
+                GF_IF_NATIVE_XATTR_GOTO ("trusted.glusterfs.quota*",
+                                         name, op_errno, err);
+                GF_IF_NATIVE_XATTR_GOTO ("trusted.pgfid*", name,
+                                         op_errno, err);
+        }
+        STACK_WIND (frame, quota_fremovexattr_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->fremovexattr,
                     fd, name, xdata);
         return 0;
- err:
+err:
         QUOTA_STACK_UNWIND (fremovexattr, frame, op_ret, op_errno, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->fremovexattr,
+                         fd, name, xdata);
         return 0;
 }
 
@@ -3290,13 +3523,14 @@ quota_statfs_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
                   int32_t op_ret, int32_t op_errno, struct statvfs *buf,
                   dict_t *xdata)
 {
-	inode_t           *inode  = NULL;
-        uint64_t           value  = 0;
-	int64_t            usage  = -1;
-        quota_inode_ctx_t *ctx    = NULL;
-        int                ret    = 0;
+	inode_t           *inode        = NULL;
+        uint64_t           value        = 0;
+	int64_t            usage        = -1;
+	int64_t            avail        = -1;
+        int64_t            blocks       = 0;
+        quota_inode_ctx_t *ctx          = NULL;
+        int                ret          = 0;
         gf_boolean_t       dict_created = _gf_false;
-        int64_t            avail        = -1;
 
         inode = cookie;
 
@@ -3316,36 +3550,15 @@ quota_statfs_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
 	}
 
         inode_ctx_get (inode, this, &value);
-	if (!value) {
-		goto unwind;
-	}
-
-        /* if limit is set on this inode, report statfs based on this inode
-         * else report based on root.
-         */
         ctx = (quota_inode_ctx_t *)(unsigned long)value;
-        if (ctx->hard_lim <= 0) {
-                inode_ctx_get (inode->table->root, this, &value);
-                ctx = (quota_inode_ctx_t *)(unsigned long) value;
-                if (ctx == NULL) {
-                        goto unwind;
-                }
-        }
+        if (!ctx || ctx->hard_lim <= 0)
+                goto unwind;
 
-        /**
-         * The control reches here only if the deem-statfs option is enabled.
-         * So, if the deem-statfs is on, regardless of the back-end disk
-         * availability, we send back the quota values to the call.
-         * For eg, if f_blocks is 10G, quota limit is 20G and usage is 9G,
-         * the df command would display the results as below,
-         *      total: 20G
-         *      used : 9G
-         *      avail: 11G
-         */
-        if (ctx->hard_lim > 0) {
+        { /* statfs is adjusted in this code block */
                 usage = (ctx->size) / buf->f_bsize;
 
-                buf->f_blocks = ctx->hard_lim / buf->f_bsize;
+                blocks = ctx->hard_lim / buf->f_bsize;
+                buf->f_blocks = blocks;
 
                 avail = buf->f_blocks - usage;
                 avail = max (avail, 0);
@@ -3379,6 +3592,7 @@ unwind:
 
         if (dict_created)
                 dict_unref (xdata);
+
         return 0;
 }
 
@@ -3387,22 +3601,23 @@ int32_t
 quota_statfs_helper (call_frame_t *frame, xlator_t *this, loc_t *loc,
                      dict_t *xdata)
 {
-        quota_local_t   *local          = NULL;
+        quota_local_t   *local          = frame->local;
         int              op_errno       = EINVAL;
 
-        GF_VALIDATE_OR_GOTO ("quota", (local = frame->local), err);
+        GF_VALIDATE_OR_GOTO ("quota", local, err);
 
         if (-1 == local->op_ret) {
                 op_errno = local->op_errno;
                 goto err;
         }
 
-        STACK_WIND_COOKIE (frame, quota_statfs_cbk, loc->inode,
+        STACK_WIND_COOKIE (frame, quota_statfs_cbk, local->inode,
                            FIRST_CHILD(this),
                            FIRST_CHILD(this)->fops->statfs, loc, xdata);
         return 0;
 err:
         QUOTA_STACK_UNWIND (statfs, frame, -1, op_errno, NULL, NULL);
+
         return 0;
 }
 
@@ -3457,24 +3672,157 @@ quota_statfs_validate_cbk (call_frame_t *frame, void *cookie, xlator_t *this,
         UNLOCK (&ctx->lock);
 
 resume:
-        --local->link_count;
-
-        quota_resume_fop_if_validation_done (local);
+        quota_link_count_decrement (local);
         return 0;
+}
+
+void
+quota_get_limit_dir_continuation (struct list_head *parents, inode_t *inode,
+                                  int32_t op_ret, int32_t op_errno, void *data)
+{
+        call_frame_t   *frame        = NULL;
+        xlator_t       *this         = NULL;
+        quota_local_t  *local        = NULL;
+        quota_dentry_t *entry        = NULL;
+        inode_t        *parent       = NULL;
+
+        frame = data;
+        local = frame->local;
+        this = THIS;
+
+        if ((op_ret < 0) || list_empty (parents)) {
+                if (op_ret >= 0) {
+                        gf_log (this->name, GF_LOG_WARNING,
+                                "Couldn't build ancestry for inode (gfid:%s). "
+                                "Without knowing ancestors till root, quota "
+                                "cannot be enforced. "
+                                "Hence, failing fop with EIO",
+                                uuid_utoa (inode->gfid));
+                        op_errno = EIO;
+                }
+
+                quota_handle_validate_error (local, -1, op_errno);
+                goto out;
+        }
+
+        entry = list_entry (parents, quota_dentry_t, next);
+        parent = inode_find (inode->table, entry->par);
+
+        quota_get_limit_dir (frame, parent, this);
+
+        inode_unref (parent);
+out:
+        return;
+}
+
+void
+quota_statfs_continue (call_frame_t *frame, xlator_t *this, inode_t *inode)
+{
+        call_stub_t     *stub           = NULL;
+        quota_local_t   *local          = frame->local;
+        int              ret            = -1;
+
+        stub = fop_statfs_stub (frame, quota_statfs_helper,
+                                &local->loc, local->xdata);
+        if (!stub)
+                goto err;
+
+        LOCK (&local->lock);
+        {
+                local->inode = inode_ref (inode);
+                local->link_count = 1;
+                local->stub = stub;
+        }
+        UNLOCK (&local->lock);
+
+        ret = quota_validate (frame, local->inode, this,
+                              quota_statfs_validate_cbk);
+        if (0 > ret)
+                quota_handle_validate_error (local, -1, -ret);
+        return;
+
+err:
+        QUOTA_STACK_UNWIND (statfs, frame, -1, ENOMEM, NULL, NULL);
+
+        return;
+}
+
+void
+quota_get_limit_dir (call_frame_t *frame, inode_t *cur_inode, xlator_t *this)
+{
+        inode_t                *inode           = NULL;
+        inode_t                *parent          = NULL;
+        uint64_t                value           = 0;
+        quota_inode_ctx_t      *ctx             = NULL;
+        int                     ret             = -1;
+        quota_local_t          *local           = frame->local;
+
+        if (!cur_inode)
+                goto out;
+
+        inode = inode_ref (cur_inode);
+        while (inode) {
+                value = 0;
+                inode_ctx_get (inode, this, &value);
+
+                if (value) {
+                        ctx = (quota_inode_ctx_t *)(unsigned long)value;
+                        if (ctx->hard_lim > 0)
+                                break;
+                }
+
+                if (__is_root_gfid (inode->gfid))
+                        goto off;
+
+                parent = inode_parent (inode, 0, NULL);
+                if (!parent) {
+                        ret = quota_build_ancestry
+                               (inode, quota_get_limit_dir_continuation,
+                                (void *)frame);
+                        goto out;
+                }
+
+                inode_unref (inode);
+                inode = parent;
+        }
+
+        quota_statfs_continue (frame, this, inode);
+        inode_unref (inode);
+        return;
+
+off:
+        gf_log (this->name, GF_LOG_DEBUG,
+                "No limit set on the inode or it's parents.");
+
+        QUOTA_STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                               FIRST_CHILD(this)->fops->statfs,
+                               &local->loc, local->xdata);
+out:
+        inode_unref (inode);
+
+        return;
 }
 
 int32_t
 quota_statfs (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
 {
-        quota_local_t   *local  = NULL;
-        int              op_errno       = 0;
-        call_stub_t     *stub           = NULL;
-        quota_priv_t *priv  = NULL;
-        int           ret       = 0;
+        int              op_errno            = 0;
+        int              ret                 = -1;
+        int8_t           ignore_deem_statfs  = 0;
+        quota_priv_t    *priv                = NULL;
+        quota_local_t   *local               = NULL;
 
         priv = this->private;
+        GF_ASSERT (loc);
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
+
+        ret = dict_get_int8 (xdata, GF_INTERNAL_IGNORE_DEEM_STATFS,
+                             &ignore_deem_statfs);
+        ret = 0;
+
+        if (ignore_deem_statfs)
+                goto off;
 
 	if (priv->consider_statfs && loc->inode) {
                 local = quota_local_new ();
@@ -3482,53 +3830,48 @@ quota_statfs (call_frame_t *frame, xlator_t *this, loc_t *loc, dict_t *xdata)
                         op_errno = ENOMEM;
                         goto err;
                 }
-                frame->local = local;
 
-                local->inode = inode_ref (loc->inode);
-                local->link_count = 1;
-
-                stub = fop_statfs_stub (frame, quota_statfs_helper, loc, xdata);
-                if (!stub) {
+                ret = loc_copy (&local->loc, loc);
+                if (-1 == ret) {
                         op_errno = ENOMEM;
                         goto err;
                 }
 
-                local->stub = stub;
+                if (xdata)
+                        local->xdata = dict_ref (xdata);
 
-                ret = quota_validate (frame, local->inode, this,
-                                      quota_statfs_validate_cbk);
-                if (0 > ret) {
-                        op_errno = -ret;
-                        --local->link_count;
-                }
+                local->link_count = 1;
 
-                quota_resume_fop_if_validation_done (local);
+                frame->local = local;
+
+                quota_get_limit_dir (frame, loc->inode, this);
+
+                return 0;
 	}
-	else {
-		/*
-		 * We have to make sure that we never get to quota_statfs_cbk
-		 * with a cookie that points to something other than an inode,
-		 * which is exactly what would happen with STACK_UNWIND using
-		 * that as a callback.  Therefore, use default_statfs_cbk in
-		 * this case instead.
-                 *
-                 * Also if the option deem-statfs is not set to "on" don't
-                 * bother calculating quota limit on / in statfs_cbk.
-		 */
-                if (priv->consider_statfs)
-                        gf_log(this->name,GF_LOG_WARNING,
-                               "missing inode, cannot adjust for quota");
-wind:
-		STACK_WIND (frame, default_statfs_cbk, FIRST_CHILD(this),
-			    FIRST_CHILD(this)->fops->statfs, loc, xdata);
-	}
+
+        /*
+         * We have to make sure that we never get to quota_statfs_cbk
+         * with a cookie that points to something other than an inode,
+         * which is exactly what would happen with STACK_UNWIND using
+         * that as a callback.  Therefore, use default_statfs_cbk in
+         * this case instead.
+         *
+         * Also if the option deem-statfs is not set to "on" don't
+         * bother calculating quota limit on / in statfs_cbk.
+         */
+        if (priv->consider_statfs)
+                gf_log (this->name, GF_LOG_ERROR,
+                        "Missing inode, can't adjust for quota");
+
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->statfs, loc, xdata);
         return 0;
 
 err:
-        STACK_UNWIND_STRICT (statfs, frame, -1, op_errno, NULL, NULL);
+        QUOTA_STACK_UNWIND (statfs, frame, -1, op_errno, NULL, NULL);
 
-        if (local)
-                quota_local_cleanup (this, local);
         return 0;
 }
 
@@ -3580,7 +3923,7 @@ quota_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
 
         priv = this->private;
 
-        WIND_IF_QUOTAOFF (priv->is_quota_on, wind);
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
 
         local = quota_local_new ();
 
@@ -3606,9 +3949,7 @@ quota_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
                 }
         }
 
-wind:
-        STACK_WIND (frame,
-                    priv->is_quota_on? quota_readdirp_cbk: default_readdirp_cbk,
+        STACK_WIND (frame, quota_readdirp_cbk,
                     FIRST_CHILD(this), FIRST_CHILD(this)->fops->readdirp, fd,
                     size, offset, dict);
 
@@ -3625,6 +3966,204 @@ err:
         }
 
         return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->readdirp, fd,
+                         size, offset, dict);
+        return 0;
+}
+
+int32_t
+quota_fallocate_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+                    int32_t op_ret, int32_t op_errno, struct iatt *prebuf,
+                    struct iatt *postbuf, dict_t *xdata)
+{
+        int32_t                  ret            = 0;
+        uint64_t                 ctx_int        = 0;
+        quota_inode_ctx_t       *ctx            = NULL;
+        quota_local_t           *local          = NULL;
+
+        local = frame->local;
+
+        if ((op_ret < 0) || (local == NULL)) {
+                goto out;
+        }
+
+        ret = inode_ctx_get (local->loc.inode, this, &ctx_int);
+        if (ret) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "%s: failed to get the context", local->loc.path);
+                goto out;
+        }
+
+        ctx = (quota_inode_ctx_t *)(unsigned long) ctx_int;
+
+        if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_WARNING,
+                        "quota context not set in %s (gfid:%s)",
+                        local->loc.path, uuid_utoa (local->loc.inode->gfid));
+                goto out;
+        }
+
+        LOCK (&ctx->lock);
+        {
+                ctx->buf = *postbuf;
+        }
+        UNLOCK (&ctx->lock);
+
+out:
+        QUOTA_STACK_UNWIND (fallocate, frame, op_ret, op_errno, prebuf, postbuf,
+                            xdata);
+
+        return 0;
+}
+
+
+int32_t
+quota_fallocate_helper (call_frame_t *frame, xlator_t *this, fd_t *fd,
+                        int32_t mode, off_t offset, size_t len, dict_t *xdata)
+{
+        quota_local_t *local    = NULL;
+        int32_t        op_errno = EINVAL;
+        quota_priv_t  *priv     = NULL;
+
+        local = frame->local;
+        if (local == NULL) {
+                gf_log (this->name, GF_LOG_WARNING, "local is NULL");
+                goto unwind;
+        }
+
+        priv = this->private;
+
+        if (local->op_ret == -1) {
+                op_errno = local->op_errno;
+                goto unwind;
+        }
+
+        STACK_WIND (frame, quota_fallocate_cbk,
+                    FIRST_CHILD(this),
+                    FIRST_CHILD(this)->fops->fallocate, fd, mode, offset, len,
+		    xdata);
+        return 0;
+
+unwind:
+        QUOTA_STACK_UNWIND (fallocate, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+}
+
+
+int32_t
+quota_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
+		off_t offset, size_t len, dict_t *xdata)
+{
+        int32_t            ret     = -1, op_errno = EINVAL;
+        int32_t            parents = 0;
+        quota_local_t     *local   = NULL;
+        quota_inode_ctx_t *ctx     = NULL;
+        quota_priv_t      *priv    = NULL;
+        quota_dentry_t    *dentry  = NULL;
+        call_stub_t       *stub    = NULL;
+
+        priv = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, priv, unwind);
+
+        WIND_IF_QUOTAOFF (priv->is_quota_on, off);
+
+        GF_ASSERT (frame);
+        GF_VALIDATE_OR_GOTO ("quota", this, unwind);
+        GF_VALIDATE_OR_GOTO (this->name, fd, unwind);
+
+        local = quota_local_new ();
+        if (local == NULL) {
+                goto unwind;
+        }
+
+        frame->local = local;
+        local->loc.inode = inode_ref (fd->inode);
+
+        ret = quota_inode_ctx_get (fd->inode, this, &ctx, 0);
+        if (ctx == NULL) {
+                gf_log (this->name, GF_LOG_DEBUG, "quota context is "
+                        "NULL on inode (%s). "
+                        "If quota is not enabled recently and crawler "
+                        "has finished crawling, its an error",
+                        uuid_utoa (local->loc.inode->gfid));
+        }
+
+        stub = fop_fallocate_stub(frame, quota_fallocate_helper, fd, mode,
+                                  offset, len, xdata);
+        if (stub == NULL) {
+                op_errno = ENOMEM;
+                goto unwind;
+        }
+
+        priv = this->private;
+        GF_VALIDATE_OR_GOTO (this->name, priv, unwind);
+
+        if (ctx != NULL) {
+                LOCK (&ctx->lock);
+                {
+                        list_for_each_entry (dentry, &ctx->parents, next) {
+                                parents++;
+                        }
+                }
+                UNLOCK (&ctx->lock);
+        }
+
+	/*
+	 * Note that by using len as the delta we're assuming the range from
+	 * offset to offset+len has not already been allocated. This can result
+	 * in ENOSPC errors attempting to allocate an already allocated range.
+	 */
+        local->delta = len;
+        local->stub = stub;
+        local->link_count = parents;
+
+        if (parents == 0) {
+                local->link_count = 1;
+                quota_check_limit (frame, fd->inode, this, NULL, NULL);
+        } else {
+                list_for_each_entry (dentry, &ctx->parents, next) {
+                        quota_check_limit (frame, fd->inode, this, dentry->name,
+                                           dentry->par);
+                }
+        }
+
+        return 0;
+
+unwind:
+        QUOTA_STACK_UNWIND (fallocate, frame, -1, op_errno, NULL, NULL, NULL);
+        return 0;
+
+off:
+        STACK_WIND_TAIL (frame, FIRST_CHILD(this),
+                         FIRST_CHILD(this)->fops->fallocate, fd, mode, offset,
+                         len, xdata);
+        return 0;
+}
+
+void
+quota_log_helper (char **usage_str, int64_t cur_size, inode_t *inode,
+                  char **path, struct timeval *cur_time)
+{
+        xlator_t        *this   = THIS;
+
+        if (!usage_str || !inode || !path || !cur_time) {
+                gf_log (this->name, GF_LOG_ERROR, "Received null argument");
+                return;
+        }
+
+        *usage_str = gf_uint64_2human_readable (cur_size);
+        if (!(*usage_str))
+                gf_log (this->name, GF_LOG_ERROR, "integer to string "
+                        "conversion failed Reason:\"Cannot allocate memory\"");
+
+        inode_path (inode, NULL, path);
+        if (!(*path))
+                *path = uuid_utoa (inode->gfid);
+
+        gettimeofday (cur_time, NULL);
 }
 
 /* Logs if
@@ -3642,36 +4181,35 @@ quota_log_usage (xlator_t *this, quota_inode_ctx_t *ctx, inode_t *inode,
         quota_priv_t            *priv           = NULL;
 
         priv = this->private;
-
-        if ((ctx->soft_lim <= 0) || (timerisset (&ctx->prev_log) &&
-                                     !quota_timeout (&ctx->prev_log,
-                                                     priv->log_timeout))) {
-                return;
-        }
-
-
         cur_size = ctx->size + delta;
-        usage_str = gf_uint64_2human_readable (cur_size);
-        inode_path (inode, NULL, &path);
-        if (!path)
-                path = uuid_utoa (inode->gfid);
 
-        gettimeofday (&cur_time, NULL);
+        if ((ctx->soft_lim <= 0) || cur_size < ctx->soft_lim)
+                return;
+
         /* Usage crossed/reached soft limit */
         if (DID_REACH_LIMIT (ctx->soft_lim, ctx->size, cur_size)) {
+
+                quota_log_helper (&usage_str, cur_size, inode,
+                                  &path, &cur_time);
 
                 gf_log (this->name, GF_LOG_ALERT, "Usage crossed "
                         "soft limit: %s used by %s", usage_str, path);
                 ctx->prev_log = cur_time;
         }
         /* Usage is above soft limit */
-        else if (cur_size > ctx->soft_lim){
+        else if (cur_size > ctx->soft_lim &&
+                           quota_timeout (&ctx->prev_log, priv->log_timeout)) {
+
+                quota_log_helper (&usage_str, cur_size, inode,
+                                  &path, &cur_time);
+
                 gf_log (this->name, GF_LOG_ALERT, "Usage is above "
                         "soft limit: %s used by %s", usage_str, path);
                 ctx->prev_log = cur_time;
         }
 
-        GF_FREE (usage_str);
+        if (usage_str)
+                GF_FREE (usage_str);
 }
 
 int32_t
@@ -3697,15 +4235,10 @@ mem_acct_init (xlator_t *this)
 int32_t
 quota_forget (xlator_t *this, inode_t *inode)
 {
-        quota_priv_t         *priv    = NULL;
         int32_t               ret     = 0;
         uint64_t              ctx_int = 0;
         quota_inode_ctx_t    *ctx     = NULL;
         quota_dentry_t       *dentry  = NULL, *tmp;
-
-        priv = this->private;
-        if (!priv->is_quota_on)
-                return 0;
 
         ret = inode_ctx_del (inode, this, &ctx_int);
 
@@ -3733,8 +4266,9 @@ quota_forget (xlator_t *this, inode_t *inode)
 int32_t
 init (xlator_t *this)
 {
-        int32_t       ret       = -1;
-        quota_priv_t *priv      = NULL;
+        int32_t       ret  = -1;
+        quota_priv_t *priv = NULL;
+        rpc_clnt_t   *rpc  = NULL;
 
         if ((this->children == NULL)
             || this->children->next) {
@@ -3773,11 +4307,19 @@ init (xlator_t *this)
         }
 
         if (priv->is_quota_on) {
-                ret = quota_enforcer_init (this, this->options);
-                if (ret) {
+                rpc = quota_enforcer_init (this, this->options);
+                if (rpc == NULL) {
+                        ret = -1;
                         gf_log (this->name, GF_LOG_WARNING,
                                 "quota enforcer rpc init failed");
+                        goto err;
                 }
+
+                LOCK (&priv->lock);
+                {
+                        priv->rpc_clnt = rpc;
+                }
+                UNLOCK (&priv->lock);
         }
 
         ret = 0;
@@ -3788,16 +4330,16 @@ err:
 int
 reconfigure (xlator_t *this, dict_t *options)
 {
-        int32_t           ret   = -1;
-        quota_priv_t     *priv  = NULL;
-        gf_boolean_t      was_enabled = _gf_true;
+        int32_t       ret      = -1;
+        quota_priv_t *priv     = NULL;
+        gf_boolean_t  quota_on = _gf_false;
+        rpc_clnt_t   *rpc      = NULL;
 
         priv = this->private;
-        was_enabled = priv->is_quota_on;
 
         GF_OPTION_RECONF ("deem-statfs", priv->consider_statfs, options, bool,
                           out);
-        GF_OPTION_RECONF ("server-quota", priv->is_quota_on, options, bool,
+        GF_OPTION_RECONF ("server-quota", quota_on, options, bool,
                           out);
         GF_OPTION_RECONF ("default-soft-limit", priv->default_soft_lim,
                           options, percent, out);
@@ -3808,26 +4350,35 @@ reconfigure (xlator_t *this, dict_t *options)
         GF_OPTION_RECONF ("hard-timeout", priv->hard_timeout, options,
                           time, out);
 
-        if (was_enabled && !priv->is_quota_on) {
-        //quota was enabled and is being disabled
-                if (priv->rpc_clnt) {
+        if (quota_on) {
+                priv->rpc_clnt = quota_enforcer_init (this,
+                                                      this->options);
+                if (priv->rpc_clnt == NULL) {
+                        ret = -1;
+                        gf_log (this->name, GF_LOG_WARNING,
+                                "quota enforcer rpc init failed");
+                        goto out;
+                }
+
+        } else {
+                LOCK (&priv->lock);
+                {
+                        rpc = priv->rpc_clnt;
+                        priv->rpc_clnt = NULL;
+                }
+                UNLOCK (&priv->lock);
+
+                if (rpc != NULL) {
                         // Quotad is shutdown when there is no started volume
                         // which has quota enabled. So, we should disable the
                         // enforcer client when quota is disabled on a volume,
                         // to avoid spurious reconnect attempts to a service
                         // (quotad), that is known to be down.
-                        rpc_clnt_disable (priv->rpc_clnt);
+                        rpc_clnt_unref (rpc);
                 }
-
-        } else if (!was_enabled && priv->is_quota_on) {
-        //quota was disabled and is being enabled
-                ret = quota_enforcer_init (this, this->options);
-                if (ret) {
-                        gf_log (this->name, GF_LOG_WARNING,
-                                "quota enforcer rpc init failed");
-                }
-
         }
+
+        priv->is_quota_on = quota_on;
 
         ret = 0;
 out:
@@ -3900,6 +4451,7 @@ struct xlator_fops fops = {
         .removexattr  = quota_removexattr,
         .fremovexattr = quota_fremovexattr,
         .readdirp     = quota_readdirp,
+	.fallocate    = quota_fallocate,
 };
 
 struct xlator_cbks cbks = {
@@ -3921,8 +4473,8 @@ struct volume_options options[] = {
         {.key = {"server-quota"},
          .type = GF_OPTION_TYPE_BOOL,
          .default_value = "off",
-         .description = "Skip the quota if xlator if the feature is not "
-                        "turned on. This is not a user exposed option."
+         .description = "Skip the quota enforcement if the feature is"
+                        " not turned on. This is not a user exposed option."
         },
         {.key = {"default-soft-limit"},
          .type = GF_OPTION_TYPE_PERCENT,

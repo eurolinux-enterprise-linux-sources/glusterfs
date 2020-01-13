@@ -2,19 +2,10 @@
   Copyright (c) 2010-2011 Gluster, Inc. <http://www.gluster.com>
   This file is part of GlusterFS.
 
-  GlusterFS is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published
-  by the Free Software Foundation; either version 3 of the License,
-  or (at your option) any later version.
-
-  GlusterFS is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see
-  <http://www.gnu.org/licenses/>.
+  This file is licensed to you under your choice of the GNU Lesser
+  General Public License, version 3 or any later version (LGPLv3 or
+  later), or the GNU General Public License, version 2 (GPLv2), in all
+  cases as published by the Free Software Foundation.
 */
 
 /* This is the primary translator source for NFS.
@@ -44,12 +35,13 @@
 #include "options.h"
 #include "acl3.h"
 #include "rpc-drc.h"
-
-#define STRINGIFY(val) #val
-#define TOSTRING(val) STRINGIFY(val)
+#include "syscall.h"
 
 #define OPT_SERVER_AUX_GIDS             "nfs.server-aux-gids"
 #define OPT_SERVER_GID_CACHE_TIMEOUT    "nfs.server.aux-gid-timeout"
+#define OPT_SERVER_RPC_STATD             "nfs.rpc-statd"
+#define OPT_SERVER_RPC_STATD_PIDFILE     "nfs.rpc-statd-pidfile"
+#define OPT_SERVER_RPC_STATD_NOTIFY_PIDFILE "nfs.rpc-statd-notify-pidfile"
 
 /* TODO: DATADIR should be based on configure's $(localstatedir) */
 #define DATADIR                         "/var/lib/glusterd"
@@ -788,9 +780,6 @@ nfs_init_state (xlator_t *this)
                         nfs->dynamicvolumes = GF_NFS_DVM_ON;
         }
 
-        /*
-         * By default NLM is enabled.
-         */
         nfs->enable_nlm = _gf_true;
         ret = dict_get_str_boolean (this->options, "nfs.nlm", _gf_true);
         if (ret == _gf_false) {
@@ -798,9 +787,6 @@ nfs_init_state (xlator_t *this)
                 nfs->enable_nlm = _gf_false;
         }
 
-        /*
-         * By default NFS ACL is enabled.
-         */
         nfs->enable_acl = _gf_true;
         ret = dict_get_str_boolean (this->options, "nfs.acl", _gf_true);
         if (ret == _gf_false) {
@@ -957,20 +943,32 @@ nfs_init_state (xlator_t *this)
                         goto free_foppool;
                 }
         }
+	GF_OPTION_INIT (OPT_SERVER_RPC_STATD, nfs->rpc_statd, path, free_foppool);
+
+	GF_OPTION_INIT (OPT_SERVER_RPC_STATD_PIDFILE, nfs->rpc_statd_pid_file, path, free_foppool);
 
         GF_OPTION_INIT (OPT_SERVER_AUX_GIDS, nfs->server_aux_gids,
                         bool, free_foppool);
-        GF_OPTION_INIT (OPT_SERVER_GID_CACHE_TIMEOUT, nfs->server_aux_gids_max_age,
+        GF_OPTION_INIT (OPT_SERVER_GID_CACHE_TIMEOUT,
+                        nfs->server_aux_gids_max_age,
                         uint32, free_foppool);
 
-	if (gid_cache_init(&nfs->gid_cache, nfs->server_aux_gids_max_age) < 0) {
-		gf_log(GF_NFS, GF_LOG_ERROR, "Failed to initialize group cache.");
-		goto free_foppool;
-	}
+        if (gid_cache_init(&nfs->gid_cache, nfs->server_aux_gids_max_age) < 0) {
+                gf_log(GF_NFS, GF_LOG_ERROR, "Failed to initialize group cache.");
+                goto free_foppool;
+        }
 
-        if (stat("/sbin/rpc.statd", &stbuf) == -1) {
-                gf_log (GF_NFS, GF_LOG_WARNING, "/sbin/rpc.statd not found. "
-                        "Disabling NLM");
+        ret = sys_access (nfs->rpc_statd, X_OK);
+        if (ret) {
+                gf_log (GF_NFS, GF_LOG_WARNING, "%s not enough permissions to"
+                        " access. Disabling NLM", nfs->rpc_statd);
+                nfs->enable_nlm = _gf_false;
+        }
+
+        ret = sys_stat (nfs->rpc_statd, &stbuf);
+        if (ret || !S_ISREG (stbuf.st_mode)) {
+                gf_log (GF_NFS, GF_LOG_WARNING, "%s not a regular file."
+                        " Disabling NLM", nfs->rpc_statd);
                 nfs->enable_nlm = _gf_false;
         }
 
@@ -983,8 +981,8 @@ nfs_init_state (xlator_t *this)
         }
 
         ret = rpcsvc_set_outstanding_rpc_limit (nfs->rpcsvc,
-                                  this->options,
-                                  RPCSVC_DEF_NFS_OUTSTANDING_RPC_LIMIT);
+                                                this->options,
+                                                RPCSVC_DEF_NFS_OUTSTANDING_RPC_LIMIT);
         if (ret < 0) {
                 gf_log (GF_NFS, GF_LOG_ERROR,
                         "Failed to configure outstanding-rpc-limit");
@@ -1029,7 +1027,7 @@ nfs_drc_init (xlator_t *this)
 
         ret = rpcsvc_drc_init (svc, this->options);
 
-out:
+ out:
         return ret;
 }
 
@@ -1038,7 +1036,8 @@ nfs_reconfigure_state (xlator_t *this, dict_t *options)
 {
         int                 ret = 0;
         int                 keyindx = 0;
-        char                *optstr = NULL;
+        char                *rmtab = NULL;
+        char                *rpc_statd = NULL;
         gf_boolean_t        optbool;
         uint32_t            optuint32;
         struct nfs_state    *nfs = NULL;
@@ -1083,19 +1082,36 @@ nfs_reconfigure_state (xlator_t *this, dict_t *options)
                 goto out;
         }
 
+        /* reconfig nfs.rpc-statd...  */
+        rpc_statd = GF_RPC_STATD_PROG;
+        if (dict_get (options, OPT_SERVER_RPC_STATD_PIDFILE)) {
+                ret = dict_get_str (options, "nfs.rpc-statd", &rpc_statd);
+                if (ret < 0) {
+                        gf_log (GF_NFS, GF_LOG_ERROR, "Failed to read "
+                                "reconfigured option: nfs.rpc-statd");
+                        goto out;
+                }
+        }
+
+        if (strcmp(nfs->rpc_statd, rpc_statd) != 0) {
+                gf_log (GF_NFS, GF_LOG_INFO,
+                        "Reconfiguring nfs.rpc-statd needs NFS restart");
+                goto out;
+        }
+
         /* reconfig nfs.mount-rmtab */
-        optstr = NFS_DATADIR "/rmtab";
+        rmtab = NFS_DATADIR "/rmtab";
         if (dict_get (options, "nfs.mount-rmtab")) {
-                ret = dict_get_str (options, "nfs.mount-rmtab", &optstr);
+                ret = dict_get_str (options, "nfs.mount-rmtab", &rmtab);
                 if (ret < 0) {
                         gf_log (GF_NFS, GF_LOG_ERROR, "Failed to read "
                                 "reconfigured option: nfs.mount-rmtab");
                         goto out;
                 }
-                gf_path_strip_trailing_slashes (optstr);
+                gf_path_strip_trailing_slashes (rmtab);
         }
-        if (strcmp (nfs->rmtab, optstr) != 0) {
-                mount_rewrite_rmtab (nfs->mstate, optstr);
+        if (strcmp (nfs->rmtab, rmtab) != 0) {
+                mount_rewrite_rmtab (nfs->mstate, rmtab);
                 gf_log (GF_NFS, GF_LOG_INFO,
                                 "Reconfigured nfs.mount-rmtab path: %s",
                                 nfs->rmtab);
@@ -1501,9 +1517,8 @@ nfs_priv (xlator_t *this)
                 gf_log (this->name, GF_LOG_DEBUG, "Statedump of NLM failed");
                 goto out;
         }
-out:
+ out:
         return ret;
-        
 }
 
 
@@ -1626,7 +1641,7 @@ struct volume_options options[] = {
                          "subdirectory or subdirectories in the volume need to "
                          "be exported separately. Enabling this option allows "
                          "any directory on a volumes to be exported separately."
-                         " Directory exports are enabled by default."
+                         "Directory exports are enabled by default."
         },
         { .key  = {"nfs3.export-volumes"},
           .type = GF_OPTION_TYPE_BOOL,
@@ -1640,8 +1655,8 @@ struct volume_options options[] = {
           .type = GF_OPTION_TYPE_BOOL,
           .default_value = "on",
           .description = "Disable or enable the AUTH_UNIX authentication type."
-                         "Must always be enabled for better interoperability."
-                         "However, can be disabled if needed. Enabled by"
+                         "Must always be enabled for better interoperability. "
+                         "However, can be disabled if needed. Enabled by "
                          "default"
         },
         { .key  = {"rpc-auth.auth-null"},
@@ -1657,8 +1672,8 @@ struct volume_options options[] = {
           .description = "Disable or enable the AUTH_UNIX authentication type "
                          "for a particular exported volume overriding defaults"
                          " and general setting for AUTH_UNIX scheme. Must "
-                         "always be enabled for better interoperability."
-                         "However, can be disabled if needed. Enabled by"
+                         "always be enabled for better interoperability. "
+                         "However, can be disabled if needed. Enabled by "
                          "default."
         },
         { .key  = {"rpc-auth.auth-unix.*.allow"},
@@ -1667,8 +1682,8 @@ struct volume_options options[] = {
           .description = "Disable or enable the AUTH_UNIX authentication type "
                          "for a particular exported volume overriding defaults"
                          " and general setting for AUTH_UNIX scheme. Must "
-                         "always be enabled for better interoperability."
-                         "However, can be disabled if needed. Enabled by"
+                         "always be enabled for better interoperability. "
+                         "However, can be disabled if needed. Enabled by "
                          "default."
         },
         { .key  = {"rpc-auth.auth-null.*"},
@@ -1681,7 +1696,7 @@ struct volume_options options[] = {
                          "unrecognized option warnings."
         },
         { .key  = {"rpc-auth.addr.allow"},
-          .type = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
+          .type = GF_OPTION_TYPE_CLIENT_AUTH_ADDR,
           .default_value = "all",
           .description = "Allow a comma separated list of addresses and/or"
                          " hostnames to connect to the server. By default, all"
@@ -1689,7 +1704,7 @@ struct volume_options options[] = {
                          "define a general rule for all exported volumes."
         },
         { .key  = {"rpc-auth.addr.reject"},
-          .type = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
+          .type = GF_OPTION_TYPE_CLIENT_AUTH_ADDR,
           .default_value = "none",
           .description = "Reject a comma separated list of addresses and/or"
                          " hostnames from connecting to the server. By default,"
@@ -1697,7 +1712,7 @@ struct volume_options options[] = {
                          "define a general rule for all exported volumes."
         },
         { .key  = {"rpc-auth.addr.*.allow"},
-          .type = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
+          .type = GF_OPTION_TYPE_CLIENT_AUTH_ADDR,
           .default_value = "all",
           .description = "Allow a comma separated list of addresses and/or"
                          " hostnames to connect to the server. By default, all"
@@ -1705,11 +1720,11 @@ struct volume_options options[] = {
                          "define a rule for a specific exported volume."
         },
         { .key  = {"rpc-auth.addr.*.reject"},
-          .type = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
+          .type = GF_OPTION_TYPE_CLIENT_AUTH_ADDR,
           .default_value = "none",
           .description = "Reject a comma separated list of addresses and/or"
                          " hostnames from connecting to the server. By default,"
-                         " all connections are allowed. This allows users to"
+                         " all connections are allowed. This allows users to "
                          "define a rule for a specific exported volume."
         },
         { .key  = {"rpc-auth.ports.insecure"},
@@ -1736,7 +1751,7 @@ struct volume_options options[] = {
                   " incoming client connections using this option. Use this "
                   "option to turn on name lookups during address-based "
                   "authentication. Turning this on will enable you to"
-                  " use hostnames in rpc-auth.addr.* filters. In some "
+                  " use hostnames in nfs.rpc-auth-* filters. In some "
                   "setups, the name server can take too long to reply to DNS "
                   "queries resulting in timeouts of mount requests. By "
                   "default, name lookup is off"
@@ -1806,8 +1821,18 @@ struct volume_options options[] = {
         { .key  = {"nfs.*.disable"},
           .type = GF_OPTION_TYPE_BOOL,
           .default_value = "false",
-          .description = "This option is used to start or stop NFS server"
-                         "for individual volume."
+          .description = "This option is used to start or stop the NFS server "
+                         "for individual volumes."
+        },
+        { .key  = {"nfs-ganesha.*.host"},
+          .type = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
+          .default_value = "none",
+          .description = "Set nfs-ganesha host IP"
+        },
+        { .key  = {"nfs-ganesha.*.enable"},
+          .type = GF_OPTION_TYPE_BOOL,
+          .default_value = "off",
+          .description = "This option, if set to 'on', enables exports via nfs-ganesha "
         },
 
         { .key  = {"nfs.nlm"},
@@ -1835,6 +1860,18 @@ struct volume_options options[] = {
                          "storage, all GlusterFS servers will update and "
                          "output (with 'showmount') the same list."
         },
+        { .key = {OPT_SERVER_RPC_STATD},
+          .type = GF_OPTION_TYPE_PATH,
+          .default_value = GF_RPC_STATD_PROG,
+          .description = "The executable of RPC statd utility. "
+                         "Defaults to " GF_RPC_STATD_PROG
+        },
+        { .key = {OPT_SERVER_RPC_STATD_PIDFILE},
+          .type = GF_OPTION_TYPE_PATH,
+          .default_value = GF_RPC_STATD_PIDFILE,
+          .description = "The pid file of RPC statd utility. "
+                         "Defaults to " GF_RPC_STATD_PIDFILE
+        },
         { .key = {OPT_SERVER_AUX_GIDS},
           .type = GF_OPTION_TYPE_BOOL,
           .default_value = "off",
@@ -1857,7 +1894,6 @@ struct volume_options options[] = {
           .type = GF_OPTION_TYPE_BOOL,
           .default_value = "on",
           .description = "This option is used to control ACL support for NFS."
-                         " It is on by default"
         },
         { .key  = {"nfs.drc"},
           .type = GF_OPTION_TYPE_STR,
@@ -1874,4 +1910,3 @@ struct volume_options options[] = {
         },
         { .key  = {NULL} },
 };
-

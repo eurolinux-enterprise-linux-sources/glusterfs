@@ -2,19 +2,10 @@
   Copyright (c) 2012 Gluster, Inc. <http://www.gluster.com>
   This file is part of GlusterFS.
 
-  GlusterFS is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published
-  by the Free Software Foundation; either version 3 of the License,
-  or (at your option) any later version.
-
-  GlusterFS is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see
-  <http://www.gnu.org/licenses/>.
+  This file is licensed to you under your choice of the GNU Lesser
+  General Public License, version 3 or any later version (LGPLv3 or
+  later), or the GNU General Public License, version 2 (GPLv2), in all
+  cases as published by the Free Software Foundation.
 */
 
 #ifndef _NLM4_H_
@@ -40,9 +31,44 @@
 #include "nlm4-xdr.h"
 #include "lkowner.h"
 
+#define NLM4_NULL          0
+#define NLM4_TEST          1
+#define NLM4_LOCK          2
+#define NLM4_CANCEL        3
+#define NLM4_UNLOCK        4
+#define NLM4_GRANTED       5
+#define NLM4_TEST_MSG      6
+#define NLM4_LOCK_MSG      7
+#define NLM4_CANCEL_MSG    8
+#define NLM4_UNLOCK_MSG    9
+#define NLM4_GRANTED_MSG   10
+#define NLM4_TEST_RES      11
+#define NLM4_LOCK_RES      12
+#define NLM4_CANCEL_RES    13
+#define NLM4_UNLOCK_RES    14
+#define NLM4_GRANTED_RES   15
+#define NLM4_SM_NOTIFY     16
+#define NLM4_SEVENTEEN     17
+#define NLM4_EIGHTEEN      18
+#define NLM4_NINETEEN      19
+#define NLM4_SHARE         20
+#define NLM4_UNSHARE       21
+#define NLM4_NM_LOCK       22
+#define NLM4_FREE_ALL      23
+#define NLM4_PROC_COUNT    24
+
 /* Registered with portmap */
 #define GF_NLM4_PORT            38468
 #define GF_NLM                  GF_NFS"-NLM"
+#ifdef GF_DARWIN_HOST_OS
+#define GF_RPC_STATD_PROG       "/usr/sbin/rpc.statd"
+#define GF_RPC_STATD_PIDFILE    "/var/run/statd.pid"
+#define GF_SM_NOTIFY_PIDFILE    "/var/run/statd.notify.pid"
+#else
+#define GF_RPC_STATD_PROG       "/sbin/rpc.statd"
+#define GF_RPC_STATD_PIDFILE    "/var/run/rpc.statd.pid"
+#define GF_SM_NOTIFY_PIDFILE    "/var/run/sm-notify.pid"
+#endif
 
 extern rpcsvc_program_t *
 nlm4svc_init (xlator_t *nfsx);

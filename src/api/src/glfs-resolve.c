@@ -48,6 +48,7 @@ glfs_first_lookup_safe (xlator_t *subvol)
 	loc.name = "";
 
 	ret = syncop_lookup (subvol, &loc, 0, 0, 0, 0);
+        DECODE_SYNCOP_ERR (ret);
 
 	gf_log (subvol->name, GF_LOG_DEBUG, "first lookup complete %d", ret);
 
@@ -98,6 +99,7 @@ glfs_refresh_inode_safe (xlator_t *subvol, inode_t *oldinode)
 		return NULL;
 
 	ret = syncop_lookup (subvol, &loc, 0, &iatt, 0, 0);
+        DECODE_SYNCOP_ERR (ret);
 
 	if (ret) {
 		gf_log (subvol->name, GF_LOG_WARNING,
@@ -181,6 +183,7 @@ glfs_resolve_symlink (struct glfs *fs, xlator_t *subvol, inode_t *inode,
 	loc.path = rpath;
 
 	ret = syncop_readlink (subvol, &loc, &path, 4096);
+        DECODE_SYNCOP_ERR (ret);
 
 	if (ret < 0)
 		goto out;
@@ -210,6 +213,7 @@ glfs_resolve_base (struct glfs *fs, xlator_t *subvol, inode_t *inode,
 		goto out;
 
 	ret = syncop_lookup (subvol, &loc, NULL, iatt, NULL, NULL);
+        DECODE_SYNCOP_ERR (ret);
 out:
 	loc_wipe (&loc);
 
@@ -237,11 +241,15 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
 	uuid_copy (loc.pargfid, parent->gfid);
 
 
-	if (strcmp (component, ".") == 0)
+	if (strcmp (component, ".") == 0) {
 		loc.inode = inode_ref (parent);
-	else if (strcmp (component, "..") == 0)
-		loc.inode = inode_parent (parent, 0, 0);
-	else
+        } else if (strcmp (component, "..") == 0) {
+                if (__is_root_gfid (parent->gfid))
+                        /* ".." on root points to itself */
+                        loc.inode = inode_ref (parent);
+                else
+                        loc.inode = inode_parent (parent, 0, 0);
+        } else
 		loc.inode = inode_grep (parent->table, parent, component);
 
 	if (loc.inode) {
@@ -268,6 +276,7 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
 	}
 
 	ret = syncop_lookup (subvol, &loc, NULL, &ciatt, NULL, NULL);
+        DECODE_SYNCOP_ERR (ret);
 	if (ret && reval) {
 		inode_unref (loc.inode);
 		loc.inode = inode_new (parent->table);
@@ -292,6 +301,7 @@ glfs_resolve_component (struct glfs *fs, xlator_t *subvol, inode_t *parent,
 
 		ret = syncop_lookup (subvol, &loc, xattr_req, &ciatt,
 				     NULL, NULL);
+                DECODE_SYNCOP_ERR (ret);
 	}
 	if (ret)
 		goto out;
@@ -444,7 +454,9 @@ glfs_resolve_at (struct glfs *fs, xlator_t *subvol, inode_t *at,
 		ret = 0;
 	}
 
-	glfs_loc_touchup (loc);
+        if (glfs_loc_touchup (loc) < 0) {
+                ret = -1;
+        }
 out:
 	GF_FREE (path);
 
@@ -515,6 +527,7 @@ glfs_migrate_fd_locks_safe (struct glfs *fs, xlator_t *oldsubvol, fd_t *oldfd,
 
 	ret = syncop_fgetxattr (oldsubvol, oldfd, &lockinfo,
 				GF_XATTR_LOCKINFO_KEY);
+        DECODE_SYNCOP_ERR (ret);
 	if (ret < 0) {
 		gf_log (fs->volname, GF_LOG_WARNING,
 			"fgetxattr (%s) failed (%s) on graph %s (%d)",
@@ -533,6 +546,7 @@ glfs_migrate_fd_locks_safe (struct glfs *fs, xlator_t *oldsubvol, fd_t *oldfd,
 	}
 
 	ret = syncop_fsetxattr (newsubvol, newfd, lockinfo, 0);
+        DECODE_SYNCOP_ERR (ret);
 	if (ret < 0) {
 		gf_log (fs->volname, GF_LOG_WARNING,
 			"fsetxattr (%s) failed (%s) on graph %s (%d)",
@@ -568,6 +582,7 @@ glfs_migrate_fd_safe (struct glfs *fs, xlator_t *newsubvol, fd_t *oldfd)
 
 	if (!oldsubvol->switched) {
 		ret = syncop_fsync (oldsubvol, oldfd, 0);
+                DECODE_SYNCOP_ERR (ret);
 		if (ret) {
 			gf_log (fs->volname, GF_LOG_WARNING,
 				"fsync() failed (%s) on %s graph %s (%d)",
@@ -614,6 +629,7 @@ glfs_migrate_fd_safe (struct glfs *fs, xlator_t *newsubvol, fd_t *oldfd)
 		ret = syncop_open (newsubvol, &loc,
 				   oldfd->flags & ~(O_TRUNC|O_EXCL|O_CREAT),
 				   newfd);
+        DECODE_SYNCOP_ERR (ret);
 	loc_wipe (&loc);
 
 	if (ret) {

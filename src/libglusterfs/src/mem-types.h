@@ -108,9 +108,23 @@ enum gf_common_mem_types_ {
         gf_common_mt_drc_globals_t        = 92,
         gf_common_mt_drc_rbtree_node_t    = 93,
         gf_common_mt_iov_base_t           = 94,
-        gf_common_mt_gsync_status_t       = 95,
-        gf_common_mt_groups_t             = 96,
-        gf_common_mt_syncopctx            = 97,
-        gf_common_mt_end                  = 98
+        gf_common_mt_groups_t             = 95,
+        gf_common_mt_cliententry_t        = 96,
+        gf_common_mt_clienttable_t        = 97,
+        gf_common_mt_client_t             = 98,
+        gf_common_mt_client_ctx           = 99,
+        gf_common_mt_lock_table           = 100,
+        gf_common_mt_locker               = 101,
+        gf_common_mt_auxgids              = 102,
+        gf_common_mt_syncopctx            = 103,
+        gf_common_mt_iobrefs              = 104,
+        gf_common_mt_gsync_status_t       = 105,
+        gf_common_mt_uuid_t               = 106,
+        gf_common_mt_mgmt_v3_lock_obj_t   = 107,
+        gf_common_mt_txn_opinfo_obj_t     = 108,
+	gf_common_mt_strfd_t              = 109,
+	gf_common_mt_strfd_data_t         = 110,
+        gf_common_mt_regex_t              = 111,
+        gf_common_mt_end
 };
 #endif

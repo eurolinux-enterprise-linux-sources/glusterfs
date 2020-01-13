@@ -68,6 +68,9 @@ const char *gf_fop_list[GF_FOP_MAXVALUE] = {
         [GF_FOP_RELEASE]     = "RELEASE",
         [GF_FOP_RELEASEDIR]  = "RELEASEDIR",
         [GF_FOP_FREMOVEXATTR]= "FREMOVEXATTR",
+	[GF_FOP_FALLOCATE]   = "FALLOCATE",
+	[GF_FOP_DISCARD]     = "DISCARD",
+        [GF_FOP_ZEROFILL]     = "ZEROFILL",
 };
 /* THIS */
 
@@ -122,8 +125,6 @@ __glusterfs_this_location ()
 
                 ret = pthread_setspecific (this_xlator_key, this_location);
                 if (ret != 0) {
-                        gf_log ("", GF_LOG_WARNING, "pthread setspecific failed");
-
                         FREE (this_location);
                         this_location = NULL;
                         goto out;

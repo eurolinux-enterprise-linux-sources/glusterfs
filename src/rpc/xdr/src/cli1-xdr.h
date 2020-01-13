@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2007-2014 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -8,12 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
-#include "xdr-common.h"
 #include "compat.h"
+#include "xdr-common.h"
+#include "xdr-nfs3.h"
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 
@@ -132,6 +134,8 @@ enum gf1_cli_gsync_set {
 	GF_GSYNC_OPTION_TYPE_ROTATE = 5,
 	GF_GSYNC_OPTION_TYPE_CREATE = 6,
 	GF_GSYNC_OPTION_TYPE_DELETE = 7,
+	GF_GSYNC_OPTION_TYPE_PAUSE = 8,
+	GF_GSYNC_OPTION_TYPE_RESUME = 9,
 };
 typedef enum gf1_cli_gsync_set gf1_cli_gsync_set;
 
@@ -143,6 +147,15 @@ enum gf1_cli_stats_op {
 	GF_CLI_STATS_TOP = 4,
 };
 typedef enum gf1_cli_stats_op gf1_cli_stats_op;
+
+enum gf1_cli_info_op {
+	GF_CLI_INFO_NONE = 0,
+	GF_CLI_INFO_ALL = 1,
+	GF_CLI_INFO_INCREMENTAL = 2,
+	GF_CLI_INFO_CUMULATIVE = 3,
+	GF_CLI_INFO_CLEAR = 4,
+};
+typedef enum gf1_cli_info_op gf1_cli_info_op;
 
 enum gf1_cli_top_op {
 	GF_CLI_TOP_NONE = 0,
@@ -174,6 +187,41 @@ enum gf_cli_status_type {
 	GF_CLI_STATUS_QUOTAD = 0x2000,
 };
 typedef enum gf_cli_status_type gf_cli_status_type;
+
+enum gf1_cli_snapshot {
+	GF_SNAP_OPTION_TYPE_NONE = 0,
+	GF_SNAP_OPTION_TYPE_CREATE = 0 + 1,
+	GF_SNAP_OPTION_TYPE_DELETE = 0 + 2,
+	GF_SNAP_OPTION_TYPE_RESTORE = 0 + 3,
+	GF_SNAP_OPTION_TYPE_ACTIVATE = 0 + 4,
+	GF_SNAP_OPTION_TYPE_DEACTIVATE = 0 + 5,
+	GF_SNAP_OPTION_TYPE_LIST = 0 + 6,
+	GF_SNAP_OPTION_TYPE_STATUS = 0 + 7,
+	GF_SNAP_OPTION_TYPE_CONFIG = 0 + 8,
+	GF_SNAP_OPTION_TYPE_INFO = 0 + 9,
+};
+typedef enum gf1_cli_snapshot gf1_cli_snapshot;
+
+enum gf1_cli_snapshot_info {
+	GF_SNAP_INFO_TYPE_ALL = 0,
+	GF_SNAP_INFO_TYPE_SNAP = 0 + 1,
+	GF_SNAP_INFO_TYPE_VOL = 0 + 2,
+};
+typedef enum gf1_cli_snapshot_info gf1_cli_snapshot_info;
+
+enum gf1_cli_snapshot_config {
+	GF_SNAP_CONFIG_TYPE_NONE = 0,
+	GF_SNAP_CONFIG_TYPE_SET = 0 + 1,
+	GF_SNAP_CONFIG_DISPLAY = 0 + 2,
+};
+typedef enum gf1_cli_snapshot_config gf1_cli_snapshot_config;
+
+enum gf1_cli_snapshot_status {
+	GF_SNAP_STATUS_TYPE_ALL = 0,
+	GF_SNAP_STATUS_TYPE_SNAP = 0 + 1,
+	GF_SNAP_STATUS_TYPE_VOL = 0 + 2,
+};
+typedef enum gf1_cli_snapshot_status gf1_cli_snapshot_status;
 
 struct gf_cli_req {
 	struct {
@@ -284,8 +332,13 @@ extern  bool_t xdr_gf1_cli_sync_volume (XDR *, gf1_cli_sync_volume*);
 extern  bool_t xdr_gf1_cli_op_flags (XDR *, gf1_cli_op_flags*);
 extern  bool_t xdr_gf1_cli_gsync_set (XDR *, gf1_cli_gsync_set*);
 extern  bool_t xdr_gf1_cli_stats_op (XDR *, gf1_cli_stats_op*);
+extern  bool_t xdr_gf1_cli_info_op (XDR *, gf1_cli_info_op*);
 extern  bool_t xdr_gf1_cli_top_op (XDR *, gf1_cli_top_op*);
 extern  bool_t xdr_gf_cli_status_type (XDR *, gf_cli_status_type*);
+extern  bool_t xdr_gf1_cli_snapshot (XDR *, gf1_cli_snapshot*);
+extern  bool_t xdr_gf1_cli_snapshot_info (XDR *, gf1_cli_snapshot_info*);
+extern  bool_t xdr_gf1_cli_snapshot_config (XDR *, gf1_cli_snapshot_config*);
+extern  bool_t xdr_gf1_cli_snapshot_status (XDR *, gf1_cli_snapshot_status*);
 extern  bool_t xdr_gf_cli_req (XDR *, gf_cli_req*);
 extern  bool_t xdr_gf_cli_rsp (XDR *, gf_cli_rsp*);
 extern  bool_t xdr_gf1_cli_peer_list_req (XDR *, gf1_cli_peer_list_req*);
@@ -312,8 +365,13 @@ extern bool_t xdr_gf1_cli_sync_volume ();
 extern bool_t xdr_gf1_cli_op_flags ();
 extern bool_t xdr_gf1_cli_gsync_set ();
 extern bool_t xdr_gf1_cli_stats_op ();
+extern bool_t xdr_gf1_cli_info_op ();
 extern bool_t xdr_gf1_cli_top_op ();
 extern bool_t xdr_gf_cli_status_type ();
+extern bool_t xdr_gf1_cli_snapshot ();
+extern bool_t xdr_gf1_cli_snapshot_info ();
+extern bool_t xdr_gf1_cli_snapshot_config ();
+extern bool_t xdr_gf1_cli_snapshot_status ();
 extern bool_t xdr_gf_cli_req ();
 extern bool_t xdr_gf_cli_rsp ();
 extern bool_t xdr_gf1_cli_peer_list_req ();

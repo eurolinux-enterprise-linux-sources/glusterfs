@@ -50,6 +50,16 @@
 #include "posix-aio.h"
 #endif
 
+#define VECTOR_SIZE 64 * 1024 /* vector size 64KB*/
+#define MAX_NO_VECT 1024
+
+#define LINKTO "trusted.glusterfs.dht.linkto"
+
+#define POSIX_GFID_HANDLE_SIZE(base_path_len) (base_path_len + SLEN("/") \
+                                               + SLEN(GF_HIDDEN_PATH) + SLEN("/") \
+                                               + SLEN("00/")            \
+                                               + SLEN("00/") + SLEN(UUID0_STR) + 1) /* '\0' */;
+
 /**
  * posix_fd - internal structure common to file and directory fd's
  */
@@ -129,10 +139,6 @@ struct posix_private {
         /* node-uuid in pathinfo xattr */
         gf_boolean_t  node_uuid_pathinfo;
 
-        /* seconds to sleep between health checks */
-        uint32_t        health_check_interval;
-        pthread_t       health_check;
-        gf_boolean_t    health_check_active;
 	pthread_t         fsyncer;
 	struct list_head  fsyncs;
 	pthread_mutex_t   fsync_mutex;
@@ -149,6 +155,21 @@ struct posix_private {
 
 	uint32_t        batch_fsync_delay_usec;
         gf_boolean_t    update_pgfid_nlinks;
+
+        /* seconds to sleep between health checks */
+        uint32_t        health_check_interval;
+        pthread_t       health_check;
+        gf_boolean_t    health_check_active;
+
+#ifdef GF_DARWIN_HOST_OS
+        enum {
+                XATTR_NONE = 0,
+                XATTR_STRIP,
+                XATTR_APPEND,
+                XATTR_BOTH,
+        } xattr_user_namespace;
+#endif
+
 };
 
 typedef struct {
@@ -204,6 +225,11 @@ void posix_spawn_health_check_thread (xlator_t *this);
 
 void *posix_fsyncer (void *);
 int
-posix_get_ancestry (xlator_t *this, const char *real_path, loc_t *loc,
-                    dict_t *dict, int type, int32_t *op_errno, dict_t *xdata);
+posix_get_ancestry (xlator_t *this, inode_t *leaf_inode,
+                    gf_dirent_t *head, char **path, int type, int32_t *op_errno,
+                    dict_t *xdata);
+
+void
+posix_gfid_unset (xlator_t *this, dict_t *xdata);
+
 #endif /* _POSIX_H */

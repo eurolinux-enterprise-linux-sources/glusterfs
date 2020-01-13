@@ -79,6 +79,9 @@ fill_defaults (xlator_t *xl)
         SET_DEFAULT_FOP (fxattrop);
         SET_DEFAULT_FOP (setattr);
         SET_DEFAULT_FOP (fsetattr);
+	SET_DEFAULT_FOP (fallocate);
+	SET_DEFAULT_FOP (discard);
+        SET_DEFAULT_FOP (zerofill);
 
         SET_DEFAULT_FOP (getspec);
 
@@ -146,10 +149,13 @@ xlator_volopt_dynload (char *xlator_type, void **dl_handle,
         }
 
         *dl_handle = handle;
+        handle = NULL;
 
         ret = 0;
  out:
         GF_FREE (name);
+        if (handle)
+                dlclose (handle);
 
         gf_log ("xlator", GF_LOG_DEBUG, "Returning %d", ret);
         return ret;
@@ -351,29 +357,6 @@ xlator_search_by_name (xlator_t *any, const char *name)
 
         while (search) {
                 if (!strcmp (search->name, name))
-                        break;
-                search = search->next;
-        }
-
-out:
-        return search;
-}
-
-xlator_t *
-xlator_search_by_xl_type (xlator_t *any, const char *type)
-{
-        xlator_t *search = NULL;
-
-        GF_VALIDATE_OR_GOTO ("xlator", any, out);
-        GF_VALIDATE_OR_GOTO ("xlator", type, out);
-
-        search = any;
-
-        while (search->prev)
-                search = search->prev;
-
-        while (search) {
-                if (!strcmp (search->type, type))
                         break;
                 search = search->next;
         }
@@ -667,6 +650,45 @@ loc_gfid_utoa (loc_t *loc)
         uuid_t gfid;
         loc_gfid (loc, gfid);
         return uuid_utoa (gfid);
+}
+
+int
+loc_copy_overload_parent (loc_t *dst, loc_t *src, inode_t *parent)
+{
+        int ret = -1;
+
+        GF_VALIDATE_OR_GOTO ("xlator", dst, err);
+        GF_VALIDATE_OR_GOTO ("xlator", src, err);
+        GF_VALIDATE_OR_GOTO ("xlator", parent, err);
+
+        uuid_copy (dst->gfid, src->gfid);
+        uuid_copy (dst->pargfid, parent->gfid);
+
+        if (src->inode)
+                dst->inode = inode_ref (src->inode);
+
+        if (parent)
+                dst->parent = inode_ref (parent);
+
+        if (src->path) {
+                dst->path = gf_strdup (src->path);
+
+                if (!dst->path)
+                        goto out;
+
+                if (src->name)
+                        dst->name = strrchr (dst->path, '/');
+                if (dst->name)
+                        dst->name++;
+        }
+
+        ret = 0;
+out:
+        if (ret == -1)
+                loc_wipe (dst);
+
+err:
+        return ret;
 }
 
 int

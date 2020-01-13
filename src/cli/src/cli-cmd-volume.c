@@ -29,6 +29,7 @@
 #include "cli1-xdr.h"
 #include "run.h"
 #include "syscall.h"
+#include "common-utils.h"
 
 extern struct rpc_clnt *global_rpc;
 extern struct rpc_clnt *global_quotad_rpc;
@@ -65,7 +66,7 @@ cli_cmd_volume_info_cbk (struct cli_state *state, struct cli_cmd_word *word,
         } else if (wordcount == 3) {
                 ctx.flags = GF_CLI_GET_VOLUME;
                 ctx.volname = (char *)words[2];
-                if (strlen (ctx.volname) > 1024) {
+                if (strlen (ctx.volname) > GD_VOLUME_NAME_MAX) {
                         cli_out ("Invalid volume name");
                         goto out;
                 }
@@ -349,6 +350,11 @@ cli_cmd_volume_create_cbk (struct cli_state *state, struct cli_cmd_word *word,
         int32_t                 sub_count = 0;
         int32_t                 type = GF_CLUSTER_TYPE_NONE;
         cli_local_t             *local = NULL;
+        char                    *trans_type = NULL;
+        char                    *question = "RDMA transport is"
+                                 " recommended only for testing purposes"
+                                 " in this release. Do you want to continue?";
+        gf_answer_t             answer = GF_ANSWER_NO;
 
         proc = &cli_rpc_prog->proctable[GLUSTER_CLI_CREATE_VOLUME];
 
@@ -391,6 +397,22 @@ cli_cmd_volume_create_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 ret = cli_cmd_check_brick_order (state, brick_list, brick_count, sub_count);
                 if (ret) {
                         gf_log("cli", GF_LOG_INFO, "Not creating volume because of bad brick order");
+                        goto out;
+                }
+        }
+
+
+        ret = dict_get_str (options, "transport", &trans_type);
+        if (ret) {
+                gf_log("cli", GF_LOG_ERROR, "Unable to get transport type");
+                goto out;
+        }
+
+        if (strcasestr (trans_type, "rdma")) {
+                answer =
+                   cli_cmd_get_confirmation (state, question);
+                if (GF_ANSWER_NO == answer) {
+                        ret = 0;
                         goto out;
                 }
         }
@@ -971,7 +993,7 @@ cli_cmd_volume_add_brick_cbk (struct cli_state *state,
         }
 
         /* TODO: there are challenges in supporting changing of
-           stripe-count, untill it is properly supported give warning to user */
+           stripe-count, until it is properly supported give warning to user */
         if (dict_get (options, "stripe-count")) {
                 answer = cli_cmd_get_confirmation (state, question);
 
@@ -1017,7 +1039,7 @@ gf_cli_create_auxiliary_mount (char *volname)
         char     mountdir[PATH_MAX]      = {0,};
         char     pidfile_path[PATH_MAX]  = {0,};
         char     logfile[PATH_MAX]       = {0,};
-        char     quota_pid[16]           = {0};
+        char     qpid [16]               = {0,};
 
         GLUSTERFS_GET_AUX_MOUNT_PIDFILE (pidfile_path, volname);
 
@@ -1039,15 +1061,16 @@ gf_cli_create_auxiliary_mount (char *volname)
 
         snprintf (logfile, PATH_MAX-1, "%s/quota-mount-%s.log",
                   DEFAULT_LOG_FILE_DIRECTORY, volname);
+        snprintf(qpid, 15, "%d", GF_CLIENT_PID_QUOTA_MOUNT);
 
-        snprintf (quota_pid, sizeof(quota_pid)-1, "%d", GF_CLIENT_PID_QUOTA);
         ret = runcmd (SBIN_DIR"/glusterfs",
                       "-s", "localhost",
                       "--volfile-id", volname,
                       "-l", logfile,
                       "-p", pidfile_path,
+                      "--client-pid", qpid,
                       mountdir,
-                      "--client-pid", quota_pid, NULL);
+                      NULL);
 
         if (ret) {
                 gf_log ("cli", GF_LOG_WARNING, "failed to mount glusterfs "
@@ -1431,7 +1454,7 @@ cli_cmd_quota_cbk (struct cli_state *state, struct cli_cmd_word *word,
                 goto out;
         }
 
-        //create auxillary mount need for quota commands that operate on path
+        //create auxiliary mount need for quota commands that operate on path
         ret = cli_stage_quota_op (volname, type);
         if (ret)
                 goto out;
@@ -1537,6 +1560,11 @@ cli_cmd_volume_replace_brick_cbk (struct cli_state *state,
         int                     sent = 0;
         int                     parse_error = 0;
         cli_local_t             *local = NULL;
+        int                     replace_op = 0;
+        char                    *q = "All replace-brick commands except "
+                                     "commit force are deprecated. "
+                                     "Do you want to continue?";
+        gf_answer_t             answer = GF_ANSWER_NO;
 
 #ifdef GF_SOLARIS_HOST_OS
         cli_out ("Command not supported on Solaris");
@@ -1554,6 +1582,15 @@ cli_cmd_volume_replace_brick_cbk (struct cli_state *state,
                 cli_usage_out (word->pattern);
                 parse_error = 1;
                 goto out;
+        }
+
+        ret = dict_get_int32 (options, "operation", &replace_op);
+        if (replace_op != GF_REPLACE_OP_COMMIT_FORCE) {
+                answer = cli_cmd_get_confirmation (state, q);
+                if (GF_ANSWER_NO == answer) {
+                        ret = 0;
+                        goto out;
+                }
         }
 
         if (state->mode & GLUSTER_MODE_WIGNORE) {
@@ -1653,6 +1690,13 @@ cli_cmd_log_rotate_cbk (struct cli_state *state, struct cli_cmd_word *word,
         cli_local_t             *local = NULL;
 
         if (!((wordcount == 4) || (wordcount == 5))) {
+                cli_usage_out (word->pattern);
+                parse_error = 1;
+                goto out;
+        }
+
+        if (!((strcmp ("rotate", words[2]) == 0) ||
+              (strcmp ("rotate", words[3]) == 0))) {
                 cli_usage_out (word->pattern);
                 parse_error = 1;
                 goto out;
@@ -1968,14 +2012,14 @@ cli_print_detailed_status (cli_volume_status_t *status)
 
 
         if (status->total_inodes) {
-                cli_out ("%-20s : %-20ld", "Inode Count",
+                cli_out ("%-20s : %-20"GF_PRI_INODE, "Inode Count",
                          status->total_inodes);
         } else {
                 cli_out ("%-20s : %-20s", "Inode Count", "N/A");
         }
 
         if (status->free_inodes) {
-                cli_out ("%-20s : %-20ld", "Free Inodes",
+                cli_out ("%-20s : %-20"GF_PRI_INODE, "Free Inodes",
                          status->free_inodes);
         } else {
                 cli_out ("%-20s : %-20s", "Free Inodes", "N/A");
@@ -2247,16 +2291,72 @@ out:
         return ret;
 }
 
+int
+cli_cmd_volume_barrier_cbk (struct cli_state *state, struct cli_cmd_word *word,
+                            const char **words, int wordcount)
+{
+        int ret = -1;
+        rpc_clnt_procedure_t *proc = NULL;
+        call_frame_t *frame = NULL;
+        dict_t *options = NULL;
+        int sent = 0;
+        int parse_error = 0;
+        cli_local_t *local = NULL;
+
+        frame = create_frame (THIS, THIS->ctx->pool);
+        if (!frame)
+                goto out;
+
+        if (wordcount != 4) {
+                cli_usage_out (word->pattern);
+                parse_error = 1;
+                goto out;
+        }
+
+        options = dict_new();
+        if (!options) {
+                ret = -1;
+                goto out;
+        }
+        ret = dict_set_str(options, "volname", (char *)words[2]);
+        if (ret)
+                goto out;
+
+        ret = dict_set_str (options, "barrier", (char *)words[3]);
+        if (ret)
+                goto out;
+
+        proc = &cli_rpc_prog->proctable[GLUSTER_CLI_BARRIER_VOLUME];
+
+        CLI_LOCAL_INIT (local, words, frame, options);
+
+        if (proc->fn)
+                ret = proc->fn (frame, THIS, options);
+
+out:
+        if (ret) {
+                cli_cmd_sent_status_get (&sent);
+                if ((sent == 0) && (parse_error == 0))
+                        cli_err ("Volume barrier failed");
+        }
+        CLI_STACK_DESTROY (frame);
+        if (options)
+                dict_unref (options);
+
+        return ret;
+}
 struct cli_cmd volume_cmds[] = {
         { "volume info [all|<VOLNAME>]",
           cli_cmd_volume_info_cbk,
           "list information of all volumes"},
 
         { "volume create <NEW-VOLNAME> [stripe <COUNT>] [replica <COUNT>] "
+          "[transport <tcp|rdma|tcp,rdma>] <NEW-BRICK>"
 #ifdef HAVE_BD_XLATOR
-          "[device vg] "
+          "?<vg_name>"
 #endif
-          "[transport <tcp|rdma|tcp,rdma>] <NEW-BRICK> ... [force]",
+          "... [force]",
+
           cli_cmd_volume_create_cbk,
           "create a new volume of specified type with mentioned bricks"},
 
@@ -2280,11 +2380,12 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_add_brick_cbk,
           "add brick to volume <VOLNAME>"},
 
-        { "volume remove-brick <VOLNAME> [replica <COUNT>] <BRICK> ... [start|stop|status|commit|force]",
+        { "volume remove-brick <VOLNAME> [replica <COUNT>] <BRICK> ..."
+          " <start|stop|status|commit|force>",
           cli_cmd_volume_remove_brick_cbk,
           "remove brick from volume <VOLNAME>"},
 
-        { "volume rebalance <VOLNAME> [fix-layout] {start|stop|status} [force]",
+        { "volume rebalance <VOLNAME> {{fix-layout start} | {start [force]|stop|status}}",
           cli_cmd_volume_defrag_cbk,
           "rebalance operations"},
 
@@ -2304,9 +2405,14 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_help_cbk,
           "display help for the volume command"},
 
-        { "volume log rotate <VOLNAME> [BRICK]",
+        { "volume log <VOLNAME> rotate [BRICK]",
           cli_cmd_log_rotate_cbk,
          "rotate the log file for corresponding volume/brick"},
+
+        { "volume log rotate <VOLNAME> [BRICK]",
+          cli_cmd_log_rotate_cbk,
+         "rotate the log file for corresponding volume/brick"
+         " NOTE: This is an old syntax, will be deprecated from next release."},
 
         { "volume sync <HOSTNAME> [all|<VOLNAME>]",
           cli_cmd_sync_volume_cbk,
@@ -2318,13 +2424,13 @@ struct cli_cmd volume_cmds[] = {
 
 #if (SYNCDAEMON_COMPILE)
         {"volume "GEOREP" [<VOLNAME>] [<SLAVE-URL>] {create [push-pem] [force]"
-         "|start [force]|stop [force]|config|status [detail]|delete} [options...]",
+         "|start [force]|stop [force]|pause [force]|resume [force]|config|status [detail]|delete} [options...]",
          cli_cmd_volume_gsync_set_cbk,
          "Geo-sync operations",
          cli_cmd_check_gsync_exists_cbk},
 #endif
 
-         { "volume profile <VOLNAME> {start|stop|info [nfs]}",
+         { "volume profile <VOLNAME> {start|info [peek|incremental [peek]|cumulative|clear]|stop} [nfs]",
            cli_cmd_volume_profile_cbk,
            "volume profile operations"},
 
@@ -2344,7 +2450,7 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_status_cbk,
           "display status of all or specified volume(s)/brick"},
 
-        { "volume heal <VOLNAME> [{full | info {healed | heal-failed | split-brain}}]",
+        { "volume heal <VOLNAME> [full | info [split-brain]]",
           cli_cmd_volume_heal_cbk,
           "self-heal commands on volume specified by <VOLNAME>"},
 
@@ -2362,6 +2468,9 @@ struct cli_cmd volume_cmds[] = {
           cli_cmd_volume_clearlocks_cbk,
           "Clear locks held on path"
         },
+        {"volume barrier <VOLNAME> {enable|disable}",
+         cli_cmd_volume_barrier_cbk,
+         "Barrier/unbarrier file operations on a volume"},
 
         { NULL, NULL, NULL }
 };

@@ -1,1 +1,1 @@
-EXTRA_DIST =  S30samba-stop.sh S29CTDB-teardown.sh
+EXTRA_DIST =  S29CTDB-teardown.sh S30samba-stop.sh

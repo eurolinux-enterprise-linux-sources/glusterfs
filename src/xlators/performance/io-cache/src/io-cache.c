@@ -41,6 +41,9 @@ ioc_hashfn (void *data, int len)
         return (offset >> ioc_log2_page_size);
 }
 
+/* TODO: This function is not used, uncomment when we find a
+         usage for this function.
+
 static inline ioc_inode_t *
 ioc_inode_reupdate (ioc_inode_t *ioc_inode)
 {
@@ -53,6 +56,7 @@ ioc_inode_reupdate (ioc_inode_t *ioc_inode)
 
         return ioc_inode;
 }
+
 
 static inline ioc_inode_t *
 ioc_get_inode (dict_t *dict, char *name)
@@ -77,6 +81,7 @@ ioc_get_inode (dict_t *dict, char *name)
 
         return ioc_inode;
 }
+*/
 
 int32_t
 ioc_inode_need_revalidate (ioc_inode_t *ioc_inode)
@@ -316,9 +321,11 @@ ioc_forget (xlator_t *this, inode_t *inode)
 static int32_t
 ioc_invalidate(xlator_t *this, inode_t *inode)
 {
+	uint64_t     ioc_addr = 0;
 	ioc_inode_t *ioc_inode = NULL;
 
-	inode_ctx_get(inode, this, (uint64_t *) &ioc_inode);
+	inode_ctx_get(inode, this, (uint64_t *) &ioc_addr);
+	ioc_inode = (void *) ioc_addr;
 
 	if (ioc_inode)
 		ioc_inode_flush(ioc_inode);
@@ -989,6 +996,7 @@ ioc_dispatch_requests (call_frame_t *frame, ioc_inode_t *ioc_inode, fd_t *fd,
                                                 "out of memory");
                                         local->op_ret = -1;
                                         local->op_errno = ENOMEM;
+                                        ioc_inode_unlock (ioc_inode);
                                         goto out;
                                 }
                         }
@@ -1422,6 +1430,58 @@ ioc_readdirp (call_frame_t *frame, xlator_t *this, fd_t *fd, size_t size,
         return 0;
 }
 
+static int32_t
+ioc_discard_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+		int32_t op_ret, int32_t op_errno, struct iatt *pre,
+		struct iatt *post, dict_t *xdata)
+{
+	STACK_UNWIND_STRICT(discard, frame, op_ret, op_errno, pre, post, xdata);
+	return 0;
+}
+
+static int32_t
+ioc_discard(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+	    size_t len, dict_t *xdata)
+{
+	uint64_t ioc_inode = 0;
+
+	inode_ctx_get (fd->inode, this, &ioc_inode);
+
+	if (ioc_inode)
+		ioc_inode_flush ((ioc_inode_t *)(long)ioc_inode);
+
+	STACK_WIND(frame, ioc_discard_cbk, FIRST_CHILD(this),
+		   FIRST_CHILD(this)->fops->discard, fd, offset, len, xdata);
+       return 0;
+}
+
+static int32_t
+ioc_zerofill_cbk(call_frame_t *frame, void *cookie, xlator_t *this,
+                int32_t op_ret, int32_t op_errno, struct iatt *pre,
+                struct iatt *post, dict_t *xdata)
+{
+        STACK_UNWIND_STRICT(zerofill, frame, op_ret,
+                            op_errno, pre, post, xdata);
+        return 0;
+}
+
+static int32_t
+ioc_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+            off_t len, dict_t *xdata)
+{
+        uint64_t ioc_inode = 0;
+
+        inode_ctx_get (fd->inode, this, &ioc_inode);
+
+        if (ioc_inode)
+                ioc_inode_flush ((ioc_inode_t *)(long)ioc_inode);
+
+        STACK_WIND(frame, ioc_zerofill_cbk, FIRST_CHILD(this),
+                   FIRST_CHILD(this)->fops->zerofill, fd, offset, len, xdata);
+       return 0;
+}
+
+
 int32_t
 ioc_get_priority_list (const char *opt_str, struct list_head *first)
 {
@@ -1608,12 +1668,12 @@ reconfigure (xlator_t *this, dict_t *options)
                 }
 
                 GF_OPTION_RECONF ("max-file-size", table->max_file_size,
-                                  options, size, unlock);
+                                  options, size_uint64, unlock);
 
                 GF_OPTION_RECONF ("min-file-size", table->min_file_size,
-                                  options, size, unlock);
+                                  options, size_uint64, unlock);
 
-                if ((table->max_file_size >= 0) &&
+                if ((table->max_file_size <= UINT64_MAX) &&
                     (table->min_file_size > table->max_file_size)) {
                         gf_log (this->name, GF_LOG_ERROR, "minimum size (%"
                                 PRIu64") of a file that can be cached is "
@@ -1624,7 +1684,7 @@ reconfigure (xlator_t *this, dict_t *options)
                 }
 
                 GF_OPTION_RECONF ("cache-size", cache_size_new,
-                                  options, size, unlock);
+                                  options, size_uint64, unlock);
                 if (!check_cache_size_ok (this, cache_size_new)) {
                         ret = -1;
                         gf_log (this->name, GF_LOG_ERROR,
@@ -1681,13 +1741,13 @@ init (xlator_t *this)
         table->xl = this;
         table->page_size = this->ctx->page_size;
 
-        GF_OPTION_INIT ("cache-size", table->cache_size, size, out);
+        GF_OPTION_INIT ("cache-size", table->cache_size, size_uint64, out);
 
         GF_OPTION_INIT ("cache-timeout", table->cache_timeout, int32, out);
 
-        GF_OPTION_INIT ("min-file-size", table->min_file_size, size, out);
+        GF_OPTION_INIT ("min-file-size", table->min_file_size, size_uint64, out);
 
-        GF_OPTION_INIT ("max-file-size", table->max_file_size, size, out);
+        GF_OPTION_INIT ("max-file-size", table->max_file_size, size_uint64, out);
 
         if  (!check_cache_size_ok (this, table->cache_size)) {
                 ret = -1;
@@ -1713,7 +1773,7 @@ init (xlator_t *this)
 
         INIT_LIST_HEAD (&table->inodes);
 
-        if ((table->max_file_size >= 0)
+        if ((table->max_file_size <= UINT64_MAX)
             && (table->min_file_size > table->max_file_size)) {
                 gf_log ("io-cache", GF_LOG_ERROR, "minimum size (%"
                         PRIu64") of a file that can be cached is "
@@ -2047,6 +2107,8 @@ struct xlator_fops fops = {
         .mknod       = ioc_mknod,
 
         .readdirp    = ioc_readdirp,
+	.discard     = ioc_discard,
+        .zerofill    = ioc_zerofill,
 };
 
 

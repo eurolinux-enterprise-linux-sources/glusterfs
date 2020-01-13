@@ -113,8 +113,8 @@ ret:
         }
 
         if (frame) {
-                if (frame->root->trans)
-                        rpc_transport_unref (frame->root->trans);
+                if (frame->root->client)
+                        gf_client_unref (frame->root->client);
 
                 STACK_DESTROY (frame->root);
         }
@@ -164,16 +164,6 @@ reply:
 
         dict_unref (xdata);
         GF_FREE (cli_rsp.dict.dict_val);
-        return 0;
-}
-
-int
-quotad_aggregator_lookup_cbk (xlator_t *this, call_frame_t *frame,
-                              void *rsp)
-{
-        quotad_aggregator_submit_reply (frame, frame->local, rsp, NULL, 0, NULL,
-                                        (xdrproc_t)xdr_gfs3_lookup_rsp);
-
         return 0;
 }
 
@@ -237,7 +227,7 @@ quotad_aggregator_getlimit (rpcsvc_request_t *req)
         if (ret)
                 goto err;
 
-        ret = dict_set_int32 (state->xdata, GET_ANCESTRY_PATH_KEY,42);
+        ret = dict_set_int32 (state->xdata, GET_ANCESTRY_PATH_KEY, 42);
         if (ret)
                 goto err;
 
@@ -265,6 +255,17 @@ err:
 
         return ret;
 }
+
+int
+quotad_aggregator_lookup_cbk (xlator_t *this, call_frame_t *frame,
+                              void *rsp)
+{
+        quotad_aggregator_submit_reply (frame, frame->local, rsp, NULL, 0, NULL,
+                                        (xdrproc_t)xdr_gfs3_lookup_rsp);
+
+        return 0;
+}
+
 
 int
 quotad_aggregator_lookup (rpcsvc_request_t *req)
@@ -403,12 +404,13 @@ out:
         return ret;
 }
 
-rpcsvc_actor_t quotad_aggregator_actors[] = {
-        [GF_AGGREGATOR_NULL]     = {"NULL", GF_AGGREGATOR_NULL, NULL, NULL, 0},
+rpcsvc_actor_t quotad_aggregator_actors[GF_AGGREGATOR_MAXVALUE] = {
+        [GF_AGGREGATOR_NULL]     = {"NULL", GF_AGGREGATOR_NULL, NULL, NULL, 0,
+                                    DRC_NA},
         [GF_AGGREGATOR_LOOKUP]   = {"LOOKUP", GF_AGGREGATOR_NULL,
-                                    quotad_aggregator_lookup, NULL, 0},
+                                    quotad_aggregator_lookup, NULL, 0, DRC_NA},
         [GF_AGGREGATOR_GETLIMIT] = {"GETLIMIT", GF_AGGREGATOR_GETLIMIT,
-                                   quotad_aggregator_getlimit, NULL, 0},
+                                   quotad_aggregator_getlimit, NULL, 0, DRC_NA},
 };
 
 

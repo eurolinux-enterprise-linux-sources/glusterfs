@@ -94,7 +94,9 @@ typedef struct clnt_conf {
         char                   portmap_err_logged; /* flag used to prevent
                                                       excessive logging */
         char                   disconnect_err_logged; /* flag used to prevent
-                                                        excessive logging */
+                                                         excessive disconnect
+                                                         logging */
+
         char                   need_different_port; /* flag used to change the
                                                        portmap path in case of
                                                        'tcp,rdma' on server */
@@ -118,14 +120,13 @@ typedef struct clnt_conf {
 						*/
         gf_boolean_t           filter_o_direct; /* if set, filter O_DIRECT from
                                                    the flags list of open() */
-
-        char                  *server_version; /* set if server sends its
-                                                  package version */
         /* set volume is the op which results in creating/re-using
          * the conn-id and is called once per connection, this remembers
          * how manytimes set_volume is called
          */
         uint64_t               setvol_count;
+
+        gf_boolean_t           send_gids; /* let the server resolve gids */
 } clnt_conf_t;
 
 typedef struct _client_fd_ctx {

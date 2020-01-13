@@ -19,13 +19,18 @@
 #include "xlator.h"
 #include "gf-dirent.h"
 
-#define HANDLE_PFX ".glusterfs"
 #define TRASH_DIR "landfill"
 
 #define UUID0_STR "00000000-0000-0000-0000-000000000000"
 #define SLEN(str) (sizeof(str) - 1)
 
-#define LOC_HAS_ABSPATH(loc) ((loc) && (loc->path) && (loc->path[0] == '/'))
+#define HANDLE_ABSPATH_LEN(this) (POSIX_BASE_PATH_LEN(this) + \
+                                  SLEN("/" GF_HIDDEN_PATH "/00/00/" \
+                                  UUID0_STR) + 1)
+
+#define LOC_HAS_ABSPATH(loc) (loc && (loc->path) && (loc->path[0] == '/'))
+#define LOC_IS_DIR(loc) (loc && (loc->inode) && \
+                (loc->inode->ia_type == IA_IFDIR))
 
 #define MAKE_PGFID_XATTR_KEY(var, prefix, pgfid) do {                   \
         var = alloca (strlen (prefix) + UUID_CANONICAL_FORM_LEN + 1);   \
@@ -33,9 +38,6 @@
         strcat (var, uuid_utoa (pgfid));                                \
         } while (0)
 
-/* expects value in host byte order and converts it into network byte order
- * before storing on disk.
- */
 #define SET_PGFID_XATTR(path, key, value, flags, op_ret, this, label) do {    \
         value = hton32 (value);                                         \
         op_ret = sys_lsetxattr (path, key, &value, sizeof (value),      \
@@ -49,22 +51,6 @@
         }                                                               \
         } while (0)
 
-#define SET_PGFID_XATTR_IF_ABSENT(path, key, value, flags, op_ret, this, label) \
-        do {                                                            \
-                op_ret = sys_lgetxattr (path, key, &value, sizeof (value)); \
-                if (op_ret == -1) {                                     \
-                        op_errno = errno;                               \
-                        if (op_errno == ENOATTR) {                      \
-                                value = 1;                              \
-                                SET_PGFID_XATTR (path, key, value, flags, \
-                                                 op_ret, this, label);  \
-                        } else {                                        \
-                                gf_log (this->name, GF_LOG_WARNING,"getting " \
-                                        "xattr failed on %s: key = %s (%s)", \
-                                        path, key, strerror (op_errno)); \
-                        }                                               \
-                }                                                       \
-        } while (0)
 
 #define REMOVE_PGFID_XATTR(path, key, op_ret, this, label) do {               \
        op_ret = sys_lremovexattr (path, key);                           \
@@ -88,6 +74,7 @@
                        gf_log (this->name, GF_LOG_WARNING,"getting xattr " \
                                "failed on %s: key = %s (%s)", path, key, \
                                strerror (op_errno));                    \
+                       goto label;                                      \
                }                                                        \
        } else {                                                         \
                value = ntoh32 (value);                                  \
@@ -152,15 +139,24 @@
         } while (0)
 
 
+#define MAKE_HANDLE_ABSPATH(var, this, gfid) do {                       \
+        struct posix_private * __priv = this->private;                  \
+        int __len = HANDLE_ABSPATH_LEN(this);                           \
+        var = alloca(__len);                                            \
+        snprintf(var, __len, "%s/" GF_HIDDEN_PATH "/%02x/%02x/%s",      \
+                 __priv->base_path, gfid[0], gfid[1], uuid_utoa(gfid)); \
+        } while (0)
+
+
 #define MAKE_INODE_HANDLE(rpath, this, loc, iatt_p) do {                \
         if (uuid_is_null (loc->gfid)) {                                 \
                 gf_log (this->name, GF_LOG_ERROR,                       \
-                        "null gfid for path %s", loc->path);            \
+                        "null gfid for path %s", (loc)->path);          \
                 break;                                                  \
         }                                                               \
-        if (LOC_HAS_ABSPATH (loc)) {                                    \
-                MAKE_REAL_PATH (rpath, this, loc->path);                \
-                op_ret = posix_pstat (this, loc->gfid, rpath, iatt_p);  \
+        if (LOC_IS_DIR (loc) && LOC_HAS_ABSPATH (loc)) {                \
+                MAKE_REAL_PATH (rpath, this, (loc)->path);              \
+                op_ret = posix_pstat (this, (loc)->gfid, rpath, iatt_p); \
                 break;                                                  \
         }                                                               \
         errno = 0;                                                      \
@@ -215,7 +211,6 @@ posix_make_ancestryfromgfid (xlator_t *this, char *path, int pathsize,
                              const char *priv_base_path,
                              inode_table_t *table, inode_t **parent,
                              dict_t *xdata);
-
 int
 posix_handle_path_safe (xlator_t *this, uuid_t gfid, const char *basename,
                         char *buf, size_t len);

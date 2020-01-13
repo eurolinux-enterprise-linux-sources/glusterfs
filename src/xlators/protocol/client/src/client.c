@@ -21,6 +21,7 @@
 #include "statedump.h"
 #include "compat-errno.h"
 
+#include "xdr-rpc.h" 
 #include "glusterfs3.h"
 
 extern rpc_clnt_prog_t clnt_handshake_prog;
@@ -28,7 +29,6 @@ extern rpc_clnt_prog_t clnt_dump_prog;
 extern struct rpcclnt_cb_program gluster_cbk_prog;
 
 int client_handshake (xlator_t *this, struct rpc_clnt *rpc);
-void client_start_ping (void *data);
 int client_init_rpc (xlator_t *this);
 int client_destroy_rpc (xlator_t *this);
 int client_mark_fd_bad (xlator_t *this);
@@ -155,10 +155,11 @@ client_submit_request (xlator_t *this, void *req, call_frame_t *frame,
         struct iovec    iov        = {0, };
         struct iobuf   *iobuf      = NULL;
         int             count      = 0;
-        char            start_ping = 0;
         struct iobref  *new_iobref = NULL;
         ssize_t         xdr_size   = 0;
         struct rpc_req  rpcreq     = {0, };
+        uint64_t        ngroups    = 0;
+        uint64_t        gid        = 0;
 
         GF_VALIDATE_OR_GOTO ("client", this, out);
         GF_VALIDATE_OR_GOTO (this->name, prog, out);
@@ -225,6 +226,18 @@ client_submit_request (xlator_t *this, void *req, call_frame_t *frame,
                 count = 1;
         }
 
+        /* do not send all groups if they are resolved server-side */
+        if (!conf->send_gids) {
+                /* copy some values for restoring later */
+                ngroups = frame->root->ngrps;
+                frame->root->ngrps = 1;
+                if (ngroups <= SMALL_GROUP_COUNT) {
+                        gid = frame->root->groups_small[0];
+                        frame->root->groups_small[0] = frame->root->gid;
+                        frame->root->groups = frame->root->groups_small;
+                }
+        }
+
         /* Send the msg */
         ret = rpc_clnt_submit (conf->rpc, prog, procnum, cbkfn, &iov, count,
                                NULL, 0, new_iobref, frame, rsphdr, rsphdr_count,
@@ -234,18 +247,12 @@ client_submit_request (xlator_t *this, void *req, call_frame_t *frame,
                 gf_log (this->name, GF_LOG_DEBUG, "rpc_clnt_submit failed");
         }
 
-        if (ret == 0) {
-                pthread_mutex_lock (&conf->rpc->conn.lock);
-                {
-                        if (!conf->rpc->conn.ping_started) {
-                                start_ping = 1;
-                        }
-                }
-                pthread_mutex_unlock (&conf->rpc->conn.lock);
+        if (!conf->send_gids) {
+                /* restore previous values */
+                frame->root->ngrps = ngroups;
+                if (ngroups <= SMALL_GROUP_COUNT)
+                        frame->root->groups_small[0] = gid;
         }
-
-        if (start_ping)
-                client_start_ping ((void *) this);
 
         ret = 0;
 
@@ -943,6 +950,7 @@ client_writev (call_frame_t *frame, xlator_t *this, fd_t *fd,
         args.vector = vector;
         args.count  = count;
         args.offset = off;
+        args.size   = iov_length (vector, count);
         args.flags  = flags;
         args.iobref = iobref;
         args.xdata = xdata;
@@ -1961,6 +1969,110 @@ out:
 	return 0;
 }
 
+int32_t
+client_fallocate(call_frame_t *frame, xlator_t *this, fd_t *fd, int32_t mode,
+		 off_t offset, size_t len, dict_t *xdata)
+{
+        int          ret  = -1;
+        clnt_conf_t *conf = NULL;
+        rpc_clnt_procedure_t *proc = NULL;
+        clnt_args_t  args = {0,};
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+        args.fd = fd;
+	args.flags = mode;
+	args.offset = offset;
+	args.size = len;
+        args.xdata = xdata;
+
+        proc = &conf->fops->proctable[GF_FOP_FALLOCATE];
+        if (!proc) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "rpc procedure not found for %s",
+                        gf_fop_list[GF_FOP_FALLOCATE]);
+                goto out;
+        }
+        if (proc->fn)
+                ret = proc->fn (frame, this, &args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT (fallocate, frame, -1, ENOTCONN, NULL, NULL, NULL);
+
+	return 0;
+}
+
+int32_t
+client_discard(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+	       size_t len, dict_t *xdata)
+{
+        int          ret  = -1;
+        clnt_conf_t *conf = NULL;
+        rpc_clnt_procedure_t *proc = NULL;
+        clnt_args_t  args = {0,};
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+        args.fd = fd;
+	args.offset = offset;
+	args.size = len;
+        args.xdata = xdata;
+
+        proc = &conf->fops->proctable[GF_FOP_DISCARD];
+        if (!proc) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "rpc procedure not found for %s",
+                        gf_fop_list[GF_FOP_DISCARD]);
+                goto out;
+        }
+        if (proc->fn)
+                ret = proc->fn (frame, this, &args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT(discard, frame, -1, ENOTCONN, NULL, NULL, NULL);
+
+	return 0;
+}
+
+int32_t
+client_zerofill(call_frame_t *frame, xlator_t *this, fd_t *fd, off_t offset,
+               off_t len, dict_t *xdata)
+{
+        int          ret              = -1;
+        clnt_conf_t *conf             = NULL;
+        rpc_clnt_procedure_t *proc    = NULL;
+        clnt_args_t  args             = {0,};
+
+        conf = this->private;
+        if (!conf || !conf->fops)
+                goto out;
+
+        args.fd = fd;
+        args.offset = offset;
+        args.size = len;
+        args.xdata = xdata;
+
+        proc = &conf->fops->proctable[GF_FOP_ZEROFILL];
+        if (!proc) {
+                gf_log (this->name, GF_LOG_ERROR,
+                        "rpc procedure not found for %s",
+                        gf_fop_list[GF_FOP_ZEROFILL]);
+                goto out;
+        }
+        if (proc->fn)
+                ret = proc->fn (frame, this, &args);
+out:
+        if (ret)
+                STACK_UNWIND_STRICT(zerofill, frame, -1, ENOTCONN,
+                                    NULL, NULL, NULL);
+
+        return 0;
+}
+
 
 int32_t
 client_getspec (call_frame_t *frame, xlator_t *this, const char *key,
@@ -2093,18 +2205,17 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
 
                 if (!conf->skip_notify) {
                         if (conf->connected) {
-                                gf_log (this->name,
+                               gf_log (this->name,
                                         ((!conf->disconnect_err_logged)
                                         ? GF_LOG_INFO : GF_LOG_DEBUG),
                                         "disconnected from %s. Client process "
                                         "will keep trying to connect to "
                                         "glusterd until brick's port is "
-                                        "available. ",
-                                  conf->rpc->conn.trans->peerinfo.identifier);
+                                        "available",
+                                  conf->rpc->conn.name);
 
                                 if (conf->portmap_err_logged)
                                         conf->disconnect_err_logged = 1;
-
                         }
 
                         /* If the CHILD_DOWN event goes to parent xlator
@@ -2140,8 +2251,6 @@ client_rpc_notify (struct rpc_clnt *rpc, void *mydata, rpc_clnt_event_t event,
 
                 break;
 
-        case RPC_CLNT_DESTROY:
-                break;
         default:
                 gf_log (this->name, GF_LOG_TRACE,
                         "got some other RPC event %d", event);
@@ -2201,6 +2310,37 @@ notify (xlator_t *this, int32_t event, void *data, ...)
 }
 
 int
+client_check_remote_host (xlator_t *this, dict_t *options)
+{
+        char           *remote_host     = NULL;
+        int             ret             = -1;
+
+        ret = dict_get_str (options, "remote-host", &remote_host);
+        if (ret < 0) {
+                gf_log (this->name, GF_LOG_INFO, "Remote host is not set. "
+                        "Assuming the volfile server as remote host.");
+
+                if (!this->ctx->cmd_args.volfile_server) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                                 "No remote host to connect.");
+                        goto out;
+                }
+
+                ret = dict_set_str (options, "remote-host",
+                                    this->ctx->cmd_args.volfile_server);
+                if (ret == -1) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to set the remote host");
+                        goto out;
+                }
+        }
+
+        ret = 0;
+out:
+        return ret;
+}
+
+int
 build_client_config (xlator_t *this, clnt_conf_t *conf)
 {
         int                     ret = -1;
@@ -2225,6 +2365,12 @@ build_client_config (xlator_t *this, clnt_conf_t *conf)
 
         GF_OPTION_INIT ("filter-O_DIRECT", conf->filter_o_direct,
                         bool, out);
+
+        GF_OPTION_INIT ("send-gids", conf->send_gids, bool, out);
+
+        ret = client_check_remote_host (this, this->options);
+        if (ret)
+                goto out;
 
         ret = 0;
 out:
@@ -2356,7 +2502,7 @@ client_init_grace_timer (xlator_t *this, dict_t *options,
         conf->grace_ts.tv_nsec  = 0;
 
         gf_log (this->name, GF_LOG_DEBUG, "Client grace timeout "
-                "value = %"PRIu64, conf->grace_ts.tv_sec);
+                "value = %"GF_PRI_SECOND, conf->grace_ts.tv_sec);
 
         ret = 0;
 out:
@@ -2381,6 +2527,10 @@ reconfigure (xlator_t *this, dict_t *options)
 
         GF_OPTION_RECONF ("ping-timeout", conf->opt.ping_timeout,
                           options, int32, out);
+
+        ret = client_check_remote_host (this, options);
+        if (ret)
+                goto out;
 
         subvol_ret = dict_get_str (this->options, "remote-host",
                                    &old_remote_host);
@@ -2412,6 +2562,8 @@ reconfigure (xlator_t *this, dict_t *options)
 
         GF_OPTION_RECONF ("filter-O_DIRECT", conf->filter_o_direct,
                           options, bool, out);
+
+        GF_OPTION_RECONF ("send-gids", conf->send_gids, options, bool, out);
 
         ret = client_init_grace_timer (this, options, conf);
         if (ret)
@@ -2682,6 +2834,9 @@ struct xlator_fops fops = {
         .fxattrop    = client_fxattrop,
         .setattr     = client_setattr,
         .fsetattr    = client_fsetattr,
+	.fallocate   = client_fallocate,
+	.discard     = client_discard,
+        .zerofill    = client_zerofill,
         .getspec     = client_getspec,
 };
 
@@ -2725,7 +2880,7 @@ struct volume_options options[] = {
         },
         { .key   = {"ping-timeout"},
           .type  = GF_OPTION_TYPE_TIME,
-          .min   = 1,
+          .min   = 0,
           .max   = 1013,
           .default_value = "42",
           .description = "Time duration for which the client waits to "
@@ -2737,13 +2892,19 @@ struct volume_options options[] = {
         { .key   = {"lk-heal"},
           .type  = GF_OPTION_TYPE_BOOL,
           .default_value = "off",
-          .description = "Enables or disables the lock heal."
+          .description = "When the connection to client is lost, server "
+                         "cleans up all the locks held by the client. After "
+                         "the connection is restored, the client reacquires "
+                         "(heals) the fcntl locks released by the server."
         },
         { .key   = {"grace-timeout"},
           .type  = GF_OPTION_TYPE_INT,
           .min   = 10,
           .max   = 1800,
-          .description = "Sets the grace-timeout value. Valid range 10-1800."
+          .default_value = "10",
+          .description = "Specifies the duration for the lock state to be "
+                         "maintained on the client after a network "
+                         "disconnection. Range 10-1800 seconds."
         },
         {.key  = {"tcp-window-size"},
          .type = GF_OPTION_TYPE_SIZET,
@@ -2758,6 +2919,10 @@ struct volume_options options[] = {
           "flag will be filtered at the client protocol level so server will "
           "still continue to cache the file. This works similar to NFS's "
           "behavior of O_DIRECT",
+        },
+        { .key   = {"send-gids"},
+          .type  = GF_OPTION_TYPE_BOOL,
+          .default_value = "on",
         },
         { .key   = {NULL} },
 };

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2006-2012 Red Hat, Inc. <http://www.redhat.com>
+   Copyright (c) 2006-2013 Red Hat, Inc. <http://www.redhat.com>
    This file is part of GlusterFS.
 
    This file is licensed to you under your choice of the GNU Lesser
@@ -39,8 +39,6 @@
 #include "syncop.h"
 #include "store.h"
 
-#define GLUSTERD_MAX_VOLUME_NAME        1000
-#define DEFAULT_LOG_FILE_DIRECTORY      DATADIR "/log/glusterfs"
 #define GLUSTERD_TR_LOG_SIZE            50
 #define GLUSTERD_NAME                   "glusterd"
 #define GLUSTERD_SOCKET_LISTEN_BACKLOG  128
@@ -48,13 +46,16 @@
 #define GLUSTERD_QUORUM_RATIO_KEY       "cluster.server-quorum-ratio"
 #define GLUSTERD_GLOBAL_OPT_VERSION     "global-option-version"
 #define GLUSTERD_COMMON_PEM_PUB_FILE    "/geo-replication/common_secret.pem.pub"
+#define GEO_CONF_MAX_OPT_VALS           6
 #define GLUSTERD_CREATE_HOOK_SCRIPT     "/hooks/1/gsync-create/post/" \
                                         "S56glusterd-geo-rep-create-post.sh"
-#define GEO_CONF_MAX_OPT_VALS           6
 
+
+#define GLUSTERD_SNAPS_MAX_HARD_LIMIT 256
+#define GLUSTERD_SNAPS_DEF_SOFT_LIMIT_PERCENT 90
+#define GLUSTERD_SNAPS_MAX_SOFT_LIMIT_PERCENT 100
 #define GLUSTERD_SERVER_QUORUM "server"
 
-#define GD_OP_VERSION_OPTION_PREFIX "!op-version."
 #define FMTSTR_CHECK_VOL_EXISTS "Volume %s does not exist"
 #define FMTSTR_RESOLVE_BRICK "Could not find peer on which brick %s:%s resides"
 
@@ -72,6 +73,9 @@
 
 struct glusterd_volinfo_;
 typedef struct glusterd_volinfo_ glusterd_volinfo_t;
+
+struct glusterd_snap_;
+typedef struct glusterd_snap_ glusterd_snap_t;
 
 typedef enum glusterd_op_ {
         GD_OP_NONE = 0,
@@ -99,10 +103,11 @@ typedef enum glusterd_op_ {
         GD_OP_LIST_VOLUME,
         GD_OP_CLEARLOCKS_VOLUME,
         GD_OP_DEFRAG_BRICK_VOLUME,
-        GD_OP_BD_OP,
         GD_OP_COPY_FILE,
         GD_OP_SYS_EXEC,
         GD_OP_GSYNC_CREATE,
+        GD_OP_SNAP,
+        GD_OP_BARRIER,
         GD_OP_MAX,
 } glusterd_op_t;
 
@@ -113,45 +118,65 @@ struct glusterd_volgen {
 };
 
 typedef struct {
-        struct rpc_clnt         *rpc;
-        gf_boolean_t            online;
+        struct rpc_clnt  *rpc;
+        gf_boolean_t      online;
 } nodesrv_t;
 
 typedef struct {
-        struct _volfile_ctx *volfile;
-	pthread_mutex_t   mutex;
-	struct list_head  peers;
-	struct list_head  xaction_peers;
-        gf_boolean_t      verify_volfile_checksum;
-        gf_boolean_t      trace;
-        uuid_t            uuid;
-        char              workdir[PATH_MAX];
-        rpcsvc_t          *rpc;
-        nodesrv_t         *shd;
-        nodesrv_t         *nfs;
-        nodesrv_t         *quotad;
-        struct pmap_registry *pmap;
-        struct list_head  volumes;
-        pthread_mutex_t   xprt_lock;
-        struct list_head  xprt_list;
-        gf_store_handle_t *handle;
-        gf_timer_t *timer;
-        glusterd_sm_tr_log_t op_sm_log;
-        struct rpc_clnt_program *gfs_mgmt;
+        struct rpc_clnt  *rpc;
+        int               port;
+        gf_boolean_t      online;
+} glusterd_snapd_t;
 
-        struct list_head mount_specs;
-        gf_boolean_t      valgrind;
-        pthread_t       brick_thread;
-        void           *hooks_priv;
+typedef struct {
+        struct _volfile_ctx     *volfile;
+        pthread_mutex_t          mutex;
+        struct list_head         peers;
+        struct list_head         xaction_peers;
+        gf_boolean_t             verify_volfile_checksum;
+        gf_boolean_t             trace;
+        uuid_t                   uuid;
+        char                     workdir[PATH_MAX];
+        rpcsvc_t                *rpc;
+        nodesrv_t               *shd;
+        nodesrv_t               *nfs;
+        nodesrv_t               *quotad;
+        struct pmap_registry    *pmap;
+        struct list_head         volumes;
+        struct list_head         snapshots; /*List of snap volumes */
+        pthread_mutex_t          xprt_lock;
+        struct list_head         xprt_list;
+        gf_store_handle_t       *handle;
+        gf_timer_t              *timer;
+        glusterd_sm_tr_log_t     op_sm_log;
+        struct rpc_clnt_program *gfs_mgmt;
+        dict_t                  *mgmt_v3_lock; /* Dict for saving
+                                                * mgmt_v3 locks */
+        dict_t                  *glusterd_txn_opinfo; /* Dict for saving
+                                                       * transaction opinfos */
+        uuid_t                   global_txn_id; /* To be used in
+                                                 * heterogeneous
+                                                 * cluster with no
+                                                 * transaction ids */
+
+        struct list_head           mount_specs;
+        gf_boolean_t               valgrind;
+        pthread_t                  brick_thread;
+        void                      *hooks_priv;
+
         /* need for proper handshake_t */
-        int             op_version; /* Starts with 1 for 3.3.0 */
-        xlator_t       *xl;  /* Should be set to 'THIS' before creating thread */
-        gf_boolean_t   pending_quorum_action;
-        dict_t             *opts;
-        synclock_t      big_lock;
-        gf_boolean_t    restart_done;
-        rpcsvc_t        *uds_rpc; /* RPCSVC for the unix domain socket */
-        gf_boolean_t    pingsvc;
+        int                        op_version; /* Starts with 1 for 3.3.0 */
+        xlator_t                  *xl;  /* Should be set to 'THIS' before creating thread */
+        gf_boolean_t               pending_quorum_action;
+        dict_t                    *opts;
+        synclock_t                 big_lock;
+        gf_boolean_t               restart_done;
+        rpcsvc_t                  *uds_rpc; /* RPCSVC for the unix domain socket */
+        uint32_t                   base_port;
+        char                      *snap_bricks_directory;
+        gf_store_handle_t         *missed_snaps_list_shandle;
+        struct list_head           missed_snaps_list;
+        int           ping_timeout;
 } glusterd_conf_t;
 
 
@@ -161,18 +186,26 @@ typedef enum gf_brick_status {
 } gf_brick_status_t;
 
 struct glusterd_brickinfo {
-        char    hostname[1024];
-        char    path[PATH_MAX];
-        struct list_head  brick_list;
-        uuid_t  uuid;
-        int     port;
-        int     rdma_port;
-        char   *logfile;
-        gf_boolean_t signed_in;
+        char               hostname[1024];
+        char               path[PATH_MAX];
+        char               device_path[PATH_MAX];
+        char               mount_dir[PATH_MAX];
+        char               brick_id[1024];/*Client xlator name, AFR changelog name*/
+        char               fstype [NAME_MAX]; /* Brick file-system type */
+        char               mnt_opts [1024]; /* Brick mount options */
+        struct list_head   brick_list;
+        uuid_t             uuid;
+        int                port;
+        int                rdma_port;
+        char              *logfile;
+        gf_boolean_t       signed_in;
         gf_store_handle_t *shandle;
-        gf_brick_status_t status;
-        struct rpc_clnt *rpc;
-        int decommissioned;
+        gf_brick_status_t  status;
+        struct rpc_clnt   *rpc;
+        int                decommissioned;
+        char vg[PATH_MAX]; /* FIXME: Use max size for length of vg */
+        int     caps; /* Capability */
+        int32_t            snap_status;
 };
 
 typedef struct glusterd_brickinfo glusterd_brickinfo_t;
@@ -195,7 +228,7 @@ struct glusterd_defrag_info_ {
         int                          cmd;
         pthread_t                    th;
         gf_defrag_status_t           defrag_status;
-        struct rpc_clnt            * rpc;
+        struct rpc_clnt             *rpc;
         uint32_t                     connected;
         char                         mount[1024];
         char                         databuf[131072];
@@ -228,23 +261,25 @@ struct _auth {
 
 typedef struct _auth auth_t;
 
-typedef enum glusterd_vol_backend_ {
-        GD_VOL_BK_DEFAULT = 0, /* POSIX */
-        GD_VOL_BK_BD = 1,
-} glusterd_vol_backend_t;
+/* Capabilities of xlator */
+#define CAPS_BD               0x00000001
+#define CAPS_THIN             0x00000002
+#define CAPS_OFFLOAD_COPY     0x00000004
+#define CAPS_OFFLOAD_SNAPSHOT 0x00000008
+#define CAPS_OFFLOAD_ZERO     0x00000020
 
 struct glusterd_rebalance_ {
-        gf_defrag_status_t      defrag_status;
-        uint64_t                rebalance_files;
-        uint64_t                rebalance_data;
-        uint64_t                lookedup_files;
-        uint64_t                skipped_files;
+        gf_defrag_status_t       defrag_status;
+        uint64_t                 rebalance_files;
+        uint64_t                 rebalance_data;
+        uint64_t                 lookedup_files;
+        uint64_t                 skipped_files;
         glusterd_defrag_info_t  *defrag;
-        gf_cli_defrag_type      defrag_cmd;
-        uint64_t                rebalance_failures;
-        uuid_t                  rebalance_id;
-        double                  rebalance_time;
-        glusterd_op_t           op;
+        gf_cli_defrag_type       defrag_cmd;
+        uint64_t                 rebalance_failures;
+        uuid_t                   rebalance_id;
+        double                   rebalance_time;
+        glusterd_op_t            op;
         dict_t                  *dict; /* Dict to store misc information
                                         * like list of bricks being removed */
 };
@@ -253,8 +288,8 @@ typedef struct glusterd_rebalance_ glusterd_rebalance_t;
 
 struct glusterd_replace_brick_ {
         gf_rb_status_t          rb_status;
-        glusterd_brickinfo_t    *src_brick;
-        glusterd_brickinfo_t    *dst_brick;
+        glusterd_brickinfo_t   *src_brick;
+        glusterd_brickinfo_t   *dst_brick;
         uuid_t                  rb_id;
 };
 
@@ -267,58 +302,124 @@ typedef enum gd_quorum_status_ {
 } gd_quorum_status_t;
 
 struct glusterd_volinfo_ {
-        char                    volname[GLUSTERD_MAX_VOLUME_NAME];
-        int                     type;
-        int                     brick_count;
-        struct list_head        vol_list;
-        struct list_head        bricks;
-        glusterd_volume_status  status;
-        int                     sub_count;  /* backward compatibility */
-        int                     stripe_count;
-        int                     replica_count;
-        int                     subvol_count; /* Number of subvolumes in a
+        gf_lock_t                 lock;
+        gf_boolean_t              is_snap_volume;
+        glusterd_snap_t          *snapshot;
+        uuid_t                    restored_from_snap;
+        char                      parent_volname[GD_VOLUME_NAME_MAX];
+                                         /* In case of a snap volume
+                                            i.e (is_snap_volume == TRUE) this
+                                            field will contain the name of
+                                            the volume which is snapped. In
+                                            case of a non-snap volume, this
+                                            field will be initialized as N/A */
+        char                      volname[GD_VOLUME_NAME_MAX];
+        int                       type;
+        int                       brick_count;
+        uint64_t                  snap_count;
+        uint64_t                  snap_max_hard_limit;
+        struct list_head          vol_list;
+                                      /* In case of a snap volume
+                                         i.e (is_snap_volume == TRUE) this
+                                         is linked to glusterd_snap_t->volumes.
+                                         In case of a non-snap volume, this is
+                                         linked to glusterd_conf_t->volumes */
+        struct list_head          snapvol_list;
+                                      /* This is a current pointer for
+                                         glusterd_volinfo_t->snap_volumes */
+        struct list_head          bricks;
+        struct list_head          snap_volumes;
+                                      /* TODO : Need to remove this, as this
+                                       * is already part of snapshot object.
+                                       */
+        glusterd_volume_status    status;
+        int                       sub_count;  /* backward compatibility */
+        int                       stripe_count;
+        int                       replica_count;
+        int                       subvol_count; /* Number of subvolumes in a
                                                  distribute volume */
-        int                     dist_leaf_count; /* Number of bricks in one
+        int                       dist_leaf_count; /* Number of bricks in one
                                                     distribute subvolume */
-        int                     port;
-        gf_store_handle_t *shandle;
-        gf_store_handle_t *rb_shandle;
-        gf_store_handle_t *node_state_shandle;
-        gf_store_handle_t *quota_conf_shandle;
+        int                       port;
+        gf_store_handle_t        *shandle;
+        gf_store_handle_t        *rb_shandle;
+        gf_store_handle_t        *node_state_shandle;
+        gf_store_handle_t        *quota_conf_shandle;
 
         /* Defrag/rebalance related */
-        glusterd_rebalance_t    rebal;
+        glusterd_rebalance_t      rebal;
 
         /* Replace brick status */
-        glusterd_replace_brick_t rep_brick;
+        glusterd_replace_brick_t  rep_brick;
 
-        int                     version;
-        uint32_t                quota_conf_version;
-        uint32_t                cksum;
-        uint32_t                quota_conf_cksum;
-        gf_transport_type       transport_type;
-        gf_transport_type   nfs_transport_type;
+        int                       version;
+        uint32_t                  quota_conf_version;
+        uint32_t                  cksum;
+        uint32_t                  quota_conf_cksum;
+        gf_transport_type         transport_type;
+        gf_transport_type         nfs_transport_type;
 
-        dict_t                  *dict;
+        dict_t                   *dict;
 
-        uuid_t                  volume_id;
-        auth_t                  auth;
-        char                    *logdir;
+        uuid_t                    volume_id;
+        auth_t                    auth;
+        char                     *logdir;
 
-        dict_t                  *gsync_slaves;
+        dict_t                   *gsync_slaves;
+        dict_t                   *gsync_active_slaves;
 
-        int                      decommission_in_progress;
-        xlator_t                *xl;
+        int                       decommission_in_progress;
+        xlator_t                 *xl;
 
-        gf_boolean_t             memory_accounting;
-        glusterd_vol_backend_t   backend;
+        gf_boolean_t              memory_accounting;
+        int                      caps; /* Capability */
 
-        int                      op_version;
-        int                      client_op_version;
-        gd_quorum_status_t       quorum_status;
+        int                       op_version;
+        int                       client_op_version;
         pthread_mutex_t           reflock;
         int                       refcnt;
+        gd_quorum_status_t        quorum_status;
+
+        glusterd_snapd_t          snapd;
 };
+
+typedef enum gd_snap_status_ {
+        GD_SNAP_STATUS_NONE,
+        GD_SNAP_STATUS_INIT,
+        GD_SNAP_STATUS_IN_USE,
+        GD_SNAP_STATUS_DECOMMISSION,
+        GD_SNAP_STATUS_UNDER_RESTORE,
+        GD_SNAP_STATUS_RESTORED,
+} gd_snap_status_t;
+
+struct glusterd_snap_ {
+        gf_lock_t                lock;
+        struct  list_head        volumes;
+        struct  list_head        snap_list;
+        char                     snapname[GLUSTERD_MAX_SNAP_NAME];
+        uuid_t                   snap_id;
+        char                    *description;
+        time_t                   time_stamp;
+        gf_boolean_t             snap_restored;
+        gd_snap_status_t         snap_status;
+        gf_store_handle_t       *shandle;
+};
+
+typedef struct glusterd_snap_op_ {
+        char                  *snap_vol_id;
+        int32_t                brick_num;
+        char                  *brick_path;
+        int32_t                op;
+        int32_t                status;
+        struct list_head       snap_ops_list;
+} glusterd_snap_op_t;
+
+typedef struct glusterd_missed_snap_ {
+        char                   *node_uuid;
+        char                   *snap_uuid;
+        struct list_head        missed_snaps;
+        struct list_head        snap_ops;
+} glusterd_missed_snap_info;
 
 typedef enum gd_node_type_ {
         GD_NODE_NONE,
@@ -329,6 +430,12 @@ typedef enum gd_node_type_ {
         GD_NODE_QUOTAD,
 } gd_node_type;
 
+typedef enum missed_snap_stat {
+        GD_MISSED_SNAP_NONE,
+        GD_MISSED_SNAP_PENDING,
+        GD_MISSED_SNAP_DONE,
+} missed_snap_stat;
+
 typedef struct glusterd_pending_node_ {
         struct list_head list;
         void   *node;
@@ -337,10 +444,10 @@ typedef struct glusterd_pending_node_ {
 } glusterd_pending_node_t;
 
 struct gsync_config_opt_vals_ {
-        char            *op_name;
+        char           *op_name;
         int             no_of_pos_vals;
         gf_boolean_t    case_sensitive;
-        char            *values[GEO_CONF_MAX_OPT_VALS];
+        char           *values[GEO_CONF_MAX_OPT_VALS];
 };
 
 enum glusterd_op_ret {
@@ -361,12 +468,19 @@ enum glusterd_vol_comp_status_ {
 #define GLUSTERD_VOLUME_DIR_PREFIX "vols"
 #define GLUSTERD_PEER_DIR_PREFIX "peers"
 #define GLUSTERD_VOLUME_INFO_FILE "info"
+#define GLUSTERD_SNAP_INFO_FILE "info"
 #define GLUSTERD_VOLUME_RBSTATE_FILE "rbstate"
 #define GLUSTERD_BRICK_INFO_DIR "bricks"
 #define GLUSTERD_CKSUM_FILE "cksum"
 #define GLUSTERD_VOL_QUOTA_CKSUM_FILE "quota.cksum"
 #define GLUSTERD_TRASH "trash"
 #define GLUSTERD_NODE_STATE_FILE "node_state.info"
+#define GLUSTERD_MISSED_SNAPS_LIST_FILE "missed_snaps_list"
+#define GLUSTERD_VOL_SNAP_DIR_PREFIX "snaps"
+
+#define GLUSTERD_DEFAULT_SNAPS_BRICK_DIR        "/gluster/snaps"
+#define GLUSTERD_VAR_RUN_DIR                    "/var/run"
+#define GLUSTERD_RUN_DIR                        "/run"
 
 /* definitions related to replace brick */
 #define RB_CLIENT_MOUNTPOINT    "rb_mount"
@@ -379,14 +493,33 @@ enum glusterd_vol_comp_status_ {
 
 typedef ssize_t (*gd_serialize_t) (struct iovec outmsg, void *args);
 
-#define GLUSTERD_GET_VOLUME_DIR(path, volinfo, priv) \
-        snprintf (path, PATH_MAX, "%s/vols/%s", priv->workdir,\
-                  volinfo->volname);
+#define GLUSTERD_GET_VOLUME_DIR(path, volinfo, priv)                       \
+        if (volinfo->is_snap_volume) {                                     \
+                snprintf (path, PATH_MAX, "%s/snaps/%s/%s", priv->workdir, \
+                          volinfo->snapshot->snapname, volinfo->volname);  \
+        } else {                                                           \
+                snprintf (path, PATH_MAX, "%s/vols/%s", priv->workdir,     \
+                          volinfo->volname);                               \
+        }
 
-#define GLUSTERD_GET_BRICK_DIR(path, volinfo, priv) \
-        snprintf (path, PATH_MAX, "%s/%s/%s/%s", priv->workdir,\
-                  GLUSTERD_VOLUME_DIR_PREFIX, volinfo->volname, \
-                  GLUSTERD_BRICK_INFO_DIR);
+#define GLUSTERD_GET_SNAP_DIR(path, snap, priv)                           \
+                snprintf (path, PATH_MAX, "%s/snaps/%s", priv->workdir,   \
+                          snap->snapname);
+
+#define GLUSTERD_GET_SNAP_GEO_REP_DIR(path, snap, priv)                      \
+                snprintf (path, PATH_MAX, "%s/snaps/%s/%s", priv->workdir,   \
+                          snap->snapname, GEOREP);
+
+#define GLUSTERD_GET_BRICK_DIR(path, volinfo, priv)                           \
+        if (volinfo->is_snap_volume) {                                        \
+                snprintf (path, PATH_MAX, "%s/snaps/%s/%s/%s", priv->workdir, \
+                          volinfo->snapshot->snapname, volinfo->volname,      \
+                          GLUSTERD_BRICK_INFO_DIR);                           \
+        } else {                                                              \
+                snprintf (path, PATH_MAX, "%s/%s/%s/%s", priv->workdir,       \
+                          GLUSTERD_VOLUME_DIR_PREFIX, volinfo->volname,       \
+                          GLUSTERD_BRICK_INFO_DIR);                           \
+        }
 
 #define GLUSTERD_GET_NFS_DIR(path, priv) \
         snprintf (path, PATH_MAX, "%s/nfs", priv->workdir);
@@ -398,13 +531,13 @@ typedef ssize_t (*gd_serialize_t) (struct iovec outmsg, void *args);
         snprintf (abspath, sizeof (abspath)-1,                          \
                   DEFAULT_VAR_RUN_DIRECTORY"/%s%s", volname, path);
 
-#define GLUSTERD_REMOVE_SLASH_FROM_PATH(path,string) do {               \
-                int i = 0;                                              \
-                for (i = 1; i < strlen (path); i++) {                   \
-                        string[i-1] = path[i];                          \
-                        if (string[i-1] == '/')                         \
-                                string[i-1] = '-';                      \
-                }                                                       \
+#define GLUSTERD_REMOVE_SLASH_FROM_PATH(path,string) do {                  \
+                int i = 0;                                                 \
+                for (i = 1; i < strlen (path); i++) {                      \
+                        string[i-1] = path[i];                             \
+                        if (string[i-1] == '/' && (i != strlen(path) - 1)) \
+                                string[i-1] = '-';                         \
+                }                                                          \
         } while (0)
 
 #define GLUSTERD_GET_BRICK_PIDFILE(pidfile,volinfo,brickinfo, priv) do {      \
@@ -413,7 +546,7 @@ typedef ssize_t (*gd_serialize_t) (struct iovec outmsg, void *args);
                 GLUSTERD_GET_VOLUME_DIR (volpath, volinfo, priv);             \
                 GLUSTERD_REMOVE_SLASH_FROM_PATH (brickinfo->path, exp_path);  \
                 snprintf (pidfile, PATH_MAX, "%s/run/%s-%s.pid",              \
-                          volpath, brickinfo->hostname, exp_path);            \
+                          volpath, brickinfo->hostname, exp_path);      \
         } while (0)
 
 #define GLUSTERD_GET_NFS_PIDFILE(pidfile,nfspath) {                     \
@@ -427,9 +560,9 @@ typedef ssize_t (*gd_serialize_t) (struct iovec outmsg, void *args);
         }
 
 #define GLUSTERD_STACK_DESTROY(frame) do {\
-		frame->local = NULL;	  \
-		STACK_DESTROY (frame->root);\
-	} while (0)
+                frame->local = NULL;                                    \
+                STACK_DESTROY (frame->root);                            \
+        } while (0)
 
 #define GLUSTERD_GET_DEFRAG_DIR(path, volinfo, priv) do {               \
                 char vol_path[PATH_MAX];                                \
@@ -437,11 +570,17 @@ typedef ssize_t (*gd_serialize_t) (struct iovec outmsg, void *args);
                 snprintf (path, PATH_MAX, "%s/rebalance",vol_path);     \
         } while (0)
 
-#define GLUSTERD_GET_DEFRAG_SOCK_FILE(path, volinfo, priv) do {         \
+#define GLUSTERD_GET_DEFRAG_SOCK_FILE_OLD(path, volinfo, priv) do {     \
                 char defrag_path[PATH_MAX];                             \
                 GLUSTERD_GET_DEFRAG_DIR(defrag_path, volinfo, priv);    \
                 snprintf (path, PATH_MAX, "%s/%s.sock", defrag_path,    \
                            uuid_utoa(MY_UUID));                         \
+        } while (0)
+
+#define GLUSTERD_GET_DEFRAG_SOCK_FILE(path, volinfo) do {                   \
+                snprintf (path, UNIX_PATH_MAX, DEFAULT_VAR_RUN_DIRECTORY    \
+                          "/gluster-rebalance-%s.sock",                     \
+                           uuid_utoa(volinfo->volume_id));                  \
         } while (0)
 
 #define GLUSTERD_GET_DEFRAG_PID_FILE(path, volinfo, priv) do {          \
@@ -456,6 +595,20 @@ typedef ssize_t (*gd_serialize_t) (struct iovec outmsg, void *args);
                           DEFAULT_VAR_RUN_DIRECTORY"/%s.pid", volname);   \
         }
 
+#define GLUSTERD_GET_UUID_NOHYPHEN(ret_string, uuid) do {               \
+                char *snap_volname_ptr = ret_string;                    \
+                char *snap_volid_ptr = uuid_utoa(uuid);                 \
+                while (*snap_volid_ptr) {                               \
+                        if (*snap_volid_ptr == '-') {                   \
+                                snap_volid_ptr++;                       \
+                        } else {                                        \
+                                (*snap_volname_ptr++) =                 \
+                                (*snap_volid_ptr++);                    \
+                        }                                               \
+                }                                                       \
+                *snap_volname_ptr = '\0';                               \
+        } while (0)
+
 int glusterd_uuid_init();
 
 int glusterd_uuid_generate_save ();
@@ -465,11 +618,11 @@ int glusterd_uuid_generate_save ();
 static inline unsigned char *
 __glusterd_uuid()
 {
-	glusterd_conf_t *priv = THIS->private;
+        glusterd_conf_t *priv = THIS->private;
 
-	if (uuid_is_null (priv->uuid))
-		glusterd_uuid_init();
-	return &priv->uuid[0];
+        if (uuid_is_null (priv->uuid))
+                glusterd_uuid_init();
+        return &priv->uuid[0];
 }
 
 int glusterd_big_locked_notify (struct rpc_clnt *rpc, void *mydata,
@@ -487,7 +640,7 @@ glusterd_brick_from_brickinfo (glusterd_brickinfo_t *brickinfo,
                                char **new_brick);
 int
 glusterd_probe_begin (rpcsvc_request_t *req, const char *hoststr, int port,
-                      dict_t *dict);
+                      dict_t *dict, int *op_errno);
 
 int
 glusterd_xfer_friend_add_resp (rpcsvc_request_t *req, char *myhostname,
@@ -515,6 +668,14 @@ glusterd_op_lock_send_resp (rpcsvc_request_t *req, int32_t status);
 
 int
 glusterd_op_unlock_send_resp (rpcsvc_request_t *req, int32_t status);
+
+int
+glusterd_op_mgmt_v3_lock_send_resp (rpcsvc_request_t *req,
+                                    uuid_t *txn_id, int32_t status);
+
+int
+glusterd_op_mgmt_v3_unlock_send_resp (rpcsvc_request_t *req,
+                                      uuid_t *txn_id, int32_t status);
 
 int
 glusterd_op_stage_send_resp (rpcsvc_request_t *req,
@@ -573,7 +734,7 @@ glusterd_xfer_friend_remove_resp (rpcsvc_request_t *req, char *hostname, int por
 
 int
 glusterd_deprobe_begin (rpcsvc_request_t *req, const char *hoststr, int port,
-                        uuid_t uuid, dict_t *dict);
+                        uuid_t uuid, dict_t *dict, int *op_errno);
 
 int
 glusterd_handle_cli_deprobe (rpcsvc_request_t *req);
@@ -704,6 +865,10 @@ glusterd_brick_rpc_notify (struct rpc_clnt *rpc, void *mydata,
                           rpc_clnt_event_t event, void *data);
 
 int
+glusterd_snapd_rpc_notify (struct rpc_clnt *rpc, void *mydata,
+                             rpc_clnt_event_t event, void *data);
+
+int
 glusterd_nodesvc_rpc_notify (struct rpc_clnt *rpc, void *mydata,
                              rpc_clnt_event_t event, void *data);
 
@@ -725,11 +890,15 @@ int glusterd_handle_defrag_start (glusterd_volinfo_t *volinfo, char *op_errstr,
                                   size_t len, int cmd, defrag_cbk_fn_t cbk,
                                   glusterd_op_t op);
 int
-glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo);
+glusterd_rebalance_rpc_create (glusterd_volinfo_t *volinfo,
+                               gf_boolean_t reconnect);
 
 int glusterd_handle_cli_heal_volume (rpcsvc_request_t *req);
 
 int glusterd_handle_cli_list_volume (rpcsvc_request_t *req);
+
+int
+glusterd_handle_snapshot (rpcsvc_request_t *req);
 
 /* op-sm functions */
 int glusterd_op_stage_heal_volume (dict_t *dict, char **op_errstr);
@@ -749,8 +918,10 @@ int glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
 int glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict);
 int glusterd_op_log_rotate (dict_t *dict);
 int glusterd_op_stage_log_rotate (dict_t *dict, char **op_errstr);
-int glusterd_op_stage_create_volume (dict_t *dict, char **op_errstr);
-int glusterd_op_stage_start_volume (dict_t *dict, char **op_errstr);
+int glusterd_op_stage_create_volume (dict_t *dict, char **op_errstr,
+                                     dict_t *rsp_dict);
+int glusterd_op_stage_start_volume (dict_t *dict, char **op_errstr,
+                                    dict_t *rsp_dict);
 int glusterd_op_stage_stop_volume (dict_t *dict, char **op_errstr);
 int glusterd_op_stage_delete_volume (dict_t *dict, char **op_errstr);
 int glusterd_op_create_volume (dict_t *dict, char **op_errstr);
@@ -760,7 +931,8 @@ int glusterd_op_delete_volume (dict_t *dict);
 
 int glusterd_op_add_brick (dict_t *dict, char **op_errstr);
 int glusterd_op_remove_brick (dict_t *dict, char **op_errstr);
-int glusterd_op_stage_add_brick (dict_t *dict, char **op_errstr);
+int glusterd_op_stage_add_brick (dict_t *dict, char **op_errstr,
+                                 dict_t *rsp_dict);
 int glusterd_op_stage_remove_brick (dict_t *dict, char **op_errstr);
 
 int glusterd_op_stage_rebalance (dict_t *dict, char **op_errstr);
@@ -772,7 +944,9 @@ int glusterd_op_statedump_volume (dict_t *dict, char **op_errstr);
 int glusterd_op_stage_clearlocks_volume (dict_t *dict, char **op_errstr);
 int glusterd_op_clearlocks_volume (dict_t *dict, char **op_errstr,
                                    dict_t *rsp_dict);
-int glusterd_op_stage_bd (dict_t *dict, char **op_errstr);
+
+int glusterd_op_stage_barrier (dict_t *dict, char **op_errstr);
+int glusterd_op_barrier (dict_t *dict, char **op_errstr);
 
 /* misc */
 void glusterd_do_replace_brick (void *data);
@@ -784,9 +958,85 @@ int glusterd_op_statedump_volume_args_get (dict_t *dict, char **volname,
 
 int glusterd_op_gsync_args_get (dict_t *dict, char **op_errstr,
                                 char **master, char **slave, char **host_uuid);
+
+int glusterd_start_volume (glusterd_volinfo_t *volinfo, int flags,
+                           gf_boolean_t wait);
+
+int glusterd_stop_volume (glusterd_volinfo_t *volinfo);
+
 /* Synctask part */
 int32_t glusterd_op_begin_synctask (rpcsvc_request_t *req, glusterd_op_t op,
                                     void *dict);
 int32_t
 glusterd_defrag_event_notify_handle (dict_t *dict);
+
+int32_t
+glusterd_txn_opinfo_dict_init ();
+
+void
+glusterd_txn_opinfo_dict_fini ();
+
+void
+glusterd_txn_opinfo_init ();
+
+/* snapshot */
+glusterd_snap_t*
+glusterd_new_snap_object();
+
+int32_t
+glusterd_list_add_snapvol (glusterd_volinfo_t *origin_vol,
+                           glusterd_volinfo_t *snap_vol);
+
+glusterd_snap_t*
+glusterd_remove_snap_by_id (uuid_t snap_id);
+
+glusterd_snap_t*
+glusterd_remove_snap_by_name (char *snap_name);
+
+glusterd_snap_t*
+glusterd_find_snap_by_name (char *snap_name);
+
+glusterd_snap_t*
+glusterd_find_snap_by_id (uuid_t snap_id);
+
+int
+glusterd_snapshot_prevalidate (dict_t *dict, char **op_errstr,
+                               dict_t *rsp_dict);
+int
+glusterd_snapshot_brickop (dict_t *dict, char **op_errstr, dict_t *rsp_dict);
+int
+glusterd_snapshot (dict_t *dict, char **op_errstr, dict_t *rsp_dict);
+int
+glusterd_snapshot_postvalidate (dict_t *dict, int32_t op_ret, char **op_errstr,
+                                dict_t *rsp_dict);
+char *
+glusterd_build_snap_device_path (char *device, char *snapname,
+                                 int32_t brick_count);
+
+int32_t
+glusterd_snap_remove (dict_t *rsp_dict, glusterd_snap_t *snap,
+                      gf_boolean_t remove_lvm, gf_boolean_t force);
+int32_t
+glusterd_snapshot_cleanup (dict_t *dict, char **op_errstr, dict_t *rsp_dict);
+
+int32_t
+glusterd_add_missed_snaps_to_list (dict_t *dict, int32_t missed_snap_count);
+
+int32_t
+glusterd_add_new_entry_to_list (char *missed_info, char *snap_vol_id,
+                                int32_t brick_num, char *brick_path,
+                                int32_t snap_op, int32_t snap_status);
+
+int
+glusterd_snapshot_revert_restore_from_snap (glusterd_snap_t *snap);
+
+
+int
+glusterd_add_brick_status_to_dict (dict_t *dict, glusterd_volinfo_t *volinfo,
+                                   glusterd_brickinfo_t *brickinfo,
+                                   char *key_prefix);
+
+int32_t
+glusterd_handle_snap_limit (dict_t *dict, dict_t *rsp_dict);
+
 #endif

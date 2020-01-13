@@ -25,33 +25,56 @@
 #include "statedump.h"
 #include "defaults.h"
 #include "authenticate.h"
-#include "rpcsvc.h"
 
 void
 grace_time_handler (void *data)
 {
-        server_connection_t     *conn = NULL;
-        xlator_t                *this = NULL;
-        gf_boolean_t            cancelled = _gf_false;
-        gf_boolean_t            detached = _gf_false;
+        client_t      *client    = NULL;
+        xlator_t      *this      = NULL;
+        gf_timer_t    *timer     = NULL;
+        server_ctx_t  *serv_ctx  = NULL;
+        gf_boolean_t   cancelled = _gf_false;
+        gf_boolean_t   detached  = _gf_false;
 
-        conn = data;
-        this = conn->this;
+        client = data;
+        this = client->this;
 
-        GF_VALIDATE_OR_GOTO (THIS->name, conn, out);
         GF_VALIDATE_OR_GOTO (THIS->name, this, out);
 
-        gf_log (this->name, GF_LOG_INFO, "grace timer expired for %s", conn->id);
+        gf_log (this->name, GF_LOG_INFO, "grace timer expired for %s",
+                client->client_uid);
 
-        cancelled = server_cancel_conn_timer (this, conn);
+        serv_ctx = server_ctx_get (client, this);
+
+        if (serv_ctx == NULL) {
+                gf_log (this->name, GF_LOG_INFO, "server_ctx_get() failed");
+                goto out;
+        }
+
+        LOCK (&serv_ctx->fdtable_lock);
+        {
+                if (serv_ctx->grace_timer) {
+                        timer = serv_ctx->grace_timer;
+                        serv_ctx->grace_timer = NULL;
+                }
+        }
+        UNLOCK (&serv_ctx->fdtable_lock);
+        if (timer) {
+                gf_timer_call_cancel (this->ctx, timer);
+                cancelled = _gf_true;
+        }
         if (cancelled) {
-                //conn should not be destroyed in conn_put, so take a ref.
-                server_conn_ref (conn);
-                server_connection_put (this, conn, &detached);
+
+                /*
+                 * client must not be destroyed in gf_client_put(),
+                 * so take a ref.
+                 */
+                gf_client_ref (client);
+                gf_client_put (client, &detached);
                 if (detached)//reconnection did not happen :-(
-                        server_connection_cleanup (this, conn,
-                                                  INTERNAL_LOCKS | POSIX_LOCKS);
-                server_conn_unref (conn);
+                        server_connection_cleanup (this, client,
+                                                   INTERNAL_LOCKS | POSIX_LOCKS);
+                gf_client_unref (client);
         }
 out:
         return;
@@ -107,8 +130,6 @@ ret:
         return iob;
 }
 
-
-
 int
 server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
                      struct iovec *payload, int payloadcount,
@@ -119,20 +140,20 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
         struct iovec            rsp        = {0,};
         server_state_t         *state      = NULL;
         char                    new_iobref = 0;
-        server_connection_t    *conn       = NULL;
+        client_t               *client     = NULL;
         gf_boolean_t            lk_heal    = _gf_false;
-        glusterfs_fop_t         fop        = GF_FOP_NULL;
+        gf_boolean_t            barriered  = _gf_false;
 
         GF_VALIDATE_OR_GOTO ("server", req, ret);
 
         if (frame) {
                 state = CALL_STATE (frame);
                 frame->local = NULL;
-                conn  = SERVER_CONNECTION(frame);
+                client = frame->root->client;
         }
 
-        if (conn)
-                lk_heal = ((server_conf_t *) conn->this->private)->lk_heal;
+        if (client)
+                lk_heal = ((server_conf_t *) client->this->private)->lk_heal;
 
         if (!iobref) {
                 iobref = iobref_new ();
@@ -165,17 +186,9 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
          */
         iobuf_unref (iob);
         if (ret == -1) {
-                if (frame && conn && !lk_heal) {
-                        fop = frame->root->op;
-                        if ((GF_FOP_NULL < fop) &&
-                           (fop < GF_FOP_MAXVALUE)) {
-                                pthread_mutex_lock (&conn->lock);
-                                {
-                                        conn->rsp_failure_fops[fop]++;
-                                }
-                                pthread_mutex_unlock (&conn->lock);
-                        }
-                        server_connection_cleanup (frame->this, conn,
+                gf_log_callingfn ("", GF_LOG_ERROR, "Reply submission failed");
+                if (frame && client && !lk_heal) {
+                        server_connection_cleanup (frame->this, client,
                                                   INTERNAL_LOCKS | POSIX_LOCKS);
                 } else {
                         gf_log_callingfn ("", GF_LOG_ERROR,
@@ -188,190 +201,21 @@ server_submit_reply (call_frame_t *frame, rpcsvc_request_t *req, void *arg,
 
         ret = 0;
 ret:
-        if (state) {
+        if (state)
                 free_state (state);
-        }
 
-        if (frame) {
-                if (frame->root->trans)
-                        server_conn_unref (frame->root->trans);
+        if (client)
+                gf_client_unref (client);
+
+        if (frame)
                 STACK_DESTROY (frame->root);
-        }
 
-        if (new_iobref) {
+        if (new_iobref)
                 iobref_unref (iobref);
-        }
 
         return ret;
 }
 
-/* */
-int
-server_fd_to_dict (xlator_t *this, dict_t *dict)
-{
-        server_conf_t           *conf = NULL;
-        server_connection_t     *trav = NULL;
-        char                    key[GF_DUMP_MAX_BUF_LEN] = {0,};
-        int                     count = 0;
-        int                     ret = -1;
-
-        GF_VALIDATE_OR_GOTO (THIS->name, this, out);
-        GF_VALIDATE_OR_GOTO (this->name, dict, out);
-
-        conf = this->private;
-        if (!conf)
-                return -1;
-
-        ret = pthread_mutex_trylock (&conf->mutex);
-        if (ret)
-                return -1;
-
-        list_for_each_entry (trav, &conf->conns, list) {
-                memset (key, 0, sizeof (key));
-                snprintf (key, sizeof (key), "conn%d", count++);
-                fdtable_dump_to_dict (trav->fdtable, key, dict);
-        }
-        pthread_mutex_unlock (&conf->mutex);
-
-        ret = dict_set_int32 (dict, "conncount", count);
-out:
-        return ret;
-}
-
-int
-server_fd (xlator_t *this)
-{
-        server_conf_t        *conf = NULL;
-        server_connection_t  *trav = NULL;
-        char                 key[GF_DUMP_MAX_BUF_LEN];
-        int                  i = 1;
-        int                  ret = -1;
-        gf_boolean_t         section_added = _gf_false;
-
-        GF_VALIDATE_OR_GOTO ("server", this, out);
-
-        conf = this->private;
-        if (!conf) {
-                gf_log (this->name, GF_LOG_WARNING,
-                        "conf null in xlator");
-                return -1;
-        }
-
-        gf_proc_dump_add_section("xlator.protocol.server.conn");
-        section_added = _gf_true;
-
-        ret = pthread_mutex_trylock (&conf->mutex);
-        if (ret)
-                goto out;
-
-        list_for_each_entry (trav, &conf->conns, list) {
-                if (trav->id) {
-                        gf_proc_dump_build_key(key,
-                                               "conn","%d.id", i);
-                        gf_proc_dump_write(key, "%s", trav->id);
-                }
-
-                gf_proc_dump_build_key(key,"conn","%d.ref",i)
-                        gf_proc_dump_write(key, "%d", trav->ref);
-                if (trav->bound_xl) {
-                        gf_proc_dump_build_key(key,
-                                               "conn","%d.bound_xl", i);
-                        gf_proc_dump_write(key, "%s", trav->bound_xl->name);
-                }
-
-                gf_proc_dump_build_key(key,
-                                       "conn","%d.id", i);
-                fdtable_dump(trav->fdtable,key);
-                i++;
-        }
-        pthread_mutex_unlock (&conf->mutex);
-
-        ret = 0;
-out:
-        if (ret) {
-                if (section_added == _gf_false)
-                        gf_proc_dump_add_section("xlator.protocol.server.conn");
-                gf_proc_dump_write ("Unable to dump the list of connections",
-                                    "(Lock acquisition failed) %s",
-                                    this?this->name:"server");
-        }
-        return ret;
-}
-
-void
-ltable_dump (server_connection_t *trav)
-{
-        char key[GF_DUMP_MAX_BUF_LEN] = {0,};
-        struct _locker *locker = NULL;
-        char    locker_data[GF_MAX_LOCK_OWNER_LEN] = {0,};
-        int     count = 0;
-
-        gf_proc_dump_build_key(key,
-                               "conn","bound_xl.ltable.inodelk.%s",
-                               trav->bound_xl?trav->bound_xl->name:"");
-        gf_proc_dump_add_section(key);
-
-        list_for_each_entry (locker, &trav->ltable->inodelk_lockers, lockers) {
-                count++;
-                gf_proc_dump_write("volume", "%s", locker->volume);
-                if (locker->fd) {
-                        gf_proc_dump_write("fd", "%p", locker->fd);
-                        gf_proc_dump_write("gfid", "%s",
-                                           uuid_utoa (locker->fd->inode->gfid));
-                } else {
-                        gf_proc_dump_write("fd", "%s", locker->loc.path);
-                        gf_proc_dump_write("gfid", "%s",
-                                           uuid_utoa (locker->loc.inode->gfid));
-                }
-                gf_proc_dump_write("pid", "%d", locker->pid);
-                gf_proc_dump_write("lock length", "%d", locker->owner.len);
-                lkowner_unparse (&locker->owner, locker_data,
-                                 locker->owner.len);
-                gf_proc_dump_write("lock owner", "%s", locker_data);
-                memset (locker_data, 0, sizeof (locker_data));
-
-                gf_proc_dump_build_key (key, "inode", "%d", count);
-                gf_proc_dump_add_section (key);
-                if (locker->fd)
-                        inode_dump (locker->fd->inode, key);
-                else
-                        inode_dump (locker->loc.inode, key);
-        }
-
-        count = 0;
-        locker = NULL;
-        gf_proc_dump_build_key(key,
-                               "conn","bound_xl.ltable.entrylk.%s",
-                               trav->bound_xl?trav->bound_xl->name:"");
-        gf_proc_dump_add_section(key);
-
-        list_for_each_entry (locker, &trav->ltable->entrylk_lockers,
-                             lockers) {
-                count++;
-                gf_proc_dump_write("volume", "%s", locker->volume);
-                if (locker->fd) {
-                        gf_proc_dump_write("fd", "%p", locker->fd);
-                        gf_proc_dump_write("gfid", "%s",
-                                           uuid_utoa (locker->fd->inode->gfid));
-                } else {
-                        gf_proc_dump_write("fd", "%s", locker->loc.path);
-                        gf_proc_dump_write("gfid", "%s",
-                                           uuid_utoa (locker->loc.inode->gfid));
-                }
-                gf_proc_dump_write("pid", "%d", locker->pid);
-                gf_proc_dump_write("lock length", "%d", locker->owner.len);
-                lkowner_unparse (&locker->owner, locker_data, locker->owner.len);
-                gf_proc_dump_write("lock data", "%s", locker_data);
-                memset (locker_data, 0, sizeof (locker_data));
-
-                gf_proc_dump_build_key (key, "inode", "%d", count);
-                gf_proc_dump_add_section (key);
-                if (locker->fd)
-                        inode_dump (locker->fd->inode, key);
-                else
-                        inode_dump (locker->loc.inode, key);
-        }
-}
 
 int
 server_priv_to_dict (xlator_t *this, dict_t *dict)
@@ -472,104 +316,6 @@ server_priv (xlator_t *this)
 out:
         if (ret)
                 gf_proc_dump_write ("Unable to print priv",
-                                    "(Lock acquisition failed) %s",
-                                    this?this->name:"server");
-
-        return ret;
-}
-
-int
-server_inode_to_dict (xlator_t *this, dict_t *dict)
-{
-        server_conf_t           *conf = NULL;
-        server_connection_t     *trav = NULL;
-        char                    key[32] = {0,};
-        int                     count = 0;
-        int                     ret = -1;
-        xlator_t                *prev_bound_xl = NULL;
-
-        GF_VALIDATE_OR_GOTO (THIS->name, this, out);
-        GF_VALIDATE_OR_GOTO (this->name, dict, out);
-
-        conf = this->private;
-        if (!conf)
-                return -1;
-
-        ret = pthread_mutex_trylock (&conf->mutex);
-        if (ret)
-                return -1;
-
-        list_for_each_entry (trav, &conf->conns, list) {
-                if (trav->bound_xl && trav->bound_xl->itable) {
-                        /* Presently every brick contains only one
-                         * bound_xl for all connections. This will lead
-                         * to duplicating of the inode lists, if listing
-                         * is done for every connection. This simple check
-                         * prevents duplication in the present case. If
-                         * need arises the check can be improved.
-                         */
-                        if (trav->bound_xl == prev_bound_xl)
-                                continue;
-                        prev_bound_xl = trav->bound_xl;
-
-                        memset (key, 0, sizeof (key));
-                        snprintf (key, sizeof (key), "conn%d", count);
-                        inode_table_dump_to_dict (trav->bound_xl->itable,
-                                                  key, dict);
-                        count++;
-                }
-        }
-        pthread_mutex_unlock (&conf->mutex);
-
-        ret = dict_set_int32 (dict, "conncount", count);
-
-out:
-        if (prev_bound_xl)
-                prev_bound_xl = NULL;
-        return ret;
-}
-
-int
-server_inode (xlator_t *this)
-{
-        server_conf_t        *conf = NULL;
-        server_connection_t  *trav = NULL;
-        char                 key[GF_DUMP_MAX_BUF_LEN];
-        int                  i = 1;
-        int                  ret = -1;
-
-        GF_VALIDATE_OR_GOTO ("server", this, out);
-
-        conf = this->private;
-        if (!conf) {
-                gf_log (this->name, GF_LOG_WARNING,
-                        "conf null in xlator");
-                return -1;
-        }
-
-        ret = pthread_mutex_trylock (&conf->mutex);
-        if (ret)
-                goto out;
-
-        list_for_each_entry (trav, &conf->conns, list) {
-                ret = pthread_mutex_trylock (&trav->lock);
-                if (!ret)
-                {
-                        gf_proc_dump_build_key(key,
-                                               "conn","%d.ltable", i);
-                        gf_proc_dump_add_section(key);
-                        ltable_dump (trav);
-                        i++;
-                        pthread_mutex_unlock (&trav->lock);
-                }else
-                        continue;
-        }
-        pthread_mutex_unlock (&conf->mutex);
-
-        ret = 0;
-out:
-        if (ret)
-                gf_proc_dump_write ("Unable to dump the lock table",
                                     "(Lock acquisition failed) %s",
                                     this?this->name:"server");
 
@@ -718,9 +464,10 @@ server_rpc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
 {
         gf_boolean_t         detached   = _gf_false;
         xlator_t            *this       = NULL;
-        rpc_transport_t     *xprt       = NULL;
-        server_connection_t *conn       = NULL;
+        rpc_transport_t     *trans      = NULL;
         server_conf_t       *conf       = NULL;
+        client_t            *client     = NULL;
+        server_ctx_t        *serv_ctx   = NULL;
 
         if (!xl || !data) {
                 gf_log_callingfn ("server", GF_LOG_WARNING,
@@ -729,7 +476,7 @@ server_rpc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
         }
 
         this = xl;
-        xprt = data;
+        trans = data;
         conf = this->private;
 
         switch (event) {
@@ -737,17 +484,17 @@ server_rpc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
         {
                 /* Have a structure per new connection */
                 /* TODO: Should we create anything here at all ? * /
-                   conn = create_server_conn_state (this, xprt);
-                   if (!conn)
+                   client->conn = create_server_conn_state (this, trans);
+                   if (!client->conn)
                    goto out;
 
-                   xprt->protocol_private = conn;
+                   trans->protocol_private = client->conn;
                 */
-                INIT_LIST_HEAD (&xprt->list);
+                INIT_LIST_HEAD (&trans->list);
 
                 pthread_mutex_lock (&conf->mutex);
                 {
-                        list_add_tail (&xprt->list, &conf->xprt_list);
+                        list_add_tail (&trans->list, &conf->xprt_list);
                 }
                 pthread_mutex_unlock (&conf->mutex);
 
@@ -760,51 +507,58 @@ server_rpc_notify (rpcsvc_t *rpc, void *xl, rpcsvc_event_t event,
                  */
                 pthread_mutex_lock (&conf->mutex);
                 {
-                        list_del_init (&xprt->list);
+                        list_del_init (&trans->list);
                 }
                 pthread_mutex_unlock (&conf->mutex);
 
-                conn = get_server_conn_state (this, xprt);
-                if (!conn)
+                client = trans->xl_private;
+                if (!client)
                         break;
 
                 gf_log (this->name, GF_LOG_INFO, "disconnecting connection"
-                        " from %s, Number of pending operations: %"PRIu64,
-                        conn->id, conn->ref);
+                        "from %s", client->client_uid);
 
                 /* If lock self heal is off, then destroy the
                    conn object, else register a grace timer event */
                 if (!conf->lk_heal) {
-                        server_conn_ref (conn);
-                        server_connection_put (this, conn, &detached);
+                        gf_client_ref (client);
+                        gf_client_put (client, &detached);
                         if (detached)
-                                server_connection_cleanup (this, conn,
-                                                           INTERNAL_LOCKS |
-                                                           POSIX_LOCKS);
-                        server_conn_unref (conn);
-                } else {
-                        put_server_conn_state (this, xprt);
-                        server_connection_cleanup (this, conn, INTERNAL_LOCKS);
-
-                        pthread_mutex_lock (&conn->lock);
-                        {
-                                if (conn->timer)
-                                        goto unlock;
-
-                                gf_log (this->name, GF_LOG_INFO, "starting a grace "
-                                        "timer for %s", conn->id);
-
-                                conn->timer = gf_timer_call_after (this->ctx,
-                                                                   conf->grace_ts,
-                                                                   grace_time_handler,
-                                                                   conn);
-                        }
-                unlock:
-                        pthread_mutex_unlock (&conn->lock);
+                                server_connection_cleanup (this, client,
+                                                           INTERNAL_LOCKS | POSIX_LOCKS);
+                        gf_client_unref (client);
+                        break;
                 }
+                trans->xl_private = NULL;
+                server_connection_cleanup (this, client, INTERNAL_LOCKS);
+
+                serv_ctx = server_ctx_get (client, this);
+
+                if (serv_ctx == NULL) {
+                        gf_log (this->name, GF_LOG_INFO,
+                                "server_ctx_get() failed");
+                        goto out;
+                }
+
+                LOCK (&serv_ctx->fdtable_lock);
+                {
+                        if (!serv_ctx->grace_timer) {
+
+                                gf_log (this->name, GF_LOG_INFO,
+                                        "starting a grace timer for %s",
+                                        client->client_uid);
+
+                                serv_ctx->grace_timer =
+                                        gf_timer_call_after (this->ctx,
+                                                             conf->grace_ts,
+                                                             grace_time_handler,
+                                                             client);
+                        }
+                }
+                UNLOCK (&serv_ctx->fdtable_lock);
                 break;
         case RPCSVC_EVENT_TRANSPORT_DESTROY:
-                /*- conn obj has been disassociated from xprt on first
+                /*- conn obj has been disassociated from trans on first
                  *  disconnect.
                  *  conn cleanup and destruction is handed over to
                  *  grace_time_handler or the subsequent handler that 'owns'
@@ -903,7 +657,7 @@ server_init_grace_timer (xlator_t *this, dict_t *options,
                 conf->grace_ts.tv_sec = 10;
 
         gf_log (this->name, GF_LOG_DEBUG, "Server grace timeout "
-                "value = %"PRIu64, conf->grace_ts.tv_sec);
+                "value = %"GF_PRI_SECOND, conf->grace_ts.tv_sec);
 
         conf->grace_ts.tv_nsec  = 0;
 
@@ -982,6 +736,17 @@ reconfigure (xlator_t *this, dict_t *options)
                 goto out;
         }
 
+        GF_OPTION_RECONF ("manage-gids", conf->server_manage_gids, options,
+                          bool, out);
+
+        GF_OPTION_RECONF ("gid-timeout", conf->gid_cache_timeout, options,
+                          int32, out);
+        if (gid_cache_reconf (&conf->gid_cache, conf->gid_cache_timeout) < 0) {
+                gf_log(this->name, GF_LOG_ERROR, "Failed to reconfigure group "
+                        "cache.");
+                goto out;
+        }
+
         rpc_conf = conf->rpc;
         if (!rpc_conf) {
                 gf_log (this->name, GF_LOG_ERROR, "No rpc_conf !!!!");
@@ -1015,6 +780,26 @@ out:
         return ret;
 }
 
+static int32_t
+client_destroy_cbk (xlator_t *this, client_t *client)
+{
+        void         *tmp = NULL;
+        server_ctx_t *ctx = NULL;
+
+        client_ctx_del (client, this, &tmp);
+
+        ctx = tmp;
+
+        if (ctx == NULL)
+                return 0;
+
+        gf_fd_fdtable_destroy (ctx->fdtable);
+        LOCK_DESTROY (&ctx->fdtable_lock);
+        GF_FREE (ctx);
+
+        return 0;
+}
+
 int
 init (xlator_t *this)
 {
@@ -1041,7 +826,6 @@ init (xlator_t *this)
 
         GF_VALIDATE_OR_GOTO(this->name, conf, out);
 
-        INIT_LIST_HEAD (&conf->conns);
         INIT_LIST_HEAD (&conf->xprt_list);
         pthread_mutex_init (&conf->mutex, NULL);
 
@@ -1087,6 +871,19 @@ init (xlator_t *this)
         ret = gf_auth_init (this, conf->auth_modules);
         if (ret) {
                 dict_unref (conf->auth_modules);
+                goto out;
+        }
+
+        ret = dict_get_str_boolean (this->options, "manage-gids", _gf_false);
+        if (ret == -1)
+                conf->server_manage_gids = _gf_false;
+        else
+                conf->server_manage_gids = ret;
+
+        GF_OPTION_INIT("gid-timeout", conf->gid_cache_timeout, int32, out);
+        if (gid_cache_init (&conf->gid_cache, conf->gid_cache_timeout) < 0) {
+                gf_log(this->name, GF_LOG_ERROR, "Failed to initialize "
+                        "group cache.");
                 goto out;
         }
 
@@ -1224,27 +1021,38 @@ int
 notify (xlator_t *this, int32_t event, void *data, ...)
 {
         int          ret = 0;
+        int32_t      val = 0;
+        dict_t      *dict = NULL;
+        dict_t      *output = NULL;
+        va_list      ap;
+
+        dict = data;
+        va_start (ap, data);
+        output = va_arg (ap, dict_t*);
+        va_end (ap);
+
         switch (event) {
         default:
                 default_notify (this, event, data);
                 break;
         }
-
         return ret;
 }
 
 
 struct xlator_fops fops;
 
-struct xlator_cbks cbks;
+struct xlator_cbks cbks = {
+        .client_destroy = client_destroy_cbk,
+};
 
 struct xlator_dumpops dumpops = {
         .priv           = server_priv,
-        .fd             = server_fd,
-        .inode          = server_inode,
+        .fd             = gf_client_dump_fdtables,
+        .inode          = gf_client_dump_inodes,
         .priv_to_dict   = server_priv_to_dict,
-        .fd_to_dict     = server_fd_to_dict,
-        .inode_to_dict  = server_inode_to_dict,
+        .fd_to_dict     = gf_client_dump_fdtables_to_dict,
+        .inode_to_dict  = gf_client_dump_inodes_to_dict,
 };
 
 
@@ -1262,9 +1070,6 @@ struct volume_options options[] = {
           .type  = GF_OPTION_TYPE_PATH,
         },
         { .key   = {"transport.*"},
-          .type  = GF_OPTION_TYPE_ANY,
-        },
-        { .key   = {"rpc*"},
           .type  = GF_OPTION_TYPE_ANY,
         },
         { .key   = {"inode-lru-limit"},
@@ -1291,10 +1096,26 @@ struct volume_options options[] = {
         { .key   = {"root-squash"},
           .type  = GF_OPTION_TYPE_BOOL,
           .default_value = "off",
-          .description = "Map  requests  from  uid/gid 0 to the anonymous "
-                         "uid/gid. Note that this does not apply to any other"
-                         "uids or gids that might be equally sensitive, such as"
-                         "user bin or group staff."
+          .description = "Map requests from uid/gid 0 to the anonymous "
+                         "uid/gid. Note that this does not apply to any other "
+                         "uids or gids that might be equally sensitive, such "
+                         "as user bin or group staff."
+        },
+        { .key           = {"anonuid"},
+          .type          = GF_OPTION_TYPE_INT,
+          .default_value = "65534", /* RPC_NOBODY_UID */
+          .min           = 0,
+          .max           = (uint32_t) -1,
+          .description   = "value of the uid used for the anonymous "
+                           "user/nfsnobody when root-squash is enabled."
+        },
+        { .key           = {"anongid"},
+          .type          = GF_OPTION_TYPE_INT,
+          .default_value = "65534", /* RPC_NOBODY_GID */
+          .min           = 0,
+          .max           = (uint32_t) -1,
+          .description   = "value of the gid used for the anonymous "
+                           "user/nfsnobody when root-squash is enabled."
         },
         { .key           = {"statedump-path"},
           .type          = GF_OPTION_TYPE_PATH,
@@ -1324,14 +1145,36 @@ struct volume_options options[] = {
         { .key   = {"auth.addr.*.allow"},
           .type  = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
           .description = "Allow a comma separated list of addresses and/or "
-                         "hostnames to connect to the server. By default, all"
-                         " connections are allowed."
+                         "hostnames to connect to the server. Option "
+                         "auth.reject overrides this option. By default, all "
+                         "connections are allowed."
         },
         { .key   = {"auth.addr.*.reject"},
           .type  = GF_OPTION_TYPE_INTERNET_ADDRESS_LIST,
           .description = "Reject a comma separated list of addresses and/or "
-                         "hostnames to connect to the server. By default, all"
+                         "hostnames to connect to the server. This option "
+                         "overrides the auth.allow option. By default, all"
                          " connections are allowed."
+        },
+        { .key  = {"rpc.outstanding-rpc-limit"},
+          .type = GF_OPTION_TYPE_INT,
+          .min  = RPCSVC_MIN_OUTSTANDING_RPC_LIMIT,
+          .max  = RPCSVC_MAX_OUTSTANDING_RPC_LIMIT,
+          .default_value = TOSTRING(RPCSVC_DEFAULT_OUTSTANDING_RPC_LIMIT),
+          .description = "Parameter to throttle the number of incoming RPC "
+                         "requests from a client. 0 means no limit (can "
+                         "potentially run out of memory)"
+        },
+
+        { .key   = {"manage-gids"},
+          .type  = GF_OPTION_TYPE_BOOL,
+          .default_value = "off",
+          .description = "Resolve groups on the server-side."
+        },
+        { .key = {"gid-timeout"},
+          .type = GF_OPTION_TYPE_INT,
+          .default_value = "2",
+          .description = "Timeout in seconds for the cached groups to expire."
         },
 
         { .key   = {NULL} },

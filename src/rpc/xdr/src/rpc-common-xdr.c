@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2007-2012 Red Hat, Inc. <http://www.redhat.com>
+  Copyright (c) 2007-2014 Red Hat, Inc. <http://www.redhat.com>
   This file is part of GlusterFS.
 
   This file is licensed to you under your choice of the GNU Lesser
@@ -8,12 +8,14 @@
   cases as published by the Free Software Foundation.
 */
 
-#include "xdr-common.h"
 #include "compat.h"
+#include "xdr-common.h"
+#include "xdr-nfs3.h"
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 
@@ -28,7 +30,6 @@ bool_t
 xdr_auth_glusterfs_parms_v2 (XDR *xdrs, auth_glusterfs_parms_v2 *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 
 	if (xdrs->x_op == XDR_ENCODE) {
@@ -93,9 +94,8 @@ bool_t
 xdr_auth_glusterfs_parms (XDR *xdrs, auth_glusterfs_parms *objp)
 {
 	register int32_t *buf;
-        int i;
-        buf = NULL;
 
+	int i;
 
 	if (xdrs->x_op == XDR_ENCODE) {
 		 if (!xdr_u_quad_t (xdrs, &objp->lk_owner))
@@ -181,7 +181,6 @@ bool_t
 xdr_gf_dump_req (XDR *xdrs, gf_dump_req *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_quad_t (xdrs, &objp->gfs_id))
 		 return FALSE;
@@ -192,7 +191,6 @@ bool_t
 xdr_gf_prog_detail (XDR *xdrs, gf_prog_detail *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_string (xdrs, &objp->progname, ~0))
 		 return FALSE;
@@ -209,7 +207,6 @@ bool_t
 xdr_gf_dump_rsp (XDR *xdrs, gf_dump_rsp *objp)
 {
 	register int32_t *buf;
-        buf = NULL;
 
 	 if (!xdr_u_quad_t (xdrs, &objp->gfs_id))
 		 return FALSE;
@@ -218,6 +215,20 @@ xdr_gf_dump_rsp (XDR *xdrs, gf_dump_rsp *objp)
 	 if (!xdr_int (xdrs, &objp->op_errno))
 		 return FALSE;
 	 if (!xdr_pointer (xdrs, (char **)&objp->prog, sizeof (gf_prog_detail), (xdrproc_t) xdr_gf_prog_detail))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
+xdr_gf_common_rsp (XDR *xdrs, gf_common_rsp *objp)
+{
+	register int32_t *buf;
+
+	 if (!xdr_int (xdrs, &objp->op_ret))
+		 return FALSE;
+	 if (!xdr_int (xdrs, &objp->op_errno))
+		 return FALSE;
+	 if (!xdr_bytes (xdrs, (char **)&objp->xdata.xdata_val, (u_int *) &objp->xdata.xdata_len, ~0))
 		 return FALSE;
 	return TRUE;
 }

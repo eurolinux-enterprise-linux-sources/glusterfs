@@ -21,18 +21,19 @@ VOLUME_OP=
 GLUSTERD_WORKING_DIR=
 ENABLED_NAME="S28Quota-root-xattr-heal.sh"
 
+
 cleanup_mountpoint ()
 {
         umount -f $MOUNT_DIR;
         if [ 0 -ne $? ]
         then
-                return $?;
+                return $?
         fi
 
         rmdir $MOUNT_DIR;
         if [ 0 -ne $? ]
         then
-                return $?;
+                return $?
         fi
 }
 

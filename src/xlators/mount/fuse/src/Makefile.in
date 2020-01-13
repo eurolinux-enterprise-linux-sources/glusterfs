@@ -36,8 +36,8 @@ POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
 subdir = xlators/mount/fuse/src
-DIST_COMMON = $(am__noinst_HEADERS_DIST) $(fuse_HEADERS) \
-	$(srcdir)/Makefile.am $(srcdir)/Makefile.in
+DIST_COMMON = $(am__noinst_HEADERS_DIST) $(srcdir)/Makefile.am \
+	$(srcdir)/Makefile.in
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/contrib/aclocal/mkdirp.m4 \
 	$(top_srcdir)/contrib/aclocal/python.m4 \
@@ -69,7 +69,7 @@ am__nobase_list = $(am__nobase_strip_setup); \
 am__base_list = \
   sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
   sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
-am__installdirs = "$(DESTDIR)$(xlatordir)" "$(DESTDIR)$(fusedir)"
+am__installdirs = "$(DESTDIR)$(xlatordir)"
 LTLIBRARIES = $(xlator_LTLIBRARIES)
 fuse_la_DEPENDENCIES =
 am__fuse_la_SOURCES_DIST = fuse-helpers.c fuse-resolve.c fuse-bridge.c \
@@ -120,8 +120,10 @@ am__noinst_HEADERS_DIST = $(CONTRIBDIR)/fuse-include/fuse-mount.h \
 	fuse-bridge.h $(CONTRIBDIR)/fuse-include/fuse_kernel.h \
 	$(CONTRIBDIR)/fuse-include/mount_util.h \
 	$(CONTRIBDIR)/fuse-lib/mount-gluster-compat.h \
-	$(CONTRIBDIR)/fuse-include/fuse_kernel_macfuse.h
-HEADERS = $(fuse_HEADERS) $(noinst_HEADERS)
+	$(CONTRIBDIR)/fuse-include/fuse_kernel_macfuse.h \
+	$(CONTRIBDIR)/macfuse/fuse_param.h \
+	$(CONTRIBDIR)/macfuse/fuse_ioctl.h
+HEADERS = $(noinst_HEADERS)
 ETAGS = etags
 CTAGS = ctags
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
@@ -132,11 +134,14 @@ AM_LIBTOOLFLAGS = @AM_LIBTOOLFLAGS@
 AM_MAKEFLAGS = @AM_MAKEFLAGS@
 AR = @AR@
 ARGP_STANDALONE_CPPFLAGS = @ARGP_STANDALONE_CPPFLAGS@
+ARGP_STANDALONE_DIR = @ARGP_STANDALONE_DIR@
 ARGP_STANDALONE_LDADD = @ARGP_STANDALONE_LDADD@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
+BUILD_PYTHON_INC = @BUILD_PYTHON_INC@
+BUILD_PYTHON_LIB = @BUILD_PYTHON_LIB@
 CC = @CC@
 CCDEPMODE = @CCDEPMODE@
 CFLAGS = @CFLAGS@
@@ -162,11 +167,15 @@ GF_CPPFLAGS = @GF_CPPFLAGS@
 GF_DISTRIBUTION = @GF_DISTRIBUTION@
 GF_FUSE_CFLAGS = @GF_FUSE_CFLAGS@
 GF_FUSE_LDADD = @GF_FUSE_LDADD@
-GF_GLUSTERFS_CFLAGS = @GF_GLUSTERFS_CFLAGS@
 GF_GLUSTERFS_LIBS = @GF_GLUSTERFS_LIBS@
 GF_HOST_OS = @GF_HOST_OS@
 GF_LDADD = @GF_LDADD@
 GF_LDFLAGS = @GF_LDFLAGS@
+GLIB_CFLAGS = @GLIB_CFLAGS@
+GLIB_LIBS = @GLIB_LIBS@
+GLUPY_SUBDIR = @GLUPY_SUBDIR@
+GLUPY_SUBDIR_MAKEFILE = @GLUPY_SUBDIR_MAKEFILE@
+GLUPY_SUBDIR_SRC_MAKEFILE = @GLUPY_SUBDIR_SRC_MAKEFILE@
 GREP = @GREP@
 HAVE_BACKTRACE = @HAVE_BACKTRACE@
 HAVE_LINKAT = @HAVE_LINKAT@
@@ -188,6 +197,8 @@ LIBAIO = @LIBAIO@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
 LIBTOOL = @LIBTOOL@
+LIBZ_CFLAGS = @LIBZ_CFLAGS@
+LIBZ_LIBS = @LIBZ_LIBS@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -203,11 +214,16 @@ OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
 PACKAGE_BUGREPORT = @PACKAGE_BUGREPORT@
 PACKAGE_NAME = @PACKAGE_NAME@
+PACKAGE_RELEASE = @PACKAGE_RELEASE@
 PACKAGE_STRING = @PACKAGE_STRING@
 PACKAGE_TARNAME = @PACKAGE_TARNAME@
 PACKAGE_VERSION = @PACKAGE_VERSION@
 PATH_SEPARATOR = @PATH_SEPARATOR@
+PKG_CONFIG = @PKG_CONFIG@
 PYTHON = @PYTHON@
+PYTHONDEV_CFLAGS = @PYTHONDEV_CFLAGS@
+PYTHONDEV_CPPFLAGS = @PYTHONDEV_CPPFLAGS@
+PYTHONDEV_LDFLAGS = @PYTHONDEV_LDFLAGS@
 PYTHON_EXEC_PREFIX = @PYTHON_EXEC_PREFIX@
 PYTHON_PLATFORM = @PYTHON_PLATFORM@
 PYTHON_PREFIX = @PYTHON_PREFIX@
@@ -215,6 +231,7 @@ PYTHON_VERSION = @PYTHON_VERSION@
 RANLIB = @RANLIB@
 RDMA_SUBDIR = @RDMA_SUBDIR@
 RLLIBS = @RLLIBS@
+RPCGEN = @RPCGEN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -231,6 +248,8 @@ XML_CPPFLAGS = @XML_CPPFLAGS@
 XML_LIBS = @XML_LIBS@
 YACC = @YACC@
 YFLAGS = @YFLAGS@
+ZLIB_CFLAGS = @ZLIB_CFLAGS@
+ZLIB_LIBS = @ZLIB_LIBS@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
@@ -288,6 +307,7 @@ sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
 subdirs = @subdirs@
 sysconfdir = @sysconfdir@
+systemddir = @systemddir@
 target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
@@ -296,13 +316,14 @@ noinst_HEADERS_linux = $(CONTRIBDIR)/fuse-include/fuse_kernel.h\
 	$(CONTRIBDIR)/fuse-include/mount_util.h\
 	$(CONTRIBDIR)/fuse-lib/mount-gluster-compat.h
 
-noinst_HEADERS_darwin = $(CONTRIBDIR)/fuse-include/fuse_kernel_macfuse.h
+noinst_HEADERS_darwin = $(CONTRIBDIR)/fuse-include/fuse_kernel_macfuse.h\
+	$(CONTRIBDIR)/macfuse/fuse_param.h\
+	$(CONTRIBDIR)/macfuse/fuse_ioctl.h
+
 noinst_HEADERS_common = $(CONTRIBDIR)/fuse-include/fuse-mount.h\
 	$(CONTRIBDIR)/fuse-include/fuse-misc.h fuse-mem-types.h \
 	fuse-bridge.h
 
-fuse_HEADERS = glfs-fuse-bridge.h
-fusedir = $(includedir)/glusterfs/
 @GF_DARWIN_HOST_OS_FALSE@noinst_HEADERS = $(noinst_HEADERS_common) $(noinst_HEADERS_linux)
 @GF_DARWIN_HOST_OS_TRUE@noinst_HEADERS = $(noinst_HEADERS_common) $(noinst_HEADERS_darwin)
 xlator_LTLIBRARIES = fuse.la
@@ -463,26 +484,6 @@ mostlyclean-libtool:
 
 clean-libtool:
 	-rm -rf .libs _libs
-install-fuseHEADERS: $(fuse_HEADERS)
-	@$(NORMAL_INSTALL)
-	test -z "$(fusedir)" || $(MKDIR_P) "$(DESTDIR)$(fusedir)"
-	@list='$(fuse_HEADERS)'; test -n "$(fusedir)" || list=; \
-	for p in $$list; do \
-	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
-	  echo "$$d$$p"; \
-	done | $(am__base_list) | \
-	while read files; do \
-	  echo " $(INSTALL_HEADER) $$files '$(DESTDIR)$(fusedir)'"; \
-	  $(INSTALL_HEADER) $$files "$(DESTDIR)$(fusedir)" || exit $$?; \
-	done
-
-uninstall-fuseHEADERS:
-	@$(NORMAL_UNINSTALL)
-	@list='$(fuse_HEADERS)'; test -n "$(fusedir)" || list=; \
-	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
-	test -n "$$files" || exit 0; \
-	echo " ( cd '$(DESTDIR)$(fusedir)' && rm -f" $$files ")"; \
-	cd "$(DESTDIR)$(fusedir)" && rm -f $$files
 
 ID: $(HEADERS) $(SOURCES) $(LISP) $(TAGS_FILES)
 	list='$(SOURCES) $(HEADERS) $(LISP) $(TAGS_FILES)'; \
@@ -570,7 +571,7 @@ check-am: all-am
 check: check-am
 all-am: Makefile $(LTLIBRARIES) $(HEADERS)
 installdirs:
-	for dir in "$(DESTDIR)$(xlatordir)" "$(DESTDIR)$(fusedir)"; do \
+	for dir in "$(DESTDIR)$(xlatordir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
 install: install-am
@@ -622,7 +623,7 @@ info: info-am
 
 info-am:
 
-install-data-am: install-fuseHEADERS install-xlatorLTLIBRARIES
+install-data-am: install-xlatorLTLIBRARIES
 
 install-dvi: install-dvi-am
 
@@ -668,7 +669,7 @@ ps: ps-am
 
 ps-am:
 
-uninstall-am: uninstall-fuseHEADERS uninstall-xlatorLTLIBRARIES
+uninstall-am: uninstall-xlatorLTLIBRARIES
 
 .MAKE: install-am install-strip
 
@@ -677,15 +678,14 @@ uninstall-am: uninstall-fuseHEADERS uninstall-xlatorLTLIBRARIES
 	distclean-compile distclean-generic distclean-libtool \
 	distclean-tags distdir dvi dvi-am html html-am info info-am \
 	install install-am install-data install-data-am install-dvi \
-	install-dvi-am install-exec install-exec-am \
-	install-fuseHEADERS install-html install-html-am install-info \
-	install-info-am install-man install-pdf install-pdf-am \
-	install-ps install-ps-am install-strip \
-	install-xlatorLTLIBRARIES installcheck installcheck-am \
-	installdirs maintainer-clean maintainer-clean-generic \
-	mostlyclean mostlyclean-compile mostlyclean-generic \
-	mostlyclean-libtool pdf pdf-am ps ps-am tags uninstall \
-	uninstall-am uninstall-fuseHEADERS uninstall-xlatorLTLIBRARIES
+	install-dvi-am install-exec install-exec-am install-html \
+	install-html-am install-info install-info-am install-man \
+	install-pdf install-pdf-am install-ps install-ps-am \
+	install-strip install-xlatorLTLIBRARIES installcheck \
+	installcheck-am installdirs maintainer-clean \
+	maintainer-clean-generic mostlyclean mostlyclean-compile \
+	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
+	tags uninstall uninstall-am uninstall-xlatorLTLIBRARIES
 
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.

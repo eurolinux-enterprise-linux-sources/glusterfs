@@ -56,6 +56,9 @@ enum gf_fop_procnum {
         GFS3_OP_RELEASE,
         GFS3_OP_RELEASEDIR,
         GFS3_OP_FREMOVEXATTR,
+	GFS3_OP_FALLOCATE,
+	GFS3_OP_DISCARD,
+        GFS3_OP_ZEROFILL,
         GFS3_OP_MAXVALUE,
 } ;
 
@@ -66,6 +69,8 @@ enum gf_handshake_procnum {
         GF_HNDSK_PING,
         GF_HNDSK_SET_LK_VER,
         GF_HNDSK_EVENT_NOTIFY,
+        GF_HNDSK_GET_VOLUME_INFO,
+        GF_HNDSK_GET_SNAPSHOT_INFO,
         GF_HNDSK_MAXVALUE,
 };
 
@@ -104,7 +109,10 @@ enum gf_probe_resp {
         GF_PROBE_SAME_UUID,
         GF_PROBE_UNKNOWN_PEER,
         GF_PROBE_ADD_FAILED,
-        GF_PROBE_QUORUM_NOT_MET
+        GF_PROBE_QUORUM_NOT_MET,
+        GF_PROBE_MISSED_SNAP_CONFLICT,
+        GF_PROBE_SNAP_CONFLICT,
+        GF_PROBE_FRIEND_DETACHING,
 };
 
 enum gf_deprobe_resp {
@@ -114,6 +122,7 @@ enum gf_deprobe_resp {
         GF_DEPROBE_BRICK_EXIST,
         GF_DEPROBE_FRIEND_DOWN,
         GF_DEPROBE_QUORUM_NOT_MET,
+        GF_DEPROBE_FRIEND_DETACHING,
 };
 
 enum gf_cbk_procnum {
@@ -161,10 +170,11 @@ enum gluster_cli_procnum {
         GLUSTER_CLI_LIST_VOLUME,
         GLUSTER_CLI_CLRLOCKS_VOLUME,
         GLUSTER_CLI_UUID_RESET,
-        GLUSTER_CLI_BD_OP,
         GLUSTER_CLI_UUID_GET,
         GLUSTER_CLI_COPY_FILE,
         GLUSTER_CLI_SYS_EXEC,
+        GLUSTER_CLI_SNAP,
+        GLUSTER_CLI_BARRIER_VOLUME,
         GLUSTER_CLI_MAXVALUE,
 };
 
@@ -196,7 +206,8 @@ enum glusterd_brick_procnum {
         GLUSTERD_BRICK_XLATOR_DEFRAG,
         GLUSTERD_NODE_PROFILE,
         GLUSTERD_NODE_STATUS,
-        GLUSTERD_BRICK_BD_OP,
+        GLUSTERD_VOLUME_BARRIER_OP,
+        GLUSTERD_BRICK_BARRIER,
         GLUSTERD_BRICK_MAXVALUE,
 };
 
@@ -207,12 +218,6 @@ enum glusterd_mgmt_hndsk_procnum {
         GD_MGMT_HNDSK_MAXVALUE,
 };
 
-enum glusterd_pingsvc__procnum {
-        GD_PING_NULL,
-        GD_PING_PING,
-        GD_PING_MAXVALUE
-};
-
 typedef enum {
         GF_AFR_OP_INVALID,
         GF_AFR_OP_HEAL_INDEX,
@@ -220,16 +225,11 @@ typedef enum {
         GF_AFR_OP_INDEX_SUMMARY,
         GF_AFR_OP_HEALED_FILES,
         GF_AFR_OP_HEAL_FAILED_FILES,
-        GF_AFR_OP_SPLIT_BRAIN_FILES
+        GF_AFR_OP_SPLIT_BRAIN_FILES,
+        GF_AFR_OP_STATISTICS,
+        GF_AFR_OP_STATISTICS_HEAL_COUNT,
+        GF_AFR_OP_STATISTICS_HEAL_COUNT_PER_REPLICA,
 } gf_xl_afr_op_t ;
-
-typedef enum {
-        GF_BD_OP_INVALID,
-        GF_BD_OP_NEW_BD,
-        GF_BD_OP_DELETE_BD,
-        GF_BD_OP_CLONE_BD,
-        GF_BD_OP_SNAPSHOT_BD,
-} gf_xl_bd_op_t ;
 
 struct gf_gsync_detailed_status_ {
         char node[NAME_MAX];
@@ -246,7 +246,31 @@ struct gf_gsync_detailed_status_ {
         char total_files_skipped[NAME_MAX];
 };
 
+enum glusterd_mgmt_v3_procnum {
+        GLUSTERD_MGMT_V3_NULL,    /* 0 */
+        GLUSTERD_MGMT_V3_LOCK,
+        GLUSTERD_MGMT_V3_PRE_VALIDATE,
+        GLUSTERD_MGMT_V3_BRICK_OP,
+        GLUSTERD_MGMT_V3_COMMIT,
+        GLUSTERD_MGMT_V3_POST_VALIDATE,
+        GLUSTERD_MGMT_V3_UNLOCK,
+        GLUSTERD_MGMT_V3_MAXVALUE,
+};
+
 typedef struct gf_gsync_detailed_status_ gf_gsync_status_t;
+
+enum gf_get_volume_info_type {
+        GF_GET_VOLUME_NONE,    /* 0 */
+        GF_GET_VOLUME_UUID
+};
+
+typedef enum gf_get_volume_info_type gf_get_volume_info_type;
+
+
+enum gf_get_snapshot_info_type {
+        GF_GET_SNAPSHOT_LIST,
+};
+typedef enum gf_get_snapshot_info_type gf_get_snapshot_info_type;
 
 #define GLUSTER_HNDSK_PROGRAM    14398633 /* Completely random */
 #define GLUSTER_HNDSK_VERSION    2   /* 0.0.2 */
@@ -278,12 +302,13 @@ typedef struct gf_gsync_detailed_status_ gf_gsync_status_t;
 #define GD_BRICK_PROGRAM         4867634 /*Completely random*/
 #define GD_BRICK_VERSION         2
 
+/* Third version */
+#define GD_MGMT_V3_VERSION       3
+
 /* OP-VERSION handshake */
 #define GD_MGMT_HNDSK_PROGRAM    1239873 /* Completely random */
 #define GD_MGMT_HNDSK_VERSION    1
 
-/* Glusterd PING */
-#define GD_PING_PROGRAM 17294873
-#define GD_PING_VERSION 1
+#define GD_VOLUME_NAME_MAX 256 /* Maximum size of volume name */
 
 #endif /* !_PROTOCOL_COMMON_H */

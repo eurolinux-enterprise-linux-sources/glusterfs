@@ -93,6 +93,8 @@ int cli_cmd_probe_register (struct cli_state *state);
 
 int cli_cmd_system_register (struct cli_state *state);
 
+int cli_cmd_snapshot_register (struct cli_state *state);
+
 int cli_cmd_misc_register (struct cli_state *state);
 
 struct cli_cmd_word *cli_cmd_nextword (struct cli_cmd_word *word,
@@ -118,10 +120,6 @@ cli_cmd_submit (struct rpc_clnt *rpc, void *req, call_frame_t *frame,
 gf_answer_t
 cli_cmd_get_confirmation (struct cli_state *state, const char *question);
 int cli_cmd_sent_status_get (int *status);
-
-#ifdef HAVE_BD_XLATOR
-int cli_cmd_bd_register (struct cli_state *state);
-#endif
 
 gf_boolean_t
 _limits_set_on_volume (char *volname);

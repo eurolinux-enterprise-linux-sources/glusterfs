@@ -31,6 +31,7 @@
                   DEFAULT_VAR_RUN_DIRECTORY"/%s-"RB_CLIENT_MOUNTPOINT,      \
                   volinfo->volname);
 
+extern uuid_t global_txn_id;
 
 int
 glusterd_get_replace_op_str (gf1_cli_replace_op op, char *op_str)
@@ -268,13 +269,6 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
                 goto out;
         }
 
-        if (volinfo->backend == GD_VOL_BK_BD) {
-                snprintf (msg, sizeof (msg), "replace brick not supported "
-                       "for Block backend volume");
-                *op_errstr = gf_strdup (msg);
-                goto out;
-        }
-
         if (GLUSTERD_STATUS_STARTED != volinfo->status) {
                 ret = -1;
                 snprintf (msg, sizeof (msg), "volume: %s is not started",
@@ -332,7 +326,7 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
                         ret = -1;
                         goto out;
                 }
-                if (is_origin_glusterd ()) {
+                if (is_origin_glusterd (dict)) {
                         if (!ctx) {
                                 ret = -1;
                                 gf_log (this->name, GF_LOG_ERROR,
@@ -550,6 +544,33 @@ glusterd_op_stage_replace_brick (dict_t *dict, char **op_errstr,
                         ret = -1;
                         goto out;
                 }
+        } else if (priv->op_version >= GD_OP_VERSION_RHS_3_0) {
+                /* A bricks mount dir is required only by snapshots which were
+                 * introduced in gluster-3.6.0
+                 */
+                ret = glusterd_get_brick_mount_dir (dst_brickinfo->path,
+                                                    dst_brickinfo->hostname,
+                                                    dst_brickinfo->mount_dir);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to get brick mount_dir");
+                        goto out;
+                }
+
+                ret = dict_set_dynstr_with_alloc (rsp_dict, "brick1.mount_dir",
+                                                  dst_brickinfo->mount_dir);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to set brick1.mount_dir");
+                        goto out;
+                }
+
+                ret = dict_set_int32 (rsp_dict, "brick_count", 1);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "Failed to set local_brick_count");
+                        goto out;
+                }
         }
 
         if (replace_op == GF_REPLACE_OP_START &&
@@ -694,7 +715,7 @@ rb_src_brick_restart (glusterd_volinfo_t *volinfo,
 
         sleep (2);
         ret = glusterd_volume_start_glusterfs (volinfo, src_brickinfo,
-                                              _gf_false);
+                                               _gf_false);
         if (ret) {
                 gf_log ("", GF_LOG_ERROR, "Unable to start "
                         "glusterfs, ret: %d", ret);
@@ -1499,13 +1520,23 @@ out:
 
 static int
 glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
-                                   char *old_brick, char  *new_brick)
+                                   char *old_brick, char *new_brick,
+                                   dict_t *dict)
 {
+        char                                    *brick_mount_dir = NULL;
         glusterd_brickinfo_t                    *old_brickinfo = NULL;
         glusterd_brickinfo_t                    *new_brickinfo = NULL;
         int32_t                                 ret = -1;
+        xlator_t                                *this = NULL;
+        glusterd_conf_t                         *conf = NULL;
 
+        this = THIS;
+        GF_ASSERT (this);
+        GF_ASSERT (dict);
         GF_ASSERT (volinfo);
+
+        conf = this->private;
+        GF_ASSERT (conf);
 
         ret = glusterd_brickinfo_new_from_brick (new_brick,
                                                  &new_brickinfo);
@@ -1521,6 +1552,23 @@ glusterd_op_perform_replace_brick (glusterd_volinfo_t  *volinfo,
                                                       volinfo, &old_brickinfo);
         if (ret)
                 goto out;
+
+        strncpy (new_brickinfo->brick_id, old_brickinfo->brick_id,
+                 sizeof (new_brickinfo->brick_id));
+
+        /* A bricks mount dir is required only by snapshots which were
+         * introduced in gluster-3.6.0
+         */
+        if (conf->op_version >= GD_OP_VERSION_RHS_3_0) {
+                ret = dict_get_str (dict, "brick1.mount_dir", &brick_mount_dir);
+                if (ret) {
+                        gf_log (this->name, GF_LOG_ERROR,
+                                "brick1.mount_dir not present");
+                        goto out;
+                }
+                strncpy (new_brickinfo->mount_dir, brick_mount_dir,
+                         sizeof(new_brickinfo->mount_dir));
+        }
 
         list_add_tail (&new_brickinfo->brick_list,
                        &old_brickinfo->brick_list);
@@ -1632,13 +1680,12 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
         if (ret)
                 goto out;
 
-
 	if ((GF_REPLACE_OP_START != replace_op)) {
 
                 /* Set task-id, if available, in op_ctx dict for operations
                  * other than start
                  */
-                if  (is_origin_glusterd ()) {
+                if  (is_origin_glusterd (dict)) {
                         ctx = glusterd_op_get_ctx();
                         if (!ctx) {
                                 gf_log (this->name, GF_LOG_ERROR, "Failed to "
@@ -1756,7 +1803,7 @@ glusterd_op_replace_brick (dict_t *dict, dict_t *rsp_dict)
                 }
 
 		ret = glusterd_op_perform_replace_brick (volinfo, src_brick,
-							 dst_brick);
+							 dst_brick, dict);
 		if (ret) {
 			gf_log (this->name, GF_LOG_CRITICAL, "Unable to add "
 				"dst-brick: %s to volume: %s", dst_brick,
@@ -1894,6 +1941,7 @@ glusterd_do_replace_brick (void *data)
         int32_t                 op      = 0;
         int32_t                 src_port = 0;
         int32_t                 dst_port = 0;
+        int32_t                 ret      = 0;
         dict_t                 *dict    = NULL;
         char                   *src_brick = NULL;
         char                   *dst_brick = NULL;
@@ -1901,14 +1949,17 @@ glusterd_do_replace_brick (void *data)
         glusterd_brickinfo_t   *src_brickinfo = NULL;
         glusterd_brickinfo_t   *dst_brickinfo = NULL;
 	glusterd_conf_t	       *priv = NULL;
+        uuid_t                 *txn_id = NULL;
+        xlator_t               *this = NULL;
 
-        int ret = 0;
+        this = THIS;
+	GF_ASSERT (this);
+	priv = this->private;
+        GF_ASSERT (priv);
+        GF_ASSERT (data);
 
+        txn_id = &priv->global_txn_id;
         dict = data;
-
-	GF_ASSERT (THIS);
-
-	priv = THIS->private;
 
 	if (priv->timer) {
 		gf_timer_call_cancel (THIS->ctx, priv->timer);
@@ -1919,6 +1970,10 @@ glusterd_do_replace_brick (void *data)
 
         gf_log ("", GF_LOG_DEBUG,
                 "Replace brick operation detected");
+
+        ret = dict_get_bin (dict, "transaction_id", (void **)&txn_id);
+        gf_log (this->name, GF_LOG_DEBUG, "transaction ID = %s",
+                uuid_utoa (*txn_id));
 
         ret = dict_get_int32 (dict, "operation", &op);
         if (ret) {
@@ -2015,9 +2070,11 @@ glusterd_do_replace_brick (void *data)
 
 out:
         if (ret)
-                ret = glusterd_op_sm_inject_event (GD_OP_EVENT_RCVD_RJT, NULL);
+                ret = glusterd_op_sm_inject_event (GD_OP_EVENT_RCVD_RJT,
+                                                   txn_id, NULL);
         else
-                ret = glusterd_op_sm_inject_event (GD_OP_EVENT_COMMIT_ACC, NULL);
+                ret = glusterd_op_sm_inject_event (GD_OP_EVENT_COMMIT_ACC,
+                                                   txn_id, NULL);
 
         synclock_lock (&priv->big_lock);
         {

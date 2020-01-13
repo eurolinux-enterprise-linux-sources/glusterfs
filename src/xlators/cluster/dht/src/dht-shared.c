@@ -18,6 +18,8 @@
 
 #include "statedump.h"
 #include "dht-common.h"
+#include "dht-messages.h"
+
 
 /* TODO:
    - use volumename in xattr instead of "dht"
@@ -103,20 +105,20 @@ dht_priv_dump (xlator_t *this)
                                this->name);
         gf_proc_dump_write("subvol_cnt","%d", conf->subvolume_cnt);
         for (i = 0; i < conf->subvolume_cnt; i++) {
-                sprintf (key, "subvolumes[%d]", i);
+                snprintf (key, sizeof (key), "subvolumes[%d]", i);
                 gf_proc_dump_write(key, "%s.%s", conf->subvolumes[i]->type,
                                    conf->subvolumes[i]->name);
                 if (conf->file_layouts && conf->file_layouts[i]){
-                        sprintf (key, "file_layouts[%d]", i);
+                        snprintf (key, sizeof (key), "file_layouts[%d]", i);
                         dht_layout_dump(conf->file_layouts[i], key);
                 }
                 if (conf->dir_layouts && conf->dir_layouts[i]) {
-                        sprintf (key, "dir_layouts[%d]", i);
+                        snprintf (key, sizeof (key), "dir_layouts[%d]", i);
                         dht_layout_dump(conf->dir_layouts[i], key);
                 }
                 if (conf->subvolume_status) {
 
-                        sprintf (key, "subvolume_status[%d]", i);
+                        snprintf (key, sizeof (key), "subvolume_status[%d]", i);
                         gf_proc_dump_write(key, "%d",
                                            (int)conf->subvolume_status[i]);
                 }
@@ -130,14 +132,35 @@ dht_priv_dump (xlator_t *this)
         gf_proc_dump_write("disk_unit", "%c", conf->disk_unit);
         gf_proc_dump_write("refresh_interval", "%d", conf->refresh_interval);
         gf_proc_dump_write("unhashed_sticky_bit", "%d", conf->unhashed_sticky_bit);
-        if (conf ->du_stats) {
-                gf_proc_dump_write("du_stats.avail_percent", "%lf",
-                                   conf->du_stats->avail_percent);
-                gf_proc_dump_write("du_stats.avail_space", "%lu",
-                                   conf->du_stats->avail_space);
-		gf_proc_dump_write("du_stats.avail_inodes", "%lf",
-                                   conf->du_stats->avail_inodes);
-                gf_proc_dump_write("du_stats.log", "%lu", conf->du_stats->log);
+
+        if (conf->du_stats) {
+                for (i = 0; i < conf->subvolume_cnt; i++) {
+                        if (!conf->subvolume_status[i])
+                                continue;
+
+                        snprintf (key, sizeof (key), "subvolumes[%d]", i);
+                        gf_proc_dump_write (key, "%s",
+                                            conf->subvolumes[i]->name);
+
+                        snprintf (key, sizeof (key),
+                                  "du_stats[%d].avail_percent", i);
+                        gf_proc_dump_write (key, "%lf",
+                                            conf->du_stats[i].avail_percent);
+
+                        snprintf (key, sizeof (key), "du_stats[%d].avail_space",
+                                  i);
+                        gf_proc_dump_write (key, "%lu",
+                                            conf->du_stats[i].avail_space);
+
+                        snprintf (key, sizeof (key),
+                                  "du_stats[%d].avail_inodes", i);
+                        gf_proc_dump_write (key, "%lf",
+                                            conf->du_stats[i].avail_inodes);
+
+                        snprintf (key, sizeof (key), "du_stats[%d].log", i);
+                        gf_proc_dump_write (key, "%lu",
+                                            conf->du_stats[i].log);
+                }
         }
 
         if (conf->last_stat_fetch.tv_sec)
@@ -194,6 +217,9 @@ dht_fini (xlator_t *this)
                 GF_FREE (conf->subvolumes);
 
                 GF_FREE (conf->subvolume_status);
+
+                if (conf->lock_pool)
+                        mem_pool_destroy (conf->lock_pool);
 
                 GF_FREE (conf);
         }
@@ -336,22 +362,23 @@ dht_reconfigure (xlator_t *this, dict_t *options)
                 /* If option is not "auto", other options _should_ be boolean*/
                 if (strcasecmp (temp_str, "auto")) {
                         if (!gf_string2boolean (temp_str, &search_unhashed)) {
-                                gf_log(this->name, GF_LOG_DEBUG, "Reconfigure:"
-                                       " lookup-unhashed reconfigured (%s)",
-                                       temp_str);
+                                gf_msg_debug(this->name, 0, "Reconfigure: "
+                                             "lookup-unhashed reconfigured(%s)",
+                                             temp_str);
                                 conf->search_unhashed = search_unhashed;
                         } else {
-                                gf_log(this->name, GF_LOG_ERROR, "Reconfigure:"
-                                       " lookup-unhashed should be boolean,"
+                                gf_msg(this->name, GF_LOG_ERROR, 0,
+                                       DHT_MSG_INVALID_OPTION,
+                                       "Invalid option: Reconfigure: "
+                                       "lookup-unhashed should be boolean,"
                                        " not (%s), defaulting to (%d)",
                                        temp_str, conf->search_unhashed);
-                                //return -1;
                                 ret = -1;
                                 goto out;
                         }
                 } else {
-                        gf_log(this->name, GF_LOG_DEBUG, "Reconfigure:"
-                               " lookup-unhashed reconfigured auto ");
+                        gf_msg_debug(this->name, 0, "Reconfigure:"
+                                     " lookup-unhashed reconfigured auto ");
                         conf->search_unhashed = GF_DHT_LOOKUP_UNHASHED_AUTO;
                 }
         }
@@ -371,6 +398,10 @@ dht_reconfigure (xlator_t *this, dict_t *options)
 
         GF_OPTION_RECONF ("readdir-optimize", conf->readdir_optimize, options,
                           bool, out);
+        GF_OPTION_RECONF ("hash-range-gfid",
+                          conf->randomize_by_gfid,
+                          options, bool, out);
+
         if (conf->defrag) {
                 GF_OPTION_RECONF ("rebalance-stats", conf->defrag->stats,
                                   options, bool, out);
@@ -428,13 +459,15 @@ gf_defrag_pattern_list_fill (xlator_t *this, gf_defrag_info_t *defrag, char *dat
                 if (!pattern)
                         goto out;
                 if (!num) {
-                        if (gf_string2bytesize(pattern, &pattern_list->size)
+                        if (gf_string2bytesize_uint64(pattern, &pattern_list->size)
                              == 0) {
                                 pattern = "*";
                         }
-                } else if (gf_string2bytesize (num, &pattern_list->size) != 0) {
-                        gf_log (this->name, GF_LOG_ERROR,
-                                "invalid number format \"%s\"", num);
+                } else if (gf_string2bytesize_uint64 (num, &pattern_list->size) != 0) {
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                DHT_MSG_INVALID_OPTION,
+                                "Invalid option. Defrag pattern:"
+                                " Invalid number format \"%s\"", num);
                         goto out;
                 }
                 memcpy (pattern_list->path_pattern, pattern, strlen (dup_str));
@@ -479,13 +512,15 @@ dht_init (xlator_t *this)
         GF_VALIDATE_OR_GOTO ("dht", this, err);
 
         if (!this->children) {
-                gf_log (this->name, GF_LOG_CRITICAL,
+                gf_msg (this->name, GF_LOG_CRITICAL, 0,
+                        DHT_MSG_INVALID_CONFIGURATION,
                         "Distribute needs more than one subvolume");
                 return -1;
         }
 
         if (!this->parents) {
-                gf_log (this->name, GF_LOG_WARNING,
+                gf_msg (this->name, GF_LOG_WARNING, 0,
+                        DHT_MSG_INVALID_CONFIGURATION,
                         "dangling volume. check volfile");
         }
 
@@ -510,14 +545,17 @@ dht_init (xlator_t *this)
 
                 ret = dict_get_str (this->options, "node-uuid", &node_uuid);
                 if (ret) {
-                        gf_log (this->name, GF_LOG_ERROR, "node-uuid not "
-                                "specified");
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                DHT_MSG_INVALID_CONFIGURATION,
+                                "Invalid volume configuration: "
+                                "node-uuid not specified");
                         goto err;
                 }
 
                 if (uuid_parse (node_uuid, defrag->node_uuid)) {
-                        gf_log (this->name, GF_LOG_ERROR, "Cannot parse "
-                                "glusterd node uuid");
+                        gf_msg (this->name, GF_LOG_ERROR, 0,
+                                DHT_MSG_INVALID_OPTION, "Invalid option:"
+                                " Cannot parse glusterd node uuid");
                         goto err;
                 }
 
@@ -561,8 +599,12 @@ dht_init (xlator_t *this)
                     == 0) {
                         if (gf_defrag_pattern_list_fill (this, defrag, temp_str)
                             == -1) {
-                                gf_log (this->name, GF_LOG_ERROR, "Cannot parse"
-                                        " rebalance-filter (%s)", temp_str);
+                                gf_msg (this->name, GF_LOG_ERROR, 0,
+                                        DHT_MSG_INVALID_OPTION,
+                                        "Invalid option:"
+                                        " Cannot parse rebalance-filter (%s)",
+                                        temp_str);
+
                                 goto err;
                         }
                 }
@@ -601,15 +643,29 @@ dht_init (xlator_t *this)
 
         this->local_pool = mem_pool_new (dht_local_t, 512);
         if (!this->local_pool) {
-                gf_log (this->name, GF_LOG_ERROR,
+                gf_msg (this->name, GF_LOG_ERROR, 0,
+                        DHT_MSG_INIT_FAILED,
+                        " DHT initialisation failed. "
                         "failed to create local_t's memory pool");
                 goto err;
         }
 
+        GF_OPTION_INIT ("hash-range-gfid",
+                        conf->randomize_by_gfid, bool, err);
+
         GF_OPTION_INIT ("xattr-name", conf->xattr_name, str, err);
-        gf_asprintf (&conf->link_xattr_name, "%s.linkto", conf->xattr_name);
+        gf_asprintf (&conf->link_xattr_name, "%s."DHT_LINKFILE_STR,
+                     conf->xattr_name);
         gf_asprintf (&conf->wild_xattr_name, "%s*", conf->xattr_name);
         if (!conf->link_xattr_name || !conf->wild_xattr_name) {
+                goto err;
+        }
+
+        conf->lock_pool = mem_pool_new (dht_lock_t, 512);
+        if (!conf->lock_pool) {
+                gf_msg (this->name, GF_LOG_ERROR, 0, DHT_MSG_INIT_FAILED,
+                        "failed to create lock mem_pool, failing "
+                        "initialization");
                 goto err;
         }
 
@@ -637,6 +693,9 @@ err:
                 GF_FREE (conf->xattr_name);
                 GF_FREE (conf->link_xattr_name);
                 GF_FREE (conf->wild_xattr_name);
+
+                if (conf->lock_pool)
+                        mem_pool_destroy (conf->lock_pool);
 
                 GF_FREE (conf);
         }
@@ -689,7 +748,8 @@ struct volume_options options[] = {
           .type = GF_OPTION_TYPE_INT,
           .min  = 1,
           .validate = GF_OPT_VALIDATE_MIN,
-          .description = "Specifies the directory layout spread."
+          .description = "Specifies the directory layout spread. Takes number "
+                         "of subvolumes as default value."
         },
         { .key  = {"decommissioned-bricks"},
           .type = GF_OPTION_TYPE_ANY,
@@ -752,6 +812,15 @@ struct volume_options options[] = {
         /* switch option */
         { .key  = {"pattern.switch.case"},
           .type = GF_OPTION_TYPE_ANY
+        },
+
+        { .key =  {"hash-range-gfid"},
+          .type = GF_OPTION_TYPE_BOOL,
+          .default_value = "off",
+          .description = "Use gfid of directory to determine the subvolume "
+          "from which hash ranges are allocated starting with 0. "
+          "Note that we still use a directory/file's name to determine the "
+          "subvolume to which it hashes"
         },
 
         { .key  = {NULL} },

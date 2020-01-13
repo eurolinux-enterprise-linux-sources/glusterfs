@@ -16,6 +16,7 @@
 
 #include "server.h"
 #include "server-helpers.h"
+#include "rpc-common-xdr.h"
 #include "glusterfs3-xdr.h"
 #include "compat-errno.h"
 #include "glusterfs3.h"
@@ -94,9 +95,9 @@ _volfile_update_checksum (xlator_t *this, char *key, uint32_t checksum)
 
         if (temp_volfile->checksum != checksum) {
                 gf_log (this->name, GF_LOG_INFO,
-                        "the volume file got modified between earlier access "
-                        "and now, this may lead to inconsistency between "
-                        "clients, advised to remount client");
+                        "the volume file was modified between a prior access "
+                        "and now. This may lead to inconsistency between "
+                        "clients, you are advised to remount client");
                 temp_volfile->checksum  = checksum;
         }
 
@@ -109,10 +110,10 @@ static size_t
 getspec_build_volfile_path (xlator_t *this, const char *key, char *path,
                             size_t path_len)
 {
-        int              ret = -1;
+        char            *filename      = NULL;
+        server_conf_t   *conf          = NULL;
+        int              ret           = -1;
         int              free_filename = 0;
-        char            *filename = NULL;
-        server_conf_t   *conf = NULL;
         char             data_key[256] = {0,};
 
         conf = this->private;
@@ -329,14 +330,15 @@ server_setvolume (rpcsvc_request_t *req)
 {
         gf_setvolume_req     args          = {{0,},};
         gf_setvolume_rsp     rsp           = {0,};
-        server_connection_t *conn          = NULL;
+        client_t            *client        = NULL;
+        server_ctx_t        *serv_ctx      = NULL;
         server_conf_t       *conf          = NULL;
         peer_info_t         *peerinfo      = NULL;
         dict_t              *reply         = NULL;
         dict_t              *config_params = NULL;
         dict_t              *params        = NULL;
         char                *name          = NULL;
-        char                *process_uuid  = NULL;
+        char                *client_uid    = NULL;
         char                *clnt_version  = NULL;
         xlator_t            *xl            = NULL;
         char                *msg           = NULL;
@@ -393,7 +395,7 @@ server_setvolume (rpcsvc_request_t *req)
         params->extra_free = buf;
         buf = NULL;
 
-        ret = dict_get_str (params, "process-uuid", &process_uuid);
+        ret = dict_get_str (params, "process-uuid", &client_uid);
         if (ret < 0) {
                 ret = dict_set_str (reply, "ERROR",
                                     "UUID not specified");
@@ -420,27 +422,34 @@ server_setvolume (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        conn = server_connection_get (this, process_uuid);
-        if (!conn) {
+        client = gf_client_get (this, &req->cred, client_uid);
+        if (client == NULL) {
                 op_ret = -1;
                 op_errno = ENOMEM;
                 goto fail;
         }
 
-        gf_log (this->name, GF_LOG_DEBUG, "Connected to %s", conn->id);
-        cancelled = server_cancel_conn_timer (this, conn);
-        if (cancelled)//Do connection_put on behalf of grace-timer-handler.
-                server_connection_put (this, conn, NULL);
-        if (conn->lk_version != 0 &&
-            conn->lk_version != lk_version) {
-                (void) server_connection_cleanup (this, conn,
+        gf_log (this->name, GF_LOG_DEBUG, "Connected to %s", client->client_uid);
+        cancelled = server_cancel_grace_timer (this, client);
+        if (cancelled)//Do gf_client_put on behalf of grace-timer-handler.
+                gf_client_put (client, NULL);
+
+        serv_ctx = server_ctx_get (client, client->this);
+        if (serv_ctx == NULL) {
+                gf_log (this->name, GF_LOG_INFO, "server_ctx_get() failed");
+                goto fail;
+        }
+
+        if (serv_ctx->lk_version != 0 &&
+            serv_ctx->lk_version != lk_version) {
+                (void) server_connection_cleanup (this, client,
                                                   INTERNAL_LOCKS | POSIX_LOCKS);
         }
 
-        if (req->trans->xl_private != conn)
-                req->trans->xl_private = conn;
+        if (req->trans->xl_private != client)
+                req->trans->xl_private = client;
 
-        auth_set_username_passwd (params, config_params, conn);
+        auth_set_username_passwd (params, config_params, client);
 
         ret = dict_get_int32 (params, "fops-version", &fop_version);
         if (ret < 0) {
@@ -565,10 +574,10 @@ server_setvolume (rpcsvc_request_t *req)
 
                 gf_log (this->name, GF_LOG_INFO,
                         "accepted client from %s (version: %s)",
-                        conn->id,
+                        client->client_uid,
                         (clnt_version) ? clnt_version : "old");
                 op_ret = 0;
-                conn->bound_xl = xl;
+                client->bound_xl = xl;
                 ret = dict_set_str (reply, "ERROR", "Success");
                 if (ret < 0)
                         gf_log (this->name, GF_LOG_DEBUG,
@@ -576,7 +585,7 @@ server_setvolume (rpcsvc_request_t *req)
         } else {
                 gf_log (this->name, GF_LOG_ERROR,
                         "Cannot authenticate client from %s %s",
-                        conn->id,
+                        client->client_uid,
                         (clnt_version) ? clnt_version : "old");
 
                 op_ret = -1;
@@ -588,7 +597,7 @@ server_setvolume (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        if (conn->bound_xl == NULL) {
+        if (client->bound_xl == NULL) {
                 ret = dict_set_str (reply, "ERROR",
                                     "Check volfile and handshake "
                                     "options in protocol/client");
@@ -601,20 +610,21 @@ server_setvolume (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        if ((conn->bound_xl != NULL) &&
+        if ((client->bound_xl != NULL) &&
             (ret >= 0)                   &&
-            (conn->bound_xl->itable == NULL)) {
+            (client->bound_xl->itable == NULL)) {
                 /* create inode table for this bound_xl, if one doesn't
                    already exist */
 
                 gf_log (this->name, GF_LOG_TRACE,
                         "creating inode table with lru_limit=%"PRId32", "
                         "xlator=%s", conf->inode_lru_limit,
-                        conn->bound_xl->name);
+                        client->bound_xl->name);
 
                 /* TODO: what is this ? */
-                conn->bound_xl->itable = inode_table_new (conf->inode_lru_limit,
-                                                          conn->bound_xl);
+                client->bound_xl->itable =
+                        inode_table_new (conf->inode_lru_limit,
+                                         client->bound_xl);
         }
 
         ret = dict_set_str (reply, "process-uuid",
@@ -623,8 +633,7 @@ server_setvolume (rpcsvc_request_t *req)
                 gf_log (this->name, GF_LOG_DEBUG,
                         "failed to set 'process-uuid'");
 
-        ret = dict_set_uint32 (reply, "clnt-lk-version",
-                               conn->lk_version);
+        ret = dict_set_uint32 (reply, "clnt-lk-version", serv_ctx->lk_version);
         if (ret)
                 gf_log (this->name, GF_LOG_WARNING,
                         "failed to set 'clnt-lk-version'");
@@ -635,16 +644,9 @@ server_setvolume (rpcsvc_request_t *req)
                 gf_log (this->name, GF_LOG_DEBUG,
                         "failed to set 'transport-ptr'");
 
-        ret = dict_set_str (reply, "server-pkg-version", PACKAGE_VERSION);
-        if (ret < 0) {
-                gf_log (this->name, GF_LOG_INFO,
-                        "failed to set server-pkg-version(%s) in handshake msg",
-                        PACKAGE_VERSION);
-        }
-
 fail:
         rsp.dict.dict_len = dict_serialized_length (reply);
-        if (rsp.dict.dict_len < 0) {
+        if (rsp.dict.dict_len > UINT_MAX) {
                 gf_log ("server-handshake", GF_LOG_DEBUG,
                         "failed to get serialized length of reply dict");
                 op_ret   = -1;
@@ -673,15 +675,15 @@ fail:
          * list of connections the server is maintaining and might segfault
          * during statedump when bound_xl of the connection is accessed.
          */
-        if (op_ret && conn && !xl) {
+        if (op_ret && !xl) {
                 /* We would have set the xl_private of the transport to the
                  * @conn. But if we have put the connection i.e shutting down
                  * the connection, then we should set xl_private to NULL as it
                  * would be pointing to a freed memory and would segfault when
                  * accessed upon getting DISCONNECT.
                  */
-                if (server_connection_put (this, conn, NULL) == NULL)
-                        req->trans->xl_private = NULL;
+                gf_client_put (client, NULL);
+                req->trans->xl_private = NULL;
         }
         server_submit_reply (NULL, req, &rsp, NULL, 0, NULL,
                              (xdrproc_t)xdr_gf_setvolume_rsp);
@@ -718,12 +720,13 @@ server_ping (rpcsvc_request_t *req)
 int
 server_set_lk_version (rpcsvc_request_t *req)
 {
-        int                     op_ret          = -1;
-        int                     op_errno        = EINVAL;
-        gf_set_lk_ver_req       args            = {0, };
-        gf_set_lk_ver_rsp       rsp             = {0,};
-        server_connection_t     *conn           = NULL;
-        xlator_t                *this           = NULL;
+        int                 op_ret   = -1;
+        int                 op_errno = EINVAL;
+        gf_set_lk_ver_req   args     = {0,};
+        gf_set_lk_ver_rsp   rsp      = {0,};
+        client_t           *client   = NULL;
+        server_ctx_t       *serv_ctx = NULL;
+        xlator_t           *this     = NULL;
 
         this = req->svc->mydata;
         //TODO: Decide on an appropriate errno for the error-path
@@ -739,14 +742,21 @@ server_set_lk_version (rpcsvc_request_t *req)
                 goto fail;
         }
 
-        conn = server_connection_get (this, args.uid);
-        conn->lk_version = args.lk_ver;
-        server_connection_put (this, conn, NULL);
+        client = gf_client_get (this, &req->cred, args.uid);
+        serv_ctx = server_ctx_get (client, client->this);
+        if (serv_ctx == NULL) {
+                gf_log (this->name, GF_LOG_INFO, "server_ctx_get() failed");
+                goto fail;
+        }
 
+        serv_ctx->lk_version = args.lk_ver;
         rsp.lk_ver   = args.lk_ver;
 
         op_ret = 0;
 fail:
+        if (client)
+                gf_client_put (client, NULL);
+
         rsp.op_ret   = op_ret;
         rsp.op_errno = op_errno;
         server_submit_reply (NULL, req, &rsp, NULL, 0, NULL,
@@ -757,7 +767,7 @@ fail:
         return 0;
 }
 
-rpcsvc_actor_t gluster_handshake_actors[] = {
+rpcsvc_actor_t gluster_handshake_actors[GF_HNDSK_MAXVALUE] = {
         [GF_HNDSK_NULL]       = {"NULL",       GF_HNDSK_NULL,       server_null,           NULL, 0, DRC_NA},
         [GF_HNDSK_SETVOLUME]  = {"SETVOLUME",  GF_HNDSK_SETVOLUME,  server_setvolume,      NULL, 0, DRC_NA},
         [GF_HNDSK_GETSPEC]    = {"GETSPEC",    GF_HNDSK_GETSPEC,    server_getspec,        NULL, 0, DRC_NA},
